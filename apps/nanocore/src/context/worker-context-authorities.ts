@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { parseReferenceScope } from '@openkit/protocol';
+import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import type { FsStore } from '../lib/store.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -135,6 +136,16 @@ export function createWorkerContextPackageAuthorityReader(
           mediaType: original.mediaType,
         };
       }),
+    readAssistantTaskHandoffSource: (receiving) =>
+      receiving.workspaceId === workspaceDb.workspaceId
+        ? readAssistantTaskHandoffSource(store, workspaceDb, {
+            workspaceId: receiving.workspaceId,
+            threadId: receiving.threadId,
+            turnId: receiving.turnId,
+            requestId: receiving.requestId,
+            turnInput: receiving.workerRequest,
+          })
+        : null,
     readAdmission: (workspaceId, threadId, turnId) => {
       const matches = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         workspaceId,
@@ -222,6 +233,8 @@ export function createWorkerContextPackageAuthorityReader(
           ? { ...revision, sensitivity: material.sensitivity }
           : null;
       }),
+    readThreadParent: (workspaceId, threadId) =>
+      readOrNull(() => store.getThread(workspaceId, threadId).parentThreadId ?? null),
     readThreadItems: (workspaceId, threadId) =>
       readOrNull(() => store.listThreadItems(workspaceId, threadId)) ?? [],
     readTurn: (workspaceId, threadId, turnId) =>

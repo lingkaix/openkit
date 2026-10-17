@@ -1,10 +1,19 @@
 import {
   ActorRefSchema,
+  ItemIdSchema,
+  KnowledgeClaimIdSchema,
+  KnowledgeConflictIdSchema,
+  KnowledgeObservationIdSchema,
+  KnowledgeOwnerScopeSchema,
+  KnowledgeSourceIdSchema,
   PageReferenceSchema,
   RequestIdSchema,
   RetrievalTraceIdSchema,
   RetrievalTraceReferenceSchema,
+  ThreadIdSchema,
   TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 
@@ -38,14 +47,14 @@ export const KnowledgeSourceKindSchema = z.enum([
 
 /** Registered workspace knowledge source identity. */
 export const KnowledgeSourceSchema = z.object({
-  id: z.string().min(1),
-  workspaceId: z.string().min(1),
+  id: KnowledgeSourceIdSchema,
+  workspaceId: WorkspaceIdSchema,
   kind: KnowledgeSourceKindSchema,
   title: z.string().min(1),
   uri: z.string().min(1).nullable(),
   contentDigest: z.string().min(1),
-  originatingThreadId: z.string().min(1).nullable(),
-  originatingTurnId: z.string().min(1).nullable(),
+  originatingThreadId: ThreadIdSchema.nullable(),
+  originatingTurnId: TurnIdSchema.nullable(),
   originatingFileId: z.string().min(1).nullable(),
   capturedAt: z.string().min(1),
   createdAt: z.string().min(1),
@@ -55,8 +64,8 @@ export const KnowledgeSourceSchema = z.object({
 /** Derived representation metadata for one workspace knowledge source. */
 export const KnowledgeSourceDerivedRepresentationSchema = z.object({
   id: z.string().min(1),
-  workspaceId: z.string().min(1),
-  sourceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
+  sourceId: KnowledgeSourceIdSchema,
   kind: z.literal('text'),
   path: z.string().min(1),
   materialPath: z.string().min(1),
@@ -73,8 +82,8 @@ export const RegisterKnowledgeSourceRequestSchema = z
     title: z.string().min(1),
     content: z.string().min(1),
     uri: z.string().min(1).optional(),
-    originatingThreadId: z.string().min(1).optional(),
-    originatingTurnId: z.string().min(1).optional(),
+    originatingThreadId: ThreadIdSchema.optional(),
+    originatingTurnId: TurnIdSchema.optional(),
     originatingFileId: z.string().min(1).optional(),
   })
   .strict();
@@ -115,8 +124,8 @@ export const KnowledgeObservationStatusSchema = z.enum([
 
 /** File-backed workspace Knowledge Store observation ledger row. */
 export const KnowledgeObservationSchema = z.object({
-  id: z.string().min(1),
-  workspaceId: z.string().min(1),
+  id: KnowledgeObservationIdSchema,
+  workspaceId: WorkspaceIdSchema,
   kind: KnowledgeObservationKindSchema,
   summary: z.string().min(1),
   sourceReferences: z.array(z.string().min(1)),
@@ -176,8 +185,8 @@ export const KnowledgeClaimConflictStatusSchema = z.enum([
 
 /** File-backed workspace Knowledge Store claim ledger row. */
 export const KnowledgeClaimSchema = z.object({
-  id: z.string().min(1),
-  workspaceId: z.string().min(1),
+  id: KnowledgeClaimIdSchema,
+  workspaceId: WorkspaceIdSchema,
   statement: z.string().min(1),
   sourceReferences: z.array(z.string().min(1)),
   scope: z.string().min(1),
@@ -236,8 +245,8 @@ export const RecordKnowledgeConflictStatusSchema = z.enum([
 
 /** File-backed workspace Knowledge Store conflict ledger row. */
 export const KnowledgeConflictSchema = z.object({
-  id: z.string().min(1),
-  workspaceId: z.string().min(1),
+  id: KnowledgeConflictIdSchema,
+  workspaceId: WorkspaceIdSchema,
   subjectReferences: z.array(z.string().min(1)).min(1),
   sourceReferences: z.array(z.string().min(1)),
   status: KnowledgeConflictStatusSchema,
@@ -290,7 +299,7 @@ export const KnowledgeConformanceSchema = z.enum([
   'invalid',
   'OKF-compatible',
   'OpenKit-profile-valid',
-  'Workspace-schema-valid',
+  'scope-schema-valid',
 ]);
 
 /** Validation error returned for one file-backed Knowledge Store page. */
@@ -311,7 +320,7 @@ export const KnowledgeLinkEdgeSchema = z.object({
 /** Derived Knowledge Store Markdown link graph. */
 export const KnowledgeLinkGraphSchema = z.object({
   schemaVersion: z.literal(1),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   rebuiltAt: z.string().min(1),
   edges: z.array(KnowledgeLinkEdgeSchema),
 });
@@ -330,7 +339,7 @@ export const KnowledgeValidationRecordSchema = z.object({
 /** Derived Knowledge Store validation report. */
 export const KnowledgeValidationIndexSchema = z.object({
   schemaVersion: z.literal(1),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   rebuiltAt: z.string().min(1),
   records: z.array(KnowledgeValidationRecordSchema),
 });
@@ -355,7 +364,7 @@ export const KnowledgeSourceReferenceSchema = z.object({
 /** Derived Knowledge Store source-reference index. */
 export const KnowledgeSourceReferenceIndexSchema = z.object({
   schemaVersion: z.literal(1),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   rebuiltAt: z.string().min(1),
   references: z.array(KnowledgeSourceReferenceSchema),
 });
@@ -397,10 +406,10 @@ export const RetrieveKnowledgeRequestSchema = z
 export const KnowledgeQueryContextSchema = z
   .object({
     serverId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     actor: ActorRefSchema,
-    threadId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
+    threadId: ThreadIdSchema.optional(),
+    turnId: TurnIdSchema.optional(),
   })
   .strict();
 
@@ -456,7 +465,7 @@ const RetrievalSelectionMetadataSchema = z.object({
 
 /** Fresh selection result; threadless calls carry no trace id or reference. */
 export const KnowledgeRetrievalResponseSchema = RetrievalSelectionMetadataSchema.extend({
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   selected: z.array(KnowledgeRetrievalCandidateSchema),
   excluded: z.array(KnowledgeRetrievalExclusionSchema),
   retrievalTraceRef: RetrievalTraceReferenceSchema.optional(),
@@ -511,7 +520,7 @@ export const KnowledgeManagerAnswerCitationSchema = z.object({
 export const KnowledgeManagerAnswerResponseSchema = z.object({
   operationId: z.string().min(1),
   operation: z.literal('answer'),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   caller: KnowledgeManagerCallerSchema,
   retrievalTraceRef: RetrievalTraceReferenceSchema.optional(),
   query: z.string().min(1),
@@ -535,7 +544,7 @@ export const KnowledgeManagerPrepareContextResponseSchema = z
   .object({
     operationId: z.string().min(1),
     operation: z.literal('prepare-context-material'),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     caller: KnowledgeManagerCallerSchema,
     retrievalTraceRef: RetrievalTraceReferenceSchema.optional(),
     outcome: z.enum(['prepared', 'insufficient-evidence']),
@@ -550,25 +559,24 @@ export const KnowledgeProposalPageIdSchema = KnowledgePageObjectIdSchema;
 /** Lowercase SHA-256 digest over exact canonical Knowledge content bytes. */
 export const KnowledgeProposalContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
-const knowledgeProposalSourceReferenceSchema = z
-  .string()
-  .refine(
-    (reference) =>
-      /^source:ks_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}@sha256:[a-f0-9]{64}$/.test(
-        reference
-      ) ||
-      /^knowledge:(?!(?:.*\/)?(?:index|log)@)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*@sha256:[a-f0-9]{64}$/.test(
-        reference
-      ) ||
-      /^(?:turn|item):[^@\s]+$/.test(reference) ||
-      /^context-package:[^@\s]+@ctxpkg_sha256_[a-f0-9]{64}$/.test(reference),
-    'Unsupported Knowledge Proposal source reference.'
+const knowledgeProposalSourceReferenceSchema = z.string().refine((reference) => {
+  const source = /^source:([^@]+)@sha256:[a-f0-9]{64}(?![\s\S])/.exec(reference);
+  if (source) return KnowledgeSourceIdSchema.safeParse(source[1]).success;
+  const entity = /^(turn|item):([^@\s]+)(?![\s\S])/.exec(reference);
+  if (entity)
+    return (entity[1] === 'turn' ? TurnIdSchema : ItemIdSchema).safeParse(entity[2]).success;
+  return (
+    /^knowledge:(?!(?:.*\/)?(?:index|log)@)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*@sha256:[a-f0-9]{64}$/.test(
+      reference
+    ) || /^context-package:[^@\s]+@ctxpkg_sha256_[a-f0-9]{64}$/.test(reference)
   );
+}, 'Unsupported Knowledge Proposal source reference.');
 
 /** Request body for one governed Knowledge Manager proposal draft operation. */
 export const KnowledgeManagerDraftProposalRequestSchema = z
   .object({
     requestId: RequestIdSchema,
+    baseRevision: z.string().min(1),
     knowledgePageId: KnowledgeProposalPageIdSchema,
     canonicalPageBytes: KnowledgeProposalSafeTextSchema,
     contentDigest: KnowledgeProposalContentDigestSchema,
@@ -590,12 +598,15 @@ export const KnowledgeManagerDraftProposalRequestSchema = z
   })
   .strict();
 
-/** Pending immutable create-only Knowledge Proposal projected after drafting. */
+/** Pending immutable fixed-base Notebook Proposal projected after drafting. */
 export const KnowledgeManagerDraftedProposalSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
-    operation: z.literal('create'),
+    workspaceId: WorkspaceIdSchema,
+    operation: z.literal('notebook-change'),
+    ownerScope: KnowledgeOwnerScopeSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
     knowledgePageId: KnowledgeProposalPageIdSchema,
     canonicalPageBytes: KnowledgeProposalSafeTextSchema,
     contentDigest: KnowledgeProposalContentDigestSchema,
@@ -611,7 +622,7 @@ export const KnowledgeManagerDraftedProposalSchema = z
 /** Deterministic validation result for one Knowledge Manager proposal draft. */
 export const KnowledgeManagerProposalValidationSchema = z
   .object({
-    conformance: z.literal('Workspace-schema-valid'),
+    conformance: z.literal('scope-schema-valid'),
     generatedFromCompletedWorkHistory: z.boolean(),
   })
   .strict();
@@ -621,7 +632,7 @@ export const KnowledgeManagerDraftProposalResponseSchema = z
   .object({
     operationId: z.string().min(1),
     operation: z.literal('draft-proposal'),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     caller: KnowledgeManagerCallerSchema,
     proposal: KnowledgeManagerDraftedProposalSchema,
     validation: KnowledgeManagerProposalValidationSchema,
@@ -650,7 +661,7 @@ export const KnowledgeManagerRepairSuggestionSchema = z.object({
 export const KnowledgeManagerSuggestRepairResponseSchema = z.object({
   operationId: z.string().min(1),
   operation: z.literal('suggest-repair'),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   caller: KnowledgeManagerCallerSchema,
   outcome: z.enum(['suggested', 'healthy']),
   suggestions: z.array(KnowledgeManagerRepairSuggestionSchema),
@@ -674,7 +685,7 @@ export const KnowledgeManagerHealthCheckItemSchema = z.object({
 export const KnowledgeManagerHealthCheckResponseSchema = z.object({
   operationId: z.string().min(1),
   operation: z.literal('health-check'),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   caller: KnowledgeManagerCallerSchema,
   outcome: z.enum(['healthy', 'needs-attention']),
   summary: z.string().min(1),

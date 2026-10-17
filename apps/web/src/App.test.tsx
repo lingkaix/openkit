@@ -20,7 +20,7 @@ import { useWorkspaceStore } from './screens/workspace-store';
  */
 function makeClient(
   metaOk: boolean,
-  workspaces = [{ id: 'ws1', name: 'Market research' }]
+  workspaces = [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }]
 ): CoreClient {
   return {
     core: {
@@ -60,7 +60,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -72,7 +72,7 @@ function makeClient(
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             })),
           })
@@ -152,12 +152,11 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
   it('keeps unpublished app surfaces out of navigation', async () => {
     await renderAt('/');
-    for (const label of ['Overview', 'Knowledge', 'Artifacts', 'Agents']) {
+    for (const label of ['Overview', 'Knowledge', 'Artifacts', 'Agents', 'Automations']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     }
     expect(screen.queryByRole('button', { name: 'Chat' })).not.toBeInTheDocument();
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Automations' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Generative UI' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Components' })).not.toBeInTheDocument();
   });
@@ -238,15 +237,15 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     const user = userEvent.setup();
     await renderAt('/', {
       workspaces: [
-        { id: 'ws_authorized', name: 'Authoritative Workspace' },
-        { id: 'ws_other', name: 'Other Workspace' },
+        { id: 'ws_00000000-0000-703e-a6be-9a9f8ac8f52c', name: 'Authoritative Workspace' },
+        { id: 'ws_00000000-0000-71f5-922f-6fd42f52f580', name: 'Other Workspace' },
       ],
     });
 
     expect(
       await screen.findByRole('button', { name: 'Authoritative Workspace' })
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assistant' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Knowledge' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
@@ -286,7 +285,9 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Authoritative Workspace' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Other Workspace' }));
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws_other');
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(
+      'ws_00000000-0000-71f5-922f-6fd42f52f580'
+    );
     expect(await screen.findByRole('button', { name: 'Other Workspace' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page');
     await user.click(screen.getByRole('button', { name: 'Account' }));

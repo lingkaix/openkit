@@ -1,6 +1,6 @@
 import { z } from 'zod';
-
 import {
+  ArtifactIdSchema,
   ItemIdSchema,
   RequestIdSchema,
   ThreadIdSchema,
@@ -274,7 +274,7 @@ export const ArtifactUpdatedDeltaEventSchema = createItemDeltaEventBaseSchema(
   itemTypesByDeltaKind['artifact-updated']
 ).extend({
   deltaKind: z.literal('artifact-updated'),
-  artifactId: z.string().min(1),
+  artifactId: ArtifactIdSchema,
   summary: z.string().min(1).nullable().optional(),
 });
 

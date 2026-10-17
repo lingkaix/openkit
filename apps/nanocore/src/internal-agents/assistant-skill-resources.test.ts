@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 // Snapshot containment fixtures require POSIX symbolic-link behavior.
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -7,7 +8,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import {
   type CatalogTreeFile,
   catalogDocumentPath,
@@ -21,6 +22,8 @@ import { FsStore } from '../lib/store.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { AssistantSkillAdmissionSchema } from '../storage/work-observations.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   AssistantSkillReadInputSchema,
@@ -49,24 +52,28 @@ function fixture() {
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Skill resource tests');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const timestamp = new Date().toISOString();
   coreDb.sqlite
     .prepare(`INSERT INTO users
     (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-    VALUES ('skill-reader', 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
-    .run(Date.now(), Date.now());
+    VALUES (?, 'Skill reader', 'skill-reader', 0, ?, ?, 'human', 'active')`)
+    .run(testEntityId('usr', 'skill-reader'), Date.now(), Date.now());
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
     (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-    VALUES (?, 'skill-reader', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`)
-    .run(workspace.id, timestamp, timestamp, timestamp);
+    VALUES (?, ?, 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`)
+    .run(workspace.id, testEntityId('usr', 'skill-reader'), timestamp, timestamp, timestamp);
   const thread = store.createThread(workspace.id, 'Use selected resources');
   const turn = store.createTurn(workspace.id, thread.id, 'Use selected resources', {
     kind: 'user',
-    id: 'skill-reader',
+    id: testEntityId('usr', 'skill-reader'),
   });
-  const actor: Actor = { kind: 'session', userId: 'skill-reader' };
+  const actor: Actor = { kind: 'session', userId: testEntityId('usr', 'skill-reader') };
   return {
     dataRoot,
     coreDb,
@@ -126,7 +133,7 @@ function importSkill(
     expectedRevision: catalog.revision,
     activate: true,
     createdAt: '2026-10-15T00:00:00.000Z',
-    producer: { kind: 'user', id: 'user_local' },
+    producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     tree: [
       { kind: 'file', path: 'SKILL.md', contentBase64: Buffer.from(text).toString('base64') },
       ...extra,
@@ -153,7 +160,7 @@ async function read(assembled: Assembly, path?: string, selection = assembled.in
       contentDigest: selection.contentDigest,
       ...(path === undefined ? {} : { path }),
     },
-    { callId: 'read-once', signal: new AbortController().signal }
+    { callId: 'read-once', toolOccurrence: 1, signal: new AbortController().signal }
   );
 }
 
@@ -265,7 +272,7 @@ describe('Assistant selected Skill assembly', () => {
           versionId: `sha256:${'a'.repeat(64)}`,
           contentDigest: `sha256:${'a'.repeat(64)}`,
         },
-        { callId: 'unselected', signal: new AbortController().signal }
+        { callId: 'unselected', toolOccurrence: 1, signal: new AbortController().signal }
       ),
       f
     );
@@ -407,7 +414,7 @@ describe('Assistant selected Skill assembly', () => {
     if (condition === 'audience')
       Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
         visibility: 'private',
-        privateOwnerUserId: 'another-user',
+        privateOwnerUserId: testEntityId('usr', 'another-user'),
       });
     if (condition === 'turn-lineage')
       f.threadId = f.store.createThread(f.workspaceId, 'Different thread').id;
@@ -466,12 +473,12 @@ describe('Assistant progressive Skill reads', () => {
     };
     const admitted = contexts.get(assembled)!;
     const mismatches: Record<typeof field, unknown> = {
-      actor: { kind: 'session', userId: 'user_local' },
-      workspaceId: 'another-workspace',
-      threadId: 'another-thread',
-      turnId: 'another-turn',
+      actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      workspaceId: testEntityId('ws', 'another-workspace'),
+      threadId: testEntityId('th', 'another-thread'),
+      turnId: testEntityId('tu', 'another-turn'),
       kind: 'worker',
-      entryScope: 'chat.quick',
+      entryScope: 'untrusted-entry',
       requestId: '00000000-0000-4000-8000-000000000145',
     };
     const missing = { ...admitted } as Record<string, unknown>;
@@ -636,7 +643,7 @@ describe('Assistant progressive Skill reads', () => {
     if (condition === 'audience')
       Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
         visibility: 'private',
-        privateOwnerUserId: 'another-user',
+        privateOwnerUserId: testEntityId('usr', 'another-user'),
       });
     if (condition === 'turn-lineage')
       f.store.getTurn(f.workspaceId, f.threadId, f.turnId).threadId = f.store.createThread(
@@ -697,7 +704,11 @@ describe('Assistant progressive Skill reads', () => {
       versionId: selected.versionId,
       contentDigest: selected.contentDigest,
     };
-    const context = { callId: 'invalid-read', signal: new AbortController().signal };
+    const context = {
+      callId: 'invalid-read',
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
     const unsafePaths = [
       '../outside.txt',
       '/absolute.txt',
@@ -720,7 +731,7 @@ describe('Assistant progressive Skill reads', () => {
       },
       { ...base, versionId: `sha256:${'f'.repeat(64)}` },
       { ...base, contentDigest: `sha256:${'f'.repeat(64)}` },
-      { ...base, workspaceId: 'untrusted-workspace' },
+      { ...base, workspaceId: testEntityId('ws', 'untrusted-workspace') },
       ...unsafePaths.map((path) => ({ ...base, path })),
     ])
       refusal(await modelTool(assembled).execute(args, context), f);

@@ -1,4 +1,4 @@
-import { generateUuidV7 } from '../runtime/session-id.js';
+import { allocateEntityId } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import {
   createOpenKitAccessTokenSecret,
@@ -139,7 +139,7 @@ export function createNanoHostTransportTokenRecord(
     );
   }
 
-  const tokenId = input.tokenId ?? generateUuidV7();
+  const tokenId = input.tokenId ?? allocateEntityId('nhtok');
   const secret = input.secret ?? createOpenKitAccessTokenSecret();
   const now = (input.now ?? new Date()).toISOString();
 

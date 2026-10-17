@@ -5,6 +5,7 @@ import { connect as connectHttp2, createServer as createHttp2Server } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
+import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -15,6 +16,8 @@ import {
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
@@ -29,6 +32,188 @@ import {
 } from './nanohost-session-dispatch.js';
 
 describe('authoritative NanoHost session dispatch', () => {
+  it.each([
+    'enabled',
+    'disabled',
+    'refused',
+  ] as const)('carries initiating context over native H2 independently of poll and export: %s', async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-effect-trace-'));
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const exporter = new InMemorySpanExporter();
+    const target = { deploymentId: 'trace', identityId: 'trace', targetId: 'trace' };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: new Date().toISOString(),
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use(createHttpTelemetryMiddleware());
+    const requestId = 'b'.repeat(64);
+    const command = { sandboxId: 'private-body-canary', requestId };
+    let result: Promise<unknown> | undefined;
+    app.post('/enqueue/:id', (c) => {
+      result = dispatch.effect({ kind: 'sandbox.delete', requestId, input: command });
+      return c.body(null, 202);
+    });
+    const importBody = Buffer.from('raw-body-canary');
+    const importId = 'e'.repeat(64);
+    let imported: Promise<unknown> | undefined;
+    app.post('/import/:id', (c) => {
+      imported = dispatch.effect({
+        kind: 'reference.import',
+        requestId: importId,
+        input: {
+          sandboxId: 'fixture-sandbox',
+          slot: 'worktree',
+          relativePath: 'fixture.txt',
+          body: importBody,
+          byteLength: importBody.length,
+          sha256: `sha256:${createHash('sha256').update(importBody).digest('hex')}`,
+        },
+      });
+      return c.body(null, 202);
+    });
+    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionEffectRoutes({ app, dispatch });
+    const listener = getRequestListener(app.fetch);
+    let admitted = false;
+    const server = createHttp2Server((request, response) => {
+      if (!admitted) {
+        authority.admit({
+          identityId: target.identityId,
+          connectionGeneration: 1,
+          physicalConnection: readNanoHostPhysicalConnectionContext(request)!,
+        });
+        admitted = true;
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      startTelemetry({
+        bootId: 'trace-core-fixture',
+        env: mode === 'disabled' ? {} : { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' },
+        exporter:
+          mode === 'refused'
+            ? { export: (_spans, done) => done({ code: 1 }), shutdown: async () => {} }
+            : exporter,
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing trace fixture address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const post = async (path: string, body: unknown, headers: Record<string, string> = {}) => {
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+          ...headers,
+        });
+        const received = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [responseHeaders] = await received;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return { headers: responseHeaders, body: Buffer.concat(chunks).toString() };
+      };
+      const path = '/api/nanohost/transport/effects/sandbox.delete';
+      expect(
+        (
+          await post('/api/nanohost/transport/session/readiness', {
+            physicalEpoch: 'a'.repeat(64),
+          })
+        ).headers[':status']
+      ).toBe(204);
+      expect((await post('/enqueue/turn-private-canary', {})).headers[':status']).toBe(202);
+      const carried = await post(path, {});
+      expect(carried.headers[':status']).toBe(200);
+      expect(JSON.parse(carried.body)).toEqual(command);
+      const hostTraceId = 'c'.repeat(32);
+      const hostSpanId = 'd'.repeat(16);
+      const response = { requestId, sandboxId: command.sandboxId, state: 'deleted' };
+      const returned = {
+        traceparent: `00-${hostTraceId}-${hostSpanId}-01`,
+        tracestate: 'vendor=private-header-canary',
+      };
+      expect((await post(`${path}/result`, response, returned)).headers[':status']).toBe(204);
+      await expect(result).resolves.toEqual({ sandboxId: command.sandboxId, state: 'deleted' });
+      // An acknowledged duplicate is delivery replay, not another effect acceptance.
+      expect((await post(`${path}/result`, response, returned)).headers[':status']).toBe(204);
+      const idle = await post(path, {});
+      expect(idle.headers[':status']).toBe(204);
+      expect(idle.headers.traceparent).toBeUndefined();
+      if (mode === 'disabled') {
+        expect(carried.headers.traceparent).toBeUndefined();
+        expect(exporter.getFinishedSpans()).toEqual([]);
+      } else {
+        expect(carried.headers.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+        if (mode === 'enabled') {
+          const spans = exporter.getFinishedSpans();
+          const origin = spans.find((span) => span.attributes['http.route'] === '/enqueue/:id')!;
+          expect(carried.headers.traceparent).toBe(
+            `00-${origin.spanContext().traceId}-${origin.spanContext().spanId}-01`
+          );
+          const acceptance = spans.filter((span) => span.name === 'nanohost.effect.accept');
+          expect(acceptance).toHaveLength(1);
+          expect(acceptance[0]!.spanContext().traceId).toBe(hostTraceId);
+          expect(acceptance[0]!.parentSpanContext?.spanId).toBe(hostSpanId);
+          expect(
+            JSON.stringify(
+              spans.map((span) => ({
+                attributes: span.attributes,
+                events: span.events,
+                status: span.status,
+              }))
+            )
+          ).not.toMatch(/private-(body|header)-canary|turn-private-canary/);
+          expect((await post('/import/known-turn', {})).headers[':status']).toBe(202);
+          const importedCommand = await post(
+            '/api/nanohost/transport/effects/reference.import',
+            {}
+          );
+          expect(importedCommand.headers['content-type']).toBe('application/octet-stream');
+          expect(importedCommand.body).toBe(importBody.toString());
+          const importOrigin = exporter
+            .getFinishedSpans()
+            .find((span) => span.attributes['http.route'] === '/import/:id')!;
+          expect(importedCommand.headers.traceparent).toBe(
+            `00-${importOrigin.spanContext().traceId}-${importOrigin.spanContext().spanId}-01`
+          );
+          const importResult = {
+            requestId: importId,
+            byteLength: importBody.length,
+            reference: 'sandbox://fixture-sandbox/worktree/fixture.txt',
+          };
+          expect(
+            (
+              await post(
+                '/api/nanohost/transport/effects/reference.import/result',
+                importResult,
+                returned
+              )
+            ).headers[':status']
+          ).toBe(204);
+          await expect(imported).resolves.toEqual({
+            byteLength: importBody.length,
+            reference: importResult.reference,
+          });
+        }
+      }
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await shutdownTelemetry();
+      log.mockRestore();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('pins Core-produced fixed commands to Host parsing and rejects unknown input before polling', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-command-pin-'));
     const coreDb = openCoreDb(root);
@@ -273,8 +458,8 @@ describe('authoritative NanoHost session dispatch', () => {
       const liveInput = {
         purpose: 'artifact-submission',
         submissionRequestId: 'submission-1',
-        turnId: 'turn-1',
-        agentSessionId: 'session-1',
+        turnId: testEntityId('tu', 'turn-1'),
+        agentSessionId: testEntityId('as', 'session-1'),
         packageSnapshotId: 'package-1',
         leaseId: 'lease-1',
         backendSessionId: 'backend-1',
@@ -572,7 +757,7 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'workspace.collect' as never,
         requestId,
         input: {
-          storageRef: 'wst_collection',
+          storageRef: 'wst_00000000-0000-75b8-8427-7b4778a52c54',
           scopeDigest: `sha256:${'b'.repeat(64)}`,
           attachmentGeneration: 1,
           sandboxId: 'sandbox-collection',
@@ -594,7 +779,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).toBe(204);
       expect(await settled).toEqual({ outcome: 'baseline', head });
       const captureInput = {
-        storageRef: 'wst_collection',
+        storageRef: 'wst_00000000-0000-75b8-8427-7b4778a52c54',
         scopeDigest: `sha256:${'b'.repeat(64)}`,
         attachmentGeneration: 1,
         sandboxId: 'sandbox-collection',
@@ -999,13 +1184,13 @@ describe('authoritative NanoHost session dispatch', () => {
       if (state !== 'draining')
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: 'agent-session-ack',
+          agentSessionId: testEntityId('as', 'agent-session-ack'),
           agentSessionRuntimeBindingId: 'agent-session-binding-ack',
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-ack',
-          threadId: 'thread-ack',
+          threadId: testEntityId('th', 'thread-ack'),
           timestamp: '2098-08-21T00:00:00.000Z',
-          workspaceId: 'workspace-ack',
+          workspaceId: testEntityId('ws', 'workspace-ack'),
         });
       queueNanoHostHarnessOperation(coreDb, {
         body:
@@ -1013,17 +1198,17 @@ describe('authoritative NanoHost session dispatch', () => {
             ? {
                 adapterId: 'codex',
                 agentSessionCompatibilityKey: 'c'.repeat(64),
-                agentSessionId: 'agent-session-ack',
+                agentSessionId: testEntityId('as', 'agent-session-ack'),
                 agentSessionRuntimeBindingId: 'agent-session-binding-ack',
                 effectiveSetupGeneration: 1,
                 resume: null,
-                threadId: 'thread-ack',
-                workspaceId: 'workspace-ack',
+                threadId: testEntityId('th', 'thread-ack'),
+                workspaceId: testEntityId('ws', 'workspace-ack'),
               }
             : state === 'draining'
               ? {}
               : {
-                  agentSessionId: 'agent-session-ack',
+                  agentSessionId: testEntityId('as', 'agent-session-ack'),
                   agentSessionRuntimeBindingId: 'agent-session-binding-ack',
                 },
         harnessInstanceId: 'harness-ack',
@@ -1276,7 +1461,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).rejects.toThrow(/physical Epoch changed/i);
       const requestId = 'e'.repeat(64);
       const imageSettlement = {
-        authoredArtifactId: 'artifact_settlement',
+        authoredArtifactId: testEntityId('ar', 'artifact_settlement'),
         authoredArtifactVersion: 1,
         authoredContentDigest: `sha256:${'a'.repeat(64)}`,
         inputDigest: `sha256:${'b'.repeat(64)}`,
@@ -1708,12 +1893,18 @@ describe('authoritative NanoHost session dispatch', () => {
           requestId: '1'.repeat(64),
         },
         {
-          input: { attachmentGeneration: 1, storageRef: 'wst_inspect' },
+          input: {
+            attachmentGeneration: 1,
+            storageRef: 'wst_00000000-0000-7961-a0ab-d2116f02fc2d',
+          },
           kind: 'storage.inspect' as const,
           requestId: '2'.repeat(64),
         },
         {
-          input: { attachmentGeneration: 1, storageRef: 'wst_purge' },
+          input: {
+            attachmentGeneration: 1,
+            storageRef: 'wst_00000000-0000-7408-95ec-23aa22e91333',
+          },
           kind: 'storage.purge' as const,
           requestId: '3'.repeat(64),
         },

@@ -1,19 +1,25 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
+import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 
 const require = createRequire(import.meta.url);
 const nodeFs = require('node:fs') as typeof import('node:fs');
 const originalRename = nodeFs.renameSync;
 const originalMkdir = nodeFs.mkdirSync;
 const originalCopy = nodeFs.cpSync;
-const localActor = { kind: 'user', id: 'user_local' } as const;
+const localActor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 const timestamp = '2026-07-06T00:00:00.000Z';
+const temporaryRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 type FsStoreCtor = typeof import('./store.js').FsStore;
 type InterruptPoint = 'staging-directory' | 'before-rename' | 'after-rename';
@@ -41,7 +47,7 @@ function isRecordStagingDirectory(target: string): boolean {
  * @returns Private copy that the writer's catch cannot clean.
  */
 function copyDataRoot(source: string): string {
-  const snapshot = join(mkdtempSync(join(tmpdir(), 'openkit-publication-snapshot-')), 'root');
+  const snapshot = join(newDataRoot('snapshot'), 'root');
   originalCopy(source, snapshot, { recursive: true });
   return snapshot;
 }
@@ -150,11 +156,14 @@ function sessionFilesReady(directory: string): boolean {
 
 /** Creates a private data root. */
 function newDataRoot(label: string): string {
-  return mkdtempSync(join(tmpdir(), `openkit-publication-${label}-`));
+  const root = mkdtempSync(join(tmpdir(), `openkit-publication-${label}-`));
+  temporaryRoots.push(root);
+  return root;
 }
 
-/** Reloads a data root after the filesystem fault has been removed. */
+/** Runs exclusive stopped-fixture recovery, then reloads after the filesystem fault is removed. */
 async function reload(dataRoot: string): Promise<InstanceType<FsStoreCtor>> {
+  discardAbandonedWorkspaceStaging(dataRoot);
   const { FsStore } = await import('./store.js');
   return new FsStore({ dataRoot });
 }
@@ -198,7 +207,7 @@ function assertNoTornCanonicalDirectories(
 function importedArtifact(workspaceId: string) {
   const body = 'Artifact body.';
   return {
-    id: 'ar_partial',
+    id: 'ar_00000000-0000-7191-9414-45fcac2c3cdb',
     workspaceId,
     threadId: null,
     turnId: null,
@@ -245,7 +254,11 @@ for (const kind of crashKinds) {
       const captured = await withCrashFault(point, faults, dataRoot, () => {
         expect(() => {
           if (kind === 'thread') {
-            store.createThread(workspace.id, 'Partial thread', 'th_partial');
+            store.createThread(
+              workspace.id,
+              'Partial thread',
+              'th_00000000-0000-7317-b428-c81ba6501ea3'
+            );
             return;
           }
           if (kind === 'turn') {
@@ -256,7 +269,7 @@ for (const kind of crashKinds) {
               localActor,
               null,
               {
-                turnId: 'tu_partial',
+                turnId: 'tu_00000000-0000-7097-8c23-6c30c55457e6',
               }
             );
             return;
@@ -266,7 +279,7 @@ for (const kind of crashKinds) {
             return;
           }
           store.createAgentSession({
-            id: 'as_partial',
+            id: 'as_00000000-0000-77a2-94b7-507e5fd22bf9',
             agentId: 'agent_codex_host',
             workspaceId: workspace.id,
             threadId: thread.id,
@@ -283,7 +296,13 @@ for (const kind of crashKinds) {
       const staged = stagedRecordDirectories(captured.snapshot);
       const canonical =
         kind === 'thread'
-          ? join(captured.snapshot, 'workspaces', workspace.id, 'threads', 'th_partial')
+          ? join(
+              captured.snapshot,
+              'workspaces',
+              workspace.id,
+              'threads',
+              'th_00000000-0000-7317-b428-c81ba6501ea3'
+            )
           : kind === 'turn'
             ? join(
                 captured.snapshot,
@@ -292,17 +311,23 @@ for (const kind of crashKinds) {
                 'threads',
                 thread.id,
                 'turns',
-                'tu_partial'
+                'tu_00000000-0000-7097-8c23-6c30c55457e6'
               )
             : kind === 'artifact'
-              ? join(captured.snapshot, 'workspaces', workspace.id, 'artifacts', 'ar_partial')
+              ? join(
+                  captured.snapshot,
+                  'workspaces',
+                  workspace.id,
+                  'artifacts',
+                  'ar_00000000-0000-7191-9414-45fcac2c3cdb'
+                )
               : join(
                   captured.snapshot,
                   'workspaces',
                   workspace.id,
                   'runtime',
                   'agent-sessions',
-                  'as_partial'
+                  'as_00000000-0000-77a2-94b7-507e5fd22bf9'
                 );
       const ready =
         kind === 'thread'
@@ -342,17 +367,17 @@ for (const kind of crashKinds) {
           reloaded.listThreads(workspace.id).find((item) => item.id === thread.id)?.preview
         ).toBe('Original preview');
         expect(reloaded.listThreadTurns(workspace.id, thread.id).map((item) => item.id)).toEqual(
-          point === 'after-rename' ? ['tu_partial'] : []
+          point === 'after-rename' ? ['tu_00000000-0000-7097-8c23-6c30c55457e6'] : []
         );
       }
       if (kind === 'artifact') {
         expect(reloaded.listArtifacts(workspace.id).map((item) => item.id)).toEqual(
-          point === 'after-rename' ? ['ar_partial'] : []
+          point === 'after-rename' ? ['ar_00000000-0000-7191-9414-45fcac2c3cdb'] : []
         );
       }
       if (kind === 'session') {
         expect(reloaded.listWorkspaceAgentSessions(workspace.id).map((item) => item.id)).toEqual(
-          point === 'after-rename' ? ['as_partial'] : []
+          point === 'after-rename' ? ['as_00000000-0000-77a2-94b7-507e5fd22bf9'] : []
         );
       }
     });
@@ -375,7 +400,9 @@ it('drops staging left by a real interrupted Artifact write', async () => {
   expect(faults.count).toBe(1);
   const staged = stagedRecordDirectories(captured.snapshot);
   expect(staged).toHaveLength(1);
-  expect(readFileSync(join(staged[0] ?? '', 'artifact.json'), 'utf8')).toContain('ar_partial');
+  expect(readFileSync(join(staged[0] ?? '', 'artifact.json'), 'utf8')).toContain(
+    'ar_00000000-0000-7191-9414-45fcac2c3cdb'
+  );
   expect(readFileSync(join(staged[0] ?? '', 'files', 'content.txt'), 'utf8')).toBe(
     'Artifact body.'
   );
@@ -386,7 +413,15 @@ it('drops staging left by a real interrupted Artifact write', async () => {
   expect(reloaded.listWorkspaceAgentSessions(workspace.id)).toEqual([]);
   expect(existsSync(join(captured.snapshot, 'workspaces', '.staging'))).toBe(false);
   expect(
-    existsSync(join(captured.snapshot, 'workspaces', workspace.id, 'artifacts', 'ar_partial'))
+    existsSync(
+      join(
+        captured.snapshot,
+        'workspaces',
+        workspace.id,
+        'artifacts',
+        'ar_00000000-0000-7191-9414-45fcac2c3cdb'
+      )
+    )
   ).toBe(false);
 });
 
@@ -406,7 +441,7 @@ it('loads a published Turn beside the Thread preview from before that Turn', asy
   );
   const beforeTurn = readFileSync(threadPath);
   store.createTurn(workspace.id, thread.id, 'partial publication input', localActor, null, {
-    turnId: 'tu_preview',
+    turnId: 'tu_00000000-0000-7ab2-8211-16142303a54d',
   });
   writeFileSync(threadPath, beforeTurn);
 
@@ -416,8 +451,16 @@ it('loads a published Turn beside the Thread preview from before that Turn', asy
     'Original preview'
   );
   expect(reloaded.listThreadTurns(workspace.id, thread.id).map((item) => item.id)).toEqual([
-    'tu_preview',
+    'tu_00000000-0000-7ab2-8211-16142303a54d',
   ]);
-  expect(existsSync(join(dirname(threadPath), 'turns', 'tu_preview', 'turn.json'))).toBe(true);
-  expect(existsSync(join(dirname(threadPath), 'turns', 'tu_preview', 'items.jsonl'))).toBe(true);
+  expect(
+    existsSync(
+      join(dirname(threadPath), 'turns', 'tu_00000000-0000-7ab2-8211-16142303a54d', 'turn.json')
+    )
+  ).toBe(true);
+  expect(
+    existsSync(
+      join(dirname(threadPath), 'turns', 'tu_00000000-0000-7ab2-8211-16142303a54d', 'items.jsonl')
+    )
+  ).toBe(true);
 });

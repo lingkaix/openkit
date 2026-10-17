@@ -1,12 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
-import { verifyDataRootBackupManifest } from './data-root-backup.js';
+import { inventoryRegularFiles, verifyDataRootBackupManifest } from './data-root-backup.js';
 import {
   migratePhysicalEpochs,
   parsePhysicalEpochMigrationArgs,
@@ -34,7 +34,7 @@ function createPhysicalEpochFixture(
   mkdirSync(join(dataRoot, 'server', 'migrations'), { recursive: true });
   writeFileSync(
     join(dataRoot, 'server', 'layout.json'),
-    `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: 'dep_cutover' })}\n`
+    `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2' })}\n`
   );
   writeFileSync(join(dataRoot, 'preserved.txt'), 'preserved predecessor bytes\n');
 
@@ -159,7 +159,7 @@ function createPhysicalEpochFixture(
     INSERT INTO schema_migrations (id, applied_at)
       VALUES ('core_0000_setup', '2026-09-10T00:00:00.000Z');
     INSERT INTO nanohost_runtime_targets VALUES (
-      'target_1', 'identity_1', 'dep_cutover', 7, 1, 1, 1,
+      'target_1', 'identity_1', 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2', 7, 1, 1, 1,
       '2026-09-10T01:00:00.000Z', 2, '2026-09-10T01:00:00.000Z'
     );
     INSERT INTO sandbox_runtime_records VALUES (
@@ -175,8 +175,8 @@ function createPhysicalEpochFixture(
       'binding_1', 'harness_1', 'open', 'cleanup-pending'
     );
     INSERT INTO worker_backend_sessions VALUES (
-      'lease_1', 'workspace_1', 'thread_1', 'turn_1', 'session_1', 'snapshot_1',
-      'openshell', 'dep_cutover', '1.2.3', 'sha256:image', 'cell_1', 'remote',
+      'lease_1', 'workspace_1', 'thread_1', 'tu_00000000-0000-7b5c-9add-c4bfc5a04575', 'session_1', 'snapshot_1',
+      'openshell', 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2', '1.2.3', 'sha256:image', 'cell_1', 'remote',
       'gateway_1', NULL, 'backend_1', 'server/runtime/backend-1', 'provider_1',
       'complete', 'cleanup-pending', NULL, '2026-09-10T01:00:00.000Z',
       '2026-09-10T02:00:00.000Z', 'target_1', '{"kind":"reference"}',
@@ -210,6 +210,27 @@ function columnInfo(
 }
 
 describe('physical Epoch cutover', () => {
+  it('refuses entropy failure before backup publication and preserves the predecessor', () => {
+    const fixture = createPhysicalEpochFixture();
+    const backupParent = mkdtempSync(join(tmpdir(), 'openkit-physical-epoch-entropy-'));
+    const backupRoot = join(backupParent, 'backup');
+    const predecessor = inventoryRegularFiles(fixture.dataRoot);
+    const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
+      throw new Error('Backup identity entropy unavailable.');
+    });
+    try {
+      expect(() =>
+        migratePhysicalEpochs({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow('Backup identity entropy unavailable.');
+      expect(existsSync(backupRoot)).toBe(false);
+      expect(inventoryRegularFiles(fixture.dataRoot)).toEqual(predecessor);
+    } finally {
+      entropy.mockRestore();
+      rmSync(fixture.dataRoot, { recursive: true, force: true });
+      rmSync(backupParent, { recursive: true, force: true });
+    }
+  });
+
   it('converts the three schemas atomically after retaining a complete predecessor backup', () => {
     const fixture = createPhysicalEpochFixture();
     const backupRoot = join(
@@ -225,14 +246,28 @@ describe('physical Epoch cutover', () => {
 
     expect(result).toEqual({
       backendSessionCount: 1,
-      backupId: expect.stringMatching(/^backup_physical_epoch_/),
+      backupId: expect.stringMatching(
+        /^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
       outcome: 'succeeded',
       runtimeTargetCount: 1,
       sandboxCount: 1,
     });
-    expect(verifyDataRootBackupManifest({ backupRoot }).checkedFiles).toContain(
-      'server/db/core.sqlite'
+    const verifiedBackup = verifyDataRootBackupManifest({ backupRoot });
+    expect(verifiedBackup.manifest.id).toBe(result.backupId);
+    expect(verifiedBackup.manifest.sourceDeploymentId).toBe(
+      'dep_00000000-0000-734c-ad49-cfb96bb3bbb2'
     );
+    expect(verifiedBackup.manifest.backupStartedAt).toBe(timestamp);
+    expect(verifiedBackup.manifest.backupCompletedAt).toBe(timestamp);
+    expect(verifiedBackup.checkedFiles).toContain('server/db/core.sqlite');
+    const report = JSON.parse(
+      readFileSync(
+        join(fixture.dataRoot, 'server', 'migrations', 'physical-epoch-cutover.json'),
+        'utf8'
+      )
+    );
+    expect(report.backupId).toBe(result.backupId);
     expect(readFileSync(join(backupRoot, 'preserved.txt'), 'utf8')).toBe(
       'preserved predecessor bytes\n'
     );
@@ -539,12 +574,15 @@ describe('physical Epoch cutover', () => {
       mkdtempSync(join(tmpdir(), 'openkit-physical-epoch-backup-')),
       'backup'
     );
-    writeFileSync(join(fixture.dataRoot, 'server', 'runtime', 'nanocore.lock'), 'running\n');
-
-    expect(() =>
-      migratePhysicalEpochs({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
-    ).toThrow(/NanoCore appears to be running/);
-    expect(existsSync(backupRoot)).toBe(false);
+    const lock = acquireDataRootLock(fixture.dataRoot, { bootId: 'boot_running' });
+    try {
+      expect(() =>
+        migratePhysicalEpochs({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow(/NanoCore appears to be running/);
+      expect(existsSync(backupRoot)).toBe(false);
+    } finally {
+      lock.release();
+    }
   });
 
   it('refuses an incomplete predecessor backup before database mutation', () => {

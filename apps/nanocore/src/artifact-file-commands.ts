@@ -3,8 +3,7 @@ import {
   type ImportWorkspaceArtifactRequest,
   ImportWorkspaceArtifactResponseSchema,
 } from '@openkit/app-api-schemas';
-import { responsibleUserIdForActor } from '@openkit/protocol';
-import { deterministicArtifactCommandId } from './artifact-operations.js';
+import { deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 import { ArtifactAuthorityError, type CommandRequestRecord, type FsStore } from './lib/store.js';
 import type { AdmittedOperationContext } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -43,8 +42,8 @@ export async function importArtifactFile(input: {
   }
   input.assertAuthorized();
   store.getWorkspace(metadata.workspaceId);
-  const artifactId = deterministicArtifactCommandId('ar_import', [
-    actorId,
+  const artifactId = deriveEntityId('ar', [
+    context.actorRef,
     metadata.workspaceId,
     'artifact.import',
     metadata.requestId,

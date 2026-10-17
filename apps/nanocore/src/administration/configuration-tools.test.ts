@@ -1,8 +1,8 @@
 import { PrepareWorkerEnvironmentRequestSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
 
 const CONFIG_REVISION = `sha256:${'a'.repeat(64)}`;
@@ -50,7 +50,7 @@ describe('administration configuration Tools', () => {
 
     const listed = await tools[0].execute(
       { targetFamily: 'agent' },
-      { callId: 'call_list', signal: new AbortController().signal }
+      { callId: 'call_list', toolOccurrence: 1, signal: new AbortController().signal }
     );
     const catalog = JSON.parse(listed.content[0]!.type === 'text' ? listed.content[0]!.text : '{}');
     expect(catalog.agents).toEqual([
@@ -66,7 +66,7 @@ describe('administration configuration Tools', () => {
 
     const result = await tools[0].execute(
       { targetFamily: 'agent', agentId: manifest.id },
-      { callId: 'call_read', signal: new AbortController().signal }
+      { callId: 'call_read', toolOccurrence: 1, signal: new AbortController().signal }
     );
     const serialized = JSON.stringify(result.content);
     const payload = JSON.parse(result.content[0]!.type === 'text' ? result.content[0]!.text : '{}');
@@ -86,7 +86,7 @@ describe('administration configuration Tools', () => {
     expect(serialized).not.toContain('tenant-row');
     expect(
       PrepareWorkerEnvironmentRequestSchema.parse({
-        administrationThreadId: 'thread_administration',
+        administrationThreadId: testEntityId('th', 'thread_administration'),
         configuration: payload.configuration,
         declaration: payload.agent.runtime.image,
         mode: 'prepare',
@@ -114,6 +114,7 @@ describe('administration configuration Tools', () => {
     } as never);
     const result = await tools[2].execute(proposal, {
       callId: 'catalog',
+      toolOccurrence: 1,
       signal: new AbortController().signal,
     });
     expect(result.isError).not.toBe(true);
@@ -131,7 +132,7 @@ describe('administration configuration Tools', () => {
 
     const schema = await tools[1].execute(
       { targetFamily: 'agent' },
-      { callId: 'call_schema', signal: new AbortController().signal }
+      { callId: 'call_schema', toolOccurrence: 1, signal: new AbortController().signal }
     );
     expect(JSON.stringify(schema.content)).toContain('OpenKit agent config');
     expect(JSON.stringify(schema.content)).toContain('pullPolicy');

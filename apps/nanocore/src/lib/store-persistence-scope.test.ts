@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+
+import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
@@ -14,13 +15,21 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { listRecoverableWorkerCheckpoints } from '../runtime/worker-checkpoints.js';
-import { listExistingWorkspaceDatabaseScopes, openBootVerifiedWorkspaceDb } from '../storage/db.js';
-import { listAppliedNativeMigrationIds } from '../storage/migrate.js';
+import {
+  listExistingWorkspaceDatabaseScopes,
+  openBootVerifiedWorkspaceDb,
+  openCoreDb,
+} from '../storage/db.js';
+import { applyMigrations, listAppliedNativeMigrationIds } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FsStore } from './store.js';
 
 /**
@@ -44,7 +53,7 @@ describe('FsStore workspace persistence scope', () => {
     const ownerNestedRecordPath = join(
       dataRoot,
       'users',
-      'user_local',
+      'usr_00000000-0000-7000-8000-000000000001',
       'workspaces',
       workspace.id,
       'workspace-record.json'
@@ -127,10 +136,10 @@ describe('FsStore workspace persistence scope', () => {
     const thread = store.createThread(workspace.id, 'Artifact lineage failure thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Reject partial Artifact lineage', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const timestamp = turn.startedAt ?? new Date().toISOString();
-    const artifactId = 'ar_reference_append_failure';
+    const artifactId = 'ar_00000000-0000-70b9-8815-cc8754a1bfdb';
     const requestId = 'artifact-create-reference-append-failure';
     const body = 'This Artifact remains authoritative after an ambiguous append.';
     const artifactInput = {
@@ -205,7 +214,7 @@ describe('FsStore workspace persistence scope', () => {
     const body = 'Preserve this workspace-only Artifact.';
     const contentDigest = artifactDigest(body);
     const artifact = store.createArtifact({
-      id: 'ar_introduction_write_failure',
+      id: 'ar_00000000-0000-7641-b04f-e54d51e067af',
       workspaceId: workspace.id,
       threadId: null,
       turnId: null,
@@ -222,7 +231,7 @@ describe('FsStore workspace persistence scope', () => {
         sourceKind: 'direct-import',
         sourceId: requestId,
         sourceDigest: contentDigest,
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId,
         recordedAt: acceptedAt,
       },
@@ -251,8 +260,8 @@ describe('FsStore workspace persistence scope', () => {
           expectedArtifactVersion: 1,
           requestId: 'artifact-introduction-persistence-failure',
           acceptedAt: '2026-07-18T00:05:00.000Z',
-          turnId: 'tu_artifact_introduction_persistence_failure',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          turnId: 'tu_00000000-0000-766e-836f-c2d0eadf5a64',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         })
       ).toThrow('Injected Artifact introduction persistence failure.');
     } finally {
@@ -269,16 +278,55 @@ describe('FsStore workspace persistence scope', () => {
     expect(restarted.listAllItems()).toEqual([]);
   });
 
-  it('does not resurrect deleted knowledge after a later projection write fails', () => {
+  it('does not resurrect deleted knowledge after a later projection write fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-knowledge-delete-failure-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge deletion workspace');
     const thread = store.createThread(workspace.id, 'Knowledge deletion thread');
-    const knowledge = store.createKnowledgeEntry(workspace.id, {
-      kind: 'project-context',
-      title: 'Delete this knowledge',
-      content: 'This record must not return after restart.',
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: workspace.id,
     });
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const app = createApp({ coreDb, dataRoot, store });
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
+    });
+    const created = await app.request('/api/app/operations/knowledge.create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+      body: JSON.stringify({
+        workspaceId: workspace.id,
+        baseRevision: notebook.publishedRevision(),
+        knowledgePageId: 'delete-me',
+        kind: 'project-context',
+        title: 'Delete this knowledge',
+        content: 'This record must not return after restart.',
+      }),
+    });
+    expect(created.status, await created.clone().text()).toBe(200);
+    const knowledge = (await created.json()) as { id: string };
+    const revision = notebook.publishedRevision();
+    const content = notebook.readRevision(revision).files[`${knowledge.id}.md`]!;
+    const deleted = await app.request('/api/app/operations/knowledge.delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+      body: JSON.stringify({
+        workspaceId: workspace.id,
+        baseRevision: revision,
+        knowledgeEntryId: knowledge.id,
+        expectedContentDigest: artifactDigest(content),
+        confirmRemoval: true,
+      }),
+    });
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
     const threadRecordPath = join(
       dataRoot,
       'workspaces',
@@ -291,7 +339,9 @@ describe('FsStore workspace persistence scope', () => {
 
     rmSync(threadRecordPath);
     mkdirSync(threadRecordPath);
-    expect(() => store.deleteKnowledgeEntry(workspace.id, knowledge.id)).toThrow(/regular file/);
+    expect(() => store.updateThread(workspace.id, thread.id, { name: 'Later projection' })).toThrow(
+      /regular file/
+    );
     rmSync(threadRecordPath, { recursive: true });
     writeFileSync(threadRecordPath, threadRecord);
 
@@ -365,11 +415,12 @@ function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-tree-durability-'));
   roots.push(dataRoot);
   const store = new FsStore({ dataRoot });
-  const workspaceId = 'ws_durable_import';
+  const workspaceId = testEntityId('ws', 'ws_durable_import');
   const finalRoot = join(dataRoot, 'workspaces', workspaceId);
   const timestamp = '2026-07-12T00:00:00.000Z';
   const publish = () =>
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: workspaceId, knowledge: [] }),
       workspace: {
         id: workspaceId,
         name: 'Durable import',
@@ -479,14 +530,14 @@ describe('Workspace directory publication durability', () => {
 });
 
 /** Creates a fresh Workspace through either public creation path. */
-function freshWorkspaceDatabaseFixture(kind: 'general' | 'quick-chat') {
+function freshWorkspaceDatabaseFixture(kind: 'general' | 'personal') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-fresh-workspace-db-'));
   roots.push(dataRoot);
   const store = new FsStore({ dataRoot });
   const create = () =>
     kind === 'general'
       ? store.createWorkspace('Ready for maintenance')
-      : store.ensureQuickChatWorkspace('user_local');
+      : store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
   return { dataRoot, store, create };
 }
 
@@ -505,7 +556,7 @@ function expectCompleteWorkspaceJournal(sqlite: Database.Database): void {
 describe('fresh Workspace database publication', () => {
   it.each([
     'general',
-    'quick-chat',
+    'personal',
   ] as const)('publishes %s with a migrated database ready for existing-only maintenance and reopen', (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     const workspace = f.create();
@@ -532,7 +583,7 @@ describe('fresh Workspace database publication', () => {
 
   it.each([
     'general',
-    'quick-chat',
+    'personal',
   ] as const)('completes the %s database in staging before the canonical rename', (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     let inspected = 0;
@@ -572,7 +623,7 @@ describe('fresh Workspace database publication', () => {
 
   it.each([
     'general',
-    'quick-chat',
+    'personal',
   ] as const)('does not publish %s when a staged Workspace migration fails', (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     const originalPrepare = Database.prototype.prepare;

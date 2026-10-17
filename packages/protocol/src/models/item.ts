@@ -1,11 +1,13 @@
 import { z } from 'zod';
-
 import {
   AgentIdSchema,
+  ArtifactIdSchema,
   ItemIdSchema,
   KnowledgeEntryIdSchema,
+  PresentationIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
+  UserIdSchema,
   UserInputRequestIdSchema,
   WorkspaceIdSchema,
 } from '../common/ids.js';
@@ -23,6 +25,7 @@ export const ItemStatusSchema = z.enum(['in_progress', 'completed', 'failed', 'd
 export const ItemTypeSchema = z.enum([
   'user-message',
   'assistant-message',
+  'context-summary',
   'reasoning',
   'artifact-reference',
   'command-execution',
@@ -78,6 +81,37 @@ export const AssistantMessageItemSchema = BaseItemSchema.extend({
   text: z.string(),
 });
 
+/** Exact canonical prefix covered by one internal continuation summary. */
+export const ContextSummarySourceRangeSchema = z.object({
+  firstItemId: ItemIdSchema,
+  lastItemId: ItemIdSchema,
+  itemCount: z.number().int().positive(),
+  sourceDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  evidenceDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+
+/** Completed untrusted continuation text; exact source history remains canonical and retrievable. */
+export const ContextSummaryItemSchema = BaseItemSchema.extend({
+  type: z.literal('context-summary'),
+  status: z.literal('completed'),
+  text: z
+    .string()
+    .min(1)
+    .max(65_536)
+    .refine((text) => new TextEncoder().encode(text).byteLength <= 65_536, {
+      message: 'Continuation summary exceeds its UTF-8 byte bound.',
+    }),
+  completedAt: TimestampSchema,
+  environmentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  sourceRange: ContextSummarySourceRangeSchema,
+  previousSummary: z
+    .object({
+      itemId: ItemIdSchema,
+      digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    })
+    .optional(),
+});
+
 /**
  * Reasoning/progress note item.
  */
@@ -92,7 +126,7 @@ export const ReasoningItemSchema = BaseItemSchema.extend({
  */
 export const ArtifactReferenceItemSchema = BaseItemSchema.extend({
   type: z.literal('artifact-reference'),
-  artifactId: z.string().min(1),
+  artifactId: ArtifactIdSchema,
   artifactVersion: z.number().int().positive(),
   lastMutationRequestId: z.string().min(1),
   title: z.string().min(1),
@@ -175,6 +209,29 @@ export const UserInputQuestionSchema = z.object({
   isSecret: z.boolean(),
 });
 
+/** Exact work selected by a human answer; this never grants execution or disclosure authority. */
+export const AssistantHandoffSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('task'),
+      targetWorkspaceId: WorkspaceIdSchema,
+      input: z.string().min(1).max(65536),
+      agentId: z.string().min(1).optional(),
+      modelId: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('goal'),
+      targetWorkspaceId: WorkspaceIdSchema,
+      intent: z.string().min(1).max(65536),
+    })
+    .strict(),
+]);
+
+/** Immutable selected work carried by the existing pending request owner. */
+export type AssistantHandoff = z.infer<typeof AssistantHandoffSchema>;
+
 /**
  * Product-visible agent question request item.
  *
@@ -183,10 +240,11 @@ export const UserInputQuestionSchema = z.object({
  */
 export const UserInputRequestItemSchema = BaseItemSchema.extend({
   type: z.literal('user-input-request'),
-  responsibleUserId: z.string().min(1),
+  responsibleUserId: UserIdSchema,
   userInputRequestId: UserInputRequestIdSchema,
   prompt: z.string().min(1),
   questions: z.array(UserInputQuestionSchema).min(1),
+  assistantHandoff: AssistantHandoffSchema.optional(),
 });
 
 /**
@@ -277,7 +335,7 @@ export const KnowledgeInjectionItemSchema = BaseItemSchema.extend({
  */
 export const GenerativeUiReferenceItemSchema = BaseItemSchema.extend({
   type: z.literal('generative-ui-reference'),
-  presentationId: z.string().uuid(),
+  presentationId: PresentationIdSchema,
   title: z.string().min(1),
   fallbackText: z.string().min(1),
 });
@@ -288,6 +346,7 @@ export const GenerativeUiReferenceItemSchema = BaseItemSchema.extend({
 export const ItemSchema = z.discriminatedUnion('type', [
   UserMessageItemSchema,
   AssistantMessageItemSchema,
+  ContextSummaryItemSchema,
   ReasoningItemSchema,
   ArtifactReferenceItemSchema,
   CommandExecutionItemSchema,

@@ -6,11 +6,11 @@ import {
   WorkspaceReadResponseSchema,
 } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
+import { createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -35,7 +35,17 @@ describe('workspace routes', () => {
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-routes-authorized-')),
     });
     const allowedWorkspace = store.createWorkspace('Allowed Workspace');
-    const app = createAppWithWorkspaceAuthority({ store });
+    // The canonical authority and Notebook content must belong to the same deployment root.
+    const coreDb = openCoreDb(store.getDataRoot()!);
+    ownedDatabases.push(coreDb);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: allowedWorkspace.id,
+    });
+    const app = createApp({ coreDb, store });
     store.createWorkspace('Denied Workspace');
     const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
       throw new Error('Workspace listing must not discover physical Workspaces.');
@@ -46,11 +56,10 @@ describe('workspace routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
+    expect(response.status, await response.clone().text()).toBe(200);
     const body = ListAuthorizedWorkspacesResponseSchema.parse(await response.json());
-
-    expect(response.status).toBe(200);
     expect(body.items.map((entry) => entry.workspace.id).sort()).toEqual(
-      [allowedWorkspace.id, 'ws_quick_chat'].sort()
+      [allowedWorkspace.id, 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28'].sort()
     );
     expect(listWorkspaces).not.toHaveBeenCalled();
   });
@@ -62,11 +71,11 @@ describe('workspace routes', () => {
     const workspace = store.createWorkspace('Counted Workspace');
     store.createThread(workspace.id, 'own-private', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.createThread(workspace.id, HIDDEN_PRIVATE_TITLE, undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'user_outsider',
+      privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80',
     });
     store.createThread(workspace.id, 'shared-work', undefined, 'conversation', {
       visibility: 'workspace',
@@ -77,7 +86,7 @@ describe('workspace routes', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
     const app = createApp({
@@ -85,7 +94,9 @@ describe('workspace routes', () => {
       store,
       mode: 'server',
       auth: {
-        api: { getSession: async () => ({ user: { id: 'user_local' } }) },
+        api: {
+          getSession: async () => ({ user: { id: 'usr_00000000-0000-7000-8000-000000000001' } }),
+        },
         handler: async () => new Response(null, { status: 404 }),
       },
     });
@@ -101,7 +112,7 @@ describe('workspace routes', () => {
     );
     const directBody = WorkspaceReadResponseSchema.parse(await directResponse.json());
     expect(directBody).toMatchObject({
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       membershipStatus: 'active',
       accessCause: 'membership',
     });

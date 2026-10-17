@@ -100,7 +100,7 @@ The required portable graph, captured-definition pairing, app/audit inventory, a
 
 [Recurring Triggers](20260711-scheduler_recurring_event_triggers.md) owns `RecurringSchedule`, `RecurringOccurrence`, and lossless `ExpiredOccurrenceRange` records. They are Workspace-owned product history physically homed in `server/db/core.sqlite`, beside existing scheduler admission rows, so the exact occurrence acceptance and queue insertion commit in one transaction. This is a named transactional exception to scope homing, not a second scheduler. The same database owns definition/cursor changes, occurrence/range materialization, and attributed recurring `AuditEvent` rows; audit reads aggregate them under the existing Workspace owner without dual-writing.
 
-The trigger specification owns fields and transitions. Storage enforces unique `(scheduleId, scheduledAt)` individual occurrence identity, non-overlapping accounted range coverage, and atomic cursor advancement with the corresponding history. Indexes support active due definitions, pending occurrence deadlines, and Workspace/schedule history pagination. Full deployment backup includes the Core database. Workspace export explicitly selects these Workspace-owned rows even though they are outside `workspace.sqlite`; execution attempts, live queue authority, and backend-private residency remain non-portable. Import stores inert history under the portability owner and never activates a source cursor.
+The trigger specification owns fields and transitions. Storage enforces unique `(scheduleId, scheduledAt)` individual occurrence identity, non-overlapping accounted range coverage, and atomic cursor advancement with the corresponding history. Indexes support active due definitions, pending occurrence deadlines, and Workspace/schedule history pagination. Full deployment backup includes the Core database. Workspace export explicitly selects these Workspace-owned rows even though they are outside `workspace.sqlite`; Agent execution attempts, live queue authority, and backend-private residency remain non-portable; bounded trigger admission attempts remain portable history. The portable owner requires the three `records/recurring-*.jsonl` families and `workspace.recurring-triggers.v1`, with deployment-local roots and working-directory paths removed. Import remints graph references into inert history only in the Workspace file `imports/recurrence-history.json` under existing imported-history provenance and never activates a source cursor.
 
 Every definition mutation, scan materialization and admission participates in the existing Workspace mutation fence, so backup/export/deletion observes a consistent cut. Definition tombstones and occurrence/range history use the existing `workspace-audit` retention class; no automatic pruning or new maintenance runner is part of this slice. Existing legal hold and sealed deletion closure include this graph and its audit before Workspace deletion removes its Core-homed rows. Missing/corrupt required history fails export or recovery visibly rather than creating replacement empty history.
 
@@ -182,6 +182,7 @@ File-backed source-of-truth records:
 SQLite source-of-truth records:
 
 - auth session records delegated to the auth implementation
+- User-owned conversation read receipts in `users/<userId>/db/user.sqlite`, keyed by Workspace and Thread, under the [Web projection receipt contract](20260628-web_product_surface_projection.md#user-owned-read-receipts); portable Workspace copies exclude this User state
 - idempotency ledger rows
 - audit events
 - usage records
@@ -450,6 +451,8 @@ Conversation file inputs remain owned by the receiving Turn at `threads/<threadI
 
 Stage streams privately in the same ownership domain. Measure actual size/digest, verify and fsync payload bytes, and atomically place the immutable file before exposing its version reference. The existing Artifact/Item/Review and receipt owner still governs acknowledgement and fail-closed partial publication. Orphan staging never proves acceptance. A referenced missing/corrupt payload returns unavailable or `recovery_required`, never reconstructed text or another version. Retry does not recapture an uncertain effect.
 
+ZIP folder derivatives use `artifacts/<artifactId>/versions/<version>/derived/zip-v1/` within the original Artifact scope. This disposable cache contains `inventory.json` and a separate `tree/`. The inventory binds the original digest, Artifact version and `openkit.zip.v1` processor, with exact relative member paths, sizes and digests. The original `payload` remains unchanged. Request-private staging under the existing staging owner precedes atomic publication of the complete cache directory. Missing or corrupt caches can be rebuilt from the verified original; they never prove Artifact acceptance or repair original loss. Current source audience governs every cache read and publication. Portable export retains the original and omits this disposable tree. [ZIP Folder Snapshot](20260713-work_resource_interaction_model.md#zip-folder-snapshot) owns its lifecycle and observable criteria.
+
 The adapter-side sidecar cache retains PDF text-layer and explicit vision derivatives in its existing scoped cache location. Its identity binds original digest, processor version/configuration, representation digest, locators, and coverage. Derived files remain separate from originals and user-authored descriptions. Rebuild cannot mutate or replace originals. Deletion, retention, holds, backup, and export use the original owner's audience and reference rules. Current-access revocation precedes cache cleanup.
 
 One configurable server reserve protects headroom in addition to the worst-case current writes and existing in-flight reservations. Those reservations cover concurrent staging, extraction, derivatives, and publication overlap. Restart accounts for occupied staging before new admission. Disk pressure refuses new work rather than evicting retained originals. Record measured defaults before release. Exact byte continuity and scope isolation must survive derivative/index rebuilds and portable export/import.
@@ -537,6 +540,7 @@ Private project Threads and their Item/Artifact material remain in their existin
 `user.sqlite` owns:
 
 - per-user idempotency receipts
+- User-owned AuditEvent records, including content-free notebook publication admission facts
 - its migration ledger
 
 User files remain under `users/<userId>/files`. Workspace ownership and visibility do not create any Workspace storage below the user tree; all canonical Workspace data lives under `workspaces/<workspaceId>` and is resolved through Core identity and policy state.

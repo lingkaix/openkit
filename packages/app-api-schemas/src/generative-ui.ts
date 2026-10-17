@@ -1,4 +1,15 @@
-import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  CollectionIdSchema,
+  FieldIdSchema,
+  ItemIdSchema,
+  PresentationIdSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Native OpenKit A2UI catalog identity. */
@@ -23,17 +34,17 @@ export const GenerativeUiKernelRecordsSourceSchema = z
   .object({
     kind: z.literal('kernel-records'),
     appId: z.string().uuid(),
-    collectionId: z.string().uuid(),
+    collectionId: CollectionIdSchema,
     schemaRevision: z.number().int().positive(),
     query: GenerativeUiKernelQuerySchema,
   })
   .strict();
 
-/** Source bound to one completed assistant-message Item. */
+/** Source bound to exact retained text from a completed assistant-message or tool-call Item. */
 export const GenerativeUiItemSourceSchema = z
   .object({
     kind: z.literal('item'),
-    itemId: z.string().min(1),
+    itemId: ItemIdSchema,
     contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   })
   .strict();
@@ -60,7 +71,7 @@ export const GenerativeUiKernelRecordUpdateActionSchema = z
     componentId: z.string().min(1).max(128),
     kind: z.literal('kernel-record-update'),
     recordId: z.string().uuid(),
-    writableFieldIds: z.array(z.string().uuid()).min(1).max(16),
+    writableFieldIds: z.array(FieldIdSchema).min(1).max(16),
   })
   .strict();
 
@@ -86,18 +97,44 @@ export const GenerativeUiA2uiActionSchema = z
   })
   .strict();
 
+/** Publish-only shorthand for bounded model-authored text with no actions. */
+export const GenerativeUiAnswerSourceSchema = z
+  .object({
+    kind: z.literal('answer'),
+    text: z
+      .string()
+      .min(1)
+      .max(2 * 1024 * 1024)
+      .refine(
+        (text) => new TextEncoder().encode(text).byteLength <= 2 * 1024 * 1024,
+        'Generated answer text exceeds 2 MiB.'
+      ),
+  })
+  .strict();
+
+/** Publish sources normalize generated text to an ordinary retained Item binding. */
+export const GenerativeUiPublishSourceSchema = z.discriminatedUnion('kind', [
+  GenerativeUiKernelRecordsSourceSchema,
+  GenerativeUiItemSourceSchema,
+  GenerativeUiAnswerSourceSchema,
+]);
+
 /** Publish input: producer messages plus source and static actions. */
 export const PublishGenerativePresentationRequestSchema = z
   .object({
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     title: z.string().min(1).max(256),
     fallbackText: z.string().min(1).max(8192),
     messages: z.array(z.unknown()).min(2).max(2),
-    source: GenerativeUiSourceSchema,
+    source: GenerativeUiPublishSourceSchema,
     actions: z.array(GenerativeUiActionSchema).max(8),
   })
-  .strict();
+  .strict()
+  .refine((input) => input.source.kind !== 'answer' || input.actions.length === 0, {
+    message: 'Generated answer sources accept no actions.',
+    path: ['actions'],
+  });
 
 /** Derived Item publication condition. */
 export const GenerativePresentationPublicationSchema = z.enum([
@@ -109,11 +146,11 @@ export const GenerativePresentationPublicationSchema = z.enum([
 /** Immutable retained presentation. */
 export const GenerativePresentationSchema = z
   .object({
-    id: z.string().uuid(),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    itemId: z.string().min(1),
+    id: PresentationIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema,
     createdAt: TimestampSchema,
     actor: ActorRefSchema,
     requestId: RequestIdSchema.nullable(),
@@ -153,7 +190,7 @@ export const RefreshGenerativePresentationRequestSchema = GenerativeUiA2uiAction
 /** Refresh/action data-model result. */
 export const GenerativePresentationDataModelResponseSchema = z
   .object({
-    presentationId: z.string().uuid(),
+    presentationId: PresentationIdSchema,
     observedAt: TimestampSchema,
     messages: z.array(z.unknown()).min(1),
     refreshUnavailable: z.boolean().optional(),

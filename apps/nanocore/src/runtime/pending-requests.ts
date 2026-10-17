@@ -1,12 +1,16 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   ApprovalRequestSchema,
+  type AssistantHandoff,
+  AssistantHandoffSchema,
+  deriveEntityId,
   type Item,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
   type TurnSchema,
 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
+import { uuidv5 } from '../generative-kernel/uuid.js';
 import type { CommandRequestRecord } from '../lib/store.js';
 import { commandInputHash } from './idempotent-command.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
@@ -28,13 +32,13 @@ export const OUTCOME_DELIVERY_BOUND = 16;
 export const PENDING_REQUEST_NEXT_STEP =
   'The outcome arrives on a later Turn. Do not call again to claim it.';
 
-/** Hashes the exact existing Assistant outcome source tuple for its receipt-free Task handoff. */
-export function assistantPendingOutcomeSourceHash(
+/** Reads the complete frozen Assistant outcome name; its recorded order, nullable facts and strings stay exact. */
+export function assistantPendingOutcomeSource(
   turn: Turn,
   records: readonly PendingRequestRecord[],
   responsibleUserId: string
-): string {
-  return commandInputHash({
+) {
+  return {
     workspaceId: turn.workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
@@ -47,10 +51,41 @@ export function assistantPendingOutcomeSourceHash(
       ending: record.ending,
       disposition: record.disposition,
       answerMap: record.answerMap,
+      // An absent extension must not change an ordinary retained outcome's complete name.
+      ...(record.assistantHandoff ? { assistantHandoff: record.assistantHandoff } : {}),
       decidedAt: record.decidedAt,
       endedAt: record.endedAt,
     })),
-  });
+  };
+}
+
+/** Hashes the unchanged source tuple for its excluded request-correlation identity. */
+export function assistantPendingOutcomeSourceHash(
+  turn: Turn,
+  records: readonly PendingRequestRecord[],
+  responsibleUserId: string
+): string {
+  return commandInputHash(assistantPendingOutcomeSource(turn, records, responsibleUserId));
+}
+
+/** Derives the single receiving-work projection on an admitted Assistant outcome. */
+export function assistantPendingHandoffResultItemId(
+  turnId: string,
+  result: 'task' | 'goal' | 'refused'
+): string {
+  return deriveEntityId('it', [`chat-${result}`, turnId]);
+}
+
+/** Derives the receiving tuple from the immutable admitted outcome, never from model correlation. */
+export function assistantPendingHandoffIds(
+  outcomeScope: ReturnType<typeof assistantPendingOutcomeSource>
+) {
+  const sourceHash = commandInputHash(outcomeScope);
+  return {
+    requestId: uuidv5(JSON.stringify({ kind: 'assistant-handoff-request', sourceHash })),
+    threadId: deriveEntityId('th', outcomeScope),
+    turnId: deriveEntityId('tu', outcomeScope),
+  };
 }
 
 /** Creates the existing Core actor for pending-request publication and machine input. */
@@ -280,6 +315,8 @@ export interface PendingRequestRecord {
   readonly authorizationContext: PendingAuthorizationContext | null;
   /** Exact governed-command intent for a command-intent approval. */
   readonly governedIntent: Readonly<Record<string, unknown>> | null;
+  /** Exact Assistant work awaiting human selection, never an authorization grant. */
+  readonly assistantHandoff: AssistantHandoff | null;
   /** Questions for a user-input request. */
   readonly questions: readonly Readonly<Record<string, unknown>>[] | null;
   /** Approval projection kind. */
@@ -350,6 +387,8 @@ export interface RaisePendingRequestInput {
   };
   /** Exact governed-command intent. */
   readonly governedIntent?: Readonly<Record<string, unknown>> | null;
+  /** Exact work proposed by the Assistant under independent current authority. */
+  readonly assistantHandoff?: AssistantHandoff | null;
   /** User-input questions. */
   readonly questions?: readonly Readonly<Record<string, unknown>>[] | null;
   /** Canonical question payload used for deduplication. */
@@ -424,6 +463,7 @@ interface PendingRequestRow {
   authorization_context_json: string | null;
   governed_intent_json: string | null;
   questions_json: string | null;
+  assistant_handoff_json: string | null;
   approval_kind: string | null;
   title: string | null;
   description: string | null;
@@ -447,7 +487,7 @@ const SELECT_COLUMNS = `
   deciding_actor_id, deciding_actor_context_json, decided_at, answer_map_json, ending, invalidating_event, ending_actor_kind,
   ending_actor_id, ended_at, server_id, catalog_revision, schema_snapshot_id, tool_name,
   canonical_arguments_json, arguments_digest, package_digest, policy_decision_id,
-  authorization_context_json, governed_intent_json, questions_json, approval_kind, title,
+  authorization_context_json, governed_intent_json, questions_json, assistant_handoff_json, approval_kind, title,
   description, claim, execution_call_id, disposition, disposition_reason, held_result_json,
   publication_turn_id, invalidation_turn_id, delivery, delivery_turn_id, delivery_cause,
   created_at, updated_at
@@ -486,7 +526,7 @@ const APPROVAL_KINDS = new Set<'permission' | 'destructive-action'>([
  * @returns Stable call id.
  */
 export function executionCallIdForRequest(requestId: string): string {
-  return `cap_pending_${requestId}`;
+  return deriveEntityId('cap', ['pending', requestId]);
 }
 
 /**
@@ -507,26 +547,7 @@ export function pendingRequestItemId(
     | 'ending'
     | 'invalidation'
 ): string {
-  switch (role) {
-    case 'request':
-      return `it_request_${requestId}`;
-    case 'decision':
-      return `it_approval_decision_${requestId}`;
-    case 'answer':
-      return `it_user_input_response_${requestId}`;
-    case 'disposition':
-      return `it_disposition_${requestId}`;
-    case 'disposition-status':
-      return `it_disposition_status_${requestId}`;
-    case 'ending':
-      return `it_ending_${requestId}`;
-    case 'invalidation':
-      return `it_invalidation_${requestId}`;
-    default: {
-      const exhaustive: never = role;
-      return exhaustive;
-    }
-  }
+  return deriveEntityId('it', [requestId, role]);
 }
 
 /**
@@ -628,6 +649,15 @@ export function preflightPendingRequest(
   sqlite: Database.Database,
   input: RaisePendingRequestInput
 ): PendingRequestRecord | null {
+  if (
+    input.assistantHandoff &&
+    (input.kind !== 'user-input' || input.requesterKind !== 'assistant')
+  )
+    throw new PendingRequestCommandError(
+      'invalid_request',
+      'Only an Assistant user-input request can retain a handoff selection.',
+      400
+    );
   const existing = readPendingRequest(sqlite, input.requestId);
   if (existing) {
     if (!sameRaiseIdentity(existing, input)) {
@@ -1078,6 +1108,7 @@ export function frozenPendingOutcomeInput(
       title: record.title,
       description: record.description,
       questions: record.questions,
+      assistantHandoff: record.assistantHandoff,
       call: record.serverId
         ? {
             serverId: record.serverId,
@@ -1398,6 +1429,14 @@ export function validateCanonicalLoad(
   ) {
     return { requestId: record.requestId, reason: 'parties' };
   }
+  if (
+    record.assistantHandoff &&
+    (record.kind !== 'user-input' ||
+      record.requesterKind !== 'assistant' ||
+      raising.agentId !== 'quick-chat' ||
+      raising.agentSessionId)
+  )
+    return { requestId: record.requestId, reason: 'handoff-producer' };
   const request = requestItems[0]!;
   if (
     request.workspaceId !== record.workspaceId ||
@@ -1414,7 +1453,8 @@ export function validateCanonicalLoad(
     (request.type === 'user-input-request' &&
       (record.kind !== 'user-input' ||
         request.responsibleUserId !== record.responsibleUserId ||
-        !isDeepStrictEqual(request.questions, record.questions)))
+        !isDeepStrictEqual(request.questions, record.questions) ||
+        !isDeepStrictEqual(request.assistantHandoff ?? null, record.assistantHandoff)))
   ) {
     return { requestId: record.requestId, reason: 'request-parties-content' };
   }
@@ -1929,13 +1969,13 @@ function insertPendingRequest(sqlite: Database.Database, input: RaisePendingRequ
          deciding_actor_id, deciding_actor_context_json, decided_at, answer_map_json, ending, invalidating_event, ending_actor_kind,
          ending_actor_id, ended_at, server_id, catalog_revision, schema_snapshot_id, tool_name,
          canonical_arguments_json, arguments_digest, package_digest, policy_decision_id,
-         authorization_context_json, governed_intent_json, questions_json, approval_kind, title,
+         authorization_context_json, governed_intent_json, questions_json, assistant_handoff_json, approval_kind, title,
          description, claim, execution_call_id, disposition, disposition_reason, held_result_json,
          publication_turn_id, invalidation_turn_id, delivery, delivery_turn_id, delivery_cause,
          created_at, updated_at
        ) VALUES (
          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-         NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', NULL, NULL, NULL, NULL,
+         NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', NULL, NULL, NULL, NULL,
          NULL, NULL, 'undelivered', NULL, NULL, ?, ?
        )`
     )
@@ -1961,6 +2001,9 @@ function insertPendingRequest(sqlite: Database.Database, input: RaisePendingRequ
       input.call ? JSON.stringify(input.call.authorizationContext) : null,
       input.governedIntent ? JSON.stringify(input.governedIntent) : null,
       input.questions ? JSON.stringify(input.questions) : null,
+      input.assistantHandoff
+        ? JSON.stringify(AssistantHandoffSchema.parse(input.assistantHandoff))
+        : null,
       input.approval?.kind ?? null,
       input.approval?.title ?? null,
       input.approval?.description ?? null,
@@ -1979,7 +2022,8 @@ function sameRaiseIdentity(record: PendingRequestRecord, input: RaisePendingRequ
     record.responsibleUserId === input.responsibleUserId &&
     record.agentId === (input.agentId ?? null) &&
     record.argumentsDigest === (input.call?.argumentsDigest ?? input.questionDigest ?? null) &&
-    canonicalJsonText(record.governedIntent) === canonicalJsonText(input.governedIntent ?? null)
+    canonicalJsonText(record.governedIntent) === canonicalJsonText(input.governedIntent ?? null) &&
+    canonicalJsonText(record.assistantHandoff) === canonicalJsonText(input.assistantHandoff ?? null)
   );
 }
 
@@ -2088,6 +2132,10 @@ function parsePendingRequestRow(row: PendingRequestRow): PendingRequestRecord {
     ) as PendingAuthorizationContext | null,
     governedIntent: parseObject(row.governed_intent_json),
     questions: parseQuestions(row.questions_json),
+    assistantHandoff:
+      row.assistant_handoff_json === null
+        ? null
+        : AssistantHandoffSchema.parse(parseJson(row.assistant_handoff_json)),
     approvalKind,
     title: row.title,
     description: row.description,

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   createAdministrationEnvironmentCandidateTools,
   createAdministrationEnvironmentTools,
 } from './environment-tools.js';
 
-const actor = { kind: 'local', userId: 'user_admin' } as const;
+const actor = { kind: 'local', userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5' } as const;
 const prepareTool: AgentTool = {
   name: 'worker_environment.prepare',
   description: 'Prepare.',
@@ -25,11 +25,14 @@ describe('administration Worker environment Tools', () => {
     });
 
     await tools[0].execute(
-      { workspaceId: 'ws_target', limit: 20 },
-      { callId: 'call_list', signal: new AbortController().signal }
+      { workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636', limit: 20 },
+      { callId: 'call_list', toolOccurrence: 1, signal: new AbortController().signal }
     );
 
-    expect(list).toHaveBeenCalledWith({ actor, workspaceId: 'ws_target' }, { limit: 20 });
+    expect(list).toHaveBeenCalledWith(
+      { actor, workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' },
+      { limit: 20 }
+    );
   });
 
   it('returns the operation owner denial as a typed Tool result', async () => {
@@ -51,8 +54,8 @@ describe('administration Worker environment Tools', () => {
     });
 
     const result = await tools[0].execute(
-      { workspaceId: 'ws_other' },
-      { callId: 'call_denied', signal: new AbortController().signal }
+      { workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
+      { callId: 'call_denied', toolOccurrence: 1, signal: new AbortController().signal }
     );
 
     expect(result.isError).toBe(true);
@@ -68,8 +71,8 @@ describe('administration Worker environment Tools', () => {
     });
     const [prepareToolView, tool] = createAdministrationEnvironmentCandidateTools({
       actor,
-      administrationThreadId: 'thread_admin',
-      administrationTurnId: 'turn_admin',
+      administrationThreadId: testEntityId('th', 'thread_admin'),
+      administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
       prepare,
     });
     expect(prepareToolView.inputSchema).toMatchObject({
@@ -79,19 +82,27 @@ describe('administration Worker environment Tools', () => {
     expect(tool.inputSchema).toMatchObject({ type: 'object', required: ['recoverFrom'] });
     const args = {
       recoverFrom: {
-        artifactId: 'artifact_a',
+        artifactId: testEntityId('ar', 'artifact_a'),
         artifactVersion: 1,
         contentDigest: `sha256:${'a'.repeat(64)}`,
       },
     };
-    const context = { callId: 'call_prepare', signal: new AbortController().signal };
+    const context = {
+      callId: 'call_prepare',
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
     const result = await tool.execute(args, context);
     await tool.execute(args, context);
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(prepare.mock.calls[0]).toEqual(prepare.mock.calls[1]);
     expect(prepare).toHaveBeenCalledWith(
-      { actor, administrationTurnId: 'turn_admin' },
-      expect.objectContaining({ ...args, mode: 'recover', administrationThreadId: 'thread_admin' })
+      { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
+      expect.objectContaining({
+        ...args,
+        mode: 'recover',
+        administrationThreadId: testEntityId('th', 'thread_admin'),
+      })
     );
     expect(JSON.stringify(result)).toContain('recovery_required');
     expect(JSON.stringify(result)).not.toContain('private detail');
@@ -117,7 +128,7 @@ describe('administration Worker environment Tools', () => {
       mode: 'recover',
       args: {
         recoverFrom: {
-          artifactId: 'artifact_a',
+          artifactId: testEntityId('ar', 'artifact_a'),
           artifactVersion: 1,
           contentDigest: `sha256:${'a'.repeat(64)}`,
         },
@@ -133,18 +144,26 @@ describe('administration Worker environment Tools', () => {
       });
       const tools = createAdministrationEnvironmentCandidateTools({
         actor,
-        administrationThreadId: 'thread_admin',
-        administrationTurnId: 'turn_admin',
+        administrationThreadId: testEntityId('th', 'thread_admin'),
+        administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         prepare,
       });
       const tool = tools[mode === 'prepare' ? 0 : 1];
-      const context = { callId: 'call_candidate', signal: new AbortController().signal };
+      const context = {
+        callId: 'call_candidate',
+        toolOccurrence: 1,
+        signal: new AbortController().signal,
+      };
 
       await tool.execute(args, context);
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(prepare).toHaveBeenCalledWith(
-        { actor, administrationTurnId: 'turn_admin' },
-        expect.objectContaining({ ...args, mode, administrationThreadId: 'thread_admin' })
+        { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
+        expect.objectContaining({
+          ...args,
+          mode,
+          administrationThreadId: testEntityId('th', 'thread_admin'),
+        })
       );
 
       // A valid UUID ensures only model selection of the bound identity causes refusal.
@@ -171,14 +190,14 @@ describe('administration Worker environment Tools', () => {
       });
       const tools = createAdministrationEnvironmentCandidateTools({
         actor,
-        administrationThreadId: 'thread_admin',
-        administrationTurnId: 'turn_admin',
+        administrationThreadId: testEntityId('th', 'thread_admin'),
+        administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         prepare,
       });
       const tool = tools[mode === 'prepare' ? 0 : 1];
       const result = await tool.execute(
         { ...args, mode },
-        { callId: 'call_obsolete_mode', signal: new AbortController().signal }
+        { callId: 'call_obsolete_mode', toolOccurrence: 1, signal: new AbortController().signal }
       );
 
       expect(result).toEqual({

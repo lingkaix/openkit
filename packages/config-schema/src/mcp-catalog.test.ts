@@ -17,7 +17,7 @@ import { McpBindingRecordSchema } from './resource-catalog.js';
 describe('MCP credential presentation admission', () => {
   const binding = {
     slot: 'token',
-    vaultGrantId: 'grant_canary',
+    vaultGrantId: 'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba',
     sink: { kind: 'header', name: 'Authorization' },
   };
   const server = {
@@ -33,7 +33,7 @@ describe('MCP credential presentation admission', () => {
     const catalog = parseWorkspaceMcpServerCatalog({ schemaVersion: 1, servers: [server] });
     expect(catalog.servers[0]!.credentialBindings).toEqual([binding]);
     expect(resolveWorkspaceMcpServer({ catalog, serverId: 'echo' }).catalogDigest).toBe(
-      'sha256:ece03620450bfab5be716543f17a1e8f7846e24d9cd612a245f8bcd6a2cd5df5'
+      'sha256:822279732d3a4eb33062c7ade755dbc87956c52d7eb587033f81f23c8ef1b188'
     );
     expect(JSON.stringify(WorkspaceMcpCredentialBindingSchema.parse(binding))).toBe(
       JSON.stringify(binding)
@@ -236,7 +236,7 @@ describe('workspace MCP server catalog', () => {
               {
                 sink: { kind: 'header', name: 'Authorization' },
                 slot: 'access-token',
-                vaultGrantId: 'grant_search',
+                vaultGrantId: 'grant_00000000-0000-7b98-9098-fc1b5de5d7a7',
               },
             ],
             deniedTools: [],
@@ -261,7 +261,7 @@ describe('workspace MCP server catalog', () => {
                 {
                   sink: { kind: 'header', name },
                   slot: 'token',
-                  vaultGrantId: 'grant_search',
+                  vaultGrantId: 'grant_00000000-0000-7b98-9098-fc1b5de5d7a7',
                 },
               ],
               enabled: true,
@@ -290,7 +290,7 @@ describe('workspace MCP server catalog', () => {
                 {
                   sink: { kind: 'header', name: 'Authorization' },
                   slot: 'token',
-                  vaultGrantId: 'grant_search',
+                  vaultGrantId: 'grant_00000000-0000-7b98-9098-fc1b5de5d7a7',
                 },
               ],
               enabled: true,
@@ -313,7 +313,7 @@ describe('workspace MCP server catalog', () => {
               {
                 sink: { kind: 'header', name: 'Authorization' },
                 slot: 'token',
-                vaultGrantId: 'grant_search',
+                vaultGrantId: 'grant_00000000-0000-7b98-9098-fc1b5de5d7a7',
               },
             ],
             enabled: true,
@@ -366,7 +366,7 @@ describe('workspace MCP server catalog', () => {
               {
                 sink: { kind: 'env', name: 'ACCESS_TOKEN' },
                 slot: 'access-token',
-                vaultGrantId: 'grant_echo',
+                vaultGrantId: 'grant_00000000-0000-7c78-a264-4a45a0259439',
               },
             ],
             enabled: true,
@@ -398,7 +398,7 @@ describe('workspace MCP server catalog', () => {
           {
             sink: { kind: 'header', name: 'Authorization' },
             slot: 'token',
-            vaultGrantId: 'grant_echo',
+            vaultGrantId: 'grant_00000000-0000-7c78-a264-4a45a0259439',
           },
         ],
         deniedTools: [],
@@ -425,7 +425,7 @@ describe('workspace MCP server catalog', () => {
           {
             sink: { kind: 'env', name: 'ACCESS_TOKEN' },
             slot: 'access-token',
-            vaultGrantId: 'grant_echo',
+            vaultGrantId: 'grant_00000000-0000-7c78-a264-4a45a0259439',
           },
         ],
         enabled: true,
@@ -476,7 +476,7 @@ describe('workspace MCP server catalog', () => {
     const right = digestMcpConfig(declaration, null);
     expect(left).toBe(right);
     expect(left).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(digestMcpConfig(declaration, 'sha256:' + 'a'.repeat(64))).not.toBe(left);
+    expect(digestMcpConfig(declaration, `sha256:${'a'.repeat(64)}`)).not.toBe(left);
   });
 
   it('includes packageRootDigest in the effective catalogDigest', () => {

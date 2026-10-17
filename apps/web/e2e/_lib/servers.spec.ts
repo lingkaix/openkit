@@ -1,20 +1,23 @@
 // openkit-test-platform: posix
 
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
   promises as fsPromises,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
@@ -119,7 +122,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
 }) => {
   const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
   const client = createCoreClient({ baseUrl: stack.coreUrl });
-  const workspaceId = 'ws_demo';
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const content = '# Release revision one\n\nExact worker input.\n';
   const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
 
@@ -152,27 +155,22 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       expectedBindingState: 'not_bound',
       requestId: randomUUID(),
     });
-    const targets = await client.operations['conversation.targets']({
-      workspaceId,
-      threadId: thread.id,
-    });
-    const target = targets.targets.find((candidate) => candidate.kind === 'warm-worker');
-    expect(target?.availability).toBe('available');
+    // Material binding is explicit to this Thread; direct Task entry executes there.
     const requestId = randomUUID();
-    const response = await request.post(`${stack.coreUrl}/api/app/operations/conversation.submit`, {
+    const response = await request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
       headers: { 'x-openkit-request-id': requestId },
       data: {
         workspaceId,
         threadId: thread.id,
-        targetRef: target!.targetRef,
         input: 'Create a summary from the exact first release revision.',
         requestId,
       },
     });
     expect(response.status(), await response.text()).toBe(202);
-    const submission = SubmitConversationResponseSchema.parse(await response.json());
-    expect(submission.receivingThreadId).toBe(thread.id);
-    const selector = { workspaceId, threadId: thread.id, turnId: submission.turn.id };
+    const submission = StartTaskModeResponseSchema.parse(await response.json());
+    const taskThreadId = thread.id;
+    expect(submission.turn).toMatchObject({ workspaceId, threadId: taskThreadId });
+    const selector = { workspaceId, threadId: taskThreadId, turnId: submission.turn.id };
     let completed = false;
     for await (const event of client.core.subscribeTurnEvents(selector)) {
       if (event.event === 'turn.completed') {
@@ -190,7 +188,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     const turn = await client.operations['turn.read'](selector);
     expect(turn.status).toBe('completed');
     expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
-    const items = await client.operations['thread.items']({ workspaceId, threadId: thread.id });
+    const items = await client.operations['thread.items']({ workspaceId, threadId: taskThreadId });
     const question = items.items.find((item) => item.type === 'user-input-request');
     expect(question).toMatchObject({
       turnId: turn.id,
@@ -201,7 +199,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     if (question?.type !== 'user-input-request') throw new Error('Simulator question missing.');
     const dashboard = await client.operations['thread.dashboard']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
     });
     expect(dashboard.pendingRequests).toEqual([
       expect.objectContaining({
@@ -218,7 +216,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
           'workspaces',
           workspaceId,
           'threads',
-          thread.id,
+          taskThreadId,
           'turns',
           turn.id,
           'context-package.json'
@@ -233,7 +231,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     });
     const projection = await client.operations['material.thread-read']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
     });
     // S16 current-turn identity ends with the Turn; the verified worker-seen identity survives.
     expect(projection.material).toMatchObject({
@@ -253,7 +251,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     });
     const queued = await client.operations['material.thread-read']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
     });
     expect(queued.material).toMatchObject({
       currentRevision: { revisionId: nextRevisionId },
@@ -265,30 +263,30 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     expect(
       await client.operations['material.thread-read']({
         workspaceId,
-        threadId: thread.id,
+        threadId: taskThreadId,
       })
     ).toEqual(queued);
     expect(
-      (await client.operations['thread.dashboard']({ workspaceId, threadId: thread.id }))
+      (await client.operations['thread.dashboard']({ workspaceId, threadId: taskThreadId }))
         .pendingRequests
     ).toEqual(dashboard.pendingRequests);
     await client.operations['question.answer']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
       userInputRequestId: question.userInputRequestId,
       requestId: randomUUID(),
       answers: { tone: ['Detailed'] },
     });
     const afterAnswer = await client.operations['thread.dashboard']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
     });
     const nextTurn = afterAnswer.turns.at(-1)!;
     expect(nextTurn.id).not.toBe(turn.id);
     let answerTurnCompleted = false;
     for await (const event of client.core.subscribeTurnEvents({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
       turnId: nextTurn.id,
     })) {
       if (event.event === 'turn.completed') {
@@ -302,13 +300,13 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     expect(answerTurnCompleted).toBe(true);
     const answerTurn = await client.operations['turn.read']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
       turnId: nextTurn.id,
     });
     expect(answerTurn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
     const deliveredMaterial = await client.operations['material.thread-read']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
     });
     expect(deliveredMaterial.material).toMatchObject({
       lastWorkerSeenRevisionId: nextRevisionId,
@@ -318,7 +316,7 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     expect((await client.operations['turn.read'](selector)).status).toBe('completed');
     const answeredItems = await client.operations['thread.items']({
       workspaceId,
-      threadId: thread.id,
+      threadId: taskThreadId,
     });
     expect(answeredItems.items.filter((item) => item.type === 'user-input-response')).toEqual([
       expect.objectContaining({
@@ -370,14 +368,14 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     expect(
       await client.operations['material.thread-read']({
         workspaceId,
-        threadId: thread.id,
+        threadId: taskThreadId,
       })
     ).toEqual(deliveredMaterial);
     expect(
       (
         await client.operations['turn.read']({
           workspaceId,
-          threadId: thread.id,
+          threadId: taskThreadId,
           turnId: nextTurn.id,
         })
       ).contextPackageDigest
@@ -799,21 +797,17 @@ test('cleans the temporary data root when NanoCore exits before readiness', asyn
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-core-readiness-cleanup-'));
   const dataRoot = join(harnessRoot, 'data-root');
   const lockDirectory = join(dataRoot, 'server', 'runtime');
-  const timestamp = new Date().toISOString();
   mkdirSync(lockDirectory, { recursive: true });
-  writeFileSync(
-    join(lockDirectory, 'nanocore.lock'),
-    `${JSON.stringify({
-      bootId: 'existing-test-holder',
-      createdAt: timestamp,
-      hostname: hostname(),
-      pid: process.pid,
-      schemaVersion: 1,
-      updatedAt: timestamp,
-    })}\n`
-  );
+  const holder = openSync(lockDirectory, 'r');
 
   try {
+    // A live kernel lock forces Core to exit; diagnostic JSON alone is not ownership.
+    const acquired = spawnSync('flock', ['--exclusive', '--nonblock', '3'], {
+      stdio: ['ignore', 'ignore', 'pipe', holder],
+    });
+    expect(acquired.error).toBeUndefined();
+    expect(acquired.status).toBe(0);
+
     const failure = await startIsolatedWebStack({
       dataRoot,
       mode: 'local',
@@ -827,6 +821,7 @@ test('cleans the temporary data root when NanoCore exits before readiness', asyn
     expect((failure as Error).message).toContain('Process exited before');
     expect(existsSync(dataRoot)).toBe(false);
   } finally {
+    closeSync(holder);
     rmSync(harnessRoot, { force: true, recursive: true });
   }
 });
@@ -888,7 +883,8 @@ test('cleans every stack-owned root when fixture initialization rejects before s
 });
 
 test('kills a SIGTERM-ignoring Web child and NanoCore before removing the data root', async () => {
-  test.setTimeout(45_000);
+  // Allow Core startup, the intentional 30s Web readiness failure, and TERM/KILL cleanup.
+  test.setTimeout(90_000);
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-sigterm-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
@@ -987,7 +983,8 @@ setInterval(() => {}, 1000);
 });
 
 test('kills a SIGTERM-ignoring Web descendant after its leader exits during failed startup cleanup', async () => {
-  test.setTimeout(15_000);
+  // Allow Core startup before advancing the Web readiness clock and checking cleanup.
+  test.setTimeout(45_000);
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-descendant-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
@@ -1040,7 +1037,7 @@ setInterval(() => {}, 1000);
   );
 
   try {
-    const markerDeadline = Date.now() + 10_000;
+    const markerDeadline = Date.now() + 30_000;
     while (
       Date.now() < markerDeadline &&
       (descendantPid === undefined || leaderPid === undefined || nanoCorePid === undefined)

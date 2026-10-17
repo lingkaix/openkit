@@ -34,17 +34,22 @@ describe('release-declared catalog Skill supply', () => {
     coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-skill-supply-')));
     applyMigrations(coreDb);
     store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    turn = store.createTurn('ws_demo', 'th_demo', 'Use catalog Skill', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Use catalog Skill',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     digest = importWorkspaceSkill({
       activate: true,
       createdAt: '2026-10-05T00:00:00.000Z',
       dataRoot: coreDb.dataRoot,
       displayName: 'Repo guidelines',
       expectedRevision: 0,
-      producer: { id: 'user_local', kind: 'user' },
+      producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
       tree: [
         {
           contentBase64: Buffer.from('# Hello\n').toString('base64'),
@@ -70,7 +75,7 @@ describe('release-declared catalog Skill supply', () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup({ adapter, skillIds: ['repo-guidelines'] }),
-      agentSessionId: 'as_skill_supply',
+      agentSessionId: 'as_00000000-0000-7754-ade8-f02f25e307a0',
       backend: { kind: 'openshell' },
       coreDb,
       createdAt: '2026-10-05T00:00:00.000Z',
@@ -88,7 +93,8 @@ describe('release-declared catalog Skill supply', () => {
           .map(([id]) => id),
         materialization: {
           kind: 'filesystem-copy',
-          targetPath: '/openkit/sessions/as_skill_supply/supply/inputs/repo-guidelines',
+          targetPath:
+            '/openkit/sessions/as_00000000-0000-7754-ade8-f02f25e307a0/supply/inputs/repo-guidelines',
         },
       }),
     ]);
@@ -120,7 +126,6 @@ describe('release-declared catalog Skill supply', () => {
       prepareLaunch: unexpectedBackendCall,
       update: unexpectedBackendCall,
       collectEvidence: unexpectedBackendCall,
-      collectProviderRefreshStatuses: unexpectedBackendCall,
       collectTranscript: unexpectedBackendCall,
       collectWorkspaceChanges: unexpectedBackendCall,
     };
@@ -132,7 +137,7 @@ describe('release-declared catalog Skill supply', () => {
     const failure = await executor
       .prepareAgentSessionForTurn(store, {
         agentSetup,
-        freshAgentSessionId: 'as_skill_supply',
+        freshAgentSessionId: 'as_00000000-0000-7754-ade8-f02f25e307a0',
         requestId: null,
         turn,
         turnInput: 'Use catalog Skill',

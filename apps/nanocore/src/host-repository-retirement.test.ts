@@ -2,11 +2,11 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createApp } from './app.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('retired host repository routes', () => {
@@ -24,11 +24,15 @@ describe('retired host repository routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     try {
       const app = createApp({ coreDb, dataRoot, store });
       if (suffix === '/git-push-records/gpr_retired') {
-        const db = openWorkspaceDb(dataRoot, 'ws_demo');
+        const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
           applyScopedMigrations(db);
           // A real historical child proves base route ownership instead of opaque-child denial.
@@ -52,7 +56,7 @@ describe('retired host repository routes', () => {
             )
             .run(
               'gpr_retired',
-              'ws_demo',
+              'ws_00000000-0000-7000-8000-000000000001',
               'repo_default',
               'Historical vendor origin',
               'HEAD',
@@ -68,12 +72,15 @@ describe('retired host repository routes', () => {
           db.sqlite.close();
         }
       }
-      const response = await app.request(`/api/app/workspaces/ws_demo/repositories${suffix}`, {
-        method,
-        ...(method === 'GET'
-          ? {}
-          : { headers: { 'content-type': 'application/json' }, body: '{}' }),
-      });
+      const response = await app.request(
+        `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/repositories${suffix}`,
+        {
+          method,
+          ...(method === 'GET'
+            ? {}
+            : { headers: { 'content-type': 'application/json' }, body: '{}' }),
+        }
+      );
       expect(response.status).toBe(404);
       expect(await response.text()).toBe('404 Not Found');
     } finally {

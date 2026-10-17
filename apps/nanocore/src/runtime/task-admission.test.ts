@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
@@ -20,6 +19,8 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
@@ -56,10 +57,14 @@ it.each([
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
   const ws = store.createWorkspace('Task citations');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: ws.id, ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: ws.id,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   const db = openWorkspaceDb(root, ws.id);
   applyScopedMigrations(db);
-  const actor = { kind: 'local' as const, userId: 'user_local' };
+  const actor = { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' };
   const human = { actor };
   const services = { coreDb };
   const originalAuthorize = operationAuthorizer.authorizeWorkspace;
@@ -150,7 +155,7 @@ it.each([
             updatedAt: at,
           });
           store.createItem({
-            id: `it_user_${turnId}`,
+            id: testEntityId('it', `it_user_${turnId}`),
             workspaceId: ws.id,
             threadId: input.threadId,
             turnId,
@@ -357,7 +362,7 @@ it.each([
         agentId: 'test-worker',
         request,
       },
-      { callId: 'task', signal: new AbortController().signal }
+      { callId: 'task', toolOccurrence: 1, signal: new AbortController().signal }
     );
     expect(authorization).toHaveBeenCalledWith(
       coreDb,

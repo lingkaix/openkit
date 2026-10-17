@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath, readTurnFeedback } from './runtime/feedback.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
@@ -11,7 +12,9 @@ import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -20,13 +23,15 @@ const TOKEN_EXPIRY = '2999-01-01T00:00:00.000Z';
 
 type MemberActor = {
   readonly scope: 'workspace' | 'workspace-readonly' | 'server-admin';
-  readonly userId: 'user_local' | 'user_other';
+  readonly userId:
+    | 'usr_00000000-0000-7000-8000-000000000001'
+    | 'usr_00000000-0000-73d4-904a-d4c4b905df7c';
 };
 
 const READ_ACTORS: readonly MemberActor[] = [
-  { scope: 'workspace-readonly', userId: 'user_local' },
-  { scope: 'workspace-readonly', userId: 'user_other' },
-  { scope: 'server-admin', userId: 'user_local' },
+  { scope: 'workspace-readonly', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+  { scope: 'workspace-readonly', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+  { scope: 'server-admin', userId: 'usr_00000000-0000-7000-8000-000000000001' },
 ];
 
 /**
@@ -43,29 +48,29 @@ function createCoreAudienceFixture() {
   const workspace = store.createWorkspace('Team');
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: workspace.id,
   });
   const now = Date.now();
   coreDb.sqlite
     .prepare(
-      `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('user_other', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
+      `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.invalid', false, ?, ?, 'human', 'active', NULL)`
     )
     .run(now, now);
   coreDb.sqlite
     .prepare(
-      `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+      `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(workspace.id, STAMP, STAMP, STAMP);
   const own = assignAudience(
     store.createThread(workspace.id, 'local-private needle'),
     'private',
-    'user_local'
+    'usr_00000000-0000-7000-8000-000000000001'
   );
   const denied = assignAudience(
     store.createThread(workspace.id, 'other-private needle'),
     'private',
-    'user_other'
+    'usr_00000000-0000-73d4-904a-d4c4b905df7c'
   );
   const shared = assignAudience(store.createThread(workspace.id, 'shared needle'), 'workspace');
   const ownTurn = seedCompletedSurface(store, workspace.id, own, 'local-private');
@@ -73,7 +78,7 @@ function createCoreAudienceFixture() {
   const sharedTurn = seedCompletedSurface(store, workspace.id, shared, 'shared');
   const approvalTurn = store.createTurn(workspace.id, own.id, 'Approve private push', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const deniedApprovalTurn = store.createTurn(
     workspace.id,
@@ -81,14 +86,14 @@ function createCoreAudienceFixture() {
     'Approve other private push',
     {
       kind: 'user',
-      id: 'user_other',
+      id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     }
   );
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
   for (const [turn, requestId, requestItemId] of [
-    [approvalTurn, 'ap_local_private', 'it_ap_local_private'],
-    [deniedApprovalTurn, 'ap_other_private', 'it_ap_other_private'],
+    [approvalTurn, 'ap_local_private', 'it_00000000-0000-7e55-98df-414094b7707e'],
+    [deniedApprovalTurn, 'ap_other_private', 'it_00000000-0000-7b56-bcdb-1d8dc2f6af03'],
   ] as const) {
     store.createItem({
       id: requestItemId,
@@ -158,8 +163,8 @@ function createCoreAudienceFixture() {
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease_${approvalTurn.id}`,
-    agentSessionId: `as_${approvalTurn.id}`,
+    attemptId: testEntityId('attempt', `lease_${approvalTurn.id}`),
+    agentSessionId: testEntityId('as', `as_${approvalTurn.id}`),
     inputRef: `pkg_${approvalTurn.id}`,
     bindingRef: `binding_${approvalTurn.id}`,
     sessionCompatibilityKey: 'audience-fixture',
@@ -183,6 +188,7 @@ function createCoreAudienceFixture() {
       rmSync(dataRoot, { force: true, recursive: true });
     },
     coreDb,
+    dataRoot,
     denied,
     deniedApprovalTurn,
     deniedGate,
@@ -239,12 +245,12 @@ function seedCompletedSurface(
 ): ReturnType<FsStore['createTurn']> {
   const turn = store.createTurn(workspaceId, thread.id, `${label} needle`, {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   store.createItem({
     completedAt: STAMP,
     createdAt: STAMP,
-    id: `it_${label}`,
+    id: testEntityId('it', `it_${label}`),
     status: 'completed',
     text: `${label} needle content`,
     threadId: thread.id,
@@ -263,7 +269,7 @@ function seedCompletedSurface(
     data: {
       delta: `${label} needle content`,
       deltaKind: 'text-delta',
-      itemId: `it_${label}`,
+      itemId: testEntityId('it', `it_${label}`),
       itemType: 'assistant-message',
       type: 'item-delta',
     },
@@ -313,7 +319,7 @@ function bearer(
  * @returns Own and other-private Thread/Turn pair.
  */
 function audienceFor(fixture: AudienceFixture, userId: MemberActor['userId']) {
-  return userId === 'user_local'
+  return userId === 'usr_00000000-0000-7000-8000-000000000001'
     ? {
         denied: fixture.denied,
         deniedTurn: fixture.deniedTurn,
@@ -347,6 +353,131 @@ async function expectNondisclosing404(
 }
 
 describe('core Thread audience', () => {
+  it('records the admitted Stop requester with exact lineage and preserves it on replay', async () => {
+    const fixture = createCoreAudienceFixture();
+    try {
+      const { app, coreDb, store, workspace, shared } = fixture;
+      const turn = store.createTurn(workspace.id, shared.id, 'Queued work', {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      });
+      createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_${turn.id}`,
+        requestId: randomUUID(),
+        workspaceId: workspace.id,
+        threadId: shared.id,
+        turnId: turn.id,
+        turnInput: 'Queued work',
+        requestedAgentId: 'agent_fixture',
+        triggerActor: turn.triggerActor,
+      });
+      const requestId = randomUUID();
+      const selectors = { workspaceId: workspace.id, threadId: shared.id, turnId: turn.id };
+      const stopper = bearer(
+        coreDb,
+        { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+        workspace.id
+      );
+      const response = await app.request(
+        ...operationRequest('turn.interrupt', selectors, {
+          headers: stopper,
+          body: JSON.stringify({ requestId }),
+        })
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toMatchObject({
+        id: turn.id,
+        status: 'cancelled',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      });
+      const read = () =>
+        app.request(
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: workspace.id },
+            { headers: stopper }
+          )
+        );
+      const first = await read();
+      expect(first.status).toBe(200);
+      const history = await first.json();
+      expect(history.auditEvents).toEqual([
+        expect.objectContaining({
+          action: 'turn.interrupt',
+          category: 'command',
+          outcome: 'succeeded',
+          actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+          ...selectors,
+          requestId,
+        }),
+      ]);
+      const replay = await app.request(
+        ...operationRequest('turn.interrupt', selectors, {
+          headers: bearer(
+            coreDb,
+            { scope: 'workspace', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            workspace.id
+          ),
+          body: JSON.stringify({ requestId }),
+        })
+      );
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      });
+      expect(await (await read()).json()).toEqual(history);
+      const rejected = await app.request(
+        ...operationRequest('turn.interrupt', selectors, {
+          headers: stopper,
+          body: JSON.stringify({ requestId: randomUUID() }),
+        })
+      );
+      expect(rejected.status).toBe(409);
+      expect(await (await read()).json()).toEqual(history);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('filters private interruption Audit history by the current exact Thread audience', async () => {
+    const fixture = createCoreAudienceFixture();
+    try {
+      const db = openWorkspaceDb(fixture.dataRoot, fixture.workspace.id);
+      const event = recordWorkspaceAuditEvent({
+        workspaceDb: db,
+        workspaceId: fixture.workspace.id,
+        threadId: fixture.own.id,
+        turnId: fixture.ownTurn.id,
+        requestId: randomUUID(),
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        action: 'turn.interrupt',
+        category: 'command',
+        outcome: 'succeeded',
+        summary: 'Stop request accepted.',
+      });
+      db.sqlite.close();
+      for (const [userId, visible] of [
+        ['usr_00000000-0000-7000-8000-000000000001', true],
+        ['usr_00000000-0000-73d4-904a-d4c4b905df7c', false],
+      ] as const) {
+        const response = await fixture.app.request(
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: fixture.workspace.id },
+            {
+              headers: bearer(fixture.coreDb, { scope: 'workspace', userId }, fixture.workspace.id),
+            }
+          )
+        );
+        expect(response.status).toBe(200);
+        expect((await response.json()).auditEvents).toEqual(visible ? [event] : []);
+      }
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('requires CoreDb server auth instead of the local implicit actor', async () => {
     const fixture = createCoreAudienceFixture();
     try {
@@ -525,12 +656,12 @@ describe('core Thread audience', () => {
     try {
       const member = bearer(
         fixture.coreDb,
-        { scope: 'workspace', userId: 'user_other' },
+        { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
         fixture.workspace.id
       );
       const admin = bearer(
         fixture.coreDb,
-        { scope: 'server-admin', userId: 'user_local' },
+        { scope: 'server-admin', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         fixture.workspace.id
       );
       const memberTurnsBefore = fixture.store.listThreadTurns(
@@ -681,12 +812,12 @@ describe('core Thread audience', () => {
     try {
       const owner = bearer(
         fixture.coreDb,
-        { scope: 'workspace', userId: 'user_local' },
+        { scope: 'workspace', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         fixture.workspace.id
       );
       const other = bearer(
         fixture.coreDb,
-        { scope: 'workspace', userId: 'user_other' },
+        { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
         fixture.workspace.id
       );
       const requestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -729,7 +860,7 @@ describe('core Thread audience', () => {
       expect([200, 201]).toContain(replay.status);
       expect(await replay.json()).toMatchObject({
         id: createdThread.id,
-        name: 'Owner private create',
+        name: createdThread.name,
       });
       const crossed = await ((input: Record<string, unknown>) =>
         fixture.app.request('/api/app/operations/thread.create', {

@@ -4,14 +4,14 @@
   "properties": {
     "id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
     "workspaceId": {
       "default": null,
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -27,7 +27,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -39,7 +39,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -51,7 +51,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -63,7 +63,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -75,7 +75,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -87,7 +87,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -121,7 +121,7 @@
                 },
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 }
               },
               "required": [
@@ -137,7 +137,6 @@
                   "type": "string",
                   "enum": [
                     "agent",
-                    "automation",
                     "integration",
                     "system"
                   ]
@@ -150,7 +149,37 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "automation"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -186,7 +215,7 @@
                 },
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 }
               },
               "required": [
@@ -202,7 +231,6 @@
                   "type": "string",
                   "enum": [
                     "agent",
-                    "automation",
                     "integration",
                     "system"
                   ]
@@ -215,7 +243,37 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "automation"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -254,7 +312,7 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1
+          "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -301,6 +359,232 @@
           "type": "null"
         }
       ]
+    },
+    "notebookAdmission": {
+      "type": "object",
+      "properties": {
+        "ownerScope": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "userId": {
+                  "type": "string",
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "required": [
+                "kind",
+                "userId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "workspace"
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "required": [
+                "kind",
+                "workspaceId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "server"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "inputDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "baseRevision": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidateRevision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "user"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "integration",
+                    "system"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "automation"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                "responsibleUserId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "responsibleUserId"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "authority": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "direct"
+                },
+                "instructionReference": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "instructionReference"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "proposal"
+                },
+                "proposalId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "proposalId"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "sourceReferences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "ownerScope",
+        "requestId",
+        "inputDigest",
+        "baseRevision",
+        "candidateRevision",
+        "producer",
+        "authority",
+        "sourceReferences"
+      ],
+      "additionalProperties": false
     },
     "outcome": {
       "type": "string",

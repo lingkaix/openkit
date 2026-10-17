@@ -15,11 +15,13 @@ import {
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
-  type KnowledgeRetrievalTrace,
-  KnowledgeRetrievalTraceReaderSchema,
+  type ProductRetrievalTrace,
+  ProductRetrievalTraceReaderSchema,
 } from '@openkit/app-api-schemas';
 import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import type { z } from 'zod';
+import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
+import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
@@ -36,7 +38,7 @@ const ConflictRowSchema = KnowledgeConflictSchema.strict();
 const ObservationReaderSchema = ObservationRowSchema.strip();
 const ClaimReaderSchema = ClaimRowSchema.strip();
 const ConflictReaderSchema = ConflictRowSchema.strip();
-const RetrievalTraceReaderSchema = KnowledgeRetrievalTraceReaderSchema;
+const RetrievalTraceReaderSchema = ProductRetrievalTraceReaderSchema;
 const retainedLedgerRow = Symbol('retainedKnowledgeLedgerRow');
 
 /** Keeps owned source annotations separate from the normalized Knowledge read model. */
@@ -60,6 +62,8 @@ function serializeRetainedLedgerRow(row: unknown): string {
 
 /** Authoritative file-backed workspace state that is portable but not owned by canonical protocol records. */
 export interface WorkspacePortableFileState {
+  /** Immutable imported source history; never interpreted as target schedule authority. */
+  readonly recurringHistory?: string | null;
   /** Observation rows grouped by canonical ledger month in append order. */
   readonly observations: ReadonlyMap<string, readonly z.infer<typeof ObservationRowSchema>[]>;
   /** Claim rows grouped by canonical ledger month in append order. */
@@ -67,11 +71,13 @@ export interface WorkspacePortableFileState {
   /** Complete conflict append history grouped by canonical ledger month. */
   readonly conflicts: ReadonlyMap<string, readonly z.infer<typeof ConflictRowSchema>[]>;
   /** Immutable query-owned retrieval traces keyed by canonical Workspace-relative path. */
-  readonly retrievalTraceFiles: ReadonlyMap<string, KnowledgeRetrievalTrace>;
+  readonly retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>;
   /** Exact workspace configuration text, or null when absent. */
   readonly workspaceConfig: string | null;
   /** Exact workspace knowledge schema text, or null when absent. */
   readonly workspaceSchema: string | null;
+  /** One source published commit; archive provenance only, never a target permission. */
+  readonly notebookRevision?: string;
   /** Exact portable OKF page text keyed by workspace-relative path. */
   readonly nativeKnowledgePages: ReadonlyMap<string, string>;
   /** Turn-owned worker Context Package traces and exact worker-visible text files. */
@@ -226,14 +232,17 @@ export function readWorkspacePortableFileState(
   const root = resolve(workspaceRoot);
 
   assertCanonicalDirectory(root);
+  const recurringHistory = readOptionalText(root, 'imports/recurrence-history.json');
+  if (recurringHistory !== null) validateRecurringPortableHistory(recurringHistory);
   return {
+    recurringHistory,
     observations: readWorkspaceKnowledgeObservationLedger(root),
     claims: readWorkspaceKnowledgeClaimLedger(root),
     conflicts: readWorkspaceKnowledgeConflictLedger(root),
     retrievalTraceFiles: readWorkspaceRetrievalTraceFiles(root, owners),
     workspaceConfig: readOptionalText(root, 'config/workspace.jsonc'),
-    workspaceSchema: readOptionalText(root, 'knowledge/schema/workspace-schema.yaml'),
-    nativeKnowledgePages: readNativeKnowledgePages(root),
+    workspaceSchema: readOptionalText(root, 'knowledge/schema/scope-schema.yaml'),
+    ...readPortableWorkspaceNotebookPages(root),
     workerContextPackageFiles: readWorkerContextPackageFiles(root, owners.turns),
   };
 }
@@ -252,6 +261,10 @@ export function writeWorkspacePortableFileState(
   const root = resolve(workspaceRoot);
 
   assertCanonicalDirectory(root);
+  if (state.recurringHistory != null) {
+    validateRecurringPortableHistory(state.recurringHistory);
+    writeText(root, 'imports/recurrence-history.json', state.recurringHistory, false);
+  }
   writeMonthlyLedger(
     root,
     'knowledge/observations',
@@ -277,9 +290,8 @@ export function writeWorkspacePortableFileState(
     writeText(root, 'config/workspace.jsonc', state.workspaceConfig, false);
   }
   if (state.workspaceSchema !== null) {
-    writeText(root, 'knowledge/schema/workspace-schema.yaml', state.workspaceSchema, true);
+    writeText(root, 'knowledge/schema/scope-schema.yaml', state.workspaceSchema, true);
   }
-  writeTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/', true);
   writeWorkspaceRetrievalTraceFiles(root, state.retrievalTraceFiles);
   assertWorkerContextPackageFiles(state.workerContextPackageFiles);
   writeTextMap(root, state.workerContextPackageFiles, 'threads/', false);
@@ -334,7 +346,7 @@ export function writeWorkspacePortableExportState(
   if (state.workspaceSchema !== null) {
     writeText(
       root,
-      'workspace-files/knowledge/schema/workspace-schema.yaml',
+      'workspace-files/knowledge/schema/scope-schema.yaml',
       state.workspaceSchema,
       false
     );
@@ -502,19 +514,12 @@ function readOptionalText(root: string, relativePath: string): string | null {
   return lstatSync(path, { throwIfNoEntry: false }) ? readCanonicalTextFile(path) : null;
 }
 
-/** Reads every portable OKF page, including exact canonical openkit_entry_id pages. */
-function readNativeKnowledgePages(root: string): ReadonlyMap<string, string> {
-  return new Map(
-    [...readTextTree(root, 'knowledge/pages', true)].filter(([path]) => path.endsWith('.md'))
-  );
-}
-
 /** Parses one query-owned trace file and binds its body to its canonical Workspace-relative path. */
 export function parseWorkspaceRetrievalTraceFile(
   relativePath: string,
   text: string,
   expectedWorkspaceId: string
-): { readonly reference: RetrievalTraceReference; readonly trace: KnowledgeRetrievalTrace } {
+): { readonly reference: RetrievalTraceReference; readonly trace: ProductRetrievalTrace } {
   safeRelativeSegments(relativePath);
   const turnMatch = /^threads\/([^/]+)\/turns\/([^/]+)\/retrieval-traces\/([^/]+)\.json$/.exec(
     relativePath
@@ -535,7 +540,7 @@ export function parseWorkspaceRetrievalTraceFile(
 }
 
 /** Serializes only normalized trace evidence; ignored additions cannot enter export or import. */
-export function serializeWorkspaceRetrievalTrace(trace: KnowledgeRetrievalTrace): string {
+export function serializeWorkspaceRetrievalTrace(trace: ProductRetrievalTrace): string {
   return `${JSON.stringify(RetrievalTraceReaderSchema.parse(trace))}\n`;
 }
 
@@ -543,7 +548,7 @@ export function serializeWorkspaceRetrievalTrace(trace: KnowledgeRetrievalTrace)
 function readWorkspaceRetrievalTraceFiles(
   root: string,
   owners: WorkspacePortableOwnerGraph
-): ReadonlyMap<string, KnowledgeRetrievalTrace> {
+): ReadonlyMap<string, ProductRetrievalTrace> {
   if (workspaceDirectory(root, 'knowledge/traces', false)) {
     throw new Error('The retired Knowledge retrieval trace ledger is unsupported.');
   }
@@ -559,7 +564,7 @@ function readWorkspaceRetrievalTraceFiles(
   if (knownThreads.size !== owners.threads.length || knownTurns.size !== owners.turns.length) {
     throw new Error('Portable retrieval trace owners must be unique.');
   }
-  const files = new Map<string, KnowledgeRetrievalTrace>();
+  const files = new Map<string, ProductRetrievalTrace>();
   const threadsDirectory = workspaceDirectory(root, 'threads', false);
   if (!threadsDirectory) return files;
 
@@ -611,7 +616,7 @@ function readRetrievalTraceDirectory(
   root: string,
   relativeDirectory: string,
   workspaceId: string,
-  files: Map<string, KnowledgeRetrievalTrace>
+  files: Map<string, ProductRetrievalTrace>
 ): void {
   const directory = workspaceDirectory(root, relativeDirectory, false);
   if (!directory) return;
@@ -645,7 +650,7 @@ function readRetrievalTraceDirectory(
 /** Writes reminted trace files into an unpublished staging Workspace. */
 function writeWorkspaceRetrievalTraceFiles(
   root: string,
-  files: ReadonlyMap<string, KnowledgeRetrievalTrace>
+  files: ReadonlyMap<string, ProductRetrievalTrace>
 ): void {
   for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
     const text = serializeWorkspaceRetrievalTrace(trace);
@@ -664,7 +669,7 @@ function writeWorkspaceRetrievalTraceFiles(
 /** Writes admitted trace files under the portable export namespace. */
 function writeWorkspaceRetrievalTraceExportFiles(
   root: string,
-  files: ReadonlyMap<string, KnowledgeRetrievalTrace>
+  files: ReadonlyMap<string, ProductRetrievalTrace>
 ): void {
   for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
     const text = serializeWorkspaceRetrievalTrace(trace);

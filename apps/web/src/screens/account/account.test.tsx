@@ -34,12 +34,12 @@ const PRODUCT_WORKSPACES = {
       membershipRevision: 1,
       membershipStatus: 'active' as const,
       accessCause: 'membership' as const,
-      ownerUserId: 'user-owner',
+      ownerUserId: 'usr_00000000-0000-7108-840f-833c46c69722',
       registryRevision: 1,
       workspace: {
         counts: { artifactCount: 0, knowledgeEntryCount: 0, threadCount: 0 },
         createdAt: '2026-08-04T00:00:00.000Z',
-        id: 'ws1',
+        id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         kind: 'general' as const,
         name: 'Authorized Workspace',
         status: 'active' as const,
@@ -56,7 +56,7 @@ const OWNER_WORKSPACES = {
       registryRevision: 4,
       workspace: {
         ...PRODUCT_WORKSPACES.items[0].workspace,
-        id: 'ws2',
+        id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
         name: 'Other Authorized Workspace',
       },
     },
@@ -88,23 +88,23 @@ const OWNER_MEMBER = {
   revision: 7,
   status: 'active' as const,
   updatedAt: MEMBER_UPDATED_AT,
-  userId: 'user-owner',
-  workspaceId: 'ws1',
+  userId: 'usr_00000000-0000-7108-840f-833c46c69722',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
 };
 const EDITOR_MEMBER = {
   ...OWNER_MEMBER,
   effectiveRole: 'editor' as const,
-  invitationId: 'inv-editor',
+  invitationId: 'inv_00000000-0000-7b2a-b999-6408d4c97a4b',
   revision: 11,
-  userId: 'user-editor',
+  userId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
 };
 const VIEWER_MEMBER = {
   ...OWNER_MEMBER,
   accessLevel: 'viewer' as const,
   effectiveRole: 'viewer' as const,
-  invitationId: 'inv-viewer',
+  invitationId: 'inv_00000000-0000-7958-9e91-ddbb89c5728d',
   revision: 13,
-  userId: 'user-viewer',
+  userId: 'usr_00000000-0000-74e6-acb7-da1cb380abb8',
 };
 const REMOVED_MEMBER = {
   ...VIEWER_MEMBER,
@@ -112,78 +112,78 @@ const REMOVED_MEMBER = {
   removedAt: MEMBER_UPDATED_AT,
   revision: 15,
   status: 'removed' as const,
-  userId: 'user-removed',
+  userId: 'usr_00000000-0000-7426-baf1-cae1728c9fe4',
 };
 const INVITATION_BASE = {
   acceptedAt: null,
   createdAt: MEMBER_CREATED_AT,
   declinedAt: null,
   expiresAt: '2026-08-11T00:00:00.000Z',
-  inviterUserId: 'user-owner',
+  inviterUserId: 'usr_00000000-0000-7108-840f-833c46c69722',
   proposedAccessLevel: 'editor' as const,
   revokedAt: null,
   updatedAt: MEMBER_UPDATED_AT,
-  workspaceId: 'ws1',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
 };
 const PENDING_INVITATION = {
   ...INVITATION_BASE,
   effectiveStatus: 'pending' as const,
-  invitationId: 'inv-pending',
-  inviteeUserId: 'user-invitee-pending',
+  invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6',
+  inviteeUserId: 'usr_00000000-0000-7be5-be91-ebcf883846d3',
   revision: 21,
 };
 const EXPIRED_INVITATION = {
   ...INVITATION_BASE,
   effectiveStatus: 'expired' as const,
   expiresAt: '2026-08-03T00:00:00.000Z',
-  invitationId: 'inv-expired',
-  inviteeUserId: 'user-invitee-expired',
+  invitationId: 'inv_00000000-0000-7200-9e49-99d12016e248',
+  inviteeUserId: 'usr_00000000-0000-74c2-b2fa-49fd40fecb55',
   revision: 22,
 };
 const ACCEPTED_INVITATION = {
   ...INVITATION_BASE,
   acceptedAt: MEMBER_UPDATED_AT,
   effectiveStatus: 'accepted' as const,
-  invitationId: 'inv-accepted',
-  inviteeUserId: 'user-invitee-accepted',
+  invitationId: 'inv_00000000-0000-73d5-8883-68984be5c068',
+  inviteeUserId: 'usr_00000000-0000-75a4-8b6b-ecda2858c76b',
   revision: 23,
 };
 const DECLINED_INVITATION = {
   ...INVITATION_BASE,
   declinedAt: MEMBER_UPDATED_AT,
   effectiveStatus: 'declined' as const,
-  invitationId: 'inv-declined',
-  inviteeUserId: 'user-invitee-declined',
+  invitationId: 'inv_00000000-0000-741b-be57-ac59dcb4c144',
+  inviteeUserId: 'usr_00000000-0000-7c16-987e-c81761317b14',
   revision: 24,
 };
 const REVOKED_INVITATION = {
   ...INVITATION_BASE,
   effectiveStatus: 'revoked' as const,
-  invitationId: 'inv-revoked',
-  inviteeUserId: 'user-invitee-revoked',
+  invitationId: 'inv_00000000-0000-761f-bf00-02a79479c1c7',
+  inviteeUserId: 'usr_00000000-0000-7539-8975-aa5d6a2986a3',
   revision: 25,
   revokedAt: MEMBER_UPDATED_AT,
 };
 const OTHER_PENDING_INVITATION = {
   ...PENDING_INVITATION,
-  invitationId: 'inv-other-pending',
-  inviteeUserId: 'user-invitee-other',
+  invitationId: 'inv_00000000-0000-730b-a570-64a499d07ce1',
+  inviteeUserId: 'usr_00000000-0000-774d-86e8-0c5d545a5607',
   revision: 31,
-  workspaceId: 'ws2',
+  workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
 };
 const JOINED_PENDING_INVITATION = {
   ...PENDING_INVITATION,
-  invitationId: 'inv-joined-ws7',
-  inviteeUserId: 'user-invitee-joined',
+  invitationId: 'inv_00000000-0000-776b-9caf-896b92d6ba1a',
+  inviteeUserId: 'usr_00000000-0000-7f3d-84cb-611d8086f626',
   revision: 41,
-  workspaceId: 'ws_7',
+  workspaceId: 'ws_00000000-0000-7174-8fab-67fae8e1decb',
 };
 const UNKNOWN_PENDING_INVITATION = {
   ...PENDING_INVITATION,
-  invitationId: 'inv-unknown-nonmember',
-  inviteeUserId: 'user-invitee-unknown',
+  invitationId: 'inv_00000000-0000-7110-ac53-c7c8b09ff7a4',
+  inviteeUserId: 'usr_00000000-0000-7b01-8ae8-2880c9773487',
   revision: 42,
-  workspaceId: 'ws_unknown',
+  workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa',
 };
 const JOINED_WORKSPACES = {
   items: [
@@ -191,7 +191,7 @@ const JOINED_WORKSPACES = {
       ...NON_OWNER_WORKSPACES.items[0],
       workspace: {
         ...PRODUCT_WORKSPACES.items[0].workspace,
-        id: 'ws_7',
+        id: 'ws_00000000-0000-7174-8fab-67fae8e1decb',
         name: 'Team Seven',
       },
     },
@@ -200,11 +200,11 @@ const JOINED_WORKSPACES = {
 const SELF_REMOVED_MEMBER = {
   ...EDITOR_MEMBER,
   effectiveRole: null,
-  invitationId: 'inv-current-user',
+  invitationId: 'inv_00000000-0000-78ae-a7e0-8c4d9c853643',
   removedAt: MEMBER_UPDATED_AT,
   revision: 18,
   status: 'removed' as const,
-  userId: 'user-current',
+  userId: 'usr_00000000-0000-732c-ad36-35686dc3d29f',
 };
 const WORKSPACE_MEMBERS = {
   items: [OWNER_MEMBER, EDITOR_MEMBER, VIEWER_MEMBER, REMOVED_MEMBER],
@@ -232,7 +232,7 @@ const AUTH_USER = {
   createdAt: '2026-08-04T00:00:00.000Z',
   email: RESPONSE_EMAIL,
   emailVerified: true,
-  id: 'user-response',
+  id: 'usr_00000000-0000-7f98-bf6c-5e0b4f463bc6',
   name: 'Response User',
   updatedAt: '2026-08-04T00:00:00.000Z',
 };
@@ -1324,22 +1324,22 @@ describe('email/password session operations', () => {
   ] as const)('%s independently isolates My invitations before admission refetch on one QueryClient', async (operation) => {
     const actorAInvitation = {
       ...PENDING_INVITATION,
-      invitationId: 'inv-actor-a-only',
-      inviteeUserId: 'user-actor-a-only',
-      workspaceId: 'ws-actor-a-only',
+      invitationId: 'inv_00000000-0000-7b87-a43d-43110c5af97d',
+      inviteeUserId: 'usr_00000000-0000-754f-a2d3-9b6be9284dc4',
+      workspaceId: 'ws_00000000-0000-7722-a92c-91dbcdd3cc2b',
     };
     const actorBInvitation = {
       ...PENDING_INVITATION,
-      invitationId: 'inv-actor-b-only',
-      inviteeUserId: 'user-actor-b-only',
-      workspaceId: 'ws-actor-b-only',
+      invitationId: 'inv_00000000-0000-7a8c-af79-5ac14b8eeadc',
+      inviteeUserId: 'usr_00000000-0000-706e-9d8d-e7df35cc2ab2',
+      workspaceId: 'ws_00000000-0000-7d56-970a-929068c925db',
     };
     const actorAValues = [
       actorAInvitation.invitationId,
       actorAInvitation.inviteeUserId,
       actorAInvitation.workspaceId,
-      'ws-actor-a-cached-catalog',
-      'user-actor-a-dashboard-viewer',
+      'ws_00000000-0000-78af-bc8c-cfa7324da1ab',
+      'usr_00000000-0000-7ff3-9f32-dc25d3615313',
       'actor-a-only-outward-activity',
     ];
     const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
@@ -1393,31 +1393,40 @@ describe('email/password session operations', () => {
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
     queryClient.setQueryData(unrelatedKey, unrelatedValue);
-    queryClient.setQueryData(['workspaces'], [{ id: 'ws-actor-a-cached-catalog' }]);
-    queryClient.setQueryData(['workspaces', 'summaries'], [{ ownerUserId: 'user-actor-a-only' }]);
-    queryClient.setQueryData(['account', 'session-user'], 'user-actor-a-only');
-    queryClient.setQueryData(['thread-dashboard', 'ws1', 'th1'], {
-      viewerUserId: 'user-actor-a-dashboard-viewer',
-      participants: [],
-      runtimeActivity: [
-        {
-          turnId: 'tu_actor_a',
-          contentCapture: 'on',
-          coverage: 'partial',
-          omittedEntryCount: 0,
-          entries: [
-            {
-              sequence: 1,
-              observedAt: '2026-09-22T00:00:00.000Z',
-              kind: 'result',
-              text: 'actor-a-only-outward-activity',
-              textTruncated: false,
-            },
-          ],
-        },
-      ],
-    });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws-actor-a-cached-catalog' });
+    queryClient.setQueryData(['workspaces'], [{ id: 'ws_00000000-0000-78af-bc8c-cfa7324da1ab' }]);
+    queryClient.setQueryData(
+      ['workspaces', 'summaries'],
+      [{ ownerUserId: 'usr_00000000-0000-754f-a2d3-9b6be9284dc4' }]
+    );
+    queryClient.setQueryData(
+      ['account', 'session-user'],
+      'usr_00000000-0000-754f-a2d3-9b6be9284dc4'
+    );
+    queryClient.setQueryData(
+      ['thread-dashboard', 'ws_00000000-0000-7b10-9af8-12fd37a880e0', 'th1'],
+      {
+        viewerUserId: 'usr_00000000-0000-7ff3-9f32-dc25d3615313',
+        participants: [],
+        runtimeActivity: [
+          {
+            turnId: 'tu_00000000-0000-7ac2-90bc-b76f463334e2',
+            contentCapture: 'on',
+            coverage: 'partial',
+            omittedEntryCount: 0,
+            entries: [
+              {
+                sequence: 1,
+                observedAt: '2026-09-22T00:00:00.000Z',
+                kind: 'result',
+                text: 'actor-a-only-outward-activity',
+                textTruncated: false,
+              },
+            ],
+          },
+        ],
+      }
+    );
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-78af-bc8c-cfa7324da1ab' });
     const guards = guardSensitiveSinks(actorAValues);
     const unrelatedQuery = queryClient
       .getQueryCache()
@@ -1434,7 +1443,9 @@ describe('email/password session operations', () => {
       );
     const actorAView = mountHarness();
 
-    await screen.findByText(/inv-actor-a-only.*user-actor-a-only.*ws-actor-a-only/i);
+    await screen.findByText(
+      /inv_00000000-0000-7b87-a43d-43110c5af97d.*usr_00000000-0000-754f-a2d3-9b6be9284dc4.*ws_00000000-0000-7722-a92c-91dbcdd3cc2b/i
+    );
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
     for (const actorAValue of actorAValues) {
       expect(retainedAccountSurfaces(queryClient, guards)).toContain(actorAValue);
@@ -1472,7 +1483,9 @@ describe('email/password session operations', () => {
 
     actorBMountStarted = true;
     mountHarness();
-    await screen.findByText(/inv-actor-b-only.*user-actor-b-only.*ws-actor-b-only/i);
+    await screen.findByText(
+      /inv_00000000-0000-7a8c-af79-5ac14b8eeadc.*usr_00000000-0000-706e-9d8d-e7df35cc2ab2.*ws_00000000-0000-7d56-970a-929068c925db/i
+    );
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
     expect(actorBReadStartedAfterMount).toBe(true);
     expect(queryClient.getQueryCache().find({ exact: true, queryKey: unrelatedKey })).toBe(
@@ -1495,9 +1508,9 @@ describe('email/password session operations', () => {
   )('%s removes only the settled My-invitation %s mutation before admission refetch', async (operation, decisionOutcome) => {
     const actorAInvitation = {
       ...PENDING_INVITATION,
-      invitationId: 'inv-actor-a-decision',
-      inviteeUserId: 'user-actor-a-decision',
-      workspaceId: 'ws-actor-a-decision',
+      invitationId: 'inv_00000000-0000-770d-9f70-2e25f1e20157',
+      inviteeUserId: 'usr_00000000-0000-71af-b726-a4a47581cdb1',
+      workspaceId: 'ws_00000000-0000-778d-8646-db72befa34f6',
     };
     const actorASettled = {
       ...actorAInvitation,
@@ -1507,9 +1520,9 @@ describe('email/password session operations', () => {
     };
     const actorBInvitation = {
       ...PENDING_INVITATION,
-      invitationId: 'inv-actor-b-decision',
-      inviteeUserId: 'user-actor-b-decision',
-      workspaceId: 'ws-actor-b-decision',
+      invitationId: 'inv_00000000-0000-7c75-a340-c02f9717d692',
+      inviteeUserId: 'usr_00000000-0000-790b-8ffe-f5509f5ff9e9',
+      workspaceId: 'ws_00000000-0000-760a-be30-3eb166082eed',
     };
     const actorAValues = [
       actorAInvitation.invitationId,
@@ -1572,7 +1585,9 @@ describe('email/password session operations', () => {
         </QueryClientProvider>
       );
     const actorAView = mountHarness();
-    await screen.findByText(/inv-actor-a-decision.*user-actor-a-decision.*ws-actor-a-decision/i);
+    await screen.findByText(
+      /inv_00000000-0000-770d-9f70-2e25f1e20157.*usr_00000000-0000-71af-b726-a4a47581cdb1.*ws_00000000-0000-778d-8646-db72befa34f6/i
+    );
     await userEvent.click(screen.getByRole('button', { name: 'settle invitation decision' }));
     await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(1));
     const decisionMutation = await waitFor(() => {
@@ -1632,7 +1647,9 @@ describe('email/password session operations', () => {
 
     actorBMountStarted = true;
     mountHarness();
-    await screen.findByText(/inv-actor-b-decision.*user-actor-b-decision.*ws-actor-b-decision/i);
+    await screen.findByText(
+      /inv_00000000-0000-7c75-a340-c02f9717d692.*usr_00000000-0000-790b-8ffe-f5509f5ff9e9.*ws_00000000-0000-760a-be30-3eb166082eed/i
+    );
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
     expect(actorBReadStartedAfterMount).toBe(true);
     expect(queryClient.getMutationCache().getAll()).toContain(unrelatedMutation);
@@ -1650,9 +1667,9 @@ describe('email/password session operations', () => {
   )('%s detaches a pending My-invitation mutation through late %s settlement', async (operation, decisionOutcome) => {
     const actorAInvitation = {
       ...PENDING_INVITATION,
-      invitationId: 'inv-actor-a-pending',
-      inviteeUserId: 'user-actor-a-pending',
-      workspaceId: 'ws-actor-a-pending',
+      invitationId: 'inv_00000000-0000-7357-b6d9-17d13db784a2',
+      inviteeUserId: 'usr_00000000-0000-76c0-a71e-a4adac054a50',
+      workspaceId: 'ws_00000000-0000-7d62-a07c-c544c1e4e1eb',
     };
     const actorASettled = {
       ...actorAInvitation,
@@ -1662,9 +1679,9 @@ describe('email/password session operations', () => {
     };
     const actorBInvitation = {
       ...PENDING_INVITATION,
-      invitationId: 'inv-actor-b-pending',
-      inviteeUserId: 'user-actor-b-pending',
-      workspaceId: 'ws-actor-b-pending',
+      invitationId: 'inv_00000000-0000-7061-b221-49e0c19ef2b2',
+      inviteeUserId: 'usr_00000000-0000-7c9c-b1a5-dce445bd2166',
+      workspaceId: 'ws_00000000-0000-7b7d-b55e-92dd4c91d877',
     };
     const actorAValues = [
       actorAInvitation.invitationId,
@@ -1791,7 +1808,9 @@ describe('email/password session operations', () => {
         </QueryClientProvider>
       );
     const actorAView = mountHarness();
-    await screen.findByText(/inv-actor-a-pending.*user-actor-a-pending.*ws-actor-a-pending/i);
+    await screen.findByText(
+      /inv_00000000-0000-7357-b6d9-17d13db784a2.*usr_00000000-0000-76c0-a71e-a4adac054a50.*ws_00000000-0000-7d62-a07c-c544c1e4e1eb/i
+    );
     const invitationsQuery = queryClient
       .getQueryCache()
       .getAll()
@@ -1873,7 +1892,9 @@ describe('email/password session operations', () => {
     actorAView.unmount();
     actorBMountStarted = true;
     mountHarness();
-    await screen.findByText(/inv-actor-b-pending.*user-actor-b-pending.*ws-actor-b-pending/i);
+    await screen.findByText(
+      /inv_00000000-0000-7061-b221-49e0c19ef2b2.*usr_00000000-0000-7c9c-b1a5-dce445bd2166.*ws_00000000-0000-7b7d-b55e-92dd4c91d877/i
+    );
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
     expect(actorBReadStartedAfterMount).toBe(true);
     expect(queryClient.getMutationCache().getAll()).not.toContain(decisionMutation);
@@ -1894,41 +1915,57 @@ describe('selected-Workspace owner management', () => {
     const listWorkspaceInvitations = vi.fn().mockReturnValue(invitationRead.promise);
     const { client, forbidden, methods } = makeSharingClient({
       coreWorkspaces: [
-        { id: 'ws1', name: 'Authorized Workspace' },
-        { id: 'ws2', name: 'Other Authorized Workspace' },
+        { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Authorized Workspace' },
+        { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Other Authorized Workspace' },
       ],
       methods: { listWorkspaceInvitations, listWorkspaceMembers },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { container } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
     expect(screen.getByRole('status', { name: /workspace members/i })).toBeInTheDocument();
     expect(screen.getByRole('status', { name: /workspace invitations/i })).toBeInTheDocument();
-    expect(listWorkspaceMembers.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
-    expect(listWorkspaceInvitations.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
+    expect(listWorkspaceMembers.mock.calls).toEqual([
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+    ]);
+    expect(listWorkspaceInvitations.mock.calls).toEqual([
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+    ]);
     memberRead.resolve(WORKSPACE_MEMBERS);
     invitationRead.resolve(WORKSPACE_INVITATIONS);
 
     await waitFor(() => {
       expect(
         within(screen.getByRole('region', { name: 'Workspace members' })).getByRole('row', {
-          name: /user-owner.*owner/i,
+          name: /usr_00000000-0000-7108-840f-833c46c69722.*owner/i,
         })
       ).toBeInTheDocument();
       expect(
         within(screen.getByRole('region', { name: 'Workspace invitations' })).getByRole('row', {
-          name: /user-invitee-pending.*pending/i,
+          name: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
         })
       ).toBeInTheDocument();
     });
     const members = screen.getByRole('region', { name: 'Workspace members' });
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
-    expect(within(members).getByRole('row', { name: /user-owner.*owner/i })).toBeInTheDocument();
-    expect(within(members).getByRole('row', { name: /user-editor.*editor/i })).toBeInTheDocument();
-    expect(within(members).getByRole('row', { name: /user-viewer.*viewer/i })).toBeInTheDocument();
     expect(
-      within(members).getByRole('row', { name: /user-removed.*removed/i })
+      within(members).getByRole('row', { name: /usr_00000000-0000-7108-840f-833c46c69722.*owner/i })
+    ).toBeInTheDocument();
+    expect(
+      within(members).getByRole('row', {
+        name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(members).getByRole('row', {
+        name: /usr_00000000-0000-74e6-acb7-da1cb380abb8.*viewer/i,
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(members).getByRole('row', {
+        name: /usr_00000000-0000-7426-baf1-cae1728c9fe4.*removed/i,
+      })
     ).toBeInTheDocument();
     for (const invitation of WORKSPACE_INVITATIONS.items) {
       expect(
@@ -1937,24 +1974,30 @@ describe('selected-Workspace owner management', () => {
         })
       ).toBeInTheDocument();
     }
-    expect(within(members).getByRole('row', { name: /user-owner.*owner/i })).not.toHaveTextContent(
-      /remove|leave/i
-    );
+    expect(
+      within(members).getByRole('row', { name: /usr_00000000-0000-7108-840f-833c46c69722.*owner/i })
+    ).not.toHaveTextContent(/remove|leave/i);
     const user = userEvent.setup();
     await expectNoRowAction(
       user,
-      within(members).getByRole('row', { name: /user-owner.*owner/i }),
+      within(members).getByRole('row', {
+        name: /usr_00000000-0000-7108-840f-833c46c69722.*owner/i,
+      }),
       /change access|remove member|transfer ownership/i
     );
     await expectNoRowAction(
       user,
-      within(members).getByRole('row', { name: /user-removed.*removed/i }),
+      within(members).getByRole('row', {
+        name: /usr_00000000-0000-7426-baf1-cae1728c9fe4.*removed/i,
+      }),
       /change access|remove member|transfer ownership/i
     );
     expect(
       await revealRowAction(
         user,
-        within(members).getByRole('row', { name: /user-editor.*editor/i }),
+        within(members).getByRole('row', {
+          name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+        }),
         /transfer ownership/i
       )
     ).toBeEnabled();
@@ -1962,13 +2005,15 @@ describe('selected-Workspace owner management', () => {
     expect(
       await revealRowAction(
         user,
-        within(members).getByRole('row', { name: /user-viewer.*viewer/i }),
+        within(members).getByRole('row', {
+          name: /usr_00000000-0000-74e6-acb7-da1cb380abb8.*viewer/i,
+        }),
         /transfer ownership/i
       )
     ).toBeEnabled();
     await user.keyboard('{Escape}');
     const pending = within(invitations).getByRole('row', {
-      name: /user-invitee-pending.*pending/i,
+      name: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
     });
     expect(await revealRowAction(user, pending, /revoke invitation/i)).toBeEnabled();
     await user.keyboard('{Escape}');
@@ -1986,8 +2031,12 @@ describe('selected-Workspace owner management', () => {
         /revoke invitation/i
       );
     }
-    expect(listWorkspaceMembers.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
-    expect(listWorkspaceInvitations.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
+    expect(listWorkspaceMembers.mock.calls).toEqual([
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+    ]);
+    expect(listWorkspaceInvitations.mock.calls).toEqual([
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+    ]);
     expect(document.body.textContent).not.toMatch(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
     expect(methods.leaveWorkspace).not.toHaveBeenCalled();
@@ -2007,18 +2056,18 @@ describe('selected-Workspace owner management', () => {
       stableMethod: 'listWorkspaceMembers',
       stableRegion: 'Workspace members',
       stableResponse: { items: [OWNER_MEMBER] },
-      stableRow: /user-owner.*owner/i,
+      stableRow: /usr_00000000-0000-7108-840f-833c46c69722.*owner/i,
     },
     {
       empty: null,
       failedMethod: 'listWorkspaceMembers',
       failedRegion: 'Workspace members',
-      recoveredRow: /user-owner.*owner/i,
+      recoveredRow: /usr_00000000-0000-7108-840f-833c46c69722.*owner/i,
       retryResponse: { items: [OWNER_MEMBER] },
       stableMethod: 'listWorkspaceInvitations',
       stableRegion: 'Workspace invitations',
       stableResponse: WORKSPACE_INVITATIONS,
-      stableRow: /user-invitee-pending.*pending/i,
+      stableRow: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
     },
   ] as const)('retries only failed owner read $failedMethod and preserves the other collection', async ({
     empty,
@@ -2039,7 +2088,7 @@ describe('selected-Workspace owner management', () => {
     const { client } = makeSharingClient({
       methods: { [failedMethod]: failedRead, [stableMethod]: stableRead },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
@@ -2068,13 +2117,13 @@ describe('selected-Workspace owner management', () => {
     [
       'editor',
       { items: [{ ...OWNER_WORKSPACES.items[0], effectiveRole: 'editor' }] },
-      ['ws1'],
+      ['ws_00000000-0000-7b10-9af8-12fd37a880e0'],
       /current.*role.*editor|editor.*current.*role/i,
     ],
     [
       'viewer',
       { items: [{ ...OWNER_WORKSPACES.items[0], effectiveRole: 'viewer' }] },
-      ['ws1'],
+      ['ws_00000000-0000-7b10-9af8-12fd37a880e0'],
       /current.*role.*viewer|viewer.*current.*role/i,
     ],
     ['no selected Workspace', { items: [] }, [], /No Workspace selected/],
@@ -2105,14 +2154,14 @@ describe('selected-Workspace owner management', () => {
       ...OWNER_WORKSPACES.items[0],
       workspace: {
         ...OWNER_WORKSPACES.items[0].workspace,
-        id: 'ws_quick_chat_owner',
-        kind: 'quick-chat' as const,
+        id: 'ws_00000000-0000-77bd-b1bb-0f0c80265392',
+        kind: 'personal' as const,
         name: 'Quick Chat',
       },
     };
     const { client, methods } = makeSharingClient({
       authorizedWorkspaces: { items: [quickChat] },
-      coreWorkspaces: [{ id: quickChat.workspace.id, kind: 'quick-chat', name: 'Quick Chat' }],
+      coreWorkspaces: [{ id: quickChat.workspace.id, kind: 'personal', name: 'Quick Chat' }],
     });
     useWorkspaceStore.setState({ currentWorkspaceId: quickChat.workspace.id });
     renderApp('/settings/account', client);
@@ -2137,7 +2186,7 @@ describe('selected-Workspace owner management', () => {
     const invite = deferred<never>();
     const createWorkspaceInvitation = vi.fn().mockReturnValue(invite.promise);
     const { client, methods } = makeSharingClient({ methods: { createWorkspaceInvitation } });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
@@ -2164,7 +2213,7 @@ describe('selected-Workspace owner management', () => {
     await user.keyboard('{Enter}');
 
     expect(createWorkspaceInvitation).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       ...{
         inviteeEmail: EMAIL,
         proposedAccessLevel: accessLevel,
@@ -2202,20 +2251,22 @@ describe('selected-Workspace owner management', () => {
     const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
       methods: { changeWorkspaceMemberAccess, listWorkspaceMembers },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
-    const editor = await within(members).findByRole('row', { name: /user-editor.*editor/i });
+    const editor = await within(members).findByRole('row', {
+      name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+    });
     const user = userEvent.setup();
     const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
     const save = await chooseMemberAccess(user, editor, 'viewer');
     await user.click(save);
 
     expect(changeWorkspaceMemberAccess).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
-      targetUserId: 'user-editor',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      targetUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
       ...{
         accessLevel: 'viewer',
         expectedRevision: 11,
@@ -2230,7 +2281,9 @@ describe('selected-Workspace owner management', () => {
     const workspaceReads = listAuthorizedWorkspaces.mock.calls.length;
     mutation.resolve({ member: settledMember });
     expect(
-      await within(members).findByRole('row', { name: /user-editor.*viewer/i })
+      await within(members).findByRole('row', {
+        name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*viewer/i,
+      })
     ).toBeInTheDocument();
     expect(methods.listWorkspaceMembers.mock.calls.length).toBeLessThanOrEqual(memberReads + 1);
     expect(methods.listWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads);
@@ -2242,7 +2295,13 @@ describe('selected-Workspace owner management', () => {
     {
       action: /revoke invitation/i,
       applicableCollection: 'invitations',
-      expected: [{ workspaceId: 'ws1', invitationId: 'inv-pending', expectedRevision: 21 }],
+      expected: [
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6',
+          expectedRevision: 21,
+        },
+      ],
       method: 'revokeWorkspaceInvitation',
       response: {
         invitation: {
@@ -2252,16 +2311,23 @@ describe('selected-Workspace owner management', () => {
           revokedAt: MEMBER_UPDATED_AT,
         },
       },
-      row: /user-invitee-pending.*pending/i,
-      settlementIdentity: /user-invitee-pending/i,
+      row: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
+      settlementIdentity: /usr_00000000-0000-7be5-be91-ebcf883846d3/i,
       settlementState: /revoked/i,
       statusName: /workspace invitation operation/i,
-      statusState: /user-invitee-pending.*revoked|revoked.*user-invitee-pending/i,
+      statusState:
+        /usr_00000000-0000-7be5-be91-ebcf883846d3.*revoked|revoked.*usr_00000000-0000-7be5-be91-ebcf883846d3/i,
     },
     {
       action: /remove member/i,
       applicableCollection: 'members',
-      expected: [{ workspaceId: 'ws1', targetUserId: 'user-editor', expectedRevision: 11 }],
+      expected: [
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          targetUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
+          expectedRevision: 11,
+        },
+      ],
       method: 'removeWorkspaceMember',
       response: {
         member: {
@@ -2271,50 +2337,64 @@ describe('selected-Workspace owner management', () => {
           status: 'removed',
         },
       },
-      row: /user-editor.*editor/i,
-      settlementIdentity: /user-editor/i,
+      row: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+      settlementIdentity: /usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
       settlementState: /removed/i,
       statusName: /workspace member operation/i,
-      statusState: /user-editor.*removed|removed.*user-editor/i,
+      statusState:
+        /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*removed|removed.*usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
     },
     {
       action: /transfer ownership/i,
       applicableCollection: 'members',
-      expected: [{ workspaceId: 'ws1', expectedRegistryRevision: 9, targetUserId: 'user-editor' }],
+      expected: [
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          expectedRegistryRevision: 9,
+          targetUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
+        },
+      ],
       method: 'transferWorkspaceOwnership',
       response: {
         workspace: {
           ...OWNER_WORKSPACES.items[0],
           effectiveRole: 'editor' as const,
-          ownerUserId: 'user-editor',
+          ownerUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
           registryRevision: 10,
         },
       },
-      row: /user-editor.*editor/i,
-      settlementIdentity: /user-editor/i,
+      row: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+      settlementIdentity: /usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
       settlementState: /owner/i,
       statusName: /workspace ownership transfer/i,
-      statusState: /ownership transferred.*user-editor|user-editor.*owner/i,
+      statusState:
+        /ownership transferred.*usr_00000000-0000-7b55-a9d9-1852a5d31d88|usr_00000000-0000-7b55-a9d9-1852a5d31d88.*owner/i,
     },
     {
       action: /transfer ownership/i,
       applicableCollection: 'members',
-      expected: [{ workspaceId: 'ws1', expectedRegistryRevision: 9, targetUserId: 'user-viewer' }],
+      expected: [
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          expectedRegistryRevision: 9,
+          targetUserId: 'usr_00000000-0000-74e6-acb7-da1cb380abb8',
+        },
+      ],
       method: 'transferWorkspaceOwnership',
       response: {
         workspace: {
           ...OWNER_WORKSPACES.items[0],
           effectiveRole: 'editor' as const,
-          ownerUserId: 'user-viewer',
+          ownerUserId: 'usr_00000000-0000-74e6-acb7-da1cb380abb8',
           registryRevision: 10,
         },
       },
-      row: /user-viewer.*viewer/i,
-      settlementIdentity: /user-viewer/i,
+      row: /usr_00000000-0000-74e6-acb7-da1cb380abb8.*viewer/i,
+      settlementIdentity: /usr_00000000-0000-74e6-acb7-da1cb380abb8/i,
       settlementState: /owner.*editor|editor.*owner/i,
       statusName: /workspace ownership transfer/i,
       statusState:
-        /ownership transferred.*user-viewer.*editor|user-viewer.*owner.*editor|user-viewer.*editor.*owner/i,
+        /ownership transferred.*usr_00000000-0000-74e6-acb7-da1cb380abb8.*editor|usr_00000000-0000-74e6-acb7-da1cb380abb8.*owner.*editor|usr_00000000-0000-74e6-acb7-da1cb380abb8.*editor.*owner/i,
     },
   ] as const)('requires confirmation and sends the exact revision command once', async ({
     action,
@@ -2339,12 +2419,21 @@ describe('selected-Workspace owner management', () => {
               { ...OWNER_MEMBER, effectiveRole: 'editor' as const },
               {
                 ...EDITOR_MEMBER,
-                effectiveRole: targetUserId === 'user-editor' ? ('owner' as const) : 'editor',
+                effectiveRole:
+                  targetUserId === 'usr_00000000-0000-7b55-a9d9-1852a5d31d88'
+                    ? ('owner' as const)
+                    : 'editor',
               },
               {
                 ...VIEWER_MEMBER,
-                accessLevel: targetUserId === 'user-viewer' ? ('editor' as const) : 'viewer',
-                effectiveRole: targetUserId === 'user-viewer' ? ('owner' as const) : 'viewer',
+                accessLevel:
+                  targetUserId === 'usr_00000000-0000-74e6-acb7-da1cb380abb8'
+                    ? ('editor' as const)
+                    : 'viewer',
+                effectiveRole:
+                  targetUserId === 'usr_00000000-0000-74e6-acb7-da1cb380abb8'
+                    ? ('owner' as const)
+                    : 'viewer',
               },
               REMOVED_MEMBER,
             ]
@@ -2368,7 +2457,7 @@ describe('selected-Workspace owner management', () => {
         listWorkspaceMembers,
       },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
@@ -2428,19 +2517,21 @@ describe('selected-Workspace owner management', () => {
       workspace: {
         ...OWNER_WORKSPACES.items[0],
         effectiveRole: 'editor' as const,
-        ownerUserId: 'user-editor',
+        ownerUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
         registryRevision: 10,
       },
     });
     const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
       methods: { transferWorkspaceOwnership },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
-    const editor = await within(members).findByRole('row', { name: /user-editor.*editor/i });
+    const editor = await within(members).findByRole('row', {
+      name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+    });
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
     const email = (await within(invitations).findByRole('textbox', {
       name: /invitee email/i,
@@ -2456,10 +2547,10 @@ describe('selected-Workspace owner management', () => {
     await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
 
     expect(transferWorkspaceOwnership).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       ...{
         expectedRegistryRevision: 9,
-        targetUserId: 'user-editor',
+        targetUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
       },
     });
     expect(
@@ -2495,8 +2586,8 @@ describe('selected-Workspace owner management', () => {
     const guards = guardSensitiveSinks([EMAIL]);
     const created = {
       ...PENDING_INVITATION,
-      invitationId: 'inv-created',
-      inviteeUserId: 'user-created',
+      invitationId: 'inv_00000000-0000-7840-a756-95ca3f410ae4',
+      inviteeUserId: 'usr_00000000-0000-71b9-8dce-8e9132a71227',
     };
     const listWorkspaceInvitations = vi
       .fn()
@@ -2506,14 +2597,14 @@ describe('selected-Workspace owner management', () => {
     const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
       methods: { createWorkspaceInvitation, listWorkspaceInvitations },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
     const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
     expect(await within(invitations).findByText(/no invitations/i)).toBeInTheDocument();
     expect(
-      within(invitations).queryByRole('row', { name: /user-created/i })
+      within(invitations).queryByRole('row', { name: /usr_00000000-0000-71b9-8dce-8e9132a71227/i })
     ).not.toBeInTheDocument();
     const email = within(invitations).getByRole('textbox', {
       name: /invitee email/i,
@@ -2529,13 +2620,15 @@ describe('selected-Workspace owner management', () => {
     );
 
     expect(createWorkspaceInvitation).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       ...{
         inviteeEmail: EMAIL,
         proposedAccessLevel: 'editor',
       },
     });
-    expect(await within(invitations).findByText('user-created')).toBeInTheDocument();
+    expect(
+      await within(invitations).findByText('usr_00000000-0000-71b9-8dce-8e9132a71227')
+    ).toBeInTheDocument();
     expect(listWorkspaceInvitations.mock.calls.length).toBeLessThanOrEqual(invitationReads + 1);
     expect(methods.listWorkspaceMembers).toHaveBeenCalledTimes(memberReads);
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
@@ -2552,12 +2645,14 @@ describe('selected-Workspace owner management', () => {
     expect(parseWorkspaceSharingError(denial)?.code).toBe('workspace_access_denied');
     const changeWorkspaceMemberAccess = vi.fn().mockRejectedValue(denial);
     const { client, methods } = makeSharingClient({ methods: { changeWorkspaceMemberAccess } });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
     const members = screen.getByRole('region', { name: 'Workspace members' });
-    const editor = await within(members).findByRole('row', { name: /user-editor.*editor/i });
+    const editor = await within(members).findByRole('row', {
+      name: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+    });
     const user = userEvent.setup();
     const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
     await user.click(await chooseMemberAccess(user, editor, 'viewer'));
@@ -2565,8 +2660,8 @@ describe('selected-Workspace owner management', () => {
     expect(await within(members).findByRole('alert')).toHaveTextContent(/access denied/i);
     expect(changeWorkspaceMemberAccess).toHaveBeenCalledTimes(1);
     expect(changeWorkspaceMemberAccess).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
-      targetUserId: 'user-editor',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      targetUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
       ...{
         accessLevel: 'viewer',
         expectedRevision: 11,
@@ -2590,15 +2685,22 @@ describe('selected-Workspace owner management', () => {
           revokedAt: MEMBER_UPDATED_AT,
         },
       },
-      currentIdentity: /user-invitee-pending/i,
+      currentIdentity: /usr_00000000-0000-7be5-be91-ebcf883846d3/i,
       currentState: /revoked/i,
-      expectedCall: [{ workspaceId: 'ws1', invitationId: 'inv-pending', expectedRevision: 21 }],
+      expectedCall: [
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6',
+          expectedRevision: 21,
+        },
+      ],
       method: 'revokeWorkspaceInvitation',
       outcome: /not pending|revoked/i,
       precludedState: /revoked/i,
       region: 'Workspace invitations',
-      row: /user-invitee-pending.*pending/i,
-      statusState: /user-invitee-pending.*revoked|revoked.*user-invitee-pending/i,
+      row: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
+      statusState:
+        /usr_00000000-0000-7be5-be91-ebcf883846d3.*revoked|revoked.*usr_00000000-0000-7be5-be91-ebcf883846d3/i,
     },
     {
       action: /revoke invitation/i,
@@ -2608,55 +2710,74 @@ describe('selected-Workspace owner management', () => {
         current: { ...PENDING_INVITATION, revision: 99 },
       },
       currentEvidence: 'revision:99',
-      currentIdentity: /user-invitee-pending/i,
+      currentIdentity: /usr_00000000-0000-7be5-be91-ebcf883846d3/i,
       currentState: /pending/i,
-      expectedCall: [{ workspaceId: 'ws1', invitationId: 'inv-pending', expectedRevision: 21 }],
+      expectedCall: [
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6',
+          expectedRevision: 21,
+        },
+      ],
       method: 'revokeWorkspaceInvitation',
       outcome: /conflict|changed/i,
       precludedState: null,
       region: 'Workspace invitations',
-      row: /user-invitee-pending.*pending/i,
-      statusState: /user-invitee-pending.*pending|pending.*user-invitee-pending/i,
+      row: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
+      statusState:
+        /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending|pending.*usr_00000000-0000-7be5-be91-ebcf883846d3/i,
     },
     {
       action: /remove member/i,
       code: 'revision_conflict',
       currentEvidence: 'revision:98',
-      currentIdentity: /user-editor/i,
+      currentIdentity: /usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
       currentState: /editor/i,
       details: { resource: 'membership', current: { ...EDITOR_MEMBER, revision: 98 } },
-      expectedCall: [{ workspaceId: 'ws1', targetUserId: 'user-editor', expectedRevision: 11 }],
+      expectedCall: [
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          targetUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
+          expectedRevision: 11,
+        },
+      ],
       method: 'removeWorkspaceMember',
       outcome: /conflict|changed/i,
       precludedState: null,
       region: 'Workspace members',
-      row: /user-editor.*editor/i,
-      statusState: /user-editor.*editor|editor.*user-editor/i,
+      row: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+      statusState:
+        /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor|editor.*usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
     },
     {
       action: /transfer ownership/i,
       code: 'revision_conflict',
       currentEvidence: 'registryRevision:97',
-      currentIdentity: /user-editor/i,
+      currentIdentity: /usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
       currentState: /owner/i,
       details: {
         resource: 'workspace',
         current: {
           ...OWNER_WORKSPACES.items[0],
           effectiveRole: 'editor' as const,
-          ownerUserId: 'user-editor',
+          ownerUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
           registryRevision: 97,
         },
       },
       expectedCall: [
-        { workspaceId: 'ws1', expectedRegistryRevision: 9, targetUserId: 'user-editor' },
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          expectedRegistryRevision: 9,
+          targetUserId: 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
+        },
       ],
       method: 'transferWorkspaceOwnership',
       outcome: /conflict|changed/i,
       precludedState: /owner/i,
       region: 'Workspace members',
-      row: /user-editor.*editor/i,
-      statusState: /user-editor.*owner|owner.*user-editor/i,
+      row: /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*editor/i,
+      statusState:
+        /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*owner|owner.*usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
     },
   ] as const)('uses the safe current record for $code from $method instead of synthesizing success', async ({
     action,
@@ -2681,7 +2802,7 @@ describe('selected-Workspace owner management', () => {
     expect(parseWorkspaceSharingError(failure)?.code).toBe(code);
     const operation = vi.fn().mockRejectedValue(failure);
     const { client, methods } = makeSharingClient({ methods: { [method]: operation } });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
@@ -2735,7 +2856,7 @@ describe('selected-Workspace owner management', () => {
     }
     const createWorkspaceInvitation = vi.fn().mockRejectedValue(failure);
     const { client, methods } = makeSharingClient({ methods: { createWorkspaceInvitation } });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
@@ -2752,7 +2873,7 @@ describe('selected-Workspace owner management', () => {
     expect(alert).toHaveTextContent(label);
     expect(createWorkspaceInvitation).toHaveBeenCalledTimes(1);
     expect(createWorkspaceInvitation).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       ...{
         inviteeEmail: EMAIL,
         proposedAccessLevel: 'editor',
@@ -2785,10 +2906,10 @@ describe('account-level My invitations', () => {
     myInvitationRead.resolve(MY_INVITATIONS);
 
     const pending = await within(invitations).findByRole('row', {
-      name: /ws1.*pending|pending.*ws1/i,
+      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
     });
     const otherPending = within(invitations).getByRole('row', {
-      name: /ws2.*pending|pending.*ws2/i,
+      name: /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i,
     });
     const user = userEvent.setup();
     expect(await revealRowAction(user, pending, /^accept/i)).toBeEnabled();
@@ -2799,7 +2920,7 @@ describe('account-level My invitations', () => {
     await user.keyboard('{Escape}');
     for (const status of ['expired', 'accepted', 'declined', 'revoked'] as const) {
       const terminal = within(invitations).getByRole('row', {
-        name: new RegExp(`ws1.*${status}|${status}.*ws1`, 'i'),
+        name: new RegExp(`ws_00000000-0000-7b10-9af8-12fd37a880e0.*${status}|${status}.*ws1`, 'i'),
       });
       await expectNoRowAction(user, terminal, /accept|decline/i);
     }
@@ -2820,7 +2941,7 @@ describe('account-level My invitations', () => {
     });
     const { client, methods } = makeSharingClient({
       authorizedWorkspaces: JOINED_WORKSPACES,
-      coreWorkspaces: [{ id: 'ws_7', name: 'Team Seven' }],
+      coreWorkspaces: [{ id: 'ws_00000000-0000-7174-8fab-67fae8e1decb', name: 'Team Seven' }],
       methods: { listMyWorkspaceInvitations },
     });
     const { queryClient } = renderApp('/settings/account', client);
@@ -2828,14 +2949,16 @@ describe('account-level My invitations', () => {
     await screen.findByRole('heading', { name: 'Account' });
     const invitations = screen.getByRole('region', { name: 'My invitations' });
     const named = await within(invitations).findByRole('row', {
-      name: /team seven.*ws_7.*pending|pending.*team seven.*ws_7/i,
+      name: /team seven.*ws_00000000-0000-7174-8fab-67fae8e1decb.*pending|pending.*team seven.*ws_00000000-0000-7174-8fab-67fae8e1decb/i,
     });
     expect(within(named).getByText('Team Seven')).toBeInTheDocument();
-    expect(within(named).getByText('ws_7')).toBeInTheDocument();
+    expect(within(named).getByText('ws_00000000-0000-7174-8fab-67fae8e1decb')).toBeInTheDocument();
     const unknown = within(invitations).getByRole('row', {
-      name: /ws_unknown.*pending|pending.*ws_unknown/i,
+      name: /ws_00000000-0000-7744-93d6-d2f551c62efa.*pending|pending.*ws_00000000-0000-7744-93d6-d2f551c62efa/i,
     });
-    expect(within(unknown).getByText('ws_unknown')).toBeInTheDocument();
+    expect(
+      within(unknown).getByText('ws_00000000-0000-7744-93d6-d2f551c62efa')
+    ).toBeInTheDocument();
     expect(within(unknown).queryByText('Team Seven')).not.toBeInTheDocument();
     expect(within(invitations).queryByText('Invented Workspace')).not.toBeInTheDocument();
     const user = userEvent.setup();
@@ -2861,20 +2984,20 @@ describe('account-level My invitations', () => {
     const { client, methods } = makeSharingClient({
       methods: { listMyWorkspaceInvitations },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
     expect(
       await within(screen.getByRole('region', { name: 'Workspace members' })).findByRole('row', {
-        name: /user-owner.*owner/i,
+        name: /usr_00000000-0000-7108-840f-833c46c69722.*owner/i,
       })
     ).toBeInTheDocument();
     expect(
       await within(screen.getByRole('region', { name: 'Workspace invitations' })).findByRole(
         'row',
         {
-          name: /user-invitee-pending.*pending/i,
+          name: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
         }
       )
     ).toBeInTheDocument();
@@ -2932,7 +3055,7 @@ describe('account-level My invitations', () => {
     await screen.findByRole('heading', { name: 'Account' });
     const invitations = screen.getByRole('region', { name: 'My invitations' });
     const pending = await within(invitations).findByRole('row', {
-      name: /ws1.*pending|pending.*ws1/i,
+      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
     });
     const user = userEvent.setup();
     await user.click(await revealRowAction(user, pending, action));
@@ -2941,20 +3064,30 @@ describe('account-level My invitations', () => {
       await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
     }
 
-    expect(decision.mock.calls).toEqual([[{ invitationId: 'inv-pending', expectedRevision: 21 }]]);
+    expect(decision.mock.calls).toEqual([
+      [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', expectedRevision: 21 }],
+    ]);
     const invitationReads = listMyWorkspaceInvitations.mock.calls.length;
     operation.resolve({ invitation: settledInvitation });
     expect(
       await within(invitations).findByRole('row', {
-        name: new RegExp(`ws1.*${settledState.source}|${settledState.source}.*ws1`, 'i'),
+        name: new RegExp(
+          `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${settledState.source}|${settledState.source}.*ws1`,
+          'i'
+        ),
       })
     ).toBeInTheDocument();
     const settledRows = within(invitations).getAllByRole('row');
     expect(settledRows).toHaveLength(2);
     expect(settledRows[0]).toHaveTextContent(
-      new RegExp(`ws1.*${settledState.source}|${settledState.source}.*ws1`, 'i')
+      new RegExp(
+        `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${settledState.source}|${settledState.source}.*ws1`,
+        'i'
+      )
     );
-    expect(settledRows[1]).toHaveTextContent(/ws2.*pending|pending.*ws2/i);
+    expect(settledRows[1]).toHaveTextContent(
+      /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
+    );
     expect(decision).toHaveBeenCalledTimes(1);
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads);
     expectNoRetainedInviteEmail(queryClient, guards);
@@ -3002,7 +3135,7 @@ describe('account-level My invitations', () => {
     await screen.findByRole('heading', { name: 'Account' });
     const invitations = screen.getByRole('region', { name: 'My invitations' });
     const pending = await within(invitations).findByRole('row', {
-      name: /ws1.*pending|pending.*ws1/i,
+      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
     });
     const user = userEvent.setup();
     await user.click(await revealRowAction(user, pending, /^accept/i));
@@ -3014,17 +3147,25 @@ describe('account-level My invitations', () => {
     expect(await within(invitations).findByRole('alert')).toHaveTextContent(outcome);
     expect(
       await within(invitations).findByRole('row', {
-        name: new RegExp(`ws1.*${currentState.source}|${currentState.source}.*ws1`, 'i'),
+        name: new RegExp(
+          `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${currentState.source}|${currentState.source}.*ws1`,
+          'i'
+        ),
       })
     ).toBeInTheDocument();
     const currentRows = within(invitations).getAllByRole('row');
     expect(currentRows).toHaveLength(2);
     expect(currentRows[0]).toHaveTextContent(
-      new RegExp(`ws1.*${currentState.source}|${currentState.source}.*ws1`, 'i')
+      new RegExp(
+        `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${currentState.source}|${currentState.source}.*ws1`,
+        'i'
+      )
     );
-    expect(currentRows[1]).toHaveTextContent(/ws2.*pending|pending.*ws2/i);
+    expect(currentRows[1]).toHaveTextContent(
+      /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
+    );
     expect(acceptWorkspaceInvitation.mock.calls).toEqual([
-      [{ invitationId: 'inv-pending', ...{ expectedRevision: 21 } }],
+      [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 21 } }],
     ]);
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
     expect(
@@ -3037,7 +3178,7 @@ describe('account-level My invitations', () => {
     ).toContain(`revision:${current.revision}`);
     if (code === 'invitation_not_pending') {
       const terminal = within(invitations).getByRole('row', {
-        name: /ws1.*revoked|revoked.*ws1/i,
+        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*revoked|revoked.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
       });
       await expectNoRowAction(user, terminal, /accept|decline/i);
     }
@@ -3082,7 +3223,7 @@ describe('account-level My invitations', () => {
     await screen.findByRole('heading', { name: 'Account' });
     const invitations = screen.getByRole('region', { name: 'My invitations' });
     const pending = await within(invitations).findByRole('row', {
-      name: /ws1.*pending|pending.*ws1/i,
+      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
     });
     const user = userEvent.setup();
     await user.click(await revealRowAction(user, pending, /^accept/i));
@@ -3094,7 +3235,7 @@ describe('account-level My invitations', () => {
     expect(await within(invitations).findByRole('alert')).toHaveTextContent(outcome);
     await waitFor(() => expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2));
     expect(acceptWorkspaceInvitation.mock.calls).toEqual([
-      [{ invitationId: 'inv-pending', ...{ expectedRevision: 21 } }],
+      [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 21 } }],
     ]);
     const prematureRetry = within(invitations).queryByRole('button', {
       name: /try again|retry/i,
@@ -3129,7 +3270,7 @@ describe('account-level My invitations', () => {
       await user.click(collectionRetry);
       await waitFor(() => expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(3));
       const refreshed = within(invitations).getByRole('row', {
-        name: /ws1.*pending|pending.*ws1/i,
+        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
       });
       await user.click(await revealRowAction(user, refreshed, /^accept/i));
       const refreshedDialog = screen.queryByRole('dialog', { name: /confirm/i });
@@ -3144,17 +3285,21 @@ describe('account-level My invitations', () => {
 
     await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(2));
     expect(acceptWorkspaceInvitation.mock.calls[1]).toEqual([
-      { invitationId: 'inv-pending', ...{ expectedRevision: 29 } },
+      { invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 29 } },
     ]);
     expect(
       await within(invitations).findByRole('row', {
-        name: /ws1.*accepted|accepted.*ws1/i,
+        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*accepted|accepted.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
       })
     ).toBeInTheDocument();
     const settledRows = within(invitations).getAllByRole('row');
     expect(settledRows).toHaveLength(2);
-    expect(settledRows[0]).toHaveTextContent(/ws1.*accepted|accepted.*ws1/i);
-    expect(settledRows[1]).toHaveTextContent(/ws2.*pending|pending.*ws2/i);
+    expect(settledRows[0]).toHaveTextContent(
+      /ws_00000000-0000-7b10-9af8-12fd37a880e0.*accepted|accepted.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i
+    );
+    expect(settledRows[1]).toHaveTextContent(
+      /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
+    );
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(rereadFails ? 3 : 2);
     expectNoRetainedInviteEmail(queryClient, guards);
   });
@@ -3167,12 +3312,12 @@ describe('selected-membership self-leave', () => {
     const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
       authorizedWorkspaces: NON_OWNER_WORKSPACES,
       coreWorkspaces: [
-        { id: 'ws1', name: 'Authorized Workspace' },
-        { id: 'ws2', name: 'Other Authorized Workspace' },
+        { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Authorized Workspace' },
+        { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Other Authorized Workspace' },
       ],
       methods: { leaveWorkspace },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     expect(
@@ -3190,13 +3335,15 @@ describe('selected-membership self-leave', () => {
     await user.click(confirm);
 
     expect(leaveWorkspace.mock.calls).toEqual([
-      [{ workspaceId: 'ws1', ...{ expectedRevision: 17 } }],
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', ...{ expectedRevision: 17 } }],
     ]);
     expect(confirm).toBeDisabled();
     const authorizedReads = listAuthorizedWorkspaces.mock.calls.length;
     leave.resolve({ member: SELF_REMOVED_MEMBER });
 
-    await waitFor(() => expectAuthorizedWorkspaceIds(queryClient, ['ws2']));
+    await waitFor(() =>
+      expectAuthorizedWorkspaceIds(queryClient, ['ws_00000000-0000-7ec6-8e33-a3b1d758efc6'])
+    );
     expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads + 1);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
@@ -3216,12 +3363,12 @@ describe('selected-membership self-leave', () => {
     const { client, methods } = makeSharingClient({
       authorizedWorkspaces: NON_OWNER_WORKSPACES,
       coreWorkspaces: [
-        { id: 'ws1', name: 'Authorized Workspace' },
-        { id: 'ws2', name: 'Other Authorized Workspace' },
+        { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Authorized Workspace' },
+        { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Other Authorized Workspace' },
       ],
       methods: { leaveWorkspace },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
@@ -3232,9 +3379,11 @@ describe('selected-membership self-leave', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/conflict|changed/i);
     expect(leaveWorkspace.mock.calls).toEqual([
-      [{ workspaceId: 'ws1', ...{ expectedRevision: 17 } }],
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', ...{ expectedRevision: 17 } }],
     ]);
-    await waitFor(() => expectAuthorizedWorkspaceIds(queryClient, ['ws2']));
+    await waitFor(() =>
+      expectAuthorizedWorkspaceIds(queryClient, ['ws_00000000-0000-7ec6-8e33-a3b1d758efc6'])
+    );
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
   });
@@ -3251,12 +3400,12 @@ describe('selected-membership self-leave', () => {
     const { client, methods } = makeSharingClient({
       authorizedWorkspaces: NON_OWNER_WORKSPACES,
       coreWorkspaces: [
-        { id: 'ws1', name: 'Authorized Workspace' },
-        { id: 'ws2', name: 'Other Authorized Workspace' },
+        { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Authorized Workspace' },
+        { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Other Authorized Workspace' },
       ],
       methods: { leaveWorkspace },
     });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
     const { queryClient } = renderApp('/settings/account', client);
 
     await screen.findByText(/Current Workspace role:/i);
@@ -3267,13 +3416,16 @@ describe('selected-membership self-leave', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(outcome);
     expect(leaveWorkspace.mock.calls).toEqual([
-      [{ workspaceId: 'ws1', ...{ expectedRevision: 17 } }],
+      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', ...{ expectedRevision: 17 } }],
     ]);
     await Promise.resolve();
     expect(leaveWorkspace).toHaveBeenCalledTimes(1);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
-    expectAuthorizedWorkspaceIds(queryClient, ['ws1', 'ws2']);
+    expectAuthorizedWorkspaceIds(queryClient, [
+      'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+    ]);
     expectNoRetainedInviteEmail(queryClient, guards);
   });
 });

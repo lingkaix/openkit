@@ -3713,11 +3713,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return [...this.requireSession(packageSnapshotId).evidence];
   }
 
-  /** Returns no provider refreshes because NanoHost owns no provider authority. */
-  public async collectProviderRefreshStatuses(): Promise<WorkerGovernanceEvidenceRecord[]> {
-    return [];
-  }
-
   /** Captures one eligible live output using the existing exact session/effect owner. @param input Core-derived identity, path, bound and cancellation. @returns Verified bytes and original private evidence. */
   public readonly captureArtifact: WorkerArtifactCapture = async (input) => {
     const session = this.requireSession(input.packageSnapshotId);

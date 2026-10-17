@@ -1,8 +1,10 @@
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
+import { DeploymentIdSchema, UserIdSchema } from '@openkit/protocol';
 
 import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Exact HTTP or HTTPS origin accepted by browser-facing server configuration. */
@@ -177,7 +179,7 @@ export const OpenKitNanoHostConfigSchema = z
         B: OpenKitNanoHostCredentialSlotSchema,
       })
       .strict(),
-    deploymentId: z.string().min(1),
+    deploymentId: DeploymentIdSchema,
     identityId: z.string().min(1),
     /** Positive backend-private Sandbox bound; omission uses the current default. */
     maxActiveTurnsPerSandbox: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -243,7 +245,7 @@ const MaintenanceRepositoryPathSchema = z
 /** Finite Server-owned authority for a registered Worker's Git-read rule correction. */
 export const WorkerGitReadMaintenanceAssignmentSchema = z
   .object({
-    responsibleUserId: z.string().min(1),
+    responsibleUserId: UserIdSchema,
     agentId: z.string().min(1),
     networkGrantId: z.string().min(1),
     host: z.string().refine((value) => {
@@ -312,6 +314,7 @@ export type WorkerGitReadMaintenanceAssignment = z.infer<
 /** File-backed NanoCore configuration schema. */
 export const OpenKitConfigSchema = z
   .object({
+    knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     appUpdate: OpenKitAppUpdateConfigSchema.optional(),
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),

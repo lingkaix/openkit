@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
@@ -5,7 +6,7 @@ import { Composer } from './Composer';
 
 /** The catalog declares the actual shared destination; it is not inferred from an identifier format. */
 const catalog = {
-  workspaceId: 'selected-workspace',
+  workspaceId: allocateEntityId('ws'),
   threadId: null,
   defaultTargetRef: 'new-task-worker',
   targets: [

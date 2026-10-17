@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -17,8 +17,8 @@ import {
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
-  type KnowledgeRetrievalTrace,
   KnowledgeRetrievalTraceSchema,
+  type ProductRetrievalTrace,
   RuntimeEvidenceRecordSchema,
   StagedWorkspaceReviewReaderSchema,
   StagedWorkspaceReviewSchema,
@@ -56,18 +56,32 @@ import {
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import {
+  AgentSessionIdSchema,
+  ArtifactIdSchema,
   ArtifactSchema,
+  AuditEventIdSchema,
   AuditEventSchema,
+  allocateEntityId,
+  CapabilityCallIdSchema,
   CapabilityCallSchema,
+  deriveEntityId,
+  type EntityKind,
   ItemSchema,
   KnowledgeEntrySchema,
+  MaterialIdSchema,
+  PermissionDecisionIdSchema,
   parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
   SseEventEnvelopeSchema,
+  ThreadIdSchema,
   ThreadSchema,
+  TurnIdSchema,
   TurnSchema,
   UsageRecordSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  WorkspaceIdSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
@@ -107,12 +121,8 @@ import {
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import {
-  parseOkfDocument,
-  stringFrontmatterField,
-  stringListFrontmatterField,
-  updateOkfFrontmatter,
-} from '../knowledge/okf.js';
+import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
+import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
@@ -122,6 +132,11 @@ import {
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
+import {
+  RECURRING_PORTABLE_FEATURE,
+  readRecurringPortableFiles,
+  remapRecurringPortableHistory,
+} from './recurring-portable-history.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
@@ -148,6 +163,12 @@ import {
   parseOwnedKnowledgeEntry,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
+import {
+  importAssistantHistoryTrace,
+  reconcileImportedAssistantContext,
+  remintAssistantSummaryItem,
+  remintAssistantThreadParents,
+} from './workspace-import-assistant-history.js';
 import {
   parseWorkspaceRetrievalTraceFile,
   serializeWorkspaceRetrievalTrace,
@@ -182,9 +203,9 @@ const ImportedWorkspaceMaterialRevisionSchema = WorkspaceMaterialRevisionViewSch
 }).strip();
 const ImportedThreadMaterialBindingSchema = z
   .object({
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    materialId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    materialId: MaterialIdSchema,
     bindingState: z.enum(['bound', 'unbound']),
     latestQueuedRevisionId: z.string().min(1).nullable(),
     inclusionState: z.enum(['included', 'excluded']),
@@ -224,8 +245,8 @@ const ImportedKnowledgeConflictSchema = KnowledgeConflictSchema.strip();
 const ExportedResolvedAgentSetupSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
-    turnId: z.string().min(1).nullable(),
+    workspaceId: WorkspaceIdSchema,
+    turnId: TurnIdSchema.nullable(),
     requestId: z.string().min(1).nullable(),
     agentId: z.string().min(1),
     logicalModelId: z.string().min(1),
@@ -245,10 +266,10 @@ type ExportedResolvedAgentSetup = Omit<ResolvedAgentSetupRecord, 'setup'> & {
 const ExportedAgentEnvironmentPackageSnapshotSchema = z
   .object({
     snapshotId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    turnId: z.string().min(1),
-    threadId: z.string().min(1),
-    agentSessionId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    turnId: TurnIdSchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
     agentId: z.string().min(1),
     packageId: z.string().min(1),
     runtimeKind: z.string().min(1),
@@ -300,7 +321,7 @@ type ExportedGitPushRecord = z.infer<typeof ExportedGitPushRecordSchema>;
 
 const ExportedStagedWorkspaceReviewSchema = z
   .object({
-    artifactId: z.string().min(1),
+    artifactId: ArtifactIdSchema,
     review: StagedWorkspaceReviewSchema,
     patchPayload: WorkspaceSyncReviewPatchPayloadSchema.nullable(),
   })
@@ -328,10 +349,10 @@ const ExportedWorkspacePermissionDecisionSchema = z
   .object({
     action: z.string().min(1),
     approvalId: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     contextSummary: z.unknown(),
     createdAt: z.string().datetime(),
-    decisionId: z.string().min(1),
+    decisionId: PermissionDecisionIdSchema,
     enforcementPoint: z.string().min(1),
     ownerScope: z.literal('workspace'),
     policyEngineVersion: z.string().min(1),
@@ -349,7 +370,7 @@ const ExportedWorkspacePermissionDecisionSchema = z
       'error',
     ]),
     subjectSummary: z.unknown(),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strict();
 
@@ -368,9 +389,9 @@ const ExportedStopReasonSchema = z.enum([
 const ExportedWorkerCheckpointSchema = z
   .object({
     checkpointId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     goalId: z.string().min(1).nullable(),
     taskId: z.string().min(1).nullable(),
     requestId: z.string().min(1),
@@ -413,7 +434,7 @@ const ExportedMcpToolSchemaSnapshotSchema = z
         })
         .strip()
     ),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
   })
   .strip();
 
@@ -433,7 +454,7 @@ const ExportedWorkspaceVaultReferenceSchema = z
 const ImportedWorkspaceVaultReferenceSchema = ExportedWorkspaceVaultReferenceSchema.extend({
   referenceId: z.string().min(1),
   ownerScope: z.literal('workspace'),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   backendLocator: z.null(),
   status: z.literal('unbound'),
   currentVersion: z.literal(0),
@@ -443,18 +464,19 @@ type ImportedWorkspaceVaultReference = z.infer<typeof ImportedWorkspaceVaultRefe
 
 const ExportedVaultGrantSchema = z
   .object({
-    grantId: z.string().min(1),
-    vaultReferenceId: z.string().min(1),
+    issuance: z.enum(['target', 'imported-history']),
+    grantId: VaultGrantIdSchema,
+    vaultReferenceId: VaultReferenceIdSchema,
     ownerScope: z.literal('workspace'),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     userId: z.null(),
     subjectSummary: z.string().min(1).nullable(),
     targetAgentId: z.string().min(1).nullable(),
-    targetAgentSessionId: z.string().min(1).nullable(),
+    targetAgentSessionId: AgentSessionIdSchema.nullable(),
     targetCapabilityId: z.string().min(1).nullable(),
     allowedInjectionPaths: z.array(z.string().min(1)),
     lifetime: z.enum(['capability-call', 'turn', 'agent-session', 'workspace', 'server']),
-    policyDecisionId: z.string().min(1).nullable(),
+    policyDecisionId: PermissionDecisionIdSchema.nullable(),
     approvalId: z.string().min(1).nullable(),
     status: z.enum(['active', 'revoked', 'expired']),
     createdAt: z.string().datetime(),
@@ -467,7 +489,7 @@ type ExportedVaultGrant = z.infer<typeof ExportedVaultGrantSchema>;
 const ExportedVaultInjectionPlanSchema = z
   .object({
     planId: z.string().min(1),
-    grantId: z.string().min(1),
+    grantId: VaultGrantIdSchema,
     packageSnapshotId: z.string().min(1).nullable(),
     capabilityId: z.string().min(1).nullable(),
     injectionVisibility: InjectionVisibilitySchema,
@@ -488,14 +510,14 @@ const ExportedVaultInjectionReceiptSchema = z
   .object({
     receiptId: z.string().min(1),
     planId: z.string().min(1),
-    grantId: z.string().min(1),
-    agentSessionId: z.string().min(1).nullable(),
-    capabilityCallId: z.string().min(1).nullable(),
+    grantId: VaultGrantIdSchema,
+    agentSessionId: AgentSessionIdSchema.nullable(),
+    capabilityCallId: CapabilityCallIdSchema.nullable(),
     backendSummary: z.string().min(1),
     injectedAt: z.string().datetime(),
     expiresAt: z.string().datetime().nullable(),
     revocationStatus: z.enum(['active', 'revoked', 'expired', 'stale-session']),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
   })
   .strict();
 
@@ -505,19 +527,19 @@ const ExportedVaultUseRecordSchema = z
   .object({
     useId: z.string().min(1),
     ownerScope: z.literal('workspace'),
-    workspaceId: z.string().min(1),
-    vaultReferenceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    vaultReferenceId: VaultReferenceIdSchema,
     materialVersion: z.number().int().nonnegative().nullable(),
     backendKind: z.literal('encrypted-file'),
     resolvingPath: z.enum(['grant', 'plan', 'admin', 'provider']),
-    grantId: z.string().min(1).nullable(),
+    grantId: VaultGrantIdSchema.nullable(),
     planId: z.string().min(1).nullable(),
     receiptId: z.string().min(1).nullable(),
-    agentSessionId: z.string().min(1).nullable(),
-    capabilityCallId: z.string().min(1).nullable(),
+    agentSessionId: AgentSessionIdSchema.nullable(),
+    capabilityCallId: CapabilityCallIdSchema.nullable(),
     outcome: z.enum(['succeeded', 'failed', 'denied']),
     failureCode: z.string().min(1).nullable(),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
     usedAt: z.string().datetime(),
   })
   .strict();
@@ -694,6 +716,10 @@ function createImportedWorkerContextPackageAuthorityReader(
   const items = snapshot.turns.flatMap((turn) => turn.items);
   return {
     readAdmission: () => null,
+    readThreadParent: (workspaceId, threadId) =>
+      snapshot.threads.find(
+        (thread) => thread.workspaceId === workspaceId && thread.id === threadId
+      )?.parentThreadId ?? null,
     readAgentEnvironmentPackage: (workspaceId, packageSnapshotId) =>
       snapshot.agentEnvironmentPackageSnapshots.find(
         (record) => record.workspaceId === workspaceId && record.snapshotId === packageSnapshotId
@@ -795,6 +821,8 @@ interface ImportRemintContext {
   agentEnvironmentPackageSnapshotIds: Map<string, string>;
   /** Imported knowledge-source ids keyed by source id. */
   knowledgeSourceIds: Map<string, string>;
+  /** Exact source-page pins remapped to the admitted target tree. */
+  knowledgePageReferences: Map<string, string>;
   /** Exact accepted Context Package references keyed by their source form. */
   contextPackageReferences: Map<string, string>;
 
@@ -811,8 +839,25 @@ interface ImportRemintContext {
   completeRuntimeOriginPackages: Set<string>;
   /** Canonical knowledge ids retained by the imported workspace. */
   knowledgeIds: Set<string>;
+  /** Inert recurring definition ids allocated once per source definition in this import. */
+  recurringScheduleIds: Map<string, string>;
+  /** Inert occurrence ids derived under the imported definition and unchanged nominal instant. */
+  recurringOccurrenceIds: Map<string, string>;
+  /** Inert expired-range ids allocated once per source range in this import. */
+  recurringRangeIds: Map<string, string>;
   /** Imported presentation ids keyed by source id. */
   presentationIds: Map<string, string>;
+}
+
+/** Allocates once for each complete source owner key in this verified invocation. */
+function allocateImportedEntityIds(
+  kind: EntityKind,
+  sourceIds: Iterable<string>
+): Map<string, string> {
+  const ids = new Map<string, string>();
+  for (const sourceId of sourceIds)
+    if (!ids.has(sourceId)) ids.set(sourceId, allocateEntityId(kind));
+  return ids;
 }
 
 /**
@@ -873,23 +918,22 @@ export function readWorkspaceImportSnapshot(
     itemIds: new Map(),
     itemLineage: new Map(),
     artifactIds: new Map(),
-    materialIds: new Map(
-      sourceWorkspaceMaterials.map((material, index) => [
-        material.materialId,
-        `mat_imported_${input.targetWorkspaceId}_${index + 1}`,
-      ])
+    materialIds: allocateImportedEntityIds(
+      'mat',
+      sourceWorkspaceMaterials.map((material) => material.materialId)
     ),
-    materialRevisionIds: new Map(
-      sourceWorkspaceMaterialRevisions.map((revision, index) => [
-        materialRevisionKey(revision.materialId, revision.revisionId),
-        `mrev_imported_${input.targetWorkspaceId}_${index + 1}`,
-      ])
+    materialRevisionIds: allocateImportedEntityIds(
+      'mrev',
+      sourceWorkspaceMaterialRevisions.map((revision) =>
+        materialRevisionKey(revision.materialId, revision.revisionId)
+      )
     ),
     agentSessionIds: new Map(),
     approvalRequestIds: new Map(),
     agentEnvironmentPackageSnapshotIds: new Map(),
     knowledgeSourceIds: new Map(),
     contextPackageReferences: new Map(),
+    knowledgePageReferences: new Map(),
 
     workerCheckpointIds: new Map(),
 
@@ -899,9 +943,74 @@ export function readWorkspaceImportSnapshot(
     completeRuntimeOriginPackages: new Set(),
     knowledgeIds: new Set(),
     presentationIds: new Map(),
+    recurringScheduleIds: new Map(),
+    recurringOccurrenceIds: new Map(),
+    recurringRangeIds: new Map(),
   };
   const canonical = readCanonicalImportState(context);
-  const retrievalTraces = readRetrievalTraceImportState(context);
+  let recurringHistory: string | null = null;
+  if (input.verified.manifest.requiredFeatures.includes(RECURRING_PORTABLE_FEATURE)) {
+    const recurring = readRecurringPortableFiles(context.files, {
+      workspaceId: report.exportedWorkspaceId,
+      threadIds: new Set(context.threadIds.keys()),
+      turns: new Map(
+        readImportJsonl(context.files, 'records/turns.jsonl').map((row) => {
+          const turn = TurnSchema.parse(row);
+          return [turn.id, turn.threadId];
+        })
+      ),
+    });
+    if (
+      recurring.schedules.length ||
+      recurring.occurrences.length ||
+      recurring.expiredRanges.length
+    ) {
+      context.recurringScheduleIds = allocateImportedEntityIds(
+        'auto',
+        recurring.schedules.map((row) => row.id)
+      );
+      context.recurringOccurrenceIds = new Map(
+        recurring.occurrences.map((row) => [
+          row.id,
+          deriveEntityId('occ', [
+            requiredMapValue(context.recurringScheduleIds, row.scheduleId, 'recurring schedule'),
+            row.scheduledAt,
+          ]),
+        ])
+      );
+      context.recurringRangeIds = allocateImportedEntityIds(
+        'range',
+        recurring.expiredRanges.map((row) => row.id)
+      );
+      // Existing canonical Thread/Turn maps supply history references; no live Core authority is created.
+      recurringHistory = JSON.stringify(
+        remapRecurringPortableHistory(recurring, {
+          workspaceId: context.targetWorkspaceId,
+          scheduleIds: context.recurringScheduleIds,
+          occurrenceIds: context.recurringOccurrenceIds,
+          rangeIds: context.recurringRangeIds,
+          threadIds: context.threadIds,
+          turnIds: context.turnIds,
+        })
+      );
+    }
+  }
+  const sourceTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
+    TurnSchema.parse(record)
+  );
+  const sourceNotebookPages = new Map(
+    [...context.files]
+      .filter(([path]) => path.startsWith('workspace-files/knowledge/pages/'))
+      .map(([path, content]) => [path.slice('workspace-files/'.length), content])
+  );
+  assertPortableKnowledgePagesMatch(sourceNotebookPages, canonical.knowledge);
+  const selectedNotebookPages = remintImportedNotebookPages(context, sourceNotebookPages);
+  const retrievalTraces = readRetrievalTraceImportState(
+    context,
+    canonical,
+    sourceTurns,
+    selectedNotebookPages
+  );
   const workerRuntime = readWorkerRuntimeControlState(context);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
   const workspaceSync = readWorkspaceSyncImportState(context);
@@ -911,11 +1020,32 @@ export function readWorkspaceImportSnapshot(
     workspaceSync,
     retrievalTraces
   );
+  Object.assign(
+    workResources,
+    reconcileImportedAssistantContext(context, workResources, retrievalTraces.files, sourceTurns)
+  );
+  workResources.turnEvents = refreshImportedTurnEventSnapshots(
+    workResources.turnEvents,
+    workResources.threads,
+    new Map(workResources.itemRevisions.map((item) => [item.id, item])),
+    workResources.turns
+  );
+  // S39 digests exist only now; finish Page references before checking their canonical projections.
+  const notebookPages = remintImportedNotebookPages(context, sourceNotebookPages);
+  for (const selections of retrievalTraces.selectedPages.values()) {
+    for (const [pageId, selection] of selections) {
+      if (notebookPages.get(`knowledge/pages/${pageId}.md`) !== selection.content)
+        throw new Error(
+          'Portable Knowledge history requires unavailable historical notebook closure.'
+        );
+    }
+  }
   const knowledgeReferenceReplacements = [
     ...context.contextPackageReferences,
     ...context.turnIds,
     ...context.itemIds,
     ...context.knowledgeSourceIds,
+    ...context.knowledgePageReferences,
   ] as const;
   const knowledge = canonical.knowledge.map((entry) =>
     KnowledgeEntrySchema.parse({
@@ -930,12 +1060,16 @@ export function readWorkspaceImportSnapshot(
         : {}),
     })
   );
-  const portableFileState = readPortableImportState(
-    context,
-    workResources.workerContextPackageFiles,
-    knowledge,
-    retrievalTraces.files
-  );
+  const portableFileState = {
+    ...readPortableImportState(
+      context,
+      workResources.workerContextPackageFiles,
+      knowledge,
+      retrievalTraces.files,
+      notebookPages
+    ),
+    recurringHistory,
+  };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
   const sourceArtifactIds = new Map(
     [...context.artifactIds].map(([sourceId, targetId]) => [targetId, sourceId])
@@ -1159,27 +1293,27 @@ function readCanonicalImportState(context: ImportRemintContext) {
     throw new Error('Workspace record id does not match the export manifest.');
   }
   const exportedThreads = readWorkspaceExportThreads(context.files);
-  const threads = exportedThreads.map((thread, index) =>
+  const threadIds = allocateImportedEntityIds(
+    'th',
+    exportedThreads.map((thread) => thread.id)
+  );
+  const threads = exportedThreads.map((thread) =>
     ThreadSchema.parse({
       ...thread,
-      id: `th_imported_${context.targetWorkspaceId}_${index + 1}`,
+      id: requiredMapValue(threadIds, thread.id, 'Thread'),
       workspaceId: context.targetWorkspaceId,
     })
   );
-  const threadIds = new Map(
-    exportedThreads.map((thread, index) => [thread.id, threads[index]!.id])
-  );
+  remintAssistantThreadParents(threads, threadIds);
   const exportedKnowledge = readImportJsonl(context.files, 'records/knowledge.jsonl').map(
     (record) => KnowledgeEntrySchema.parse(record)
   );
   const exportedTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
     TurnSchema.parse(record)
   );
-  const turnIds = new Map(
-    exportedTurns.map((turn, index) => [
-      turn.id,
-      `tu_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
+  const turnIds = allocateImportedEntityIds(
+    'tu',
+    exportedTurns.map((turn) => turn.id)
   );
   const exportedArtifacts = readExportedArtifacts(context.files, report.manifest);
   const exportedWorkspace = WorkspaceRecordSchema.parse({
@@ -1201,20 +1335,16 @@ function readCanonicalImportState(context: ImportRemintContext) {
       manifestDigest: context.manifestDigest,
     },
   });
-  const artifactIds = new Map(
-    exportedArtifacts.map((artifact, index) => [
-      artifact.id,
-      `ar_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
+  const artifactIds = allocateImportedEntityIds(
+    'ar',
+    exportedArtifacts.map((artifact) => artifact.id)
   );
   const exportedAgentSessions = readImportJsonl(context.files, 'records/agent-sessions.jsonl').map(
     (record) => AgentSessionRecordSchema.parse(record) as AgentSession
   );
-  const agentSessionIds = new Map(
-    exportedAgentSessions.map((session, index) => [
-      session.id,
-      `as_imported_${context.targetWorkspaceId}_${index + 1}`,
-    ])
+  const agentSessionIds = allocateImportedEntityIds(
+    'as',
+    exportedAgentSessions.map((session) => session.id)
   );
   const exportedItemRevisions = readImportJsonl(context.files, 'records/item-revisions.jsonl').map(
     (record) => ItemSchema.parse(record)
@@ -1240,7 +1370,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
               requiredMapValue(artifactIds, revision.artifactId, 'artifact'),
               requiredMapValue(turnIds, revision.turnId, 'turn')
             )
-          : `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`
+          : allocateEntityId('it')
       );
     }
     itemLineage.set(revision.id, revision);
@@ -1278,11 +1408,11 @@ function readCanonicalImportState(context: ImportRemintContext) {
     }
     const record = row as { id: string; lineage?: { itemId?: unknown } };
     if (!context.presentationIds.has(record.id)) {
-      context.presentationIds.set(record.id, randomUUID());
+      context.presentationIds.set(record.id, allocateEntityId('pres'));
     }
     const reservedItemId = record.lineage?.itemId;
     if (typeof reservedItemId === 'string' && !itemIds.has(reservedItemId)) {
-      itemIds.set(reservedItemId, `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`);
+      itemIds.set(reservedItemId, allocateEntityId('it'));
     }
   }
   const exportedAgentEnvironmentPackageSnapshots = readOptionalImportJsonl(
@@ -1415,6 +1545,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     if (item.type !== 'user-input-response' && item.causationId && itemIds.has(item.causationId)) {
       rewritten.causationId = requiredMapValue(itemIds, item.causationId, 'causation item');
     }
+    Object.assign(rewritten, remintAssistantSummaryItem(item, itemIds));
     if (item.type === 'artifact-reference') {
       rewritten.artifactId = requiredMapValue(artifactIds, item.artifactId, 'artifact');
     } else if (item.type === 'approval-request' || item.type === 'approval-decision') {
@@ -1538,10 +1669,14 @@ function readCanonicalImportState(context: ImportRemintContext) {
     assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
     return source;
   });
-  const knowledgeSources = exportedKnowledgeSources.map((parsed, index) =>
+  const knowledgeSourceIds = allocateImportedEntityIds(
+    'ks',
+    exportedKnowledgeSources.map((source) => source.id)
+  );
+  const knowledgeSources = exportedKnowledgeSources.map((parsed) =>
     KnowledgeSourceRecordSchema.parse({
       ...parsed,
-      id: `ks_imported_${context.targetWorkspaceId}_${index + 1}`,
+      id: requiredMapValue(knowledgeSourceIds, parsed.id, 'Knowledge source'),
       originatingThreadId: parsed.originatingThreadId
         ? requiredMapValue(threadIds, parsed.originatingThreadId, 'thread')
         : null,
@@ -1557,9 +1692,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
         : null,
       workspaceId: context.targetWorkspaceId,
     })
-  );
-  const knowledgeSourceIds = new Map(
-    exportedKnowledgeSources.map((source, index) => [source.id, knowledgeSources[index]!.id])
   );
   const knowledge = exportedKnowledge;
   parseCanonicalWorkspaceHistory({
@@ -1640,15 +1772,18 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     turnIds,
     workerCheckpointIds,
   } = context;
-  const vaultReferences = readOptionalImportJsonl(
+  const exportedVaultReferences = readOptionalImportJsonl(
     context.files,
     'records/vault-references.jsonl'
-  ).map((record, index) => {
-    const parsed = ExportedWorkspaceVaultReferenceSchema.parse(record);
-
-    return ImportedWorkspaceVaultReferenceSchema.parse({
+  ).map((record) => ExportedWorkspaceVaultReferenceSchema.parse(record));
+  const vaultReferenceIds = allocateImportedEntityIds(
+    'vault',
+    exportedVaultReferences.map((reference) => reference.sourceReferenceId)
+  );
+  const vaultReferences = exportedVaultReferences.map((parsed) =>
+    ImportedWorkspaceVaultReferenceSchema.parse({
       ...parsed,
-      referenceId: `vault_imported_${context.targetWorkspaceId}_${index + 1}`,
+      referenceId: requiredMapValue(vaultReferenceIds, parsed.sourceReferenceId, 'Vault reference'),
       ownerScope: 'workspace',
       workspaceId: context.targetWorkspaceId,
       backendLocator: null,
@@ -1656,19 +1791,21 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       currentVersion: 0,
       createdAt: report.manifest.exportCreatedAt,
       updatedAt: report.manifest.exportCreatedAt,
-    });
-  });
-  const vaultReferenceIds = new Map(
-    vaultReferences.map((reference) => [reference.sourceReferenceId, reference.referenceId])
+    })
   );
   const exportedVaultGrants = readOptionalImportJsonl(
     context.files,
     'records/vault-grants.jsonl'
   ).map((record) => ExportedVaultGrantSchema.parse(record));
-  const vaultGrants = exportedVaultGrants.map((grant, index) =>
+  const vaultGrantIds = allocateImportedEntityIds(
+    'grant',
+    exportedVaultGrants.map((grant) => grant.grantId)
+  );
+  const vaultGrants = exportedVaultGrants.map((grant) =>
     ExportedVaultGrantSchema.parse({
       ...grant,
-      grantId: `grant_imported_${context.targetWorkspaceId}_${index + 1}`,
+      issuance: 'imported-history',
+      grantId: requiredMapValue(vaultGrantIds, grant.grantId, 'Vault grant'),
       approvalId: grant.approvalId
         ? requiredMapValue(approvalRequestIds, grant.approvalId, 'approval request')
         : null,
@@ -1682,9 +1819,6 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       ),
       workspaceId: context.targetWorkspaceId,
     })
-  );
-  const vaultGrantIds = new Map(
-    exportedVaultGrants.map((grant, index) => [grant.grantId, vaultGrants[index]!.grantId])
   );
   const exportedVaultInjectionPlans = readOptionalImportJsonl(
     context.files,
@@ -1795,31 +1929,54 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
           ? requiredMapValue(vaultGrantIds, parsed.vaultGrantId, 'vault grant')
           : null,
         workspaceId: context.targetWorkspaceId,
-        resource:
-          parsed.resource === `workspace:${report.exportedWorkspaceId}`
-            ? `workspace:${context.targetWorkspaceId}`
-            : parsed.resource?.startsWith('goal-review:')
-              ? `goal-review:${parsed.resource.slice('goal-review:'.length)}`
-              : parsed.resource?.startsWith('goal-verification:')
-                ? `goal-verification:${parsed.resource.slice('goal-verification:'.length)}`
-                : parsed.resource?.startsWith('goal-task:')
-                  ? `goal-task:${parsed.resource.slice('goal-task:'.length)}`
-                  : parsed.resource?.startsWith('goal:')
-                    ? `goal:${parsed.resource.slice('goal:'.length)}`
-                    : parsed.resource?.startsWith('worker-checkpoint:')
-                      ? `worker-checkpoint:${requiredMapValue(
-                          workerCheckpointIds,
-                          parsed.resource.slice('worker-checkpoint:'.length),
-                          'worker checkpoint'
-                        )}`
-                      : parsed.resource?.startsWith('vault:') &&
-                          vaultReferenceIds.has(parsed.resource.slice('vault:'.length))
-                        ? `vault:${requiredMapValue(
-                            vaultReferenceIds,
-                            parsed.resource.slice('vault:'.length),
-                            'vault reference'
-                          )}`
-                        : parsed.resource,
+        resource: [
+          'recurring.schedule.create',
+          'recurring.schedule.edit',
+          'recurring.schedule.pause',
+          'recurring.schedule.resume',
+          'recurring.schedule.delete',
+        ].includes(parsed.action)
+          ? requiredMapValue(
+              context.recurringScheduleIds,
+              parsed.resource ?? '',
+              'recurring schedule Audit subject'
+            )
+          : parsed.action === 'recurring.occurrence.terminal'
+            ? requiredMapValue(
+                context.recurringOccurrenceIds,
+                parsed.resource ?? '',
+                'recurring occurrence Audit subject'
+              )
+            : parsed.action === 'recurring.expired-range.record'
+              ? requiredMapValue(
+                  context.recurringRangeIds,
+                  parsed.resource ?? '',
+                  'recurring range Audit subject'
+                )
+              : parsed.resource === `workspace:${report.exportedWorkspaceId}`
+                ? `workspace:${context.targetWorkspaceId}`
+                : parsed.resource?.startsWith('goal-review:')
+                  ? `goal-review:${parsed.resource.slice('goal-review:'.length)}`
+                  : parsed.resource?.startsWith('goal-verification:')
+                    ? `goal-verification:${parsed.resource.slice('goal-verification:'.length)}`
+                    : parsed.resource?.startsWith('goal-task:')
+                      ? `goal-task:${parsed.resource.slice('goal-task:'.length)}`
+                      : parsed.resource?.startsWith('goal:')
+                        ? `goal:${parsed.resource.slice('goal:'.length)}`
+                        : parsed.resource?.startsWith('worker-checkpoint:')
+                          ? `worker-checkpoint:${requiredMapValue(
+                              workerCheckpointIds,
+                              parsed.resource.slice('worker-checkpoint:'.length),
+                              'worker checkpoint'
+                            )}`
+                          : parsed.resource?.startsWith('vault:') &&
+                              vaultReferenceIds.has(parsed.resource.slice('vault:'.length))
+                            ? `vault:${requiredMapValue(
+                                vaultReferenceIds,
+                                parsed.resource.slice('vault:'.length),
+                                'vault reference'
+                              )}`
+                            : parsed.resource,
       });
     }
   );
@@ -2582,6 +2739,7 @@ function readWorkResourceImportState(
       content: requiredExportFile(context.files, `${sourcePackageRoot}/${selection.packagePath}`),
       contentDigest: selection.contentDigest,
       knowledgePageId: selection.knowledgePageId,
+      notebookRevision: selection.notebookRevision,
       sourceRefs: selection.sourceRefs,
     }));
     const targetKnowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => {
@@ -3773,7 +3931,7 @@ interface ImportedRetrievalSelectedPage {
 
 /** Retrieval traces reminted before dependent S39 package reconstruction. */
 interface ImportedRetrievalTraceState {
-  readonly files: ReadonlyMap<string, KnowledgeRetrievalTrace>;
+  readonly files: Map<string, ProductRetrievalTrace>;
   readonly references: ReadonlyMap<string, RetrievalTraceReference>;
   readonly selectedPages: ReadonlyMap<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>;
 }
@@ -3784,7 +3942,7 @@ function retrievalTraceReferenceKey(reference: RetrievalTraceReference): string 
   return `${parsed.scopeId}\0${parsed.objectId}`;
 }
 
-/** Builds the already-owned id substitutions available before S39 digest reconstruction. */
+/** Builds the already-owned id substitutions available at the current import phase. */
 function portableReferenceReplacements(
   context: ImportRemintContext
 ): readonly (readonly [string, string])[] {
@@ -3793,6 +3951,7 @@ function portableReferenceReplacements(
   ]);
   for (const idMap of [
     context.contextPackageReferences,
+    context.knowledgePageReferences,
     context.threadIds,
     context.turnIds,
     context.itemIds,
@@ -3843,7 +4002,12 @@ function remintImportedPageReference(
 }
 
 /** Reconstructs immutable query-owned trace files before S39 consumes their qualified references. */
-function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRetrievalTraceState {
+function readRetrievalTraceImportState(
+  context: ImportRemintContext,
+  targetCanonical: ReturnType<typeof readCanonicalImportState>,
+  sourceTurnRecords: readonly Turn[],
+  notebookPages: ReadonlyMap<string, string>
+): ImportedRetrievalTraceState {
   const tracePaths = [...context.files.keys()]
     .filter((path) =>
       /^workspace-files\/threads\/[^/]+\/(?:turns\/[^/]+\/)?retrieval-traces\/[^/]+\.json$/.test(
@@ -3855,13 +4019,14 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
     throw new Error('Workspace import requires the target Server identity for retrieval traces.');
   }
   const sourceTurns = new Map(
-    readImportJsonl(context.files, 'records/turns.jsonl').map((record) => {
+    sourceTurnRecords.map((record) => {
       const turn = TurnSchema.parse(record);
       return [turn.id, turn.threadId] as const;
     })
   );
   const replacements = portableReferenceReplacements(context);
-  const files = new Map<string, KnowledgeRetrievalTrace>();
+  const files = new Map<string, ProductRetrievalTrace>();
+  const targetItems = new Map(targetCanonical.itemRevisions.map((item) => [item.id, item]));
   const references = new Map<string, RetrievalTraceReference>();
   const selectedPages = new Map<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>();
 
@@ -3893,6 +4058,22 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
         : `retrieval-trace/thread/${context.targetWorkspaceId}/${targetThreadId}`,
       objectId: sourceReference.objectId,
     });
+    if ('sourceKind' in sourceTrace) {
+      importAssistantHistoryTrace({
+        context,
+        sourceTrace,
+        sourceReference,
+        targetReference,
+        targetThreadId,
+        targetTurnId,
+        sourceTurnRecords,
+        targetCanonical,
+        targetItems,
+        files,
+        references,
+      });
+      continue;
+    }
     const targetSourceScope = remintImportedPageScope(sourceTrace.sourceScope, context);
     const expectedSourceScope =
       sourceTrace.retrievalParameters.sourceScope === 'workspace'
@@ -3901,6 +4082,13 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
     if (sourceTrace.sourceScope !== expectedSourceScope) {
       throw new Error('Portable retrieval trace source selection is contradictory.');
     }
+    if (
+      sourceTrace.sourceScope.startsWith('page/workspace/') &&
+      sourceTrace.notebookRevision !== context.report.manifest.knowledgeNotebookRevision
+    )
+      throw new Error(
+        'Portable Knowledge history requires unavailable historical notebook closure.'
+      );
     const targetSelections = new Map<string, ImportedRetrievalSelectedPage>();
     const selected = sourceTrace.selected.map((entry) => {
       const reference = remintImportedPageReference(
@@ -3924,10 +4112,17 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
       const pagePath = `workspace-files/knowledge/pages/${entry.reference.objectId}.md`;
       const sourceContent = requiredExportFile(context.files, pagePath);
       const sourceContentDigest = `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`;
-      if (sourceContentDigest !== entry.contentDigest || entry.revision !== entry.contentDigest) {
+      if (
+        sourceContentDigest !== entry.contentDigest ||
+        entry.revision !== sourceTrace.notebookRevision
+      ) {
         throw new Error('Portable retrieval trace does not match its exported Knowledge Page.');
       }
-      const targetContent = rewriteNativePageReferences(pagePath, sourceContent, replacements);
+      const targetContent = requiredMapValue(
+        notebookPages,
+        pagePath.slice('workspace-files/'.length),
+        'Knowledge Page'
+      );
       const targetContentDigest = `sha256:${createHash('sha256').update(targetContent).digest('hex')}`;
       const targetSourceReferences = rewritePortableReferences(
         entry.sourceReferences,
@@ -3946,7 +4141,7 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
       return {
         ...entry,
         reference,
-        revision: targetContentDigest,
+        revision: sourceTrace.notebookRevision,
         contentDigest: targetContentDigest,
         sourceReferences: targetSourceReferences,
       };
@@ -3973,18 +4168,22 @@ function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRe
         const sourceContentDigest = `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`;
         if (
           sourceContentDigest !== entry.contentDigest ||
-          (entry.revision !== null && entry.revision !== entry.contentDigest)
+          (entry.revision !== null && entry.revision !== sourceTrace.notebookRevision)
         ) {
           throw new Error(
             'Portable retrieval exclusion does not match its exported Knowledge Page.'
           );
         }
-        const targetContent = rewriteNativePageReferences(pagePath, sourceContent, replacements);
+        const targetContent = requiredMapValue(
+          notebookPages,
+          pagePath.slice('workspace-files/'.length),
+          'Knowledge Page'
+        );
         const targetContentDigest = `sha256:${createHash('sha256').update(targetContent).digest('hex')}`;
         return {
           ...entry,
           reference,
-          revision: entry.revision === null ? null : targetContentDigest,
+          revision: entry.revision,
           contentDigest: targetContentDigest,
           sourceReferences: targetSourceReferences,
         };
@@ -4049,11 +4248,35 @@ function readPortableImportState(
   context: ImportRemintContext,
   workerContextPackageFiles: ReadonlyMap<string, string>,
   knowledge: readonly KnowledgeEntry[],
-  retrievalTraceFiles: ReadonlyMap<string, KnowledgeRetrievalTrace>
+  retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>,
+  notebookPages: ReadonlyMap<string, string>
 ): WorkspacePortableFileState {
-  const portableFileState = readPortableFileStateFromExport(context);
+  const portableFileState = readPortableFileStateFromExport(context, notebookPages);
   assertPortableKnowledgePagesMatch(portableFileState.nativeKnowledgePages, knowledge);
   return { ...portableFileState, retrievalTraceFiles, workerContextPackageFiles };
+}
+
+/**
+ * Remints the current Page tree and refreshes its exact pin map as import owners become known.
+ *
+ * Retrieval and S39 need the early projection; the final projection also resolves newly reminted Context Package references.
+ * @param context Current invocation's owned identity and package mappings.
+ * @param pages Verified source Notebook bytes, never an earlier target projection.
+ * @returns Target Page bytes under the mappings available in this phase.
+ */
+function remintImportedNotebookPages(
+  context: ImportRemintContext,
+  pages: ReadonlyMap<string, string>
+): ReadonlyMap<string, string> {
+  const notebook = remintPortableWorkspaceNotebookPages({
+    pages,
+    sourceWorkspaceId: context.report.exportedWorkspaceId,
+    targetWorkspaceId: context.targetWorkspaceId,
+    rewriteReferences: (references) =>
+      rewritePortableReferences(references, portableReferenceReplacements(context)),
+  });
+  context.knowledgePageReferences = new Map(notebook.referenceReplacements);
+  return notebook.pages;
 }
 
 /**
@@ -4075,12 +4298,16 @@ function assertPortableKnowledgePagesMatch(
 
   for (const [path, content] of pages) {
     const parsed = parseOkfDocument({ path, content });
-    const entryId = parsed.document
-      ? stringFrontmatterField(parsed.document, 'openkit_entry_id')
-      : null;
-    if (!entryId) {
-      continue;
-    }
+    if (!parsed.ok) throw new Error('Portable Knowledge Page is invalid.');
+    if (parsed.document.reserved) continue;
+    if (
+      Object.hasOwn(parsed.document.frontmatter, 'openkit_entry_id') &&
+      typeof parsed.document.frontmatter.openkit_entry_id !== 'string'
+    )
+      throw new Error('Portable Knowledge Page has an invalid managed identity.');
+    const entryId =
+      stringFrontmatterField(parsed.document, 'openkit_entry_id') ??
+      path.slice('knowledge/pages/'.length, -3);
     if (matchedIds.has(entryId) || path !== `knowledge/pages/${entryId}.md`) {
       throw new Error(`Portable Knowledge Page identity is ambiguous: ${entryId}`);
     }
@@ -4111,7 +4338,10 @@ function assertPortableKnowledgePagesMatch(
  * @param context Canonical id maps established by the current import.
  * @returns Portable file state ready for staged publication.
  */
-function readPortableFileStateFromExport(context: ImportRemintContext): WorkspacePortableFileState {
+function readPortableFileStateFromExport(
+  context: ImportRemintContext,
+  notebookPages: ReadonlyMap<string, string>
+): WorkspacePortableFileState {
   const files = context.files;
   const replacements = portableReferenceReplacements(context);
   const observations = readImportJsonl(files, 'records/knowledge-observations.jsonl').map(
@@ -4152,6 +4382,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
       sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
     });
   });
+
   let workspaceConfig: string | null = null;
   let workspaceSchema: string | null = null;
   const nativeKnowledgePages = new Map<string, string>();
@@ -4163,12 +4394,12 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
     assertPortableWorkspaceFilePath(workspacePath);
     if (workspacePath === 'config/workspace.jsonc') {
       workspaceConfig = content;
-    } else if (workspacePath === 'knowledge/schema/workspace-schema.yaml') {
+    } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
     } else if (workspacePath.startsWith('knowledge/pages/')) {
       nativeKnowledgePages.set(
         workspacePath,
-        rewriteNativePageReferences(workspacePath, content, replacements)
+        requiredMapValue(notebookPages, workspacePath, 'Knowledge Page')
       );
     } else if (
       workspacePath.startsWith('evidence/bundles/') ||
@@ -4180,6 +4411,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
   }
 
   return {
+    recurringHistory: null,
     observations: groupPortableRecords(observations, (record) => record.observedAt),
     claims: groupPortableRecords(claims, (record) => record.createdAt),
     conflicts: groupPortableRecords(conflicts, (record) => record.resolvedAt ?? record.createdAt),
@@ -4229,29 +4461,6 @@ function groupPortableRecords<T>(
     grouped.set(month, rows);
   }
   return grouped;
-}
-
-/** Rewrites only the structured source_refs field of one native OKF page. */
-function rewriteNativePageReferences(
-  path: string,
-  content: string,
-  replacements: readonly (readonly [string, string])[]
-): string {
-  const parsed = parseOkfDocument({ path, content });
-  if (parsed.document?.frontmatter.source_refs === undefined) {
-    return content;
-  }
-  const sourceReferences = parsed.document
-    ? stringListFrontmatterField(parsed.document, 'source_refs')
-    : null;
-  if (sourceReferences === null) {
-    throw new Error(`Native OKF page has invalid source_refs: ${path}`);
-  }
-  const rewritten = rewritePortableReferences(sourceReferences, replacements);
-  if (rewritten.every((reference, index) => reference === sourceReferences[index])) {
-    return content;
-  }
-  return updateOkfFrontmatter({ path, content, updates: { source_refs: rewritten } });
 }
 
 /**
@@ -5037,6 +5246,14 @@ function readWorkerRuntimeControlState(context: ImportRemintContext) {
       workspaceId: context.targetWorkspaceId,
       threadId,
       turnId,
+      workerSessionId:
+        parsed.workerSessionId === null
+          ? null
+          : requiredMapValue(
+              context.agentSessionIds,
+              parsed.workerSessionId,
+              'checkpoint AgentSession'
+            ),
       checkpointId: `${context.targetWorkspaceId}:${threadId}:${turnId}`,
     });
   });

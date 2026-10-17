@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
-import { deterministicArtifactCommandId } from '../artifact-operations.js';
 import { FsStore } from '../lib/store.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
@@ -30,7 +30,7 @@ function fixture(content = 'prior original') {
     workspace = store.createWorkspace('Canonical capacity');
   const bytes = content;
   const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  const artifactId = deterministicArtifactCommandId('ar_import', [workspace.id, randomUUID()]);
+  const artifactId = allocateEntityId('ar');
   const requestId = randomUUID(),
     time = new Date().toISOString();
   store.createArtifact({
@@ -51,7 +51,7 @@ function fixture(content = 'prior original') {
       sourceKind: 'direct-import',
       sourceId: requestId,
       sourceDigest: contentDigest,
-      actor: { kind: 'user', id: randomUUID() },
+      actor: { kind: 'user', id: allocateEntityId('usr') },
       requestId,
       recordedAt: time,
     },

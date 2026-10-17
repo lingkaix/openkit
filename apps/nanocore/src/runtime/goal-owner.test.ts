@@ -1,12 +1,14 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { checkGoalCommandIntent, executeGoalOperation } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
+import { commandInputHash } from './idempotent-command.js';
 import { respondRecordedApproval } from './pending-request-flow.js';
 import { readPendingRequest } from './pending-requests.js';
 
@@ -18,7 +20,9 @@ describe('Goal durable owner', () => {
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
-      const context = { actor: { kind: 'local' as const, userId: 'user_local' } };
+      const context = {
+        actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      };
       const created = await executeGoalOperation(
         'goal.create',
         {
@@ -87,30 +91,32 @@ describe('Goal durable owner', () => {
       db.sqlite.close();
     }
   });
-  it('refuses a private Quick Chat Coordinator Thread before storing a Goal', async () => {
+  it('creates shared Goal execution in the owner-only personal Workspace', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-audience-'));
     const store = new FsStore({ dataRoot: root });
-    const ws = store.ensureQuickChatWorkspace('user_local');
+    const ws = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
-      await expect(
-        executeGoalOperation(
-          'goal.create',
-          {
-            workspaceId: ws.id,
-            requestId: '44444444-4444-4444-8444-444444444444',
-            intent: 'Produce a shared design',
-          },
-          { actor: { kind: 'local', userId: 'user_local' } },
-          store,
-          db
-        )
-      ).rejects.toThrow('Quick Chat requires its owner-only private audience.');
-      expect(new FsStore({ dataRoot: root }).listThreads(ws.id)).toEqual([]);
-      expect(db.sqlite.prepare('SELECT * FROM goals').all()).toEqual([]);
+      const created = await executeGoalOperation(
+        'goal.create',
+        {
+          workspaceId: ws.id,
+          requestId: '44444444-4444-4444-8444-444444444444',
+          intent: 'Produce a shared design',
+        },
+        { actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' } },
+        store,
+        db
+      );
+      expect(ws.kind).toBe('personal');
+      expect(
+        new FsStore({ dataRoot: root }).getThread(ws.id, created.goal!.threadId)
+      ).toMatchObject({ visibility: 'workspace', threadSource: 'conversation' });
+      expect(db.sqlite.prepare('SELECT * FROM goals').all()).toHaveLength(1);
     } finally {
       db.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -123,7 +129,9 @@ describe('Proposed Plan eligibility', () => {
     const ws = store.createWorkspace('Plan eligibility');
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
-    const human = { actor: { kind: 'local' as const, userId: 'user_local' } };
+    const human = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
     let serial = 10;
     const requestId = () => `00000000-0000-4000-8000-${String(serial++).padStart(12, '0')}`;
     const created = await executeGoalOperation(
@@ -142,7 +150,7 @@ describe('Proposed Plan eligibility', () => {
       ws.id,
       scope.threadId,
       'Coordinate',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       undefined,
       { executorKind: 'coordinator', agentId: 'goal-coordinator' }
     );
@@ -579,7 +587,7 @@ describe('Proposed Plan eligibility', () => {
       const link = {
         goalId: f.scope.goalId,
         cardId: f.card.cardId,
-        threadId: 'th_missing_task',
+        threadId: 'th_00000000-0000-749e-a37d-2ae7769a39a8',
         planVersionId: plan.planVersionId,
         cardRevision: 0,
         admittedAt: new Date().toISOString(),
@@ -654,18 +662,119 @@ describe('Proposed Plan eligibility', () => {
       f.db.sqlite.close();
     }
   });
-  it('captures an exact completion candidate without accepting, then accepts only its unchanged current intent', async () => {
+  it('refuses a Plan grant through completion acceptance without consuming it', async () => {
+    const f = await fixture();
+    try {
+      const plan = await f.propose();
+      await f.resolve(plan.pendingRequestId);
+      await expect(
+        executeGoalOperation(
+          'goal.completion.accept',
+          {
+            ...f.scope,
+            requestId: f.requestId(),
+            pendingRequestId: plan.pendingRequestId,
+            decision: 'granted',
+          },
+          f.coordinator,
+          f.store,
+          f.db
+        )
+      ).rejects.toMatchObject({ code: 'approval_conflict' });
+      expect(readPendingRequest(f.db.sqlite, plan.pendingRequestId)).toMatchObject({
+        claim: 'unclaimed',
+        disposition: null,
+      });
+      const unchanged = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
+      expect(unchanged.goal).toMatchObject({ activePlanVersionId: null, disposition: null });
+      expect((await f.consume(plan.pendingRequestId)).goal!.activePlanVersionId).toBe(
+        plan.planVersionId
+      );
+    } finally {
+      f.db.sqlite.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it('refuses a completion grant through Plan approval and leaves the Goal open', async () => {
+    const f = await fixture();
+    try {
+      const plan = await f.propose();
+      await f.resolve(plan.pendingRequestId);
+      await f.consume(plan.pendingRequestId);
+      const raised = await executeGoalOperation(
+        'goal.completion.accept',
+        {
+          ...f.scope,
+          requestId: f.requestId(),
+          candidate: {
+            intentRevision: 0,
+            intent: 'Produce a design',
+            planVersionId: plan.planVersionId,
+            evidence: [],
+            unresolvedWork: ['Human review remains'],
+            summary: 'Review this exact candidate.',
+          },
+        },
+        f.coordinator,
+        f.store,
+        f.db
+      );
+      const request = raised.requests.find((row) => row.operation === 'goal.completion.accept')!;
+      await executeGoalOperation(
+        'goal.completion.accept',
+        {
+          ...f.scope,
+          requestId: f.requestId(),
+          pendingRequestId: request.requestId,
+          decision: 'granted',
+        },
+        f.human,
+        f.store,
+        f.db
+      );
+      await expect(f.consume(request.requestId)).rejects.toMatchObject({
+        code: 'approval_conflict',
+      });
+      expect(readPendingRequest(f.db.sqlite, request.requestId)).toMatchObject({
+        claim: 'unclaimed',
+        disposition: null,
+      });
+      const unchanged = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
+      expect(unchanged.goal).toMatchObject({
+        activePlanVersionId: plan.planVersionId,
+        disposition: null,
+      });
+    } finally {
+      f.db.sqlite.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it.each([
+    false,
+    true,
+  ])('captures evidence and unresolved work, then rechecks current intent before completion (revised=%s)', async (revised) => {
     const f = await fixture();
     try {
       const p = await f.propose();
       await f.resolve(p.pendingRequestId);
       await f.consume(p.pendingRequestId);
+      const evidence = f.store.createItem({
+        id: testEntityId('it', 'goal-completion-evidence'),
+        workspaceId: f.scope.workspaceId,
+        threadId: f.scope.threadId,
+        turnId: f.coordinator.coordinatorTurnId,
+        type: 'assistant-message',
+        text: 'The schema review is retained. Publication is still pending.',
+        status: 'completed',
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      });
       const candidate = {
         intentRevision: 0,
         intent: 'Produce a design',
         planVersionId: p.planVersionId,
-        evidence: [],
-        unresolvedWork: ['No report retained'],
+        evidence: [{ kind: 'item' as const, id: evidence.id, digest: commandInputHash(evidence) }],
+        unresolvedWork: ['Publication remains'],
         summary: 'Review unresolved work explicitly.',
       };
       const raised = await executeGoalOperation(
@@ -690,7 +799,20 @@ describe('Proposed Plan eligibility', () => {
         f.store,
         f.db
       );
-      const ended = await executeGoalOperation(
+      if (revised)
+        await executeGoalOperation(
+          'goal.intent.revise',
+          {
+            ...f.scope,
+            requestId: f.requestId(),
+            expectedRevision: 0,
+            intent: 'Produce a design and a publication plan',
+          },
+          f.human,
+          f.store,
+          f.db
+        );
+      const completion = executeGoalOperation(
         'goal.completion.accept',
         {
           ...f.scope,
@@ -702,13 +824,26 @@ describe('Proposed Plan eligibility', () => {
         f.store,
         f.db
       );
-      expect(ended.goal!.disposition).toMatchObject({
-        kind: 'accepted',
-        candidate,
-        actorId: 'user_local',
-      });
+      if (revised) {
+        await expect(completion).rejects.toMatchObject({ code: 'grant_conflict' });
+        expect(
+          (await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db)).goal!
+            .disposition
+        ).toBeNull();
+        expect(readPendingRequest(f.db.sqlite, request.requestId)).toMatchObject({
+          disposition: 'denied-not-executed',
+          claim: 'unclaimed',
+        });
+      } else {
+        expect((await completion).goal!.disposition).toMatchObject({
+          kind: 'accepted',
+          candidate,
+          actorId: f.human.actor.userId,
+        });
+      }
     } finally {
       f.db.sqlite.close();
+      rmSync(f.root, { recursive: true, force: true });
     }
   });
 });
@@ -719,8 +854,12 @@ describe('Public Goal command publication', () => {
     const ws = store.createWorkspace('Public proposal');
     const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-public-plan-')), ws.id);
     applyScopedMigrations(db);
-    const person = { actor: { kind: 'local' as const, userId: 'user_local' } };
-    const caller = { actor: { kind: 'session' as const, userId: 'another-writer' } };
+    const person = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
+    const caller = {
+      actor: { kind: 'session' as const, userId: 'usr_00000000-0000-7000-8000-000000000099' },
+    };
     try {
       const created = await executeGoalOperation(
         'goal.create',
@@ -762,14 +901,14 @@ describe('Public Goal command publication', () => {
         requesterKind: 'coordinator',
         agentId: 'goal-coordinator',
         agentSessionId: null,
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         state: 'pending',
       });
       const turn = store.getTurnById(request.raisingTurnId);
       expect(turn).toMatchObject({
         agentId: 'goal-coordinator',
         status: 'completed',
-        triggerActor: { kind: 'user', id: 'another-writer' },
+        triggerActor: { kind: 'user', id: caller.actor.userId },
       });
       expect(turn.agentSessionId).toBeUndefined();
       const replay = await executeGoalOperation('goal.plan.propose', input, caller, store, db);
@@ -786,7 +925,9 @@ describe('Public Goal command publication', () => {
     const origin = store.createThread(ws.id, 'Chat');
     const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-origin-')), ws.id);
     applyScopedMigrations(db);
-    const context = { actor: { kind: 'local' as const, userId: 'user_local' } };
+    const context = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
     const input = {
       workspaceId: ws.id,
       requestId: '10000000-0000-4000-8000-000000000004',

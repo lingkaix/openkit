@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type {
   GenerativePresentation,
   GenerativePresentationDataModelResponse,
@@ -18,6 +18,8 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  allocateEntityId,
+  deriveEntityId,
   type Item,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
@@ -32,7 +34,10 @@ import {
 } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type { FsStore } from '../lib/store.js';
-import { runIdempotentCommand } from '../runtime/idempotent-command.js';
+import {
+  IdempotencyKeyConflictError,
+  runIdempotentCommand,
+} from '../runtime/idempotent-command.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   type AdmittedDeclaration,
@@ -111,14 +116,40 @@ export async function publishGenerativePresentation(
         context.requestId
       );
       if (interrupted) {
+        if (interrupted.semantic_input_hash !== semanticInputHash(input)) {
+          throw new IdempotencyKeyConflictError();
+        }
         throw new KernelCommandError(
           'recovery_required',
           'Interrupted presentation publication requires recovery.'
         );
       }
       const admitted = admitProducerMessages(input);
-      const sourceData = readAuthorizedSource(context, input.source, admitted, input.actions);
-      const dataModel = buildSourceDataModel(input.source, sourceData);
+      const answer = input.source.kind === 'answer' ? input.source : null;
+      const source: GenerativePresentation['source'] =
+        input.source.kind === 'answer'
+          ? {
+              kind: 'item',
+              itemId: answerSourceItemId(context),
+              contentDigest: digestText(input.source.text),
+            }
+          : input.source;
+      if (
+        answer &&
+        source.kind === 'item' &&
+        context.store
+          .listWorkspaceItemRevisions(context.workspaceId)
+          .some((item) => item.id === source.itemId)
+      ) {
+        throw new KernelCommandError(
+          'recovery_required',
+          'Interrupted answer publication requires recovery.'
+        );
+      }
+      const sourceData = answer
+        ? { text: answer.text }
+        : readAuthorizedSource(context, source, admitted, input.actions);
+      const dataModel = buildSourceDataModel(source, sourceData);
       assertExpandedSourceInstances(admitted.components, dataModel);
       const acceptedMessages = [
         input.messages[0],
@@ -139,8 +170,8 @@ export async function publishGenerativePresentation(
           maximum: ACCEPTED_MESSAGE_BYTE_LIMIT,
         });
       }
-      const presentationId = randomUUID();
-      const itemId = `it_${randomUUID()}`;
+      const presentationId = allocateEntityId('pres');
+      const itemId = allocateEntityId('it');
       const createdAt = new Date().toISOString();
       const row: PresentationRow = {
         presentation_id: presentationId,
@@ -152,25 +183,31 @@ export async function publishGenerativePresentation(
         actor_json: JSON.stringify(context.actor),
         request_id: context.requestId,
         origin_request_id: null,
-        semantic_input_hash: digestJson({
-          threadId: input.threadId,
-          turnId: input.turnId,
-          title: input.title,
-          fallbackText: input.fallbackText,
-          messages: input.messages,
-          source: input.source,
-          actions: input.actions,
-        }),
+        semantic_input_hash: semanticInputHash(input),
         title: input.title,
         fallback_text: input.fallbackText,
         protocol_version: GENERATIVE_UI_PROTOCOL_VERSION,
         catalog_id: GENERATIVE_UI_NATIVE_CATALOG_ID,
         messages_json: JSON.stringify(acceptedMessages),
         content_digest: digestJson(acceptedMessages),
-        source_json: JSON.stringify(input.source),
+        source_json: JSON.stringify(source),
         actions_json: JSON.stringify(input.actions),
         observed_at: createdAt,
       };
+      if (answer && source.kind === 'item') {
+        context.store.createItem({
+          id: source.itemId,
+          workspaceId: context.workspaceId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          type: 'assistant-message',
+          status: 'completed',
+          text: answer.text,
+          createdAt,
+          completedAt: createdAt,
+          causationId: context.requestId,
+        });
+      }
       context.workspaceDb.sqlite.transaction(() => {
         insertPresentation(context.workspaceDb, row);
         recordWorkspaceAuditEvent({
@@ -441,7 +478,7 @@ export function listExportableGenerativePresentations(workspaceDb: WorkspaceDb):
 
 function readAuthorizedSource(
   context: GenerativeUiCommandContext,
-  source: PublishGenerativePresentationRequest['source'],
+  source: GenerativePresentation['source'],
   admitted: AdmittedDeclaration,
   actions: readonly GenerativeUiAction[]
 ): { records?: LightAppRecord[]; text?: string; schemaRevision?: number } {
@@ -544,21 +581,26 @@ function readItemSource(
     source,
     new KernelCommandError('not_found', 'Source item was not found.')
   );
-  if (item.type !== 'assistant-message' || item.status !== 'completed') {
+  if (
+    item.status !== 'completed' ||
+    (item.type !== 'assistant-message' && item.type !== 'tool-call') ||
+    (item.type === 'tool-call' && item.result === null)
+  ) {
     throw new KernelCommandError(
       'unsupported_operation',
-      'Item sources must name a completed assistant-message.'
+      'Item sources must name completed assistant text or a completed non-null Tool result.'
     );
   }
-  const digest = digestText(item.text);
+  const text = item.type === 'assistant-message' ? item.text : item.result!;
+  const digest = digestText(text);
   if (digest !== source.contentDigest) {
     throw new KernelCommandError('conflict', 'Item content digest does not match the source.');
   }
-  return item.text;
+  return text;
 }
 
 function buildSourceDataModel(
-  source: PublishGenerativePresentationRequest['source'],
+  source: GenerativePresentation['source'],
   data: { records?: LightAppRecord[]; text?: string; schemaRevision?: number }
 ): unknown {
   if (source.kind === 'item') {
@@ -967,6 +1009,7 @@ function assertSourceReadable(
     return;
   }
   assertItemSourcePublishable(context, source, destinationThreadId);
+  readItemSource(context, source);
 }
 
 function assertActionMessageSize(event: GenerativeUiA2uiAction): void {
@@ -1017,4 +1060,28 @@ function digestJson(value: unknown): string {
 
 function digestText(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
+}
+
+/** Retains the submitted semantic tuple before answer shorthand normalization. */
+function semanticInputHash(input: PublishGenerativePresentationRequest): string {
+  return digestJson({
+    threadId: input.threadId,
+    turnId: input.turnId,
+    title: input.title,
+    fallbackText: input.fallbackText,
+    messages: input.messages,
+    source: input.source,
+    actions: input.actions,
+  });
+}
+
+/** Distinguishes this command's source text from the enclosing conversation result. */
+function answerSourceItemId(context: GenerativeUiCommandContext): string {
+  return deriveEntityId('it', [
+    'generative-ui.publish',
+    context.workspaceId,
+    context.actor.id,
+    context.requestId,
+    'answer-source',
+  ]);
 }

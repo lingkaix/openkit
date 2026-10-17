@@ -1,4 +1,17 @@
-import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  ArtifactIdSchema,
+  ArtifactReviewIdSchema,
+  ExecutionAttemptIdSchema,
+  ItemIdSchema,
+  KnowledgeOwnerScopeSchema,
+  KnowledgeReviewIdSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import {
   KnowledgeProposalContentDigestSchema,
@@ -58,10 +71,10 @@ export const ProtocolItemHumanAttentionSourceSchema = z
   .object({
     type: z.literal('protocol_item'),
     itemType: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    itemId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema,
   })
   .strict();
 
@@ -70,10 +83,10 @@ export const ApprovalHumanAttentionSourceSchema = z
   .object({
     type: z.literal('approval'),
     approvalRequestId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    itemId: z.string().min(1).optional(),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema.optional(),
   })
   .strict();
 
@@ -84,9 +97,9 @@ export const SchedulerAdmissionHumanAttentionSourceSchema = z
     queueEntryId: z.string().min(1),
     status: z.enum(['queued', 'denied']),
     denialReason: z.string().min(1).optional(),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     requestedAgentId: z.string().min(1),
   })
   .strict();
@@ -96,9 +109,9 @@ export const WorkerControlRejectionHumanAttentionSourceSchema = z
   .object({
     type: z.literal('worker_control_rejection'),
     rejectionId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     packageSnapshotId: z.string().min(1),
     route: z.string().min(1),
     operation: z.string().min(1),
@@ -111,13 +124,13 @@ export const WorkerControlRejectionHumanAttentionSourceSchema = z
 export const ExecutionAttemptHumanAttentionSourceSchema = z
   .object({
     type: z.literal('execution_attempt'),
-    attemptId: z.string().min(1),
+    attemptId: ExecutionAttemptIdSchema,
     backendId: z.string().min(1),
     phase: z.enum(['open', 'closing', 'closed']),
     disposition: z.enum(['not_accepted', 'accepted', 'unknown']),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
   })
   .strict();
 
@@ -126,9 +139,9 @@ export const WorkerCheckpointHumanAttentionSourceSchema = z
   .object({
     type: z.literal('worker_checkpoint'),
     checkpointId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     stage: z.string().min(1),
     stopReason: z.string().min(1).nullable().optional(),
   })
@@ -139,7 +152,7 @@ export const AgentReadinessHumanAttentionSourceSchema = z
   .object({
     type: z.literal('agent_readiness'),
     agentId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     status: z.string().min(1),
   })
   .strict();
@@ -148,12 +161,12 @@ export const AgentReadinessHumanAttentionSourceSchema = z
 export const ArtifactReviewHumanAttentionSourceSchema = z
   .object({
     type: z.literal('artifact_review'),
-    reviewId: z.string().min(1),
-    artifactId: z.string().min(1),
+    reviewId: ArtifactReviewIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
   })
   .strict();
 
@@ -163,8 +176,8 @@ export const WorkspaceReviewHumanAttentionSourceSchema = z
     type: z.literal('workspace_review'),
     reviewId: z.string().min(1),
     changeSetId: z.string().min(1),
-    artifactId: z.string().min(1).optional(),
-    workspaceId: z.string().min(1),
+    artifactId: ArtifactIdSchema.optional(),
+    workspaceId: WorkspaceIdSchema,
     status: z.string().min(1),
   })
   .strict();
@@ -174,7 +187,7 @@ export const WorkspaceRecoveryHumanAttentionSourceSchema = z
   .object({
     type: z.literal('workspace_recovery'),
     reconciliationRecordId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     triggerReason: z.enum(['restart', 'backend_takeover', 'manual']),
     stateAfter: z.literal('requires-human'),
     affectedRecordIds: z.array(z.string().min(1)),
@@ -188,7 +201,10 @@ export const KnowledgeHumanAttentionSourceSchema = z
   .object({
     type: z.literal('knowledge'),
     knowledgeProposalId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    proposalDigest: KnowledgeProposalContentDigestSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     status: z.string().min(1),
   })
   .strict();
@@ -225,12 +241,12 @@ export const HumanAttentionRowSchema = z
   .object({
     id: z.string().min(1),
     kind: HumanAttentionKindSchema,
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-    itemId: z.string().min(1).optional(),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema.optional(),
+    turnId: TurnIdSchema.optional(),
+    itemId: ItemIdSchema.optional(),
     reviewId: z.string().min(1).optional(),
-    artifactId: z.string().min(1).optional(),
+    artifactId: ArtifactIdSchema.optional(),
     artifactVersion: z.number().int().positive().optional(),
     goalId: z.string().min(1).optional(),
     taskId: z.string().min(1).optional(),
@@ -307,6 +323,9 @@ export const SubmitKnowledgeProposalDecisionRequestSchema = z
   .object({
     requestId: RequestIdSchema,
     decision: KnowledgeProposalDecisionSchema,
+    proposalDigest: KnowledgeProposalContentDigestSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
   })
   .strict();
 
@@ -314,8 +333,11 @@ export const SubmitKnowledgeProposalDecisionRequestSchema = z
 export const KnowledgeProposalReviewSchema = z
   .object({
     proposalId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    reviewId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    ownerScope: KnowledgeOwnerScopeSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
+    reviewId: KnowledgeReviewIdSchema,
     requestId: RequestIdSchema,
     decision: KnowledgeProposalDecisionSchema,
     actor: ActorRefSchema,
@@ -327,12 +349,13 @@ export const KnowledgeProposalReviewSchema = z
   })
   .strict();
 
-/** Current Knowledge Page presence projected from proposal-owned application lineage. */
+/** Knowledge Page result at the exact published commit named by its command. */
 export const KnowledgeProposalApplicationSchema = z
   .object({
     knowledgePageId: KnowledgeProposalPageIdSchema,
     contentDigest: KnowledgeProposalContentDigestSchema,
     present: z.boolean(),
+    notebookRevision: z.string().min(1),
   })
   .strict();
 
@@ -346,7 +369,9 @@ export const SubmitKnowledgeProposalDecisionResponseSchema = z
   .superRefine((response, context) => {
     const accepted = response.review.decision === 'accepted';
     if (
-      response.review.targetAbsentAtDecision !== (accepted ? true : null) ||
+      (accepted
+        ? response.review.targetAbsentAtDecision === null
+        : response.review.targetAbsentAtDecision !== null) ||
       (accepted ? response.application?.present !== true : response.application !== null)
     ) {
       context.addIssue({
@@ -366,11 +391,13 @@ export const SubmitKnowledgeProposalDecisionResponseSchema = z
     }
   });
 
-/** Request payload for removing one unchanged proposal-created Knowledge Page. */
+/** Request payload for restoring the original selected path after one reviewed change. */
 export const ReverseKnowledgeProposalRequestSchema = z
   .object({
     requestId: RequestIdSchema,
-    reviewId: z.string().min(1),
+    baseRevision: z.string().min(1),
+    confirmRemoval: z.literal(true).optional(),
+    reviewId: KnowledgeReviewIdSchema,
     knowledgePageId: KnowledgeProposalPageIdSchema,
     expectedContentDigest: KnowledgeProposalContentDigestSchema,
   })
@@ -380,8 +407,8 @@ export const ReverseKnowledgeProposalRequestSchema = z
 export const ReverseKnowledgeProposalResponseSchema = z
   .object({
     proposalId: z.string().min(1),
-    reviewId: z.string().min(1),
-    application: KnowledgeProposalApplicationSchema.extend({ present: z.literal(false) }),
+    reviewId: KnowledgeReviewIdSchema,
+    application: KnowledgeProposalApplicationSchema,
   })
   .strict();
 
@@ -395,13 +422,13 @@ export type SubmitKnowledgeProposalDecisionRequest = z.infer<
 >;
 /** Append-only human Knowledge Review row projected after one decision. */
 export type KnowledgeProposalReview = z.infer<typeof KnowledgeProposalReviewSchema>;
-/** Current Knowledge Page presence projected from proposal-owned application lineage. */
+/** Knowledge Page result at the exact published commit named by its command. */
 export type KnowledgeProposalApplication = z.infer<typeof KnowledgeProposalApplicationSchema>;
 /** Response payload after recording one knowledge proposal decision. */
 export type SubmitKnowledgeProposalDecisionResponse = z.infer<
   typeof SubmitKnowledgeProposalDecisionResponseSchema
 >;
-/** Request payload for removing one unchanged proposal-created Knowledge Page. */
+/** Request payload for restoring the original selected path after one reviewed change. */
 export type ReverseKnowledgeProposalRequest = z.infer<typeof ReverseKnowledgeProposalRequestSchema>;
 /** Derived post-reversal projection without a separate reversal record. */
 export type ReverseKnowledgeProposalResponse = z.infer<

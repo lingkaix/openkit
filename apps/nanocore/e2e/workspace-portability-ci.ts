@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deriveEntityId } from '@openkit/protocol';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot,
@@ -20,9 +21,9 @@ import { postJson } from './_lib/http.js';
 const ARCHIVE_FILE = 'workspace.openkit-workspace.tar.zst';
 const DIGEST_FILE = `${ARCHIVE_FILE}.sha256`;
 const SEMANTICS_FILE = 'source-semantics.json';
-const WORKSPACE_ID = 'ws_demo';
+const WORKSPACE_ID = 'ws_00000000-0000-7000-8000-000000000001';
 const KNOWLEDGE_TITLE = 'CI workspace portability knowledge';
-const VAULT_REFERENCE_ID = 'vault_portability_ci';
+const VAULT_REFERENCE_ID = 'vault_00000000-0000-76e5-a790-da0fed8cfd04';
 const cliPath = fileURLToPath(
   new URL('../../../skills/openkit-ops/scripts/openkit', import.meta.url)
 );
@@ -41,7 +42,9 @@ type SemanticSnapshot = {
 const [mode, artifactDir] = process.argv.slice(2);
 
 if ((mode !== 'source' && mode !== 'target') || !artifactDir) {
-  throw new Error('Usage: workspace-portability-ci.ts <source|target> <artifact-directory>');
+  throw new Error(
+    'Usage: ws_00000000-0000-736e-b87b-c0a5752eeb64.ts <source|target> <artifact-directory>'
+  );
 }
 
 await mkdir(artifactDir, { recursive: true });
@@ -69,7 +72,15 @@ async function runSource(outputDir: string): Promise<void> {
     });
     assert.equal(readPath(sourceReferences.data, 'items', 0, 'status'), 'active');
 
+    const sourceNotebook = await runCli(harness.baseUrl, 'knowledge.list', {
+      workspaceId: WORKSPACE_ID,
+    });
     await runCli(harness.baseUrl, 'knowledge.create', {
+      baseRevision: requiredString(
+        sourceNotebook.data.notebookRevision,
+        'Source Notebook revision'
+      ),
+      knowledgePageId: 'ci-portability',
       content: 'The fixed two-job artifact transfer preserves authoritative knowledge.',
       kind: 'project-context',
       requestId: randomUUID(),
@@ -165,7 +176,15 @@ async function runTarget(inputDir: string): Promise<void> {
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('base64')));
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('utf8')));
 
+    const targetNotebook = await runCli(harness.baseUrl, 'knowledge.list', {
+      workspaceId: importedWorkspaceId,
+    });
     await runCli(harness.baseUrl, 'knowledge.create', {
+      baseRevision: requiredString(
+        targetNotebook.data.notebookRevision,
+        'Target Notebook revision'
+      ),
+      knowledgePageId: 'target-portability',
       content: 'Target behavior remains writable after explicit local resource re-binding.',
       kind: 'task-summary',
       requestId: randomUUID(),
@@ -187,7 +206,7 @@ async function runTarget(inputDir: string): Promise<void> {
     });
     assert.equal(reExportDryRun.data.mode, 'dry-run');
     assert.deepEqual(reExportDryRun.data.collision, {
-      suggestedWorkspaceId: `ws_imported_${importedWorkspaceId}`,
+      suggestedWorkspaceId: deriveEntityId('ws', ['imported', importedWorkspaceId, 1]),
       status: 'collides',
       workspaceId: importedWorkspaceId,
     });
@@ -204,25 +223,25 @@ async function runTarget(inputDir: string): Promise<void> {
 async function seedSourceHistory(dataRoot: string): Promise<void> {
   const { FsStore } = await import('../dist/lib/store.js');
   const store = new FsStore({ dataRoot });
-  const actor = { id: 'user_local', kind: 'user' } as const;
+  const actor = { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' } as const;
   const startedAt = '2026-09-02T00:00:00.000Z';
   const completedAt = '2026-09-02T00:00:01.000Z';
   const turn = store.createTurn(
     WORKSPACE_ID,
-    'th_demo',
+    'th_00000000-0000-7000-8000-000000000001',
     'Preserve this complete source Turn history across the portable archive.',
     actor,
     null,
-    { startedAt, turnId: 'tu_portability_ci' }
+    { startedAt, turnId: 'tu_00000000-0000-7194-a67c-32b07effe4b8' }
   );
   const userItem = store.createItem({
     actor,
     completedAt: startedAt,
     createdAt: startedAt,
-    id: 'it_portability_ci_user',
+    id: 'it_00000000-0000-7d0c-ad54-0225525bc75d',
     status: 'completed',
     text: 'Preserve this complete source Turn history across the portable archive.',
-    threadId: 'th_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: turn.id,
     type: 'user-message',
     workspaceId: WORKSPACE_ID,
@@ -230,10 +249,10 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
   const assistantItem = store.createItem({
     completedAt,
     createdAt: completedAt,
-    id: 'it_portability_ci_assistant',
+    id: 'it_00000000-0000-7fd6-ab8f-4ceab3394f63',
     status: 'completed',
     text: 'Portable history is ready for transfer.',
-    threadId: 'th_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: turn.id,
     type: 'assistant-message',
     workspaceId: WORKSPACE_ID,
@@ -244,7 +263,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
       data: { item, itemId: item.id, type: 'item-completed' },
       event: 'item.completed',
       requestId: '00000000-0000-4000-8000-00000000c801',
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       workspaceId: WORKSPACE_ID,
     });
@@ -254,7 +273,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
     data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
     event: 'turn.completed',
     requestId: '00000000-0000-4000-8000-00000000c801',
-    threadId: 'th_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: turn.id,
     workspaceId: WORKSPACE_ID,
   });

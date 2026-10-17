@@ -6,7 +6,7 @@ import {
   operationModelInput,
   operationToolName,
 } from '@openkit/app-api-schemas';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -18,7 +18,12 @@ import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runti
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import { type AgentTool, runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
+import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
+import {
+  internalContextFailure,
+  prepareInternalAgentContext,
+} from '../internal-agents/rolling-context.js';
 import type { FsStore } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
@@ -35,6 +40,7 @@ import {
   type GoalOwnerServices,
   goalActor,
   readGoalView,
+  requireCoordinatorGoal,
 } from './goal-owner.js';
 import { proveFrozenDelivery } from './pending-requests.js';
 import { recoverTaskTerminalFacts } from './task-terminal-fact.js';
@@ -65,7 +71,7 @@ export function considerGoal(
     'Consider current Goal records',
     { kind: 'user', id: actor.userId },
     undefined,
-    { turnId: `tu_goal_${randomUUID()}`, executorKind: 'coordinator', agentId: 'goal-coordinator' }
+    { turnId: allocateEntityId('tu'), executorKind: 'coordinator', agentId: 'goal-coordinator' }
   );
   db.sqlite
     .prepare(
@@ -87,6 +93,22 @@ export interface GoalCoordinatorOptions {
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly taskTool: (goalId: string, turnId: string) => AgentTool;
   readonly services: () => GoalOwnerServices;
+  /** Reuses ordinary Task setup and live readiness, without a reusable conversation pin. */
+  readonly workerCandidates: (
+    workspaceId: string,
+    userId: string
+  ) => readonly GoalWorkerCandidate[];
+}
+/** Bounded product discovery fields; native commands and authored diagnostics are excluded. */
+export interface GoalWorkerCandidate {
+  /** Exact current Agent identity; never inferred from its label. */
+  readonly agentId: string;
+  /** Closed runtime label admitted by the Workflow Coordinator owner. */
+  readonly runtime: 'codex' | 'opencode';
+  /** Current ordinary Task setup result; discovery grants no admission. */
+  readonly readiness: 'ready' | 'blocked' | 'unknown';
+  /** Bounded safe explanations without authored configuration or native diagnostics. */
+  readonly reasons: readonly string[];
 }
 /** Table-derived Goal Tools and linked Task reads bind authority to the admitted Coordinator Turn. */
 export function createGoalTools(input: {
@@ -97,6 +119,7 @@ export function createGoalTools(input: {
   readonly turnId: string;
   readonly services: GoalOwnerServices;
   readonly invoke: ReturnType<typeof createOperationInvocation>;
+  readonly workerCandidates?: GoalCoordinatorOptions['workerCandidates'];
 }): AgentTool[] {
   const goal = readGoalView(input.store, input.db, input.goalId).goal!;
   const goalTools: AgentTool[] = Object.entries(GOAL_OPERATION_DEFINITIONS)
@@ -262,7 +285,100 @@ export function createGoalTools(input: {
       },
     };
   });
-  return [...goalTools, ...evidenceTools];
+  const { $schema: _discoverySchema, ...discoveryInput } = z.toJSONSchema(
+    operationModelInput(OPERATION_DEFINITIONS['agent.list'].inputSchema, [])
+  );
+  const discovery: AgentTool = {
+    name: operationToolName('agent.list'),
+    description:
+      'Discover current Worker candidates for this Goal Workspace. Discovery starts no work; Task admission rechecks the exact selection.',
+    inputSchema: discoveryInput,
+    execute: async (value) => {
+      try {
+        if (!OPERATION_DEFINITIONS['agent.list'].inputSchema.safeParse(value).success)
+          throw new OperationError(
+            'invalid_request',
+            'Worker discovery accepts only an empty object.',
+            400
+          );
+        const candidates = await input.invoke('agent.list', value, {
+          kind: 'coordinator',
+          actor: input.actor,
+          workspaceId: goal.workspaceId,
+          threadId: goal.threadId,
+          goalId: goal.goalId,
+          turnId: input.turnId,
+          requestId: randomUUID(),
+        });
+        if (!input.workerCandidates)
+          throw new OperationError(
+            'worker_discovery_unavailable',
+            'Worker readiness is unavailable.',
+            503
+          );
+        const readiness = input.workerCandidates(goal.workspaceId, goal.responsibleUserId);
+        if (readiness.length > 200)
+          throw new OperationError(
+            'result_too_large',
+            'Worker discovery exceeds the read limit.',
+            413
+          );
+        const items = readiness.map((candidate) => {
+          const catalog = candidates.items.find((agent) => agent.id === candidate.agentId);
+          if (!catalog)
+            throw new OperationError(
+              'worker_discovery_changed',
+              'Worker supply changed; read it again.',
+              409
+            );
+          return { ...candidate, displayName: catalog.name };
+        });
+        const text = JSON.stringify({ items });
+        if (Buffer.byteLength(text) > 64 * 1024)
+          throw new OperationError(
+            'result_too_large',
+            'Worker discovery exceeds the read limit.',
+            413
+          );
+        // Recheck current source, actor and destination after the asynchronous operation boundary.
+        requireCoordinatorGoal(input.store, input.db, {
+          actor: input.actor,
+          goalId: goal.goalId,
+          workspaceId: goal.workspaceId,
+          threadId: goal.threadId,
+          turnId: input.turnId,
+        });
+        if (
+          !input.services.coreDb ||
+          !authorizeWorkspace(
+            input.services.coreDb,
+            input.actor,
+            goal.workspaceId,
+            OPERATION_DEFINITIONS['agent.list']
+          )
+        )
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        return { content: [{ type: 'text', text }] };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                projectOperationError(error) ?? {
+                  code: 'worker_discovery_unavailable',
+                  message: 'Worker discovery is unavailable.',
+                  status: 503,
+                }
+              ),
+            },
+          ],
+        };
+      }
+    },
+  };
+  return [...goalTools, ...evidenceTools, discovery];
 }
 /** Runs ordinary internal-agent Turns and owns their terminal closeout and wake opportunities. */
 export function createGoalCoordinator(options: GoalCoordinatorOptions) {
@@ -328,6 +444,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
           goalId: goal.goalId,
           turnId,
           services: options.services(),
+          workerCandidates: options.workerCandidates,
           invoke: createOperationInvocation({
             coreDb: options.coreDb,
             store,
@@ -344,58 +461,99 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         async (capture) => {
           // Native acceptance of exact source input proves delivery, never grant consumption.
           proveFrozenDelivery(db.sqlite, turnId, new Date().toISOString());
+          const provider = createInternalAgentGatewayProvider({
+            capture,
+            logicalModel: selection.logicalModel,
+            resolveLogicalModel: (id) => {
+              const current = options.runtimeConfig();
+              return resolveLogicalModel(
+                current.gatewayConfig,
+                current.providerRegistry,
+                id,
+                options.providerSubscriptionAccountManager,
+                options.providerCredentialConfigured
+              );
+            },
+            dispatcher: options.llmGatewayDispatcher,
+            resolveGatewayProvider: options.resolveGatewayProvider,
+            ...(options.providerSubscriptionAccountManager
+              ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
+              : {}),
+            promptCacheScope: { sessionId: `goal:${goal.goalId}`, workspaceId: goal.workspaceId },
+            usageEndpoint: 'responses',
+            callContext: {
+              authorityActor: { kind: 'user', id: actor.userId },
+              agentId: 'goal-coordinator',
+              workspaceId: goal.workspaceId,
+              family: 'llm',
+              operation: 'goal.coordinate',
+              capabilityId: 'inference.local.goal_coordinator',
+              providerRef: null,
+              requestId: null,
+              serviceRef: 'llm-gateway',
+              redactionClass: 'metadata-only',
+              summary: 'Goal Coordinator Turn.',
+            },
+          });
+          const model = {
+            logicalModelId: selection.logicalModel.id,
+            capabilities: selection.logicalModel.capabilities,
+            modelFamilyId: selection.logicalModel.modelFamilyId,
+          };
+          const window = await prepareInternalAgentContext({
+            store,
+            turn,
+            systemPrompt,
+            tools,
+            model,
+            bounds: {
+              context: selection.logicalModel.contract?.context,
+              output: selection.logicalModel.contract?.output,
+            },
+            requiredMessages: [
+              { role: 'user', content: [{ type: 'text', text: JSON.stringify(view) }] },
+            ],
+            limits: selection.profile?.limits ?? {
+              maxModelTurns: 8,
+              maxToolCalls: 24,
+              deadlineMs: 120000,
+            },
+            signal: new AbortController().signal,
+            assertCurrent: () => {
+              if (
+                !authorizeWorkspace(options.coreDb!, actor, goal.workspaceId, {
+                  policyOperation: 'workspace.write',
+                  mutating: true,
+                })
+              )
+                throw new Error('Coordinator current authority is unavailable.');
+            },
+            readEvidence: (items) =>
+              readInternalContextEvidence({
+                store,
+                coreDb: options.coreDb!,
+                actor,
+                workspaceId: goal.workspaceId,
+                threadId: goal.threadId,
+                items,
+              }),
+            callProvider: provider,
+          });
           const exit = await runInternalAgentLoop(
             {
               systemPrompt,
-              messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify(view) }] }],
               tools,
-              model: {
-                logicalModelId: selection.logicalModel.id,
-                capabilities: selection.logicalModel.capabilities,
-                modelFamilyId: selection.logicalModel.modelFamilyId,
-              },
-              limits: selection.profile?.limits ?? {
-                maxModelTurns: 8,
-                maxToolCalls: 24,
-                deadlineMs: 120000,
-              },
-              signal: new AbortController().signal,
+              model,
+              messages: window.messages,
+              limits: window.limits,
+              signal: window.signal,
             },
-            createInternalAgentGatewayProvider({
-              capture,
-              logicalModel: selection.logicalModel,
-              resolveLogicalModel: (id) => {
-                const current = options.runtimeConfig();
-                return resolveLogicalModel(
-                  current.gatewayConfig,
-                  current.providerRegistry,
-                  id,
-                  options.providerSubscriptionAccountManager,
-                  options.providerCredentialConfigured
-                );
-              },
-              dispatcher: options.llmGatewayDispatcher,
-              resolveGatewayProvider: options.resolveGatewayProvider,
-              ...(options.providerSubscriptionAccountManager
-                ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
-                : {}),
-              promptCacheScope: { sessionId: `goal:${goal.goalId}`, workspaceId: goal.workspaceId },
-              usageEndpoint: 'responses',
-              callContext: {
-                authorityActor: { kind: 'user', id: actor.userId },
-                agentId: 'goal-coordinator',
-                workspaceId: goal.workspaceId,
-                family: 'llm',
-                operation: 'goal.coordinate',
-                capabilityId: 'inference.local.goal_coordinator',
-                providerRef: null,
-                requestId: null,
-                serviceRef: 'llm-gateway',
-                redactionClass: 'metadata-only',
-                summary: 'Goal Coordinator Turn.',
-              },
-            })
+            (request) => {
+              window.assertCurrent();
+              return provider(request);
+            }
           );
+          window.assertCurrent();
           if (exit.kind !== 'quiescent')
             throw new Error(
               `Coordinator Turn did not finish: ${exit.kind}${'code' in exit ? ` (${exit.code})` : ''}.`
@@ -410,7 +568,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             .join('\n\n');
           if (text)
             store.createItem({
-              id: `it_${randomUUID()}`,
+              id: allocateEntityId('it'),
               workspaceId: goal.workspaceId,
               threadId: goal.threadId,
               turnId,
@@ -428,7 +586,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         store.updateTurn(turnId, {
           status: 'failed',
           completedAt: new Date().toISOString(),
-          error: {
+          error: internalContextFailure(error) ?? {
             code: 'goal_coordinator_failed',
             message: error instanceof Error ? error.message : 'Coordinator failed.',
           },

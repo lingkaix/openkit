@@ -12,6 +12,7 @@ import {
   AgentEnvironmentRuntimeSchema,
   AgentEnvironmentSupplySchema,
   OPENKIT_WORKER_CONTROL_POST_PATHS,
+  RetainedAgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
   validateAgentEnvironmentPackageForBackend,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
@@ -31,11 +32,11 @@ function openshellPackageFixture(): unknown {
     snapshotId: 'aepsnap_demo',
     createdAt: '2026-06-16T00:00:00.000Z',
     scope: {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      agentSessionId: 'as_demo',
-      triggerActor: { kind: 'user', id: 'user_demo' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       requestId: 'req_demo',
     },
     agent: {
@@ -108,13 +109,15 @@ function openshellPackageFixture(): unknown {
           id: 'repo-guidelines',
           version: '1.0.0',
           sourceRef: 'server:skills/repo-guidelines',
-          target: '/openkit/sessions/as_example/supply/inputs/repo-guidelines',
+          target:
+            '/openkit/sessions/as_00000000-0000-76aa-9543-aa11abd11aa9/supply/inputs/repo-guidelines',
           allowedRuntimeAdapters: ['codex'],
           allowedWorkspaceScopes: ['workspace'],
           integrity: { sha256: 'sha256-repo-guidelines-v1' },
           materialization: {
             kind: 'filesystem-copy',
-            targetPath: '/openkit/sessions/as_example/supply/inputs/repo-guidelines',
+            targetPath:
+              '/openkit/sessions/as_00000000-0000-76aa-9543-aa11abd11aa9/supply/inputs/repo-guidelines',
           },
           policyRefIds: ['policy_worker_skill_repo_guidelines'],
           reviewStatus: 'approved',
@@ -152,9 +155,11 @@ function openshellPackageFixture(): unknown {
         },
       },
       transcript: {
-        root: '/openkit/threads/th_demo/codex/capture/turn_demo',
-        eventsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/events.jsonl',
-        itemsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl',
+        root: '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64',
+        eventsPath:
+          '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/events.jsonl',
+        itemsPath:
+          '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/items.jsonl',
         flush: 'line',
         import: 'turn-end',
         required: true,
@@ -179,15 +184,15 @@ function openshellPackageFixture(): unknown {
     vault: {
       references: [
         {
-          id: 'vault_github_read',
+          id: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
           kind: 'secret-ref',
           secretRef: 'vault://github/read',
         },
       ],
       grants: [
         {
-          id: 'grant_github_read',
-          vaultRefId: 'vault_github_read',
+          id: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+          vaultRefId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
           scope: 'agent-session',
           expiresAt: '2026-06-16T01:00:00.000Z',
         },
@@ -329,15 +334,18 @@ function runtimeProvenancePackageFixture(): Record<string, unknown> {
       ...control,
       transcript: {
         ...transcript,
-        root: '/openkit/threads/th_demo/codex/capture/turn_demo',
-        eventsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/events.jsonl',
-        itemsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl',
+        root: '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64',
+        eventsPath:
+          '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/events.jsonl',
+        itemsPath:
+          '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/items.jsonl',
         runtimeProvenance: {
-          rawStreamsRoot: '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw',
+          rawStreamsRoot:
+            '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/raw',
           streamManifestPath:
-            '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw-streams.json',
+            '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/raw-streams.json',
           nativeOriginIndexPath:
-            '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/native-origin-index.jsonl',
+            '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/native-origin-index.jsonl',
           maxTotalBytes: 268_435_456,
           maxStreamCount: 64,
         },
@@ -347,6 +355,39 @@ function runtimeProvenancePackageFixture(): Record<string, unknown> {
 }
 
 describe('agent environment package schema', () => {
+  it.each([
+    { kind: 'user', id: 'usr_01890f3e-0000-7000-8000-000000000001' },
+    {
+      kind: 'agent',
+      id: 'agent_fixture',
+      responsibleUserId: 'usr_01890f3e-0000-7000-8000-000000000001',
+    },
+    { kind: 'integration', id: 'integration_fixture', responsibleUserId: null },
+    { kind: 'system', id: 'system_fixture', responsibleUserId: null },
+    {
+      kind: 'automation',
+      id: 'auto_01890f3e-0000-7000-8000-000000000001',
+      responsibleUserId: 'usr_01890f3e-0000-7000-8000-000000000001',
+    },
+  ])('retains every accepted $kind actor branch while stripping descriptive additions', (actor) => {
+    const base = AgentEnvironmentPackageSchema.parse(openshellPackageFixture());
+    const parsed = RetainedAgentEnvironmentPackageSchema.parse({
+      ...base,
+      scope: { ...base.scope, triggerActor: { ...actor, description: 'Synthetic retained note' } },
+    });
+    expect(parsed.scope.triggerActor).toEqual(actor);
+    const invalid =
+      actor.kind === 'automation'
+        ? { ...actor, id: 'ws_01890f3e-0000-7000-8000-000000000001' }
+        : { ...actor, kind: 'unknown' };
+    expect(
+      RetainedAgentEnvironmentPackageSchema.safeParse({
+        ...base,
+        scope: { ...base.scope, triggerActor: invalid },
+      }).success
+    ).toBe(false);
+  });
+
   it.each([
     'server',
     'workspace',
@@ -507,7 +548,10 @@ describe('agent environment package schema', () => {
     const parsed = AgentEnvironmentPackageSchema.parse(fixture);
 
     expect(parsed.schemaVersion).toBe(4);
-    expect(parsed.scope.triggerActor).toEqual({ kind: 'user', id: 'user_demo' });
+    expect(parsed.scope.triggerActor).toEqual({
+      kind: 'user',
+      id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+    });
     expect(
       AgentEnvironmentPackageSchema.parse({
         ...fixture,
@@ -515,15 +559,15 @@ describe('agent environment package schema', () => {
           ...scope,
           triggerActor: {
             kind: 'automation',
-            id: 'automation_demo',
-            responsibleUserId: 'user_demo',
+            id: 'auto_00000000-0000-78f1-8515-ecaa54916cbe',
+            responsibleUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
           },
         },
       }).scope.triggerActor
     ).toEqual({
       kind: 'automation',
-      id: 'automation_demo',
-      responsibleUserId: 'user_demo',
+      id: 'auto_00000000-0000-78f1-8515-ecaa54916cbe',
+      responsibleUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
     });
     expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, schemaVersion: 1 }).success).toBe(
       false
@@ -555,7 +599,7 @@ describe('agent environment package schema', () => {
           {
             id: 'registry_token',
             targetEnvVarName: 'NPM_TOKEN',
-            vaultGrantId: 'grant_registry_token',
+            vaultGrantId: 'grant_00000000-0000-796e-9496-5f944b238610',
             visibility: 'runtime-env',
           },
         ],
@@ -697,7 +741,7 @@ describe('agent environment package schema', () => {
     for (const targetPath of [
       '/openkit/config',
       '/openkit/sessions',
-      '/openkit/sessions/as_a/context',
+      '/openkit/sessions/as_00000000-0000-75c4-8f9b-15087ed5df6e/context',
     ]) {
       expect(() =>
         WorkerSandboxAccessSchema.parse({
@@ -747,7 +791,7 @@ describe('agent environment package schema', () => {
         filesystem: [
           {
             access: 'read-write',
-            id: 'workspace_cache',
+            id: 'ws_00000000-0000-7d5d-8f65-dbe6c4bd0d3a',
             purpose: 'Workspace cache',
             targetPath: '/workspace/.cache',
           },
@@ -811,7 +855,7 @@ describe('agent environment package schema', () => {
           profileId: 'okp-local-foo-api-v1',
           type: 'generic',
         },
-        vaultGrantId: 'grant_foo_api',
+        vaultGrantId: 'grant_00000000-0000-7d22-ae13-a30bf74a22d5',
         visibility: 'sandbox-provider',
       })
     ).toMatchObject({ id: 'foo_api', visibility: 'sandbox-provider' });
@@ -820,7 +864,7 @@ describe('agent environment package schema', () => {
       AgentEnvironmentCredentialDeclarationSchema.parse({
         id: 'bar_config',
         targetPath: '/sandbox/.config/bar/credentials.json',
-        vaultGrantId: 'grant_bar_config',
+        vaultGrantId: 'grant_00000000-0000-7996-b400-20237e93aeb3',
         visibility: 'runtime-file',
       })
     ).toMatchObject({ targetPath: '/sandbox/.config/bar/credentials.json' });
@@ -829,7 +873,7 @@ describe('agent environment package schema', () => {
       AgentEnvironmentCredentialDeclarationSchema.parse({
         id: 'legacy_cli_key',
         targetEnvVarName: 'LEGACY_API_KEY',
-        vaultGrantId: 'grant_legacy_cli_key',
+        vaultGrantId: 'grant_00000000-0000-780b-9bcb-1d11752198db',
         visibility: 'runtime-env',
       })
     ).toMatchObject({ targetEnvVarName: 'LEGACY_API_KEY' });
@@ -839,7 +883,7 @@ describe('agent environment package schema', () => {
     expect(() =>
       AgentEnvironmentCredentialDeclarationSchema.parse({
         id: 'missing_provider',
-        vaultGrantId: 'grant_missing_provider',
+        vaultGrantId: 'grant_00000000-0000-7725-8e8e-b0289d7f01c4',
         visibility: 'sandbox-provider',
       })
     ).toThrow();
@@ -853,7 +897,7 @@ describe('agent environment package schema', () => {
           profileId: 'okp-local-old-api-v1',
           type: 'generic',
         },
-        vaultGrantId: 'grant_old_api',
+        vaultGrantId: 'grant_00000000-0000-7798-96b1-41c1983c2ea9',
         visibility: 'openshell-provider-proxy',
       })
     ).toThrow();
@@ -862,7 +906,7 @@ describe('agent environment package schema', () => {
       AgentEnvironmentCredentialDeclarationSchema.parse({
         id: 'relative_file',
         targetPath: 'relative/path.json',
-        vaultGrantId: 'grant_relative_file',
+        vaultGrantId: 'grant_00000000-0000-7308-b239-54fd56841c9f',
         visibility: 'runtime-file',
       })
     ).toThrow();
@@ -871,7 +915,7 @@ describe('agent environment package schema', () => {
       AgentEnvironmentCredentialDeclarationSchema.parse({
         id: 'bad_env',
         targetEnvVarName: 'bad-env',
-        vaultGrantId: 'grant_bad_env',
+        vaultGrantId: 'grant_00000000-0000-7ae0-97d2-18f30aed2117',
         visibility: 'runtime-env',
       })
     ).toThrow();
@@ -880,7 +924,7 @@ describe('agent environment package schema', () => {
       AgentEnvironmentCredentialDeclarationSchema.parse({
         id: 'inline_secret',
         token: 'ghp_inline_secret',
-        vaultGrantId: 'grant_inline_secret',
+        vaultGrantId: 'grant_00000000-0000-719c-b513-7cac61e31ec9',
         visibility: 'runtime-env',
         targetEnvVarName: 'INLINE_SECRET',
       })
@@ -898,13 +942,13 @@ describe('agent environment package schema', () => {
             {
               id: 'dup',
               targetEnvVarName: 'DUPLICATE_SECRET',
-              vaultGrantId: 'grant_one',
+              vaultGrantId: 'grant_00000000-0000-70f3-9fb5-882dd7cf73ef',
               visibility: 'runtime-env',
             },
             {
               id: 'dup',
               targetEnvVarName: 'OTHER_SECRET',
-              vaultGrantId: 'grant_two',
+              vaultGrantId: 'grant_00000000-0000-7ef9-ae35-6acc0e2d8c64',
               visibility: 'runtime-env',
             },
           ],
@@ -920,13 +964,13 @@ describe('agent environment package schema', () => {
             {
               id: 'one',
               targetPath: '/sandbox/.config/shared.json',
-              vaultGrantId: 'grant_one',
+              vaultGrantId: 'grant_00000000-0000-70f3-9fb5-882dd7cf73ef',
               visibility: 'runtime-file',
             },
             {
               id: 'two',
               targetPath: '/sandbox/.config/shared.json',
-              vaultGrantId: 'grant_two',
+              vaultGrantId: 'grant_00000000-0000-7ef9-ae35-6acc0e2d8c64',
               visibility: 'runtime-file',
             },
           ],
@@ -963,7 +1007,7 @@ describe('agent environment package schema', () => {
     expect(parsed.control).not.toHaveProperty('endpoint');
     expect(parsed.control).not.toHaveProperty('auth');
     expect(parsed.control.transcript?.itemsPath).toBe(
-      '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl'
+      '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/items.jsonl'
     );
     expect(parsed.supply.skills[0]).toMatchObject({
       id: 'repo-guidelines',
@@ -996,7 +1040,7 @@ describe('agent environment package schema', () => {
 
     expect(parsed.control.transcript).not.toHaveProperty('artifactsPath');
     expect(parsed.control.transcript.itemsPath).toBe(
-      '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl'
+      '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/items.jsonl'
     );
   });
 
@@ -1507,11 +1551,12 @@ describe('agent environment package schema', () => {
     expect(WORKER_RUNTIME_PROVENANCE_FEATURE).toBe(WORKER_PROTOCOL_RUNTIME_PROVENANCE_FEATURE);
     expect(parsed.backend.requiredCapabilities).toContain(WORKER_RUNTIME_PROVENANCE_FEATURE);
     expect(parsed.control.transcript?.runtimeProvenance).toEqual({
-      rawStreamsRoot: '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw',
+      rawStreamsRoot:
+        '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/raw',
       streamManifestPath:
-        '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw-streams.json',
+        '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/raw-streams.json',
       nativeOriginIndexPath:
-        '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/native-origin-index.jsonl',
+        '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/native-origin-index.jsonl',
       maxTotalBytes: 268_435_456,
       maxStreamCount: 64,
     });
@@ -1576,9 +1621,18 @@ describe('agent environment package schema', () => {
 
     for (const override of [
       { rawStreamsRoot: '/tmp/runtime/raw' },
-      { rawStreamsRoot: '/openkit/threads/sibling/codex/capture/turn_demo/runtime/raw' },
-      { rawStreamsRoot: '/openkit/threads/th_demo/pi/capture/turn_demo/runtime/raw' },
-      { rawStreamsRoot: '/openkit/threads/th_demo/codex/capture/other_turn/runtime/raw' },
+      {
+        rawStreamsRoot:
+          '/openkit/threads/sibling/codex/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/raw',
+      },
+      {
+        rawStreamsRoot:
+          '/openkit/threads/th_00000000-0000-7000-8000-000000000001/pi/capture/tu_00000000-0000-77e3-bfde-66477d556f64/runtime/raw',
+      },
+      {
+        rawStreamsRoot:
+          '/openkit/threads/th_00000000-0000-7000-8000-000000000001/codex/capture/other_turn/runtime/raw',
+      },
       { streamManifestPath: '../raw-streams.json' },
       { nativeOriginIndexPath: '/openkit/session/native-origin-index.jsonl' },
       { maxTotalBytes: 0 },
@@ -1699,7 +1753,7 @@ describe('agent environment package schema', () => {
             {
               id: 'github_runtime_env',
               targetEnvVarName: 'GITHUB_TOKEN',
-              vaultGrantId: 'grant_github_runtime_env',
+              vaultGrantId: 'grant_00000000-0000-7442-973b-70a1859f99e7',
               visibility: 'runtime-env',
             },
           ],
@@ -1707,14 +1761,14 @@ describe('agent environment package schema', () => {
         vault: {
           grants: [
             {
-              id: 'grant_github_runtime_env',
+              id: 'grant_00000000-0000-7442-973b-70a1859f99e7',
               scope: 'agent-session',
-              vaultRefId: 'vault_github_runtime_env',
+              vaultRefId: 'vault_00000000-0000-772b-b39c-2e9eac94d65d',
             },
           ],
           references: [
             {
-              id: 'vault_github_runtime_env',
+              id: 'vault_00000000-0000-772b-b39c-2e9eac94d65d',
               kind: 'secret-ref',
               secretRef: 'vault://workspace/github',
             },

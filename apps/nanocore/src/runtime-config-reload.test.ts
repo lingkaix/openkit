@@ -1,13 +1,17 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { once } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { connect, createServer, type ServerHttp2Session } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
+import { getNanoHostTransportSessionAuthority } from './app.js';
+import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
 import { openCoreDb } from './storage/db.js';
@@ -17,6 +21,7 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -86,6 +91,199 @@ function writeServerConfig(dataRoot: string, model: string): void {
     );
 }
 
+describe('NanoHost restart-required reload fencing', () => {
+  for (const mode of ['safe', 'strict', 'dry-run', 'read-failed'] as const) {
+    it(`keeps native connection authority consistent after ${mode} reload`, async () => {
+      const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
+      const coreDb = openCoreDb(dataRoot);
+      const clients: ReturnType<typeof connect>[] = [];
+      const sessions: ServerHttp2Session[] = [];
+      let server: ReturnType<typeof createServer> | undefined;
+      try {
+        applyMigrations(coreDb);
+        const localUserId = ensureLocalUser(coreDb);
+        const store = createDemoStore({ dataRoot });
+        const deploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
+        const host = {
+          bind: { host: '127.0.0.1', port: 3101 },
+          credentialRef: 'fixture-host',
+          credentialSlots: {
+            A: { companionPath: '/fixture/a-companion', secretPath: '/fixture/a-secret' },
+            B: { companionPath: '/fixture/b-companion', secretPath: '/fixture/b-secret' },
+          },
+          deploymentId,
+          identityId: 'fixture-reload-host',
+          rendezvousUrl: 'http://127.0.0.1:3101',
+        };
+        const configPath = join(dataRoot, 'config', 'server.jsonc');
+        const originalConfig = JSON.parse(readFileSync(configPath, 'utf8'));
+        const writeHost = (value: typeof host) =>
+          writeFileSync(configPath, JSON.stringify({ ...originalConfig, nanohost: value }));
+        writeHost(host);
+        const manager = createRuntimeConfigManager({ dataRoot });
+        const initial = manager.current();
+        let app = createApp({ coreDb, dataRoot, runtimeConfigManager: manager, store });
+        const authority = getNanoHostTransportSessionAuthority(app);
+        coreDb.sqlite
+          .prepare(
+            'INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at) VALUES (?, ?, ?, ?)'
+          )
+          .run(host.identityId, deploymentId, 'active', new Date().toISOString());
+        const token = createNanoHostTransportTokenRecord(coreDb, {
+          deploymentId,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          ownerNanoHostIdentityId: host.identityId,
+          responsibleServerAdminActorId: localUserId,
+        });
+        server = createServer(async (request, response) => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const result = await app.fetch(
+            new Request('http://fixture/api/nanohost/transport/session/admit', {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${token.secret}`,
+                'content-type': 'application/json',
+              },
+              body: Buffer.concat(chunks),
+            }),
+            { incoming: request }
+          );
+          response
+            .writeHead(result.status, { 'content-type': 'application/json' })
+            .end(await result.text());
+        });
+        server.on('session', (session) => sessions.push(session));
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        const address = server.address();
+        if (!address || typeof address === 'string')
+          throw new Error('Missing reload fixture address.');
+        const admit = async () => {
+          const client = connect(`http://127.0.0.1:${address.port}`);
+          clients.push(client);
+          const request = client.request({ ':method': 'POST', ':path': '/' });
+          let status: unknown;
+          request.on('response', (headers) => {
+            status = headers[':status'];
+          });
+          const chunks: Buffer[] = [];
+          request.on('data', (chunk: Buffer) => chunks.push(chunk));
+          request.end('{}');
+          await once(request, 'end');
+          return { status, body: JSON.parse(Buffer.concat(chunks).toString()) };
+        };
+        const first = await admit();
+        expect(first.status).toBe(200);
+        expect(first.body.role).toBe('authoritative');
+        const target = getNanoHostRuntimeTarget(coreDb, host.identityId)!;
+        upsertNanoHostRuntimeTarget(coreDb, {
+          ...target,
+          freshEmpty: true,
+          observedAt: new Date().toISOString(),
+          physicalEpoch: 'a'.repeat(64),
+          predecessorFenced: true,
+          ready: true,
+        });
+        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+          ready: true,
+          physicalEpoch: 'a'.repeat(64),
+        });
+        if (mode === 'strict' || mode === 'read-failed') {
+          const candidate = await admit();
+          expect(candidate.status).toBe(200);
+          expect(candidate.body.role).toBe('candidate');
+          expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
+        }
+        writeHost({ ...host, credentialRef: 'fixture-successor' });
+
+        // Direct callers and public operations must cross the same reload fence.
+        if (mode === 'read-failed') {
+          const failure = new Error('Synthetic readiness observation read failed.');
+          const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
+          const targetBeforeReload = getNanoHostRuntimeTarget(coreDb, host.identityId);
+          const readFailure = vi
+            .spyOn(coreDb.sqlite, 'prepare')
+            .mockImplementation((sql: string) => {
+              if (sql.includes('target_id AS targetId') && sql.includes('WHERE identity_id = ?'))
+                throw failure;
+              return prepare(sql);
+            });
+          try {
+            expect(() => manager.reload({ mode: 'safe' })).toThrow(failure);
+            expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
+            expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
+            expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
+          } finally {
+            readFailure.mockRestore();
+          }
+          // Failed durable observation stays unchanged; process fencing does not claim a committed readiness update.
+          expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toEqual(targetBeforeReload);
+        } else if (mode === 'safe') expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+        else {
+          const response = await app.request(
+            ...operationRequest(
+              'runtime.reload',
+              {},
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ mode: 'strict', dryRun: mode === 'dry-run' }),
+              }
+            )
+          );
+          expect(response.status).toBe(200);
+          expect((await response.json()).status).toBe('rejected');
+        }
+        expect(manager.current().openKitConfig.nanohost).toEqual(host);
+        if (mode === 'strict' || mode === 'dry-run') expect(manager.current()).toBe(initial);
+        if (mode === 'dry-run') {
+          expect(authority.mayCarryWork(sessions[0]!)).toBe(true);
+          expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+            ready: true,
+            physicalEpoch: 'a'.repeat(64),
+          });
+          return;
+        }
+        expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
+        expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
+        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+          ready: false,
+          freshEmpty: false,
+          physicalEpoch: null,
+        });
+        if (mode === 'strict' || mode === 'read-failed') {
+          authority.closePhysicalConnection(sessions[0]!);
+          expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
+          expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
+        }
+        expect((await admit()).status).toBe(409);
+
+        writeHost(host);
+        expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+        expect(manager.status().pendingRestart).toEqual([]);
+        expect((await admit()).status).toBe(409);
+        expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
+
+        // A new App lifetime reads the restored startup file and admits a fresh generation.
+        app = createApp({
+          coreDb,
+          dataRoot,
+          runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
+          store,
+        });
+        expect((await admit()).status).toBe(200);
+      } finally {
+        for (const client of clients) client.destroy();
+        for (const session of sessions) session.destroy();
+        if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe('runtime config reload API', () => {
   it('hydrates the joined Workspace name after an accepted config reload', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
@@ -93,7 +291,7 @@ describe('runtime config reload API', () => {
     const workspaceConfigPath = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'config',
       'workspace.jsonc'
     );
@@ -119,7 +317,9 @@ describe('runtime config reload API', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(store.getWorkspace('ws_demo').name).toBe('Reloaded Workspace');
+    expect(store.getWorkspace('ws_00000000-0000-7000-8000-000000000001').name).toBe(
+      'Reloaded Workspace'
+    );
   });
 
   it('keeps provider changes pending restart and exposes the live runtime status', async () => {
@@ -187,8 +387,8 @@ describe('runtime config reload API', () => {
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
     const agentSetup = createTestAgentSetup({
@@ -251,8 +451,8 @@ describe('runtime config reload API', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000301',
               input: 'Run with version one',
             }),
@@ -273,7 +473,10 @@ describe('runtime config reload API', () => {
             .get(turn.id)
         ).toEqual({ phase: 'closed' });
       });
-      const sessionsBeforeReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
+      const sessionsBeforeReload = store.listThreadAgentSessions(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
       expect(sessionsBeforeReload).toEqual([
         expect.objectContaining({ configVersion: 1, stale: false, status: 'idle' }),
       ]);
@@ -306,16 +509,27 @@ describe('runtime config reload API', () => {
       const dashboardRes = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+        body: JSON.stringify({
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        }),
       });
       const dashboard = await dashboardRes.json();
-      const sessionsAfterReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
+      const sessionsAfterReload = store.listThreadAgentSessions(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
 
       expect(dashboardRes.status, JSON.stringify(dashboard)).toBe(200);
       expect(JSON.stringify(dashboard)).not.toMatch(/agentSession/i);
       expect(sessionsAfterReload).toEqual(sessionsBeforeReload);
       expect(
-        store.listThreadTurns('ws_demo', 'th_demo').some((item) => item.status === 'interrupted')
+        store
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .some((item) => item.status === 'interrupted')
       ).toBe(false);
     } finally {
       coreDb.sqlite.close();

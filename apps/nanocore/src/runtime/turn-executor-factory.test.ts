@@ -13,18 +13,18 @@ import {
   sessionStaticControl,
   WorkerSandboxAccessSchema,
 } from '@openkit/config-schema';
+import { ENTITY_KINDS, entityIdPattern, isEntityId } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as attemptActionOwners from '../scheduler-records.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -38,12 +38,15 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -257,6 +260,10 @@ function authorizeNanoHostPackage(
   } catch {
     const fixture = createDemoWorkspaceForUser(ownerUserId);
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({
+        workspaceId: environmentPackage.scope.workspaceId,
+        knowledge: [],
+      }),
       agentSessions: [],
       artifacts: [],
       itemRevisions: [],
@@ -433,7 +440,7 @@ function anchorNanoHostMaterialization(
   try {
     leaseId = internal.requireAttemptId(environmentPackage.snapshotId);
   } catch {
-    leaseId = `lease-fixture:${environmentPackage.snapshotId}`;
+    leaseId = testEntityId('attempt', `lease-fixture:${environmentPackage.snapshotId}`);
   }
   if (
     coreDb.sqlite.prepare('SELECT 1 FROM worker_backend_sessions WHERE attempt_id = ?').get(leaseId)
@@ -534,7 +541,7 @@ function attachNanoHostStorageFixture(
     expectedRevision: binding.revision,
     layout,
     purpose: 'work',
-    responsibleUserId: 'user_fixture',
+    responsibleUserId: 'usr_00000000-0000-7696-8ea8-dab52c9a8217',
     runtimeTargetId: input.runtimeTargetId,
     storageRef: binding.storageRef,
     threadId: input.threadId,
@@ -560,24 +567,24 @@ function completeNanoHostPackage(input: {
   const { agentSetup, ...packageInput } = input;
   const base = resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
-    agentSessionId: String(input.scope.agentSessionId ?? 'as_factory_fixture'),
+    agentSessionId: String(input.scope.agentSessionId ?? testEntityId('as', 'as_factory_fixture')),
     agentSetup: agentSetup ?? createTestAgentSetup(),
     backend: { kind: 'openshell' },
     createdAt: '2026-08-21T00:00:00.000Z',
     requestId: 'request_factory_fixture',
-    triggerActor: { kind: 'user', id: 'user-factory' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
     turn: {
       completedAt: null,
       configVersion: null,
       durationMs: null,
       error: null,
-      id: String(input.scope.turnId ?? 'turn_factory_fixture'),
+      id: String(input.scope.turnId ?? testEntityId('tu', 'turn_factory_fixture')),
       items: [],
       startedAt: '2026-08-21T00:00:00.000Z',
       status: 'running',
-      threadId: String(input.scope.threadId ?? 'thread_factory_fixture'),
-      triggerActor: { kind: 'user', id: 'user-factory' },
-      workspaceId: String(input.scope.workspaceId ?? 'workspace_factory_fixture'),
+      threadId: String(input.scope.threadId ?? 'th_00000000-0000-79ee-a2d0-3fba4a9c8530'),
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
+      workspaceId: String(input.scope.workspaceId ?? 'ws_00000000-0000-7d70-aab0-c1f50b525f79'),
     },
     turnInput: 'Run fixture',
     workspaceCwd: '/workspace',
@@ -770,10 +777,10 @@ async function failLivePartialSandboxActivation(
   const environmentPackage = completeNanoHostPackage({
     runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
     scope: {
-      agentSessionId: `as_${label}`,
-      threadId: `thread_${label}`,
-      turnId: `turn_${label}`,
-      workspaceId: `ws_${label}`,
+      agentSessionId: testEntityId('as', `as_${label}`),
+      threadId: testEntityId('th', `thread_${label}`),
+      turnId: testEntityId('tu', `turn_${label}`),
+      workspaceId: testEntityId('ws', `ws_${label}`),
     },
     snapshotId: `aepsnap_${label}`,
   });
@@ -805,7 +812,7 @@ async function failLivePartialSandboxActivation(
       };
     }
   ).backend;
-  const leaseId = `lease_${label}`;
+  const leaseId = testEntityId('attempt', `lease_${label}`);
   backend.requireAttemptId = () => leaseId;
   authorizeNanoHostPackage(coreDb, environmentPackage);
   anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
@@ -870,15 +877,15 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
   const coreDb = createFactoryCoreDb();
   const effects: NanoHostSessionEffectRequest[] = [];
   const hooks: { onInspect?: () => void } = {};
-  const adminUserId = 'user_storage_admin';
-  const ownerUserId = 'user_storage_owner';
+  const adminUserId = 'usr_00000000-0000-7608-82c1-24d471dc8ebe';
+  const ownerUserId = 'usr_00000000-0000-7616-b399-55d24068709b';
   const tokenId = `token_${label}`;
-  const workspaceId = `workspace_${label}`;
+  const workspaceId = testEntityId('ws', `workspace_${label}`);
   const environmentPackage = completeNanoHostPackage({
     scope: {
-      agentSessionId: `as_${label}`,
-      threadId: `thread_${label}`,
-      turnId: `turn_${label}`,
+      agentSessionId: testEntityId('as', `as_${label}`),
+      threadId: testEntityId('th', `thread_${label}`),
+      turnId: testEntityId('tu', `turn_${label}`),
       triggerActor: { kind: 'user', id: adminUserId },
       workspaceId,
     },
@@ -909,7 +916,7 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     workspaceIds: [],
   });
   bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-    attemptId: `lease_${label}`,
+    attemptId: testEntityId('attempt', `lease_${label}`),
     sandboxBindingRef: `lease-binding:${label}`,
     serverAdminTokenId: tokenId,
   });
@@ -1034,7 +1041,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
 
       const identity: WorkerGovernanceBackendSessionIdentity = {
-        agentSessionId: 'as_effect_carriage',
+        agentSessionId: testEntityId('as', 'as_effect_carriage'),
         backendKind: 'openshell',
         backendSessionId: 'sandbox-effect-carriage',
         deploymentId: runtimeTarget.deploymentId,
@@ -1046,13 +1053,13 @@ describe('createConfiguredTurnExecutor', () => {
       const imageDigest = `sha256:${'d'.repeat(64)}`;
       const imageInspection = createNanoHostEffectRequest(
         identity,
-        'lease_effect_carriage',
+        testEntityId('attempt', 'lease_effect_carriage'),
         'image.inspect',
         { imageDigest }
       );
       const otherLeaseInspection = createNanoHostEffectRequest(
         identity,
-        'lease_effect_carriage_other',
+        testEntityId('attempt', 'lease_effect_carriage_other'),
         'image.inspect',
         { imageDigest }
       );
@@ -1075,7 +1082,7 @@ describe('createConfiguredTurnExecutor', () => {
 
       const sandboxCreate = createNanoHostEffectRequest(
         identity,
-        'lease_effect_carriage',
+        testEntityId('attempt', 'lease_effect_carriage'),
         'sandbox.create',
         {
           imageDigest,
@@ -1085,16 +1092,16 @@ describe('createConfiguredTurnExecutor', () => {
             attachmentGeneration: 1,
             layoutDigest: `sha256:${'a'.repeat(64)}`,
             scopeDigest: `sha256:${'b'.repeat(64)}`,
-            storageRef: 'wst_effect_carriage',
+            storageRef: 'wst_00000000-0000-748a-8c09-e3eb26ff4e25',
             targets: [{ target: '/workspace', volumeRef: 'wsv_effect_carriage' }],
           },
         }
       );
       expect(sandboxCreate.input).toMatchObject({
         backendSessionId: identity.backendSessionId,
-        leaseId: 'lease_effect_carriage',
+        leaseId: testEntityId('attempt', 'lease_effect_carriage'),
         packageSnapshotId: identity.packageSnapshotId,
-        storage: { storageRef: 'wst_effect_carriage' },
+        storage: { storageRef: 'wst_00000000-0000-748a-8c09-e3eb26ff4e25' },
       });
       const pendingSandbox = dispatch.effect(sandboxCreate);
       void pendingSandbox.catch(() => undefined);
@@ -1177,14 +1184,14 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = () => 'lease_pre_witness_cleanup';
+      backend.requireAttemptId = () => testEntityId('attempt', 'lease_pre_witness_cleanup');
       const identity = backend.planSession(
         completeNanoHostPackage({
           scope: {
-            agentSessionId: 'as_pre_witness_cleanup',
-            threadId: 'thread_pre_witness_cleanup',
-            turnId: 'turn_pre_witness_cleanup',
-            workspaceId: 'workspace_pre_witness_cleanup',
+            agentSessionId: testEntityId('as', 'as_pre_witness_cleanup'),
+            threadId: 'th_00000000-0000-7ca5-9987-116ab66f51c7',
+            turnId: testEntityId('tu', 'turn_pre_witness_cleanup'),
+            workspaceId: 'ws_00000000-0000-703d-8b8c-9fdf9957fc96',
           },
           snapshotId: 'aepsnap_pre_witness_cleanup',
         })
@@ -1216,8 +1223,8 @@ describe('createConfiguredTurnExecutor', () => {
         deploymentId: identity.deploymentId,
         runtimeTargetId: identity.runtimeTargetId,
         sandboxBindingRef: 'sandbox-binding-pre-witness-cleanup',
-        threadId: 'thread_pre_witness_cleanup',
-        workspaceId: 'workspace_pre_witness_cleanup',
+        threadId: 'th_00000000-0000-7ca5-9987-116ab66f51c7',
+        workspaceId: 'ws_00000000-0000-703d-8b8c-9fdf9957fc96',
       });
       coreDb.sqlite
         .prepare(
@@ -1227,8 +1234,8 @@ describe('createConfiguredTurnExecutor', () => {
              runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
-             'lease_pre_witness_cleanup', 'workspace_pre_witness_cleanup',
-             'thread_pre_witness_cleanup', 'turn_pre_witness_cleanup', ?, ?, 'openshell', ?, ?, ?,
+             '${testEntityId('attempt', 'lease_pre_witness_cleanup')}', 'ws_00000000-0000-703d-8b8c-9fdf9957fc96',
+             'th_00000000-0000-7ca5-9987-116ab66f51c7', 'tu_00000000-0000-71a2-b61c-25d6b8b41132', ?, ?, 'openshell', ?, ?, ?,
              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
              'lease-binding:pre-witness-cleanup', ?, 'pending',
              'cleanup-pending', ?, ?
@@ -1303,7 +1310,7 @@ describe('createConfiguredTurnExecutor', () => {
         ready: true,
       });
       const identity: WorkerGovernanceBackendSessionIdentity = {
-        agentSessionId: 'as_epoch_race',
+        agentSessionId: testEntityId('as', 'as_epoch_race'),
         backendKind: 'openshell',
         backendSessionId: 'backend-epoch-race',
         deploymentId: 'deployment_epoch_race',
@@ -1320,8 +1327,8 @@ describe('createConfiguredTurnExecutor', () => {
              runtime_target_id, origin_physical_epoch, backend_lineage_json,
              sandbox_binding_ref, staging_directory_ref, workspace_handoff_state,
              state, created_at, updated_at
-           ) VALUES ('lease_epoch_race', 'workspace_epoch_race', 'thread_epoch_race',
-             'turn_epoch_race', ?, ?, 'openshell', ?, ?, ?, ?, ?,
+           ) VALUES ('${testEntityId('attempt', 'lease_epoch_race')}', 'ws_00000000-0000-75f7-b25a-09c4b172778e', 'th_00000000-0000-7f4f-88a5-4b398f8f889d',
+             'tu_00000000-0000-72bc-acff-63dafcde7826', ?, ?, 'openshell', ?, ?, ?, ?, ?,
              'sandbox-binding-epoch-race', ?, 'pending', 'materializing', ?, ?)`
         )
         .run(
@@ -1339,15 +1346,15 @@ describe('createConfiguredTurnExecutor', () => {
       const epochPackage = completeNanoHostPackage({
         scope: {
           agentSessionId: identity.agentSessionId,
-          workspaceId: 'workspace_epoch_race',
-          threadId: 'thread_epoch_race',
-          turnId: 'turn_epoch_race',
+          workspaceId: 'ws_00000000-0000-75f7-b25a-09c4b172778e',
+          threadId: 'th_00000000-0000-7f4f-88a5-4b398f8f889d',
+          turnId: testEntityId('tu', 'turn_epoch_race'),
         },
         snapshotId: identity.packageSnapshotId,
       });
       authorizeNanoHostPackage(coreDb, epochPackage);
       bindNanoHostWorkerLineage(coreDb, epochPackage, {
-        attemptId: 'lease_epoch_race',
+        attemptId: testEntityId('attempt', 'lease_epoch_race'),
         sandboxBindingRef: 'sandbox-binding-epoch-race',
       });
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -1369,9 +1376,9 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = () => 'lease_epoch_race';
+      backend.requireAttemptId = () => testEntityId('attempt', 'lease_epoch_race');
       await expect(
-        backend.effect(identity, 'lease_epoch_race', 'image.inspect', {
+        backend.effect(identity, testEntityId('attempt', 'lease_epoch_race'), 'image.inspect', {
           imageDigest: `sha256:${'d'.repeat(64)}`,
         })
       ).resolves.toEqual({});
@@ -1390,7 +1397,7 @@ describe('createConfiguredTurnExecutor', () => {
         ready: true,
       });
       await expect(
-        backend.effect(identity, 'lease_epoch_race', 'image.inspect', {
+        backend.effect(identity, testEntityId('attempt', 'lease_epoch_race'), 'image.inspect', {
           imageDigest: `sha256:${'d'.repeat(64)}`,
         })
       ).rejects.toThrow(/physical Epoch changed/i);
@@ -1417,7 +1424,7 @@ describe('createConfiguredTurnExecutor', () => {
       ?.split('public async submit(')[0];
     const transcriptSource = backendSource
       ?.split('public async collectTranscript(')[1]
-      ?.split('/** Returns workspace-change candidates')[0];
+      ?.split('/** Returns ws_00000000-0000-7652-b38f-f1800a855e1b candidates')[0];
     const workspaceSource = backendSource
       ?.split('public async collectWorkspaceChanges(')[1]
       ?.split('/** Dispatches one fixed effect')[0];
@@ -1509,10 +1516,10 @@ describe('createConfiguredTurnExecutor', () => {
     const store = createDemoStore();
     const turn = store.updateTurn(
       store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Require configured NanoHost readiness',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null
       ).id,
       { agentId: 'agent_codex_host' }
@@ -1526,7 +1533,7 @@ describe('createConfiguredTurnExecutor', () => {
       await expect(
         runtime.turnExecutor.prepareAgentSessionForTurn?.(store, {
           agentSetup: createTestAgentSetup(),
-          freshAgentSessionId: 'as-missing-runtime-target',
+          freshAgentSessionId: 'as_00000000-0000-7d6e-a3d8-9e0d90e77ae0',
           requestId: 'req-missing-runtime-target',
           turn,
           turnInput: turn.input,
@@ -1571,13 +1578,13 @@ describe('createConfiguredTurnExecutor', () => {
     });
     openNanoHostAgentSessionBinding(coreDb, {
       agentSessionCompatibilityKey: 'c'.repeat(64),
-      agentSessionId: 'as-unready-predecessor',
+      agentSessionId: 'as_00000000-0000-7ff2-9481-d757fe7ac840',
       agentSessionRuntimeBindingId: 'binding-unready-predecessor',
       effectiveSetupGeneration: 1,
       harnessInstanceId: 'harness-unready-admission',
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       timestamp: '2026-08-21T00:00:01.000Z',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: 'deployment-unready-admission',
@@ -1588,10 +1595,10 @@ describe('createConfiguredTurnExecutor', () => {
     const store = createDemoStore();
     const turn = store.updateTurn(
       store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Do not close before readiness',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null
       ).id,
       { agentId: 'agent_codex_host' }
@@ -1600,7 +1607,7 @@ describe('createConfiguredTurnExecutor', () => {
       agentId: 'agent_codex_host',
       createdAt: '2026-08-21T00:00:01.000Z',
       environmentPackageSnapshotId: 'aepsnap-unready-predecessor',
-      id: 'as-unready-predecessor',
+      id: 'as_00000000-0000-7ff2-9481-d757fe7ac840',
       message: null,
       policySnapshotId: 'worker_turn_launch_policy',
       sessionCompatibilityKey: `sha256:${'d'.repeat(64)}`,
@@ -1619,20 +1626,20 @@ describe('createConfiguredTurnExecutor', () => {
       await expect(
         runtime.turnExecutor.prepareAgentSessionForTurn?.(store, {
           agentSetup: createTestAgentSetup(),
-          freshAgentSessionId: 'as-after-unready-predecessor',
+          freshAgentSessionId: 'as_00000000-0000-75cf-8a90-5e33ce6f37f2',
           requestId: 'req-unready-runtime-target',
           turn,
           turnInput: turn.input,
           workspaceRoots: [],
         })
       ).rejects.toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
-      expect(store.getAgentSession('as-unready-predecessor').status).toBe('idle');
+      expect(store.getAgentSession('as_00000000-0000-7ff2-9481-d757fe7ac840').status).toBe('idle');
       expect(
         coreDb.sqlite
           .prepare(
             'SELECT lifecycle_state AS lifecycleState FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
           )
-          .get('as-unready-predecessor')
+          .get('as_00000000-0000-7ff2-9481-d757fe7ac840')
       ).toEqual({ lifecycleState: 'opening' });
       expect(
         coreDb.sqlite
@@ -1790,10 +1797,10 @@ describe('createConfiguredTurnExecutor', () => {
     const store = createDemoStore();
     const turn = store.updateTurn(
       store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Admit against ready NanoHost',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null
       ).id,
       { agentId: 'agent_codex_host' }
@@ -1807,14 +1814,14 @@ describe('createConfiguredTurnExecutor', () => {
       await expect(
         runtime.turnExecutor.prepareAgentSessionForTurn?.(store, {
           agentSetup: createTestAgentSetup(),
-          freshAgentSessionId: 'as-ready-runtime-target',
+          freshAgentSessionId: 'as_00000000-0000-7ef6-8585-a46fb4284ef8',
           requestId: 'req-ready-runtime-target',
           turn,
           turnInput: turn.input,
           workspaceRoots: [],
         })
       ).resolves.toEqual({
-        agentSessionId: 'as-ready-runtime-target',
+        agentSessionId: 'as_00000000-0000-7ef6-8585-a46fb4284ef8',
         currentAgentSession: null,
         replacementRequired: false,
         sessionCompatibilityKey: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
@@ -1856,19 +1863,19 @@ describe('createConfiguredTurnExecutor', () => {
         deploymentId: 'deployment_factory_restore',
         runtimeTargetId: 'target_factory_restore',
         sandboxBindingRef: 'sandbox-binding-factory-restore',
-        threadId: 'thread-one',
-        workspaceId: 'workspace-factory-restore',
+        threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+        workspaceId: 'ws_00000000-0000-70f1-89ce-933e4aeb49a8',
       });
       for (const suffix of ['one', 'two']) {
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: suffix === 'one' ? 'b'.repeat(64) : 'c'.repeat(64),
-          agentSessionId: `agent-session-${suffix}`,
+          agentSessionId: testEntityId('as', `agent-session-${suffix}`),
           agentSessionRuntimeBindingId: `agent-session-binding-${suffix}`,
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-factory-restore',
           threadId: `thread-${suffix}`,
           timestamp: '2026-08-21T00:00:00.000Z',
-          workspaceId: 'workspace-factory-restore',
+          workspaceId: 'ws_00000000-0000-70f1-89ce-933e4aeb49a8',
         });
       }
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -1902,7 +1909,9 @@ describe('createConfiguredTurnExecutor', () => {
         ]
           .map(([agentSessionId]) => agentSessionId)
           .sort()
-      ).toEqual(['agent-session-one', 'agent-session-two']);
+      ).toEqual(
+        [testEntityId('as', 'agent-session-one'), testEntityId('as', 'agent-session-two')].sort()
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -1972,7 +1981,7 @@ describe('createConfiguredTurnExecutor', () => {
         queueEntryId: 'queue_continuity_commit',
         requestedAgentId: 'agent_codex_host',
         threadId: input.threadId,
-        turnId: 'turn-continuity-commit',
+        turnId: 'tu_00000000-0000-7198-835c-d2d0d4772464',
         turnInput: 'Commit exact continuity',
         triggerActor: environmentPackage.scope.triggerActor,
         workspaceId: input.workspaceId,
@@ -1982,7 +1991,7 @@ describe('createConfiguredTurnExecutor', () => {
           coreDb,
           'queue_continuity_commit'
         ),
-        attemptId: 'lease-continuity-commit',
+        attemptId: testEntityId('attempt', 'lease-continuity-commit'),
         preparationInput: { admission: 'queue_continuity_commit' },
       });
       attempts.bindSchedulerExecutionAttemptSession(coreDb, {
@@ -1994,7 +2003,7 @@ describe('createConfiguredTurnExecutor', () => {
         backend.prepareAgentSessionContinuity?.({
           ...input,
           admissionAgentSessionId: input.agentSessionId,
-          admissionAttemptId: 'lease-continuity-commit',
+          admissionAttemptId: testEntityId('attempt', 'lease-continuity-commit'),
         })
       ).resolves.toBe('replacement-required');
       expect(
@@ -2023,20 +2032,20 @@ describe('createConfiguredTurnExecutor', () => {
         backend.prepareAgentSessionContinuity?.({
           ...input,
           admissionAgentSessionId: input.agentSessionId,
-          admissionAttemptId: 'lease-continuity-commit',
+          admissionAttemptId: testEntityId('attempt', 'lease-continuity-commit'),
         })
       ).resolves.toBe('sandbox-replacement-required');
       coreDb.sqlite
         .prepare(
           `UPDATE scheduler_execution_attempts SET agent_session_id = ?
-           WHERE attempt_id = 'lease-continuity-commit'`
+           WHERE attempt_id = '${testEntityId('attempt', 'lease-continuity-commit')}'`
         )
-        .run('as-continuity-successor');
+        .run('as_00000000-0000-7ae9-8d3d-3dddb5075810');
       const retirementPackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'as-continuity-successor',
+          agentSessionId: 'as_00000000-0000-7ae9-8d3d-3dddb5075810',
           threadId: input.threadId,
-          turnId: 'turn-continuity-commit',
+          turnId: 'tu_00000000-0000-7198-835c-d2d0d4772464',
           workspaceId: input.workspaceId,
         },
         snapshotId: 'snapshot-continuity-retirement',
@@ -2053,7 +2062,7 @@ describe('createConfiguredTurnExecutor', () => {
         backend.prepareAgentSessionContinuity?.({
           ...input,
           admissionAgentSessionId: retirementPackage.scope.agentSessionId,
-          admissionAttemptId: 'lease-continuity-commit',
+          admissionAttemptId: testEntityId('attempt', 'lease-continuity-commit'),
           environmentPackage: retirementPackage,
           reuseAllowed: false,
         })
@@ -2075,6 +2084,11 @@ describe('createConfiguredTurnExecutor', () => {
   async function admitIdleSupplyResident(
     label: string,
     options: {
+      scope?: Pick<
+        AgentEnvironmentPackage['scope'],
+        'workspaceId' | 'threadId' | 'agentSessionId' | 'turnId'
+      >;
+      attemptId?: string;
       agentSetup?: ReturnType<typeof createTestAgentSetup>;
       exactBinding?: boolean;
       capacity?: number;
@@ -2125,9 +2139,9 @@ describe('createConfiguredTurnExecutor', () => {
         };
       };
     const readyDigest = 'a'.repeat(64);
-    const workspaceId = `workspace_${label}`;
-    const threadId = `thread_${label}`;
-    const agentSessionId = `as_${label}`;
+    const workspaceId = options.scope?.workspaceId ?? testEntityId('ws', `workspace_${label}`);
+    const threadId = options.scope?.threadId ?? testEntityId('th', `thread_${label}`);
+    const agentSessionId = options.scope?.agentSessionId ?? testEntityId('as', `as_${label}`);
     coreDb.sqlite
       .prepare(
         `INSERT INTO nanohost_runtime_targets (
@@ -2207,7 +2221,7 @@ describe('createConfiguredTurnExecutor', () => {
       scope: {
         agentSessionId,
         threadId,
-        turnId: `turn_${label}`,
+        turnId: options.scope?.turnId ?? testEntityId('tu', `turn_${label}`),
         workspaceId,
       },
       snapshotId: `snapshot_${label}`,
@@ -2215,7 +2229,7 @@ describe('createConfiguredTurnExecutor', () => {
     authorizeNanoHostPackage(coreDb, environmentPackage);
     options.configurePackage?.(environmentPackage, coreDb);
     bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-      attemptId: `lease_${label}`,
+      attemptId: options.attemptId ?? testEntityId('attempt', `lease_${label}`),
       sandboxBindingRef: `sandbox-binding:${label}`,
     });
     anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
@@ -2336,7 +2350,10 @@ describe('createConfiguredTurnExecutor', () => {
     const capturedSession = backend.sessions.get(environmentPackage.snapshotId);
     await backend.cleanupSession(backend.planSession(environmentPackage));
 
-    await closeFactoryAttempt(coreDb, `lease_${label}`);
+    await closeFactoryAttempt(
+      coreDb,
+      options.attemptId ?? testEntityId('attempt', `lease_${label}`)
+    );
     expect(
       coreDb.sqlite
         .prepare(
@@ -2399,7 +2416,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease_thread_root',
+        attemptId: testEntityId('attempt', 'lease_thread_root'),
         sandboxBindingRef: 'binding_thread_root',
       });
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
@@ -2466,15 +2483,18 @@ describe('createConfiguredTurnExecutor', () => {
             ...f.environmentPackage.scope,
             ...(index === 0
               ? {}
-              : { agentSessionId: `as_${label}_${index}`, threadId: `thread_${label}_${index}` }),
-            turnId: `turn_${label}_live_${index}`,
+              : {
+                  agentSessionId: testEntityId('as', `as_${label}_${index}`),
+                  threadId: testEntityId('th', `thread_${label}_${index}`),
+                }),
+            turnId: testEntityId('tu', `turn_${label}_live_${index}`),
           },
           snapshotId: `snapshot_${label}_live_${index}`,
         });
         authorizeNanoHostPackage(f.coreDb, environmentPackage);
         const routeBindingRef = `sandbox-binding:${label}:live_${index}`;
         bindNanoHostWorkerLineage(f.coreDb, environmentPackage, {
-          attemptId: `lease_${label}_${index}`,
+          attemptId: testEntityId('attempt', `lease_${label}_${index}`),
           sandboxBindingRef: routeBindingRef,
         });
         anchorNanoHostMaterialization(f.coreDb, f.backend, environmentPackage);
@@ -2552,7 +2572,7 @@ describe('createConfiguredTurnExecutor', () => {
       await firstPeek;
 
       // A sibling command cannot erase persisted admission if Core missed the submit observation.
-      const inspectedLease = `lease_${label}_1`;
+      const inspectedLease = testEntityId('attempt', `lease_${label}_1`);
       f.coreDb.sqlite
         .prepare("UPDATE worker_backend_sessions SET state = 'launching' WHERE attempt_id = ?")
         .run(inspectedLease);
@@ -2609,7 +2629,7 @@ describe('createConfiguredTurnExecutor', () => {
       await f.backend.cleanupSession(f.backend.planSession(firstPackage));
       // Session-local cleanup alone does not complete the Core output/drain/revocation barrier.
       expect(f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe('capacity-saturated');
-      await closeFactoryAttempt(f.coreDb, `lease_${label}_0`);
+      await closeFactoryAttempt(f.coreDb, testEntityId('attempt', `lease_${label}_0`));
       expect(f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
       expect(
         f.effects.filter(
@@ -2626,10 +2646,10 @@ describe('createConfiguredTurnExecutor', () => {
 
       // A materialized no-effect successor does not own its AS's retained idle resident or siblings.
       const noEffect = completeNanoHostPackage({
-        scope: { ...firstPackage.scope, turnId: `turn_${label}_no_effect` },
+        scope: { ...firstPackage.scope, turnId: testEntityId('tu', `turn_${label}_no_effect`) },
         snapshotId: `snapshot_${label}_no_effect`,
       });
-      const noEffectAttempt = `lease_${label}_no_effect`;
+      const noEffectAttempt = testEntityId('attempt', `lease_${label}_no_effect`);
       bindNanoHostWorkerLineage(f.coreDb, noEffect, {
         attemptId: noEffectAttempt,
         sandboxBindingRef: `sandbox-binding:${label}:no_effect`,
@@ -2739,7 +2759,7 @@ describe('createConfiguredTurnExecutor', () => {
         expect(f.backend.inspectMaterializationCapacity?.(packages[1]!)).toBe('capacity-saturated');
         for (let index = 1; index < bound; index += 1) {
           await f.backend.cleanupSession(f.backend.planSession(packages[index]!));
-          await closeFactoryAttempt(f.coreDb, `lease_${label}_${index}`);
+          await closeFactoryAttempt(f.coreDb, testEntityId('attempt', `lease_${label}_${index}`));
         }
         expect(f.effects).toHaveLength(effectsAfterFence);
         expect(f.backend.inspectMaterializationCapacity?.(packages[1]!)).toBe('available');
@@ -2847,6 +2867,13 @@ describe('createConfiguredTurnExecutor', () => {
         ],
       });
       const resident = await admitIdleSupplyResident('producer_pin', {
+        scope: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-7000-8000-000000000001',
+        },
+        attemptId: 'attempt_00000000-0000-7000-8000-000000000001',
         agentSetup: createTestAgentSetup({ network: authored.network }),
         onExport,
         configurePackage: (pkg) => {
@@ -2944,7 +2971,7 @@ describe('createConfiguredTurnExecutor', () => {
         }) as NanoHostSessionDispatch['effect'],
       });
       const candidate = {
-        artifactId: 'artifact_pin',
+        artifactId: testEntityId('ar', 'artifact_pin'),
         artifactVersion: 1,
         contentDigest: `sha256:${'c'.repeat(64)}`,
       };
@@ -3024,8 +3051,12 @@ describe('createConfiguredTurnExecutor', () => {
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
           { ...target, coreDb }
         );
-        void dispatch.effect(request).catch(() => undefined);
+        let dispatchFailure: unknown;
+        void dispatch.effect(request).catch((error) => {
+          dispatchFailure = error;
+        });
         const command = await dispatch.poll(physical, request.kind);
+        if (!command && dispatchFailure) throw dispatchFailure;
         expect(command, `${producer} ${request.kind}`).not.toBeNull();
         fixture.push({
           producer,
@@ -3049,8 +3080,24 @@ describe('createConfiguredTurnExecutor', () => {
       }
       // Normalize only generated identity values, never field names or authored payloads.
       const volumeIds = new Map<string, string>();
+      const entityIds = new Map<string, string>();
+      const entityCounts = new Map<string, number>();
       const normalized = JSON.parse(
         JSON.stringify(fixture, (key, value) => {
+          if (typeof value === 'string' && key !== 'storageRef') {
+            const kind = ENTITY_KINDS.find((candidate) => isEntityId(candidate, value));
+            if (kind) {
+              if (!entityIds.has(value)) {
+                const ordinal = (entityCounts.get(kind) ?? 0) + 1;
+                entityCounts.set(kind, ordinal);
+                entityIds.set(
+                  value,
+                  `${kind}_00000000-0000-7000-8000-${ordinal.toString(16).padStart(12, '0')}`
+                );
+              }
+              return entityIds.get(value);
+            }
+          }
           if (value?.type === 'Buffer')
             return { type: 'Buffer', hex: Buffer.from(value.data).toString('hex') };
           if (key === 'requestId') {
@@ -3066,8 +3113,8 @@ describe('createConfiguredTurnExecutor', () => {
             return `nh-${'1'.repeat(16)}`;
           }
           if (key === 'storageRef') {
-            expect(value).toMatch(/^wst_[0-9a-f]{32}$/);
-            return `wst_${'1'.repeat(32)}`;
+            expect(value).toMatch(entityIdPattern('wst'));
+            return 'wst_00000000-0000-7ac8-9f6c-13552db6aa87';
           }
           if (key === 'sandboxIntegrationBindingRef') {
             expect(value).toMatch(/^integration-binding-/);
@@ -3141,7 +3188,7 @@ describe('createConfiguredTurnExecutor', () => {
           .prepare(
             'UPDATE scheduler_execution_attempts SET worker_capability_token_hash = ? WHERE attempt_id = ?'
           )
-          .run('f'.repeat(64), `lease_live_evidence_${mode}`);
+          .run('f'.repeat(64), testEntityId('attempt', `lease_live_evidence_${mode}`));
       const before = fixture.effects.filter((effect) => effect.kind === 'file.export').length;
       const capture = (fixture.backend as unknown as { captureArtifact: WorkerArtifactCapture })
         .captureArtifact;
@@ -3888,7 +3935,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(live.sensitiveValues).toContain('sandbox-binding:credential_admission');
       f.coreDb.sqlite
         .prepare('UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?')
-        .run('2000-01-01T00:00:00.000Z', 'lease_credential_admission');
+        .run('2000-01-01T00:00:00.000Z', testEntityId('attempt', 'lease_credential_admission'));
       const recovered = collector.transcriptCredentialCheckValues({
         ...session,
         liveRouteTokens: null,
@@ -3903,7 +3950,7 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           'UPDATE scheduler_execution_attempts SET worker_control_token_hash = NULL WHERE attempt_id = ?'
         )
-        .run('lease_credential_admission');
+        .run(testEntityId('attempt', 'lease_credential_admission'));
       expect(() =>
         collector.transcriptCredentialCheckValues({
           ...session,
@@ -4177,8 +4224,8 @@ describe('createConfiguredTurnExecutor', () => {
         ...environmentPackage,
         scope: {
           ...environmentPackage.scope,
-          turnId: 'turn_supply_same_next',
-          requestId: `request:${'turn_supply_same_next'}`,
+          turnId: testEntityId('tu', 'turn_supply_same_next'),
+          requestId: `request:${testEntityId('tu', 'turn_supply_same_next')}`,
         },
         snapshotId: 'snapshot_supply_same_next',
       };
@@ -4197,7 +4244,7 @@ describe('createConfiguredTurnExecutor', () => {
       ).resolves.toBe('reusable');
       authorizeNanoHostPackage(coreDb, nextPackage);
       bindNanoHostWorkerLineage(coreDb, nextPackage, {
-        attemptId: 'lease_supply_same_next',
+        attemptId: testEntityId('attempt', 'lease_supply_same_next'),
         sandboxBindingRef: 'sandbox-binding:supply-same-next',
       });
       anchorNanoHostMaterialization(coreDb, backend, nextPackage);
@@ -4246,7 +4293,10 @@ describe('createConfiguredTurnExecutor', () => {
     try {
       const decisionPackage = withChange(
         environmentPackage,
-        { ...environmentPackage.scope, turnId: 'turn_supply_mcp_next' },
+        {
+          ...environmentPackage.scope,
+          turnId: testEntityId('tu', 'turn_supply_mcp_next'),
+        },
         'snapshot_supply_mcp_next'
       );
       if (change === 'mcp')
@@ -4299,9 +4349,9 @@ describe('createConfiguredTurnExecutor', () => {
         environmentPackage,
         {
           ...environmentPackage.scope,
-          agentSessionId: 'as_supply_mcp_successor',
-          turnId: 'turn_supply_mcp_successor',
-          requestId: `request:${'turn_supply_mcp_successor'}`,
+          agentSessionId: testEntityId('as', 'as_supply_mcp_successor'),
+          turnId: testEntityId('tu', 'turn_supply_mcp_successor'),
+          requestId: `request:${testEntityId('tu', 'turn_supply_mcp_successor')}`,
         },
         'snapshot_supply_mcp_successor'
       );
@@ -4329,7 +4379,7 @@ describe('createConfiguredTurnExecutor', () => {
       const resume = { digest: readyDigest, locator: environmentPackage.scope.agentSessionId };
       authorizeNanoHostPackage(coreDb, successorPackage);
       bindNanoHostWorkerLineage(coreDb, successorPackage, {
-        attemptId: 'lease_supply_mcp_successor',
+        attemptId: testEntityId('attempt', 'lease_supply_mcp_successor'),
         sandboxBindingRef: 'sandbox-binding:supply-mcp-successor',
       });
       anchorNanoHostMaterialization(coreDb, backend, successorPackage);
@@ -4378,7 +4428,7 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb.sqlite
           .prepare('SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings')
           .all()
-      ).toEqual([{ agentSessionId: 'as_supply_mcp_successor' }]);
+      ).toEqual([{ agentSessionId: testEntityId('as', 'as_supply_mcp_successor') }]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -4445,19 +4495,19 @@ describe('createConfiguredTurnExecutor', () => {
         deploymentId: 'deployment_restart_same_epoch',
         layout,
         runtimeTargetId: 'target_restart_same_epoch',
-        workspaceId: 'workspace_restart_same_epoch',
+        workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb',
       });
       const predecessor = reserveWorkerStorageAttachment(coreDb, {
-        agentSessionId: 'as_restart_same_epoch_predecessor',
+        agentSessionId: testEntityId('as', 'as_restart_same_epoch_predecessor'),
         authorizeContributor: () => true,
         expectedRevision: createdStorage.revision,
         layout,
         purpose: 'work',
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: 'target_restart_same_epoch',
         storageRef: createdStorage.storageRef,
-        threadId: 'thread_restart_same_epoch_predecessor',
-        workspaceId: 'workspace_restart_same_epoch',
+        threadId: 'th_00000000-0000-7980-ad21-84518466e2ab',
+        workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb',
       });
       const predecessorAttached = activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: predecessor.attachmentGeneration,
@@ -4476,12 +4526,18 @@ describe('createConfiguredTurnExecutor', () => {
       const retainedWorkSlotRef = predecessor.currentWorkSlotRef;
       if (!retainedWorkSlotRef) throw new Error('Expected predecessor retained work slot.');
       expect(retainedWorkSlotRef).not.toBe(
-        workerStorageDefaultWorkSlotRef('workspace_restart_same_epoch', 'thread_restart_same_epoch')
+        workerStorageDefaultWorkSlotRef(
+          'ws_00000000-0000-7734-9328-04bb0a013ecb',
+          'th_00000000-0000-7721-81c5-55891e4c429c'
+        )
       );
-      const triggerActor = { kind: 'user' as const, id: 'user-factory' };
+      const triggerActor = {
+        kind: 'user' as const,
+        id: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
+      };
       const packageResolution = {
         captureCoverage: { scope: 'server', value: 'off' } as const,
-        agentSessionId: 'as_restart_same_epoch',
+        agentSessionId: testEntityId('as', 'as_restart_same_epoch'),
         agentSetup: createTestAgentSetup(),
         backend: { kind: 'openshell' as const },
         createdAt: '2026-08-21T00:00:00.000Z',
@@ -4492,13 +4548,13 @@ describe('createConfiguredTurnExecutor', () => {
           configVersion: null,
           durationMs: null,
           error: null,
-          id: 'turn_restart_same_epoch',
+          id: testEntityId('tu', 'turn_restart_same_epoch'),
           items: [],
           startedAt: '2026-08-21T00:00:00.000Z',
           status: 'running' as const,
-          threadId: 'thread_restart_same_epoch',
+          threadId: 'th_00000000-0000-7721-81c5-55891e4c429c',
           triggerActor,
-          workspaceId: 'workspace_restart_same_epoch',
+          workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb',
         },
         turnInput: 'Run fixture',
         workspaceCwd: '/workspace',
@@ -4526,16 +4582,19 @@ describe('createConfiguredTurnExecutor', () => {
         (plannedPackage.extensions.openkit as { workerStorage: { workSlotRef: string } })
           .workerStorage.workSlotRef
       ).toBe(
-        workerStorageDefaultWorkSlotRef('workspace_restart_same_epoch', 'thread_restart_same_epoch')
+        workerStorageDefaultWorkSlotRef(
+          'ws_00000000-0000-7734-9328-04bb0a013ecb',
+          'th_00000000-0000-7721-81c5-55891e4c429c'
+        )
       );
       authorizeNanoHostPackage(coreDb, environmentPackage);
       new FsStore({ dataRoot: coreDb.dataRoot }).createThread(
         environmentPackage.scope.workspaceId,
         'Predecessor',
-        'thread_restart_same_epoch_predecessor'
+        'th_00000000-0000-7980-ad21-84518466e2ab'
       );
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: `lease-${environmentPackage.snapshotId}`,
+        attemptId: testEntityId('attempt', `lease-${environmentPackage.snapshotId}`),
         sandboxBindingRef: 'lease-binding:restart-same-epoch',
       });
       const firstRuntime = createConfiguredWorkerLifecycleRuntime({
@@ -4658,7 +4717,10 @@ describe('createConfiguredTurnExecutor', () => {
       expect(recordedDigests).toEqual(['a'.repeat(64)]);
       await firstRuntime.cleanupBackendSession(firstBackend.planSession(environmentPackage));
 
-      await closeFactoryAttempt(coreDb, `lease-${environmentPackage.snapshotId}`);
+      await closeFactoryAttempt(
+        coreDb,
+        testEntityId('attempt', `lease-${environmentPackage.snapshotId}`)
+      );
       const sandboxBindingRef = (
         coreDb.sqlite
           .prepare('SELECT sandbox_binding_ref AS sandboxBindingRef FROM sandbox_runtime_records')
@@ -4795,10 +4857,10 @@ describe('createConfiguredTurnExecutor', () => {
     try {
       const environmentPackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'as_cold_slot_absent',
-          threadId: 'thread_cold_slot_absent',
-          turnId: 'turn_cold_slot_absent',
-          workspaceId: 'workspace_cold_slot_absent',
+          agentSessionId: testEntityId('as', 'as_cold_slot_absent'),
+          threadId: 'th_00000000-0000-7d65-8e5e-41063cbfcd4f',
+          turnId: testEntityId('tu', 'turn_cold_slot_absent'),
+          workspaceId: 'ws_00000000-0000-74d8-aece-4769474f6ae5',
         },
         snapshotId: 'snapshot_cold_slot_absent',
       });
@@ -4868,19 +4930,19 @@ describe('createConfiguredTurnExecutor', () => {
         deploymentId: 'deployment_selected_slot',
         layout,
         runtimeTargetId: 'target_selected_slot',
-        workspaceId: 'workspace_selected_slot',
+        workspaceId: 'ws_00000000-0000-77cd-b501-25149e0337a0',
       });
       const predecessor = reserveWorkerStorageAttachment(coreDb, {
-        agentSessionId: 'as_selected_slot_predecessor',
+        agentSessionId: testEntityId('as', 'as_selected_slot_predecessor'),
         authorizeContributor: () => true,
         expectedRevision: created.revision,
         layout,
         purpose: 'work',
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: 'target_selected_slot',
         storageRef: created.storageRef,
-        threadId: 'thread_selected_slot_predecessor',
-        workspaceId: 'workspace_selected_slot',
+        threadId: 'th_00000000-0000-7726-981a-dc092b7847df',
+        workspaceId: 'ws_00000000-0000-77cd-b501-25149e0337a0',
       });
       const predecessorAttached = activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: predecessor.attachmentGeneration,
@@ -4897,10 +4959,13 @@ describe('createConfiguredTurnExecutor', () => {
         storageRef: predecessorAttached.storageRef,
       });
       const selectedWorkSlotRef = predecessor.currentWorkSlotRef!;
-      const triggerActor = { id: 'user-factory', kind: 'user' as const };
+      const triggerActor = {
+        id: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
+        kind: 'user' as const,
+      };
       const environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: 'as_selected_slot_successor',
+        agentSessionId: testEntityId('as', 'as_selected_slot_successor'),
         agentSetup: createTestAgentSetup({ imageRef: `sha256:${'6'.repeat(64)}` }),
         backend: { kind: 'openshell' },
         createdAt: '2026-09-11T00:00:01.000Z',
@@ -4911,13 +4976,13 @@ describe('createConfiguredTurnExecutor', () => {
           configVersion: null,
           durationMs: null,
           error: null,
-          id: 'turn_selected_slot_successor',
+          id: testEntityId('tu', 'turn_selected_slot_successor'),
           items: [],
           startedAt: '2026-09-11T00:00:01.000Z',
           status: 'running',
-          threadId: 'thread_selected_slot_successor',
+          threadId: 'th_00000000-0000-732d-b277-d1c586f5870b',
           triggerActor,
-          workspaceId: 'workspace_selected_slot',
+          workspaceId: 'ws_00000000-0000-77cd-b501-25149e0337a0',
         },
         turnInput: 'Continue predecessor work',
         workspaceCwd: null,
@@ -4953,10 +5018,10 @@ describe('createConfiguredTurnExecutor', () => {
       new FsStore({ dataRoot: coreDb.dataRoot }).createThread(
         environmentPackage.scope.workspaceId,
         'Predecessor',
-        'thread_selected_slot_predecessor'
+        'th_00000000-0000-7726-981a-dc092b7847df'
       );
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease_selected_slot',
+        attemptId: testEntityId('attempt', 'lease_selected_slot'),
         sandboxBindingRef: 'sandbox-binding:selected-slot',
       });
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -4998,7 +5063,7 @@ describe('createConfiguredTurnExecutor', () => {
         configVersion: null,
         durationMs: null,
         error: null,
-        id: 'turn_selected_slot_no_choice',
+        id: testEntityId('tu', 'turn_selected_slot_no_choice'),
         items: [],
         startedAt: '2026-09-11T00:00:02.000Z',
         status: 'running' as const,
@@ -5016,7 +5081,7 @@ describe('createConfiguredTurnExecutor', () => {
       ).previewAgentEnvironmentPackage.bind(runtime.turnExecutor);
       const successorPreparation = {
         agentSetup: createTestAgentSetup({ imageRef: `sha256:${'6'.repeat(64)}` }),
-        freshAgentSessionId: 'as_selected_slot_no_choice',
+        freshAgentSessionId: testEntityId('as', 'as_selected_slot_no_choice'),
         requestId: 'request_selected_slot_no_choice',
         turn: successorTurn,
         turnInput: 'Continue in the resident handoff worktree',
@@ -5048,19 +5113,22 @@ describe('createConfiguredTurnExecutor', () => {
         ],
         workspaceSourceRefs: { repo: 'main-repo' },
       };
-      const successorPreview = previewPackage('as_selected_slot_no_choice', successorPreparation);
+      const successorPreview = previewPackage(
+        testEntityId('as', 'as_selected_slot_no_choice'),
+        successorPreparation
+      );
       expect(successorPreview).not.toHaveProperty('observability');
       const successorPackage = AgentEnvironmentPackageSchema.parse({
         ...successorPreview,
         observability: environmentPackage.observability,
       });
-      const freshSuccessorPackage = previewPackage('as_selected_slot_fresh', {
+      const freshSuccessorPackage = previewPackage(testEntityId('as', 'as_selected_slot_fresh'), {
         ...successorPreparation,
-        freshAgentSessionId: 'as_selected_slot_fresh',
+        freshAgentSessionId: testEntityId('as', 'as_selected_slot_fresh'),
         requestId: 'request_selected_slot_fresh',
         turn: {
           ...successorTurn,
-          id: 'turn_selected_slot_fresh',
+          id: testEntityId('tu', 'turn_selected_slot_fresh'),
         },
         workerStorageChoice: { goalId: null, kind: 'fresh', taskId: null },
       });
@@ -5070,14 +5138,14 @@ describe('createConfiguredTurnExecutor', () => {
       )}`;
       expect(freshSuccessorPackage.workspace.inputs[0]?.target).toBe(freshWorktree);
       expect(freshSuccessorPackage.runtime.command.workingDirectory).toBe(freshWorktree);
-      const unrelatedThreadId = 'thread_selected_slot_unrelated';
-      const unrelatedPackage = previewPackage('as_selected_slot_unrelated', {
+      const unrelatedThreadId = 'th_00000000-0000-7c6f-be3b-fc98a28f5680';
+      const unrelatedPackage = previewPackage(testEntityId('as', 'as_selected_slot_unrelated'), {
         ...successorPreparation,
-        freshAgentSessionId: 'as_selected_slot_unrelated',
+        freshAgentSessionId: testEntityId('as', 'as_selected_slot_unrelated'),
         requestId: 'request_selected_slot_unrelated',
         turn: {
           ...successorTurn,
-          id: 'turn_selected_slot_unrelated',
+          id: testEntityId('tu', 'turn_selected_slot_unrelated'),
           threadId: unrelatedThreadId,
         },
       });
@@ -5096,7 +5164,7 @@ describe('createConfiguredTurnExecutor', () => {
         ).id
       );
       bindNanoHostWorkerLineage(coreDb, successorPackage, {
-        attemptId: 'lease_selected_slot_no_choice',
+        attemptId: testEntityId('attempt', 'lease_selected_slot_no_choice'),
         sandboxBindingRef: 'sandbox-binding:selected-slot-no-choice',
       });
       anchorNanoHostMaterialization(coreDb, backend, successorPackage);
@@ -5199,19 +5267,19 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = () => 'lease_absent_cleanup';
+      backend.requireAttemptId = () => testEntityId('attempt', 'lease_absent_cleanup');
       const environmentPackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'as_absent_cleanup',
-          threadId: 'thread_absent_cleanup',
-          turnId: 'turn_absent_cleanup',
-          workspaceId: 'workspace_absent_cleanup',
+          agentSessionId: testEntityId('as', 'as_absent_cleanup'),
+          threadId: 'th_00000000-0000-7a35-b70b-6c17df884783',
+          turnId: testEntityId('tu', 'turn_absent_cleanup'),
+          workspaceId: 'ws_00000000-0000-76f3-9adf-5651f3be6dfc',
         },
         snapshotId: 'aepsnap_absent_cleanup',
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease_absent_cleanup',
+        attemptId: testEntityId('attempt', 'lease_absent_cleanup'),
         sandboxBindingRef: 'sandbox-binding-absent-cleanup',
       });
       const identity = backend.planSession(environmentPackage);
@@ -5357,13 +5425,13 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = () => 'lease_pending_cleanup';
+      backend.requireAttemptId = () => testEntityId('attempt', 'lease_pending_cleanup');
       const environmentPackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'as_pending_cleanup',
-          threadId: 'thread_pending_cleanup',
-          turnId: 'turn_pending_cleanup',
-          workspaceId: 'workspace_pending_cleanup',
+          agentSessionId: testEntityId('as', 'as_pending_cleanup'),
+          threadId: 'th_00000000-0000-763f-8a74-8d8ab0efa3c7',
+          turnId: testEntityId('tu', 'turn_pending_cleanup'),
+          workspaceId: 'ws_00000000-0000-7749-aa22-245c0564b3b2',
         },
         snapshotId: 'aepsnap_pending_cleanup',
       });
@@ -5376,7 +5444,7 @@ describe('createConfiguredTurnExecutor', () => {
                runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
                staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
              ) VALUES (
-               'lease_pending_cleanup', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?, ?, ?,
+               '${testEntityId('attempt', 'lease_pending_cleanup')}', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?, ?, ?,
                'lease-binding:pending-cleanup', ?, 'pending', 'cleanup-pending', ?, ?
              )`
         )
@@ -5416,7 +5484,7 @@ describe('createConfiguredTurnExecutor', () => {
         expectedRevision: created.revision,
         layout,
         purpose: 'work' as const,
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: identity.runtimeTargetId,
         storageRef: created.storageRef,
         threadId: environmentPackage.scope.threadId,
@@ -5448,10 +5516,10 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const sibling = reserveWorkerStorageAttachment(coreDb, {
         ...reservationInput,
-        agentSessionId: 'as_sibling_cleanup',
+        agentSessionId: testEntityId('as', 'as_sibling_cleanup'),
         expectedRevision: siblingCreated.revision,
         storageRef: siblingCreated.storageRef,
-        threadId: 'thread_sibling_cleanup',
+        threadId: 'th_00000000-0000-7d26-a570-f586e40d63eb',
       });
       let expectedAfterFailure = before;
       let duplicate: typeof before | null = null;
@@ -5587,13 +5655,13 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = () => 'lease_reserved_cleanup';
+      backend.requireAttemptId = () => testEntityId('attempt', 'lease_reserved_cleanup');
       const environmentPackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'as_reserved_cleanup',
-          threadId: 'thread_reserved_cleanup',
-          turnId: 'turn_reserved_cleanup',
-          workspaceId: 'workspace_reserved_cleanup',
+          agentSessionId: testEntityId('as', 'as_reserved_cleanup'),
+          threadId: 'th_00000000-0000-7f8f-9c18-44d0901cf5ef',
+          turnId: testEntityId('tu', 'turn_reserved_cleanup'),
+          workspaceId: 'ws_00000000-0000-7112-91c0-28c0825f328a',
         },
         snapshotId: 'aepsnap_reserved_cleanup',
       });
@@ -5606,7 +5674,7 @@ describe('createConfiguredTurnExecutor', () => {
              runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
-             'lease_reserved_cleanup', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?,
+             '${testEntityId('attempt', 'lease_reserved_cleanup')}', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?,
              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?,
              'lease-binding:reserved-cleanup', ?, 'pending', 'cleanup-failed', ?, ?
            )`
@@ -5646,7 +5714,7 @@ describe('createConfiguredTurnExecutor', () => {
         expectedRevision: created.revision,
         layout,
         purpose: 'work',
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: identity.runtimeTargetId,
         storageRef: created.storageRef,
         threadId: environmentPackage.scope.threadId,
@@ -5671,7 +5739,7 @@ describe('createConfiguredTurnExecutor', () => {
         expectedRevision: duplicateCreated.revision,
         layout,
         purpose: 'work',
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: identity.runtimeTargetId,
         storageRef: duplicateCreated.storageRef,
         threadId: environmentPackage.scope.threadId,
@@ -5782,14 +5850,14 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      initialBackend.requireAttemptId = () => 'lease_post_fence';
+      initialBackend.requireAttemptId = () => testEntityId('attempt', 'lease_post_fence');
       const identity = initialBackend.planSession(
         completeNanoHostPackage({
           scope: {
-            agentSessionId: 'as_post_fence',
-            threadId: 'thread_post_fence',
-            turnId: 'turn_post_fence',
-            workspaceId: 'workspace_post_fence',
+            agentSessionId: testEntityId('as', 'as_post_fence'),
+            threadId: 'th_00000000-0000-7c74-9ab7-ed20fc758df8',
+            turnId: testEntityId('tu', 'turn_post_fence'),
+            workspaceId: 'ws_00000000-0000-7199-922f-b9ab14e4af98',
           },
           snapshotId: 'aepsnap_post_fence',
         })
@@ -5819,8 +5887,8 @@ describe('createConfiguredTurnExecutor', () => {
         deploymentId: identity.deploymentId,
         runtimeTargetId: identity.runtimeTargetId,
         sandboxBindingRef: 'sandbox-binding-post-fence',
-        threadId: 'thread_post_fence',
-        workspaceId: 'workspace_post_fence',
+        threadId: 'th_00000000-0000-7c74-9ab7-ed20fc758df8',
+        workspaceId: 'ws_00000000-0000-7199-922f-b9ab14e4af98',
       });
       coreDb.sqlite
         .prepare(
@@ -5830,8 +5898,8 @@ describe('createConfiguredTurnExecutor', () => {
              runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
-             'lease_post_fence', 'workspace_post_fence', 'thread_post_fence',
-             'turn_post_fence', ?, ?, 'openshell', ?, ?, ?, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
+             '${testEntityId('attempt', 'lease_post_fence')}', 'ws_00000000-0000-7199-922f-b9ab14e4af98', 'th_00000000-0000-7c74-9ab7-ed20fc758df8',
+             'tu_00000000-0000-7562-8838-aa3f57fb311b', ?, ?, 'openshell', ?, ?, ?, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
              'lease-binding:post-fence', ?, 'pending', 'cleanup-pending', ?, ?
            )`
         )
@@ -5907,7 +5975,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      restartedBackend.requireAttemptId = () => 'lease_post_fence';
+      restartedBackend.requireAttemptId = () => testEntityId('attempt', 'lease_post_fence');
 
       for (const mismatchedIdentity of [
         { ...identity, runtimeTargetId: 'target_post_fence_missing' },
@@ -6119,7 +6187,7 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: '2026-08-21T00:00:00.000Z',
       });
       const nonProjectingIdentity: WorkerGovernanceBackendSessionIdentity = {
-        agentSessionId: 'as_lookup_none',
+        agentSessionId: testEntityId('as', 'as_lookup_none'),
         backendKind: 'openshell',
         backendSessionId: `nh-${projectingPrefix.slice(0, 15)}b-${'0'.repeat(16)}`,
         deploymentId: 'deployment_lookup',
@@ -6148,7 +6216,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(() =>
         backend.findDurableSandboxBinding({
           ...nonProjectingIdentity,
-          agentSessionId: 'as_lookup_ambiguous',
+          agentSessionId: testEntityId('as', 'as_lookup_ambiguous'),
           backendSessionId: `nh-${projectingPrefix}-${'0'.repeat(16)}`,
           packageSnapshotId: 'aepsnap_lookup_ambiguous',
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_ambiguous',
@@ -6178,8 +6246,8 @@ describe('createConfiguredTurnExecutor', () => {
              runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
-             'lease_lookup_worker', 'workspace_lookup', 'thread_lookup_worker',
-             'turn_lookup_worker', 'as_lookup_worker', 'aepsnap_lookup_worker', 'openshell',
+             '${testEntityId('attempt', 'lease_lookup_worker')}', 'ws_00000000-0000-7372-b5d3-9ed01d53b7fc', 'th_00000000-0000-75af-a582-f592a850d0e6',
+             'tu_00000000-0000-7963-abd2-3651e8c769fa', 'as_00000000-0000-7076-8b53-ad40211a7a2a', 'aepsnap_lookup_worker', 'openshell',
              'deployment_lookup', 'nh-1111111111111111', 'target_lookup',
              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
              'sandbox-binding-lookup-worker',
@@ -6190,7 +6258,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-08-21T00:00:00.000Z', '2026-08-21T00:00:00.000Z');
       const workerIdentity: WorkerGovernanceBackendSessionIdentity = {
         ...nonProjectingIdentity,
-        agentSessionId: 'as_lookup_worker',
+        agentSessionId: testEntityId('as', 'as_lookup_worker'),
         backendSessionId: `nh-${'e'.repeat(16)}-${'0'.repeat(16)}`,
         packageSnapshotId: 'aepsnap_lookup_worker',
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_worker',
@@ -6216,17 +6284,17 @@ describe('createConfiguredTurnExecutor', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'e'.repeat(64),
-        agentSessionId: 'as_lookup_agent',
+        agentSessionId: testEntityId('as', 'as_lookup_agent'),
         agentSessionRuntimeBindingId: 'binding-lookup-agent',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-lookup-agent',
-        threadId: 'thread_lookup_agent',
+        threadId: 'th_00000000-0000-745f-8011-8eeba156aed6',
         timestamp: '2026-08-21T00:00:00.000Z',
-        workspaceId: 'workspace_lookup',
+        workspaceId: 'ws_00000000-0000-7372-b5d3-9ed01d53b7fc',
       });
       const agentIdentity: WorkerGovernanceBackendSessionIdentity = {
         ...nonProjectingIdentity,
-        agentSessionId: 'as_lookup_agent',
+        agentSessionId: testEntityId('as', 'as_lookup_agent'),
         backendSessionId: `nh-${'f'.repeat(16)}-${'0'.repeat(16)}`,
         packageSnapshotId: 'aepsnap_lookup_agent',
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_agent',
@@ -6355,8 +6423,8 @@ describe('createConfiguredTurnExecutor', () => {
             openkit: {
               workerStorage: {
                 workSlotRef: workerStorageDefaultWorkSlotRef(
-                  'workspace-compatible',
-                  `thread-${turnId}`
+                  'ws_00000000-0000-7b28-a22f-e9264be03c98',
+                  `${testEntityId('th', `thread-${turnId}`)}`
                 ),
               },
             },
@@ -6368,7 +6436,7 @@ describe('createConfiguredTurnExecutor', () => {
                 {
                   access: 'read-only',
                   id: 'openkit-context-package',
-                  workerPath: `/openkit/sessions/agent-session-${turnId}/context`,
+                  workerPath: `/openkit/sessions/${testEntityId('as', `agent-session-${turnId}`)}/context`,
                 },
               ],
             },
@@ -6377,11 +6445,14 @@ describe('createConfiguredTurnExecutor', () => {
           runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
           schemaVersion: 4,
           scope: {
-            agentSessionId: `agent-session-${turnId}`,
-            threadId: `thread-${turnId}`,
-            triggerActor: { kind: 'user', id: overrides.actorId ?? 'user-compatible' },
-            turnId,
-            workspaceId: 'workspace-compatible',
+            agentSessionId: testEntityId('as', `agent-session-${turnId}`),
+            threadId: testEntityId('th', `thread-${turnId}`),
+            triggerActor: {
+              kind: 'user',
+              id: overrides.actorId ?? 'usr_00000000-0000-762e-acbb-d80b6f0e8f34',
+            },
+            turnId: testEntityId('tu', `turn-${turnId}`),
+            workspaceId: 'ws_00000000-0000-7b28-a22f-e9264be03c98',
           },
           snapshotId: `snapshot-${turnId}`,
           supply: { services: [] },
@@ -6392,13 +6463,13 @@ describe('createConfiguredTurnExecutor', () => {
                 access: 'read-only',
                 contentRef: `agent-environment-package://snapshot-${turnId}`,
                 id: 'agent-environment-package',
-                target: `/openkit/sessions/agent-session-${turnId}/config/package.json`,
+                target: `/openkit/sessions/${testEntityId('as', `agent-session-${turnId}`)}/config/package.json`,
               },
             ],
             inputs: [
               {
                 access: 'read-only',
-                id: `context_${turnId}`,
+                id: `context_${testEntityId('tu', `turn-${turnId}`)}`,
                 kind: 'generated',
                 materialization: {
                   contentDigest: `sha256:${turnId.repeat(64).slice(0, 64)}`,
@@ -6407,9 +6478,9 @@ describe('createConfiguredTurnExecutor', () => {
                 },
                 source: {
                   kind: 'generated',
-                  pathRef: `threads/thread-${turnId}/turns/${turnId}/context-package`,
+                  pathRef: `threads/${testEntityId('th', `thread-${turnId}`)}/turns/${testEntityId('tu', `turn-${turnId}`)}/context-package`,
                 },
-                target: `/openkit/sessions/agent-session-${turnId}/context`,
+                target: `/openkit/sessions/${testEntityId('as', `agent-session-${turnId}`)}/context`,
               },
               {
                 access: 'read-only',
@@ -6427,7 +6498,7 @@ describe('createConfiguredTurnExecutor', () => {
             outputs: [
               {
                 id: 'turn-output-root',
-                path: `/openkit/sessions/agent-session-${turnId}/outputs`,
+                path: `/openkit/sessions/${testEntityId('as', `agent-session-${turnId}`)}/outputs`,
                 registerAsArtifacts: true,
                 retention: 'sync-on-turn-end',
               },
@@ -6444,7 +6515,9 @@ describe('createConfiguredTurnExecutor', () => {
 
       expect(keyFor(packageFor('b'))).toBe(baseline);
       expect(planFor(packageFor('b'))).not.toBe(planFor(baselinePackage));
-      expect(keyFor(packageFor('c', { actorId: 'user-other' }))).not.toBe(baseline);
+      expect(
+        keyFor(packageFor('c', { actorId: 'usr_00000000-0000-7de9-993f-8088d6e797b7' }))
+      ).not.toBe(baseline);
       expect(keyFor(packageFor('d', { mountLabel: 'secondary' }))).not.toBe(baseline);
       expect(keyFor(packageFor('e', { sensitivity: 'restricted' }))).not.toBe(baseline);
       expect(
@@ -6499,14 +6572,14 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const store = createDemoStore();
       const turn = store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Interrupt the configured worker',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null,
-        { turnId: 'turn_factory_interrupt' }
+        { turnId: testEntityId('tu', 'turn_factory_interrupt') }
       );
-      const agentSessionId = 'as_factory_interrupt';
+      const agentSessionId = testEntityId('as', 'as_factory_interrupt');
       const packageSnapshotId = 'aepsnap_factory_interrupt';
       store.createAgentSession({
         agentId: 'agent_codex_host',
@@ -6641,17 +6714,17 @@ describe('createConfiguredTurnExecutor', () => {
           openkit: {
             workerStorage: {
               workSlotRef: workerStorageDefaultWorkSlotRef(
-                'workspace_human_gate',
-                'thread_human_gate'
+                'ws_00000000-0000-7fa5-9782-1098693cdfc1',
+                'th_00000000-0000-7b36-ada8-71118e96b488'
               ),
             },
           },
         },
         scope: {
-          agentSessionId: 'as_human_gate',
-          threadId: 'thread_human_gate',
-          turnId: 'turn_human_gate',
-          workspaceId: 'workspace_human_gate',
+          agentSessionId: testEntityId('as', 'as_human_gate'),
+          threadId: 'th_00000000-0000-7b36-ada8-71118e96b488',
+          turnId: testEntityId('tu', 'turn_human_gate'),
+          workspaceId: 'ws_00000000-0000-7fa5-9782-1098693cdfc1',
         },
         snapshotId: 'aepsnap_human_gate',
       });
@@ -6685,7 +6758,7 @@ describe('createConfiguredTurnExecutor', () => {
         const setup = createTestAgentSetup({ adapter: 'pi' });
         environmentPackage = resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
-          agentSessionId: 'as_human_gate',
+          agentSessionId: testEntityId('as', 'as_human_gate'),
           agentSetup: {
             ...setup,
             manifest: {
@@ -6703,13 +6776,13 @@ describe('createConfiguredTurnExecutor', () => {
             configVersion: null,
             durationMs: null,
             error: null,
-            id: 'turn_human_gate',
+            id: testEntityId('tu', 'turn_human_gate'),
             items: [],
             startedAt: '2026-09-03T00:00:00.000Z',
             status: 'running',
-            threadId: 'thread_human_gate',
+            threadId: 'th_00000000-0000-7b36-ada8-71118e96b488',
             triggerActor: environmentPackage.scope.triggerActor,
-            workspaceId: 'workspace_human_gate',
+            workspaceId: 'ws_00000000-0000-7fa5-9782-1098693cdfc1',
           },
           workspaceCwd: '/workspace/openkit',
           workspaceRoots: [
@@ -6774,7 +6847,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
 
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease_human_gate',
+        attemptId: testEntityId('attempt', 'lease_human_gate'),
         sandboxBindingRef: 'sandbox-binding:resident-session',
       });
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -6831,18 +6904,18 @@ describe('createConfiguredTurnExecutor', () => {
       const proofStore = proofRoot ? createDemoStore({ dataRoot: proofRoot }) : null;
       if (proofStore) {
         const proofTurn = proofStore.createTurn(
-          'ws_demo',
-          'th_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
           'Failed ready proof',
-          { kind: 'user', id: 'user_local' },
+          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           null,
-          { turnId: 'turn_factory_failed_ready' }
+          { turnId: testEntityId('tu', 'turn_factory_failed_ready') }
         );
         proofStore.updateTurn(proofTurn.id, { agentId: 'agent_codex_host' });
         proofStore.createAgentSession({
           agentId: 'agent_codex_host',
           createdAt: '2026-09-03T00:00:00.000Z',
-          id: 'as_factory_failed_ready',
+          id: testEntityId('as', 'as_factory_failed_ready'),
           message: null,
           status: 'idle',
           threadId: proofTurn.threadId,
@@ -6857,9 +6930,10 @@ describe('createConfiguredTurnExecutor', () => {
         recordedDigests.push(digest);
         if (
           proofStore &&
-          proofStore.getAgentSession('as_factory_failed_ready').nativeHandleDigest !== digest
+          proofStore.getAgentSession(testEntityId('as', 'as_factory_failed_ready'))
+            .nativeHandleDigest !== digest
         ) {
-          proofStore.updateAgentSession('as_factory_failed_ready', {
+          proofStore.updateAgentSession(testEntityId('as', 'as_factory_failed_ready'), {
             nativeHandleDigest: digest,
             updatedAt: '2026-09-03T00:00:01.000Z',
           });
@@ -6910,8 +6984,8 @@ describe('createConfiguredTurnExecutor', () => {
               .map((effect) => effect.input.slot)
           ).toEqual(Array(startedTurns).fill('package-config'));
           expect(command.body).toMatchObject({
-            aepRef: '/openkit/sessions/as_human_gate/config/package.json',
-            contextRef: '/openkit/sessions/as_human_gate/context',
+            aepRef: `/openkit/sessions/${testEntityId('as', 'as_human_gate')}/config/package.json`,
+            contextRef: `/openkit/sessions/${testEntityId('as', 'as_human_gate')}/context`,
           });
         }
         const wireCommand = runtime.acceptNanoHostHarnessCommand(command);
@@ -6973,8 +7047,8 @@ describe('createConfiguredTurnExecutor', () => {
       // This terminal-inspection subject begins with exact occupancy; Harness record regressions separately retain the leaseId-to-attemptId publication defect.
       coreDb.sqlite
         .prepare(`UPDATE agent_session_runtime_bindings
-        SET current_attempt_id = 'lease_human_gate'
-        WHERE agent_session_id = 'as_human_gate' AND current_turn_id = 'turn_human_gate'`)
+        SET current_attempt_id = '${testEntityId('attempt', 'lease_human_gate')}'
+        WHERE agent_session_id = 'as_00000000-0000-724a-bad4-af2315ba9f21' AND current_turn_id = 'tu_00000000-0000-75c6-a618-1f296931ec36'`)
         .run();
 
       if (
@@ -7143,10 +7217,10 @@ describe('createConfiguredTurnExecutor', () => {
       if (!completed) {
         const interrupt = await settleNext('turn.interrupt', { state: 'interrupted' });
         expect(interrupt.body).toMatchObject({
-          agentSessionId: 'as_human_gate',
-          leaseId: 'lease_human_gate',
+          agentSessionId: testEntityId('as', 'as_human_gate'),
+          leaseId: testEntityId('attempt', 'lease_human_gate'),
           purpose: 'interrupt',
-          turnId: 'turn_human_gate',
+          turnId: testEntityId('tu', 'turn_human_gate'),
         });
         interruptSequence = interrupt.sequence;
       }
@@ -7201,7 +7275,7 @@ describe('createConfiguredTurnExecutor', () => {
         const admitNext = () =>
           openNanoHostAgentSessionBinding(coreDb, {
             agentSessionCompatibilityKey: 'e'.repeat(64),
-            agentSessionId: 'as_human_gate_next',
+            agentSessionId: testEntityId('as', 'as_human_gate_next'),
             agentSessionRuntimeBindingId: 'binding_human_gate_next',
             effectiveSetupGeneration: 1,
             harnessInstanceId: harness.harnessInstanceId,
@@ -7236,18 +7310,18 @@ describe('createConfiguredTurnExecutor', () => {
       ).toEqual({ count: 1 });
       if (purpose === 'failed-ready' && proofRoot) {
         const reloaded = createDemoStore({ dataRoot: proofRoot });
-        expect(reloaded.getAgentSession('as_factory_failed_ready').nativeHandleDigest).toBe(
-          'a'.repeat(64)
-        );
+        expect(
+          reloaded.getAgentSession(testEntityId('as', 'as_factory_failed_ready')).nativeHandleDigest
+        ).toBe('a'.repeat(64));
       }
       if (purpose === 'completed') {
-        await closeFactoryAttempt(coreDb, 'lease_human_gate');
+        await closeFactoryAttempt(coreDb, testEntityId('attempt', 'lease_human_gate'));
         const nextPackage = {
           ...environmentPackage,
           scope: {
             ...environmentPackage.scope,
-            turnId: 'turn_human_gate_next',
-            requestId: `request:${'turn_human_gate_next'}`,
+            turnId: testEntityId('tu', 'turn_human_gate_next'),
+            requestId: `request:${testEntityId('tu', 'turn_human_gate_next')}`,
           },
           snapshotId: 'aepsnap_human_gate_next',
         };
@@ -7266,7 +7340,7 @@ describe('createConfiguredTurnExecutor', () => {
           })
         ).resolves.toBe('reusable');
         bindNanoHostWorkerLineage(coreDb, nextPackage, {
-          attemptId: 'lease_human_gate_next',
+          attemptId: testEntityId('attempt', 'lease_human_gate_next'),
           sandboxBindingRef: 'sandbox-binding:resident-session-next',
         });
         anchorNanoHostMaterialization(coreDb, backend, nextPackage);
@@ -7417,15 +7491,18 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      const retainedStorage = { storageRef: `wst_${'1'.repeat(32)}`, workSlotRef: 'slot-inspect' };
+      const retainedStorage = {
+        storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
+        workSlotRef: 'slot-inspect',
+      };
       const environmentPackage = {
         extensions: { openkit: { workerStorage: { workSlotRef: retainedStorage.workSlotRef } } },
         scope: {
-          agentSessionId: 'as_factory_inspect',
+          agentSessionId: testEntityId('as', 'as_factory_inspect'),
           requestId: null,
-          threadId: 'thread_factory_inspect',
-          turnId: 'turn_factory_inspect',
-          workspaceId: 'workspace_factory_inspect',
+          threadId: 'th_00000000-0000-728a-9acc-1d67cef1f13c',
+          turnId: testEntityId('tu', 'turn_factory_inspect'),
+          workspaceId: 'ws_00000000-0000-7af6-9cee-9356913f50cf',
         },
         snapshotId: 'aepsnap_factory_inspect',
       } as AgentEnvironmentPackage;
@@ -7439,8 +7516,13 @@ describe('createConfiguredTurnExecutor', () => {
       const session = {
         agentSessionRuntimeBindingId: 'binding_factory_inspect',
         environmentPackage,
-        attemptId: 'attempt_factory_inspect',
-        nativeResume: resume ? { digest: resume, locator: 'as_factory_predecessor' } : null,
+        attemptId: testEntityId('attempt', 'attempt_factory_inspect'),
+        nativeResume: resume
+          ? {
+              digest: resume,
+              locator: testEntityId('as', 'as_factory_predecessor'),
+            }
+          : null,
         nativeSessionReusable: false,
         recordNativeHandleDigest: (digest: string, actualStorage: typeof retainedStorage) => {
           expect(actualStorage).toEqual(retainedStorage);
@@ -7515,11 +7597,11 @@ describe('createConfiguredTurnExecutor', () => {
       const session = {
         environmentPackage: {
           scope: {
-            agentSessionId: 'as_factory_inspect',
+            agentSessionId: testEntityId('as', 'as_factory_inspect'),
             requestId: null,
-            threadId: 'thread_factory_inspect',
-            turnId: 'turn_factory_inspect',
-            workspaceId: 'workspace_factory_inspect',
+            threadId: 'th_00000000-0000-728a-9acc-1d67cef1f13c',
+            turnId: testEntityId('tu', 'turn_factory_inspect'),
+            workspaceId: 'ws_00000000-0000-7af6-9cee-9356913f50cf',
           },
           snapshotId: 'aepsnap_factory_inspect',
         },
@@ -7606,7 +7688,7 @@ describe('createConfiguredTurnExecutor', () => {
         };
       }
     ).backend;
-    backend.requireAttemptId = () => 'lease_factory_pre_bridge_failure';
+    backend.requireAttemptId = () => testEntityId('attempt', 'lease_factory_pre_bridge_failure');
     const environmentPackage = completeNanoHostPackage({
       policy: {
         filesystem: { default: 'deny', rules: [] },
@@ -7614,24 +7696,25 @@ describe('createConfiguredTurnExecutor', () => {
         process: { default: 'deny', rules: [] },
         snapshotId: 'policy_factory_pre_bridge_failure',
       },
-      runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+      runtime: {
+        image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
+      },
       scope: {
-        agentSessionId: 'as_factory_pre_bridge_failure',
-        threadId: 'thread_factory_pre_bridge_failure',
-        turnId: 'turn_factory_pre_bridge_failure',
-        workspaceId: 'ws_factory_pre_bridge_failure',
+        agentSessionId: testEntityId('as', 'as_factory_pre_bridge_failure'),
+        threadId: 'th_00000000-0000-7bce-9381-19961748c911',
+        turnId: testEntityId('tu', 'turn_factory_pre_bridge_failure'),
+        workspaceId: 'ws_00000000-0000-728c-9485-f030b87c022c',
       },
       snapshotId: packageSnapshotId,
       workspace: {
         inputs: [
           {
             access: 'read-only',
-            id: 'context_turn_factory_pre_bridge_failure',
+            id: `context_${testEntityId('tu', 'turn_factory_pre_bridge_failure')}`,
             kind: 'generated',
             source: {
               kind: 'generated',
-              pathRef:
-                'threads/thread_factory_pre_bridge_failure/turns/turn_factory_pre_bridge_failure/context-package',
+              pathRef: `threads/th_00000000-0000-7bce-9381-19961748c911/turns/${testEntityId('tu', 'turn_factory_pre_bridge_failure')}/context-package`,
             },
             target: '/openkit/context',
           },
@@ -7709,7 +7792,7 @@ describe('createConfiguredTurnExecutor', () => {
         };
       }
     ).backend;
-    backend.requireAttemptId = () => 'lease_factory_reservation_failure';
+    backend.requireAttemptId = () => testEntityId('attempt', 'lease_factory_reservation_failure');
     const environmentPackage = completeNanoHostPackage({
       policy: {
         filesystem: { default: 'deny', rules: [] },
@@ -7719,10 +7802,10 @@ describe('createConfiguredTurnExecutor', () => {
       },
       runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
       scope: {
-        agentSessionId: 'as_factory_reservation_failure',
-        threadId: 'thread_factory_reservation_failure',
-        turnId: 'turn_factory_reservation_failure',
-        workspaceId: 'ws_factory_reservation_failure',
+        agentSessionId: testEntityId('as', 'as_factory_reservation_failure'),
+        threadId: 'th_00000000-0000-72db-b3c8-374d6ada7039',
+        turnId: testEntityId('tu', 'turn_factory_reservation_failure'),
+        workspaceId: 'ws_00000000-0000-7788-af62-b10b8ed2158d',
       },
       snapshotId: packageSnapshotId,
     });
@@ -7765,15 +7848,15 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId: fixture.environmentPackage.scope.workspaceId,
       });
       const siblingReserved = reserveWorkerStorageAttachment(fixture.coreDb, {
-        agentSessionId: 'as_live_partial_sibling',
+        agentSessionId: testEntityId('as', 'as_live_partial_sibling'),
         authorizeContributor: () => true,
         expectedRevision: sibling.revision,
         layout: before.layout,
         purpose: 'work',
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: fixture.identity.runtimeTargetId,
         storageRef: sibling.storageRef,
-        threadId: 'thread_live_partial_sibling',
+        threadId: 'th_00000000-0000-79ee-8305-d2c3357bd6fa',
         workspaceId: fixture.environmentPackage.scope.workspaceId,
       });
       transitionWorkerBackendSessionState(fixture.coreDb, {
@@ -8044,10 +8127,10 @@ describe('createConfiguredTurnExecutor', () => {
                 },
         },
         scope: {
-          agentSessionId: 'as_image_failure',
-          threadId: 'thread_image_failure',
-          turnId: 'turn_image_failure',
-          workspaceId: 'ws_image_failure',
+          agentSessionId: testEntityId('as', 'as_image_failure'),
+          threadId: 'th_00000000-0000-78c4-aa89-8c93b3620c54',
+          turnId: testEntityId('tu', 'turn_image_failure'),
+          workspaceId: 'ws_00000000-0000-74e5-8f9d-77c66511df54',
         },
         snapshotId: 'aepsnap_image_failure',
       });
@@ -8199,25 +8282,25 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: localDigest },
         },
         scope: {
-          agentSessionId: 'as_factory_newest_lease',
-          threadId: 'thread_factory_newest_lease',
-          turnId: 'turn_factory_newest_lease',
-          workspaceId: 'ws_factory_newest_lease',
+          agentSessionId: testEntityId('as', 'as_factory_newest_lease'),
+          threadId: 'th_00000000-0000-7de7-983a-086ab56b8b90',
+          turnId: testEntityId('tu', 'turn_factory_newest_lease'),
+          workspaceId: 'ws_00000000-0000-7060-b78c-6b2c47ca40f0',
         },
         snapshotId: packageSnapshotId,
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease_a_current',
+        attemptId: testEntityId('attempt', 'lease_a_current'),
         sandboxBindingRef: 'binding:lease_a_current',
       });
       expect(() =>
         recordTestExecutionAttempt(coreDb, {
           entry: attemptActionOwners.requireSchedulerAdmissionEntry(
             coreDb,
-            'queue:lease_a_current'
+            `queue:${testEntityId('attempt', 'lease_a_current')}`
           ),
-          attemptId: 'lease_b_current',
+          attemptId: testEntityId('attempt', 'lease_b_current'),
           agentSessionId: environmentPackage.scope.agentSessionId,
           inputRef: packageSnapshotId,
           bindingRef: 'binding:lease_b_current',
@@ -8272,8 +8355,8 @@ describe('createConfiguredTurnExecutor', () => {
         snapshotId: `snapshot_acquire_mismatch`,
         scope: {
           ...environmentPackage.scope,
-          agentSessionId: 'as_acquire_mismatch',
-          turnId: 'turn_acquire_mismatch',
+          agentSessionId: testEntityId('as', 'as_acquire_mismatch'),
+          turnId: testEntityId('tu', 'turn_acquire_mismatch'),
           requestId: 'request_acquire_mismatch',
         },
       };
@@ -8309,8 +8392,8 @@ describe('createConfiguredTurnExecutor', () => {
         snapshotId: `snapshot_acquire_match`,
         scope: {
           ...environmentPackage.scope,
-          agentSessionId: 'as_acquire_match',
-          turnId: 'turn_acquire_match',
+          agentSessionId: testEntityId('as', 'as_acquire_match'),
+          turnId: testEntityId('tu', 'turn_acquire_match'),
           requestId: 'request_acquire_match',
         },
       };
@@ -8325,7 +8408,10 @@ describe('createConfiguredTurnExecutor', () => {
       ).rejects.toThrow('Sandbox creation reached');
       expect(effects).toHaveLength(3);
       expect(effects[0]).toMatchObject({
-        input: { imageReference: localDigest, leaseId: 'lease-fixture:snapshot_acquire_match' },
+        input: {
+          imageReference: localDigest,
+          leaseId: testEntityId('attempt', 'lease-fixture:snapshot_acquire_match'),
+        },
         kind: 'image.acquire',
       });
       expect(effects[1]).toMatchObject({
@@ -8334,13 +8420,16 @@ describe('createConfiguredTurnExecutor', () => {
       });
       expect(effects[1]?.input).not.toHaveProperty('leaseId');
       expect(effects[2]).toMatchObject({
-        input: { imageDigest: localDigest, leaseId: 'lease-fixture:snapshot_acquire_match' },
+        input: {
+          imageDigest: localDigest,
+          leaseId: testEntityId('attempt', 'lease-fixture:snapshot_acquire_match'),
+        },
         kind: 'sandbox.create',
       });
       // The new original sandbox.create has an unknown response; it cannot replay a cleanup effect.
       const failedAttempt = attempts.requireSchedulerExecutionAttempt(
         coreDb,
-        'lease-fixture:snapshot_acquire_match'
+        testEntityId('attempt', 'lease-fixture:snapshot_acquire_match')
       );
       expect(failedAttempt.disposition).toBe('unknown');
       await expect(
@@ -8403,12 +8492,16 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      backend.requireAttemptId = (packageSnapshotId) =>
+        testEntityId('attempt', `lease-${packageSnapshotId}`);
       const packageFor = (adapterId: 'codex' | 'opencode', suffix: string = adapterId) => {
-        const triggerActor = { id: 'user-multi-harness', kind: 'user' as const };
+        const triggerActor = {
+          id: 'usr_00000000-0000-7c8f-90e4-3a8e74781bc7',
+          kind: 'user' as const,
+        };
         return resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
-          agentSessionId: `agent-session-${suffix}`,
+          agentSessionId: testEntityId('as', `agent-session-${suffix}`),
           agentSetup: createTestAgentSetup({
             adapter: adapterId,
             agentId: `agent-${adapterId}`,
@@ -8422,13 +8515,13 @@ describe('createConfiguredTurnExecutor', () => {
             configVersion: null,
             durationMs: null,
             error: null,
-            id: `turn-${suffix}`,
+            id: testEntityId('tu', `turn-${suffix}`),
             items: [],
             startedAt: '2026-08-21T00:00:00.000Z',
             status: 'running',
-            threadId: 'thread-multi-harness',
+            threadId: 'th_00000000-0000-72f2-a013-5e17b0446503',
             triggerActor,
-            workspaceId: 'workspace-multi-harness',
+            workspaceId: 'ws_00000000-0000-763b-a723-89cbc100e1e6',
           },
           turnInput: `Run ${suffix}`,
           workspaceCwd: '/workspace',
@@ -8543,11 +8636,15 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      firstBackend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
-      const triggerActor = { id: 'user-measured-restore', kind: 'user' as const };
+      firstBackend.requireAttemptId = (packageSnapshotId) =>
+        testEntityId('attempt', `lease-${packageSnapshotId}`);
+      const triggerActor = {
+        id: 'usr_00000000-0000-79db-9c17-f1ded30da0de',
+        kind: 'user' as const,
+      };
       const environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: 'agent-session-measured-restore',
+        agentSessionId: testEntityId('as', 'agent-session-measured-restore'),
         agentSetup: createTestAgentSetup({
           adapter: 'codex',
           agentId: 'agent-codex',
@@ -8561,13 +8658,13 @@ describe('createConfiguredTurnExecutor', () => {
           configVersion: null,
           durationMs: null,
           error: null,
-          id: 'turn-measured-restore',
+          id: 'tu_00000000-0000-7016-b7fa-beda4ffdc265',
           items: [],
           startedAt: '2026-08-21T00:00:00.000Z',
           status: 'running',
-          threadId: 'thread-measured-restore',
+          threadId: 'th_00000000-0000-76fb-97f1-abc486fea25a',
           triggerActor,
-          workspaceId: 'workspace-measured-restore',
+          workspaceId: 'ws_00000000-0000-72af-a977-4c84584c2cee',
         },
         turnInput: 'Restore existing binding copy',
         workspaceCwd: '/workspace',
@@ -8647,7 +8744,8 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      restoredBackend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      restoredBackend.requireAttemptId = (packageSnapshotId) =>
+        testEntityId('attempt', `lease-${packageSnapshotId}`);
       anchorNanoHostMaterialization(coreDb, restoredBackend, environmentPackage);
       await restoredBackend.materialize(environmentPackage, {
         sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
@@ -8716,11 +8814,15 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
-      const triggerActor = { id: 'user-measured-inspect', kind: 'user' as const };
+      backend.requireAttemptId = (packageSnapshotId) =>
+        testEntityId('attempt', `lease-${packageSnapshotId}`);
+      const triggerActor = {
+        id: 'usr_00000000-0000-7d88-9ab3-251840286dba',
+        kind: 'user' as const,
+      };
       const firstPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: 'agent-session-measured-inspect',
+        agentSessionId: testEntityId('as', 'agent-session-measured-inspect'),
         agentSetup: createTestAgentSetup({
           adapter: 'codex',
           agentId: 'agent-codex',
@@ -8734,13 +8836,13 @@ describe('createConfiguredTurnExecutor', () => {
           configVersion: null,
           durationMs: null,
           error: null,
-          id: 'turn-measured-inspect',
+          id: 'tu_00000000-0000-7fae-a34b-1136e7368f9c',
           items: [],
           startedAt: '2026-08-21T00:00:00.000Z',
           status: 'running',
-          threadId: 'thread-measured-inspect',
+          threadId: 'th_00000000-0000-7465-bba5-dc4cf7c89b86',
           triggerActor,
-          workspaceId: 'workspace-measured-inspect',
+          workspaceId: 'ws_00000000-0000-7058-8e48-7cd50df605b6',
         },
         turnInput: 'Inspect restored binding copy',
         workspaceCwd: '/workspace',
@@ -8819,8 +8921,12 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      restoredBackend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
-      restoredBackend.restoreSession(firstPackage, `lease-${firstPackage.snapshotId}`);
+      restoredBackend.requireAttemptId = (packageSnapshotId) =>
+        testEntityId('attempt', `lease-${packageSnapshotId}`);
+      restoredBackend.restoreSession(
+        firstPackage,
+        testEntityId('attempt', `lease-${firstPackage.snapshotId}`)
+      );
       const inspectLaunch = submitTestNanoHostTurn(coreDb, restoredBackend, firstMaterialization);
       void inspectLaunch.catch(() => undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -8913,7 +9019,8 @@ describe('createConfiguredTurnExecutor', () => {
             };
           }
         ).backend;
-        backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+        backend.requireAttemptId = (packageSnapshotId) =>
+          testEntityId('attempt', `lease-${packageSnapshotId}`);
         return { backend, runtime };
       };
       const { backend, runtime } = createBackend();
@@ -8922,16 +9029,16 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
         },
         scope: {
-          agentSessionId: 'as_resume_open',
-          threadId: 'thread_resume_open',
-          turnId: 'turn_resume_open',
-          workspaceId: 'workspace_resume_open',
+          agentSessionId: testEntityId('as', 'as_resume_open'),
+          threadId: 'th_00000000-0000-7180-88f8-8a00cdc67226',
+          turnId: testEntityId('tu', 'turn_resume_open'),
+          workspaceId: 'ws_00000000-0000-7672-9133-5f5991b8c6ba',
         },
         snapshotId: 'snapshot_resume_open',
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease-snapshot_resume_open',
+        attemptId: testEntityId('attempt', 'lease-snapshot_resume_open'),
         sandboxBindingRef: 'lease-binding:resume-open',
       });
       const settleNext = async (
@@ -8979,7 +9086,10 @@ describe('createConfiguredTurnExecutor', () => {
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       const materialization = await backend.materialize(environmentPackage, {
         sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
-        nativeResume: { digest: predecessorDigest, locator: 'as_resume_predecessor' },
+        nativeResume: {
+          digest: predecessorDigest,
+          locator: testEntityId('as', 'as_resume_predecessor'),
+        },
         workspaceRoots: [],
       });
       const recordedDigests: string[] = [];
@@ -8995,7 +9105,10 @@ describe('createConfiguredTurnExecutor', () => {
         state: 'open',
       });
       expect(open.body).toMatchObject({
-        resume: { digest: predecessorDigest, locator: 'as_resume_predecessor' },
+        resume: {
+          digest: predecessorDigest,
+          locator: testEntityId('as', 'as_resume_predecessor'),
+        },
       });
       if (openedDigest !== predecessorDigest) {
         await expect(launch).rejects.toThrow('session.open result is incompatible');
@@ -9015,7 +9128,10 @@ describe('createConfiguredTurnExecutor', () => {
       // A restarted NanoCore restores the binding from its durable row and hands the recorder the
       // proof that row holds, closing the window between the row commit and the AgentSession write.
       const restored = createBackend().backend;
-      restored.restoreSession(environmentPackage, 'lease-snapshot_resume_open');
+      restored.restoreSession(
+        environmentPackage,
+        testEntityId('attempt', 'lease-snapshot_resume_open')
+      );
       const restoredDigests: string[] = [];
       restored.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
         restoredDigests.push(digest);
@@ -9096,17 +9212,17 @@ describe('createConfiguredTurnExecutor', () => {
           openkit: {
             workerStorage: {
               workSlotRef: workerStorageDefaultWorkSlotRef(
-                'workspace_ready_open',
-                'thread_ready_open'
+                'ws_00000000-0000-7a51-9dfb-8cae00dd2ce8',
+                'th_00000000-0000-76d6-b987-2ed544055f3e'
               ),
             },
           },
         },
         scope: {
-          agentSessionId: 'as_ready_open',
-          threadId: 'thread_ready_open',
-          turnId: 'turn_ready_open',
-          workspaceId: 'workspace_ready_open',
+          agentSessionId: testEntityId('as', 'as_ready_open'),
+          threadId: 'th_00000000-0000-76d6-b987-2ed544055f3e',
+          turnId: testEntityId('tu', 'turn_ready_open'),
+          workspaceId: 'ws_00000000-0000-7a51-9dfb-8cae00dd2ce8',
         },
         snapshotId: 'snapshot_ready_open',
       });
@@ -9114,7 +9230,7 @@ describe('createConfiguredTurnExecutor', () => {
       environmentPackage.agent.runtimeVersion = adapterId === 'pi' ? '0.85.1' : '0.153.4';
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease_ready_open',
+        attemptId: testEntityId('attempt', 'lease_ready_open'),
         sandboxBindingRef: 'sandbox-binding:ready-open',
       });
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
@@ -9290,7 +9406,8 @@ describe('createConfiguredTurnExecutor', () => {
             };
           }
         ).backend;
-        backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+        backend.requireAttemptId = (packageSnapshotId) =>
+          testEntityId('attempt', `lease-${packageSnapshotId}`);
         return { backend, runtime };
       };
       const { backend, runtime } = createBackend();
@@ -9299,16 +9416,16 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
         },
         scope: {
-          agentSessionId: 'as_restored_proof',
-          threadId: 'thread_restored_proof',
-          turnId: 'turn_restored_proof',
-          workspaceId: 'workspace_restored_proof',
+          agentSessionId: testEntityId('as', 'as_restored_proof'),
+          threadId: 'th_00000000-0000-7829-91a3-9f116054448c',
+          turnId: testEntityId('tu', 'turn_restored_proof'),
+          workspaceId: 'ws_00000000-0000-79a0-bbc2-fef84b0979c4',
         },
         snapshotId: 'snapshot_restored_proof',
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: 'lease-snapshot_restored_proof',
+        attemptId: testEntityId('attempt', 'lease-snapshot_restored_proof'),
         sandboxBindingRef: 'lease-binding:restored-proof',
       });
       const settleNext = async (
@@ -9354,7 +9471,10 @@ describe('createConfiguredTurnExecutor', () => {
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       const materialization = await backend.materialize(environmentPackage, {
         sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
-        nativeResume: { digest: readyDigest, locator: 'as_restored_predecessor' },
+        nativeResume: {
+          digest: readyDigest,
+          locator: testEntityId('as', 'as_restored_predecessor'),
+        },
         workspaceRoots: [],
       });
       backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => undefined);
@@ -9373,7 +9493,10 @@ describe('createConfiguredTurnExecutor', () => {
       });
       await launch;
       const restored = createBackend().backend;
-      restored.restoreSession(environmentPackage, 'lease-snapshot_restored_proof');
+      restored.restoreSession(
+        environmentPackage,
+        testEntityId('attempt', 'lease-snapshot_restored_proof')
+      );
       expect(() => {
         restored.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {
           throw new Error('recorder failed');
@@ -9439,10 +9562,10 @@ describe('createConfiguredTurnExecutor', () => {
         completeNanoHostPackage({
           agentSetup: setup,
           scope: {
-            agentSessionId: `as_busy_${suffix}`,
-            threadId: `th_busy_${suffix}`,
-            turnId: `turn_busy_${suffix}`,
-            workspaceId: 'ws_busy',
+            agentSessionId: testEntityId('as', `as_busy_${suffix}`),
+            threadId: testEntityId('th', `th_busy_${suffix}`),
+            turnId: testEntityId('tu', `turn_busy_${suffix}`),
+            workspaceId: 'ws_00000000-0000-7112-96e0-9da90dd77afb',
           },
           snapshotId: `snapshot_busy_${suffix}`,
         })
@@ -9470,7 +9593,7 @@ describe('createConfiguredTurnExecutor', () => {
     const nativeStarts: string[] = [];
     backend.collectTranscript = async (id) => {
       await backend.inspectTerminalHarnessSession(backend.sessions.get(id));
-      if (scenario === 'closeout' && id.includes('turn_busy_first')) {
+      if (scenario === 'closeout' && id.includes(testEntityId('tu', 'turn_busy_first'))) {
         held.resolve();
         await release.promise;
       }
@@ -9484,7 +9607,7 @@ describe('createConfiguredTurnExecutor', () => {
         ...args: Parameters<WorkerGovernanceTurnExecutor['startTurn']>
       ): Promise<void> {
         const execution = super.startTurn(...args);
-        if (args[1] === 'turn_busy_second' && !this.capacityChanged) {
+        if (args[1] === testEntityId('tu', 'turn_busy_second') && !this.capacityChanged) {
           this.capacityChanged = true;
           if (scenario === 'materialization-initial-guard') {
             coreDb.sqlite
@@ -9494,7 +9617,7 @@ describe('createConfiguredTurnExecutor', () => {
             // A compatible resident can still acquire unfinished binding ownership before retirement.
             coreDb.sqlite
               .prepare(`UPDATE agent_session_runtime_bindings
-              SET current_turn_id = 'turn_busy_first', current_attempt_id = 'attempt_busy_1'`)
+              SET current_turn_id = '${testEntityId('tu', 'turn_busy_first')}', current_attempt_id = 'attempt_00000000-0000-7c61-92e0-cb977706c695'`)
               .run();
           }
         }
@@ -9511,7 +9634,7 @@ describe('createConfiguredTurnExecutor', () => {
       backend,
       coreDb,
       awaitWorkerCompletion: async (aep) => {
-        if (scenario !== 'closeout' && aep.scope.turnId === 'turn_busy_first') {
+        if (scenario !== 'closeout' && aep.scope.turnId === testEntityId('tu', 'turn_busy_first')) {
           held.resolve();
           await release.promise;
         }
@@ -9527,11 +9650,11 @@ describe('createConfiguredTurnExecutor', () => {
         return { acceptedAt, status: 'completed', stopReason: 'completed' };
       },
     });
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_busy');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7112-96e0-9da90dd77afb');
     applyScopedMigrations(workspaceDb);
     const entries = await Promise.all(
       ['first', 'second'].map(async (suffix, index) => {
-        const contextItemId = `it_busy_context_${suffix}`;
+        const contextItemId = testEntityId('it', `it_busy_context_${suffix}`);
         const requestId = `00000000-0000-4000-8000-00000000030${index}`;
         const workerRequest = JSON.stringify({
           schemaVersion: 1,
@@ -9555,11 +9678,11 @@ describe('createConfiguredTurnExecutor', () => {
           queueEntryId: `queue_busy_${suffix}`,
           requestId,
           requestedAgentId: setup.manifest.id,
-          threadId: `th_busy_${suffix}`,
-          turnId: `turn_busy_${suffix}`,
+          threadId: testEntityId('th', `th_busy_${suffix}`),
+          turnId: testEntityId('tu', `turn_busy_${suffix}`),
           turnInput: workerRequest,
-          triggerActor: { kind: 'user', id: 'user-factory' },
-          workspaceId: 'ws_busy',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
+          workspaceId: 'ws_00000000-0000-7112-96e0-9da90dd77afb',
         });
         publishFactoryAdmission(store, entry);
         store.createItem({
@@ -9632,7 +9755,7 @@ describe('createConfiguredTurnExecutor', () => {
       store,
       turnExecutor: executor,
       executionBackend: backend,
-      createAttemptId: () => `attempt_busy_${++attemptNumber}`,
+      createAttemptId: () => testEntityId('attempt', `attempt_busy_${++attemptNumber}`),
     };
     /** Settles only external Harness replies while the real in-process owners execute. */
     const drive = async <T>(promise: Promise<T>): Promise<T> => {
@@ -9699,7 +9822,7 @@ describe('createConfiguredTurnExecutor', () => {
       const scope = {
         workspaceId: second.workspaceId,
         threadId: second.threadId,
-        actorId: 'user-factory',
+        actorId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
       };
       const receipt = store.getCommandRequest('turn.start', second.requestId, scope);
       const checkpoint = getWorkerCheckpoint(
@@ -9861,24 +9984,24 @@ describe('createConfiguredTurnExecutor', () => {
         resolveAgentEnvironmentPackage({
           coreDb,
           captureCoverage: { scope: 'server', value: 'off' },
-          agentSessionId: `as_seed_${index}`,
+          agentSessionId: testEntityId('as', `as_seed_${index}`),
           agentSetup: setup,
           backend: { kind: 'openshell' },
           createdAt: '2999-10-03T00:00:00.000Z',
           requestId: null,
-          triggerActor: { kind: 'user', id: 'user_resume' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7b6b-94c1-11ec88e0100c' },
           turn: {
             completedAt: null,
             configVersion: null,
             durationMs: null,
             error: null,
-            id: `turn_seed_${index}`,
+            id: testEntityId('tu', `turn_seed_${index}`),
             items: [],
             startedAt: '2999-10-03T00:00:00.000Z',
             status: 'running',
-            threadId: `thread_resume_${index}`,
-            triggerActor: { kind: 'user', id: 'user_resume' },
-            workspaceId: 'workspace_resume',
+            threadId: testEntityId('th', `thread_resume_${index}`),
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7b6b-94c1-11ec88e0100c' },
+            workspaceId: 'ws_00000000-0000-7af1-aea9-339aceb3f05b',
           },
           turnInput: 'Continue',
           workspaceCwd: null,
@@ -9944,11 +10067,11 @@ describe('createConfiguredTurnExecutor', () => {
         queueEntryId: `queue_resume_${index}`,
         requestId: `request_resume_${index}`,
         requestedAgentId: setups[agentIndex]!.manifest.id,
-        threadId: `thread_resume_${agentIndex}`,
-        turnId: `turn_resume_${index}`,
+        threadId: testEntityId('th', `thread_resume_${agentIndex}`),
+        turnId: testEntityId('tu', `turn_resume_${index}`),
         turnInput: 'Continue',
-        triggerActor: { kind: 'user', id: 'user_resume' },
-        workspaceId: 'workspace_resume',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7b6b-94c1-11ec88e0100c' },
+        workspaceId: 'ws_00000000-0000-7af1-aea9-339aceb3f05b',
       });
       publishFactoryAdmission(
         store,
@@ -9958,8 +10081,8 @@ describe('createConfiguredTurnExecutor', () => {
       const running = runSchedulerDispatchLoop({
         agentManifests: setups.map((setup) => setup.manifest),
         coreDb,
-        createAgentSessionId: () => `as_resume_${index}`,
-        createAttemptId: () => `lease_resume_${index}`,
+        createAgentSessionId: () => testEntityId('as', `as_resume_${index}`),
+        createAttemptId: () => testEntityId('attempt', `lease_resume_${index}`),
         gatewayConfig: createTestGatewayConfig(),
         maxDispatches: 1,
         now: () => `2999-10-03T00:00:${tick}.000Z`,
@@ -10027,8 +10150,13 @@ describe('createConfiguredTurnExecutor', () => {
       expect(done).toBe(true);
       const dispatched = await running;
       expect(dispatched.startedTurns).toHaveLength(1);
-      await completeOwnedTerminalAttempt(coreDb, store.getTurnById(`turn_resume_${index}`));
-      expect(store.getTurnById(`turn_resume_${index}`).status).toBe('completed');
+      await completeOwnedTerminalAttempt(
+        coreDb,
+        store.getTurnById(testEntityId('tu', `turn_resume_${index}`))
+      );
+      expect(store.getTurnById(testEntityId('tu', `turn_resume_${index}`)).status).toBe(
+        'completed'
+      );
     };
     try {
       await run(1, 0);
@@ -10041,19 +10169,22 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .get()
       ).toEqual({ targetId: 'staging-nanohost-a2', deploymentId: 'staging-a2' });
-      expect.soft(store.getAgentSession('as_resume_1')).toMatchObject({
+      expect.soft(store.getAgentSession(testEntityId('as', 'as_resume_1'))).toMatchObject({
         nativeHandleDigest: digest,
         retainedStorage: {
           storageRef: (original as { storageRef: string }).storageRef,
-          workSlotRef: workerStorageDefaultWorkSlotRef('workspace_resume', 'thread_resume_0'),
+          workSlotRef: workerStorageDefaultWorkSlotRef(
+            'ws_00000000-0000-7af1-aea9-339aceb3f05b',
+            testEntityId('th', 'thread_resume_0')
+          ),
         },
       });
       if (scenario !== 'eviction') {
-        const predecessor = store.getAgentSession('as_resume_1');
+        const predecessor = store.getAgentSession(testEntityId('as', 'as_resume_1'));
         // Persist the exact crash/pre-fact state; the write-once API must not erase a live fact.
         const recordPath = join(
           coreDb.dataRoot,
-          'workspaces/workspace_resume/runtime/agent-sessions/as_resume_1/session.json'
+          `workspaces/ws_00000000-0000-7af1-aea9-339aceb3f05b/runtime/agent-sessions/${testEntityId('as', 'as_resume_1')}/session.json`
         );
         const record = JSON.parse(readFileSync(recordPath, 'utf8'));
         if (!['intact', 'image-intact'].includes(scenario)) record.nativeHandleDigest = null;
@@ -10144,7 +10275,7 @@ describe('createConfiguredTurnExecutor', () => {
         if (scenario.startsWith('ignored-package-') || scenario.startsWith('known-package-')) {
           const snapshotPath = join(
             coreDb.dataRoot,
-            'workspaces/workspace_resume/runtime/agent-sessions',
+            'workspaces/ws_00000000-0000-7af1-aea9-339aceb3f05b/runtime/agent-sessions',
             predecessor.id,
             'aep-snapshots',
             `${predecessor.environmentPackageSnapshotId}.json`
@@ -10313,9 +10444,9 @@ describe('createConfiguredTurnExecutor', () => {
                   snapshotId: 'snapshot_fresh_cross_thread',
                   scope: {
                     ...normalized.scope,
-                    agentSessionId: 'as_resume_2',
-                    threadId: 'thread_resume_1',
-                    turnId: 'turn_resume_2',
+                    agentSessionId: testEntityId('as', 'as_resume_2'),
+                    threadId: 'th_00000000-0000-7054-b6df-2538df60a647',
+                    turnId: testEntityId('tu', 'turn_resume_2'),
                   },
                 }
               : normalized;
@@ -10442,7 +10573,7 @@ describe('createConfiguredTurnExecutor', () => {
             .prepare('UPDATE worker_backend_sessions SET thread_id = ?, runtime_target_id = ?')
             .run(predecessor.threadId, 'staging-nanohost-a2');
           const originalBytes = readFileSync(snapshotPath, 'utf8');
-          retained.snapshot.scope.threadId = 'wrong-package-thread';
+          retained.snapshot.scope.threadId = testEntityId('th', 'wrong-package-thread');
           writeFileSync(snapshotPath, JSON.stringify(retained));
           expect(() => inspect()).toThrow('digest mismatch');
           retained.contentDigest = createHash('sha256')
@@ -10452,7 +10583,7 @@ describe('createConfiguredTurnExecutor', () => {
           expect(() => inspect()).toThrow('lineage mismatch');
           writeFileSync(snapshotPath, originalBytes);
           const changedScope = JSON.parse(originalBytes);
-          changedScope.threadId = 'wrong-package-thread';
+          changedScope.threadId = testEntityId('th', 'wrong-package-thread');
           changedScope.snapshot.scope.threadId = changedScope.threadId;
           changedScope.contentDigest = createHash('sha256')
             .update(JSON.stringify(changedScope.snapshot))
@@ -10461,7 +10592,7 @@ describe('createConfiguredTurnExecutor', () => {
           expect(() => inspect()).toThrow();
           writeFileSync(snapshotPath, originalBytes);
           for (const [field, value] of [
-            ['triggerActor', { kind: 'user', id: 'wrong-package-actor' }],
+            ['triggerActor', { kind: 'user', id: 'usr_00000000-0000-78d7-b17c-43d9aa145f21' }],
             ['requestId', 'wrong-package-request'],
           ]) {
             const changedAdmission = JSON.parse(originalBytes);
@@ -10525,9 +10656,9 @@ describe('createConfiguredTurnExecutor', () => {
               nativeHandleDigest: digest,
               retainedStorage: predecessor.retainedStorage,
             });
-            expect(store.getAgentSession('as_resume_2').retainedStorage?.storageRef).not.toBe(
-              predecessor.retainedStorage?.storageRef
-            );
+            expect(
+              store.getAgentSession(testEntityId('as', 'as_resume_2')).retainedStorage?.storageRef
+            ).not.toBe(predecessor.retainedStorage?.storageRef);
             return;
           }
           // Once Core has accepted a pair, a changed ready digest must not replace it.
@@ -10576,9 +10707,12 @@ describe('createConfiguredTurnExecutor', () => {
               )
               .get(predecessor.id)
           ).toMatchObject({ state: 'ready', digest });
-          expect(store.listThreadAgentSessions('workspace_resume', 'thread_resume_0')).toHaveLength(
-            1
-          );
+          expect(
+            store.listThreadAgentSessions(
+              'ws_00000000-0000-7af1-aea9-339aceb3f05b',
+              testEntityId('th', 'thread_resume_0')
+            )
+          ).toHaveLength(1);
         } else if (crossThread) {
           await run(2, 1);
           expect(opens).toHaveLength(2);
@@ -10595,9 +10729,9 @@ describe('createConfiguredTurnExecutor', () => {
             nativeHandleDigest: digest,
             retainedStorage: predecessor.retainedStorage,
           });
-          expect(store.getAgentSession('as_resume_2').retainedStorage?.storageRef).not.toBe(
-            predecessor.retainedStorage?.storageRef
-          );
+          expect(
+            store.getAgentSession(testEntityId('as', 'as_resume_2')).retainedStorage?.storageRef
+          ).not.toBe(predecessor.retainedStorage?.storageRef);
         } else {
           await run(2, 0);
           const creates = effects.filter((effect) => effect.kind === 'sandbox.create');
@@ -10626,7 +10760,7 @@ describe('createConfiguredTurnExecutor', () => {
             nativeHandleDigest: digest,
             retainedStorage: predecessor.retainedStorage,
           });
-          expect(store.getAgentSession('as_resume_2').retainedStorage).toEqual(
+          expect(store.getAgentSession(testEntityId('as', 'as_resume_2')).retainedStorage).toEqual(
             predecessor.retainedStorage
           );
         }
@@ -10647,9 +10781,11 @@ describe('createConfiguredTurnExecutor', () => {
         storageRef: (original as { storageRef: string }).storageRef,
         targets: (original as { targets: unknown }).targets,
       });
-      expect(opens[2]).toMatchObject({ resume: { digest, locator: 'as_resume_1' } });
-      expect(store.getAgentSession('as_resume_3').retainedStorage).toEqual(
-        store.getAgentSession('as_resume_1').retainedStorage
+      expect(opens[2]).toMatchObject({
+        resume: { digest, locator: testEntityId('as', 'as_resume_1') },
+      });
+      expect(store.getAgentSession(testEntityId('as', 'as_resume_3')).retainedStorage).toEqual(
+        store.getAgentSession(testEntityId('as', 'as_resume_1')).retainedStorage
       );
     } finally {
       coreDb.sqlite.close();
@@ -10738,24 +10874,24 @@ describe('createConfiguredTurnExecutor', () => {
         return resolveAgentEnvironmentPackage({
           coreDb,
           captureCoverage: { scope: 'server', value: 'off' },
-          agentSessionId: `as_admission_stall_${number}`,
+          agentSessionId: testEntityId('as', `as_admission_stall_${number}`),
           agentSetup: setup,
           backend: { kind: 'openshell' },
           createdAt: '2026-09-06T00:00:00.000Z',
           requestId: `request_admission_stall_${number}`,
-          triggerActor: { kind: 'user', id: 'user-factory' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
           turn: {
             completedAt: null,
             configVersion: null,
             durationMs: null,
             error: null,
-            id: `turn_admission_stall_${number}`,
+            id: testEntityId('tu', `turn_admission_stall_${number}`),
             items: [],
             startedAt: '2026-09-06T00:00:00.000Z',
             status: 'running',
-            threadId: `thread_admission_stall_${number}`,
-            triggerActor: { kind: 'user', id: 'user-factory' },
-            workspaceId: 'workspace_admission_stall',
+            threadId: testEntityId('th', `thread_admission_stall_${number}`),
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
+            workspaceId: 'ws_00000000-0000-7ae6-ab0c-3edb48a2c46a',
           },
           turnInput: 'Complete a reusable Turn',
           workspaceCwd: '/workspace',
@@ -10820,7 +10956,7 @@ describe('createConfiguredTurnExecutor', () => {
       const dispatch = (environmentPackage: AgentEnvironmentPackage) => {
         expect(backend.inspectMaterializationCapacity?.(environmentPackage)).toBe('available');
         bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-          attemptId: `lease:${environmentPackage.snapshotId}`,
+          attemptId: testEntityId('attempt', `lease:${environmentPackage.snapshotId}`),
           sandboxBindingRef: `lease-binding:${environmentPackage.snapshotId}`,
         });
         anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
@@ -11028,13 +11164,13 @@ describe('createConfiguredTurnExecutor', () => {
                 .prepare(
                   'SELECT phase, operation_id, turn_id, agent_session_id, thread_id FROM scheduler_execution_attempts WHERE attempt_id = ?'
                 )
-                .get('attempt_fresh_retirement')
+                .get(testEntityId('attempt', 'attempt_fresh_retirement'))
             ).toEqual({
               phase: 'open',
               operation_id: null,
-              turn_id: 'turn_fresh_retirement',
-              agent_session_id: 'as_fresh_retirement',
-              thread_id: 'thread_fresh_retirement',
+              turn_id: testEntityId('tu', 'turn_fresh_retirement'),
+              agent_session_id: testEntityId('as', 'as_fresh_retirement'),
+              thread_id: 'th_00000000-0000-7723-9174-bd587ef8cd09',
             });
             expect(
               coreDb.sqlite
@@ -11123,7 +11259,8 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       const requireAttemptId = backend.requireAttemptId.bind(backend);
-      backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      backend.requireAttemptId = (packageSnapshotId) =>
+        testEntityId('attempt', `lease-${packageSnapshotId}`);
       const native = backend as WorkerGovernanceBackend & {
         evictIncompatibleIdleSandbox(...args: unknown[]): Promise<unknown>;
       };
@@ -11142,17 +11279,17 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
         },
         scope: {
-          agentSessionId: 'as_idle_eviction_a',
-          threadId: 'thread_idle_eviction_a',
-          turnId: 'turn_idle_eviction_a',
-          workspaceId: 'workspace_idle_eviction_a',
+          agentSessionId: testEntityId('as', 'as_idle_eviction_a'),
+          threadId: 'th_00000000-0000-7915-a6f9-62c39f405597',
+          turnId: testEntityId('tu', 'turn_idle_eviction_a'),
+          workspaceId: 'ws_00000000-0000-7395-a40f-79180b090159',
         },
         extensions: {
           openkit: {
             workerStorage: {
               workSlotRef: workerStorageDefaultWorkSlotRef(
-                'workspace_idle_eviction_a',
-                'thread_idle_eviction_a'
+                'ws_00000000-0000-7395-a40f-79180b090159',
+                'th_00000000-0000-7915-a6f9-62c39f405597'
               ),
             },
           },
@@ -11164,17 +11301,17 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
         scope: {
-          agentSessionId: 'as_idle_eviction_b',
-          threadId: 'thread_idle_eviction_a',
-          turnId: 'turn_idle_eviction_b',
-          workspaceId: 'workspace_idle_eviction_a',
+          agentSessionId: testEntityId('as', 'as_idle_eviction_b'),
+          threadId: 'th_00000000-0000-7915-a6f9-62c39f405597',
+          turnId: testEntityId('tu', 'turn_idle_eviction_b'),
+          workspaceId: 'ws_00000000-0000-7395-a40f-79180b090159',
         },
         extensions: {
           openkit: {
             workerStorage: {
               workSlotRef: workerStorageDefaultWorkSlotRef(
-                'workspace_idle_eviction_a',
-                'thread_idle_eviction_a'
+                'ws_00000000-0000-7395-a40f-79180b090159',
+                'th_00000000-0000-7915-a6f9-62c39f405597'
               ),
             },
           },
@@ -11184,7 +11321,7 @@ describe('createConfiguredTurnExecutor', () => {
       authorizeNanoHostPackage(coreDb, firstPackage);
       authorizeNanoHostPackage(coreDb, secondPackage);
       bindNanoHostWorkerLineage(coreDb, firstPackage, {
-        attemptId: 'lease-snapshot_idle_eviction_a',
+        attemptId: testEntityId('attempt', 'lease-snapshot_idle_eviction_a'),
         sandboxBindingRef: 'lease-binding:idle-eviction-a',
       });
       const settleNext = async (
@@ -11266,7 +11403,7 @@ describe('createConfiguredTurnExecutor', () => {
         if (operation === 'session.close' && startupRefused === 'predecessor-effectful') {
           // A concurrent possible successor effect defeats no-effect deferral even after definite refusal.
           recordSchedulerExecutionOperation(coreDb, {
-            attemptId: `lease-${secondPackage.snapshotId}`,
+            attemptId: testEntityId('attempt', `lease-${secondPackage.snapshotId}`),
             operationId: 'incoming-effect-before-close-settlement',
           });
         }
@@ -11387,7 +11524,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(recordedDigests).toEqual(['a'.repeat(64)]);
       await runtime.cleanupBackendSession(backend.planSession(firstPackage));
 
-      await closeFactoryAttempt(coreDb, 'lease-snapshot_idle_eviction_a');
+      await closeFactoryAttempt(coreDb, testEntityId('attempt', 'lease-snapshot_idle_eviction_a'));
       const retainedBinding = coreDb.sqlite
         .prepare(
           `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
@@ -11396,7 +11533,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .get();
       expect(retainedBinding).toEqual({
-        agentSessionId: 'as_idle_eviction_a',
+        agentSessionId: testEntityId('as', 'as_idle_eviction_a'),
         cleanupState: 'clean',
         lifecycleState: 'open',
       });
@@ -11411,8 +11548,8 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
-           SET lifecycle_state = 'active', current_turn_id = 'turn_compatible_busy',
-               current_attempt_id = 'lease_compatible_busy'`
+           SET lifecycle_state = 'active', current_turn_id = 'tu_00000000-0000-7e2d-b2ea-13401a617e23',
+               current_attempt_id = '${testEntityId('attempt', 'lease_compatible_busy')}'`
         )
         .run();
       coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
@@ -11434,8 +11571,8 @@ describe('createConfiguredTurnExecutor', () => {
              effective_setup_generation, native_handle_state, native_handle_digest,
              lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence,
              cleanup_state, created_at, updated_at, image_digest
-           ) SELECT 'binding_closed_history', harness_instance_id, 'as_closed_history',
-                    'workspace_closed_history', 'thread_closed_history', ?, 1, 'absent', NULL,
+           ) SELECT 'binding_closed_history', harness_instance_id, 'as_00000000-0000-72f9-ba82-c36a5be45290',
+                    'ws_00000000-0000-73f2-b1c3-2b14de5cf4fe', 'th_00000000-0000-7d88-bad4-01be43ac09b2', ?, 1, 'absent', NULL,
                     'closed', NULL, NULL, 1, 'clean', ?, ?, ?
              FROM harness_instance_records LIMIT 1`
         )
@@ -11510,7 +11647,7 @@ describe('createConfiguredTurnExecutor', () => {
           ...(queuedAdmission
             ? {
                 admissionAgentSessionId: secondPackage.scope.agentSessionId,
-                admissionAttemptId: `lease-${secondPackage.snapshotId}`,
+                admissionAttemptId: testEntityId('attempt', `lease-${secondPackage.snapshotId}`),
               }
             : {}),
           agentSessionCompatibilityKey: `sha256:${'e'.repeat(64)}`,
@@ -11529,7 +11666,10 @@ describe('createConfiguredTurnExecutor', () => {
             : expect(close).rejects.toThrow(/session.close refused: cleanup_required/);
         await settleNext('session.close', { reasonCode: 'cleanup_required' }, 'refused');
         await refused;
-        await closeFactoryAttempt(coreDb, 'lease-snapshot_idle_eviction_b');
+        await closeFactoryAttempt(
+          coreDb,
+          testEntityId('attempt', 'lease-snapshot_idle_eviction_b')
+        );
         secondPackage = completeNanoHostPackage({
           ...secondPackage,
           ...(startupRefused === 'predecessor-close-required'
@@ -11537,8 +11677,8 @@ describe('createConfiguredTurnExecutor', () => {
             : {}),
           scope: {
             ...secondPackage.scope,
-            agentSessionId: 'as_idle_eviction_c',
-            turnId: 'turn_idle_eviction_c',
+            agentSessionId: testEntityId('as', 'as_idle_eviction_c'),
+            turnId: testEntityId('tu', 'turn_idle_eviction_c'),
             requestId: 'request_idle_eviction_c',
           },
           snapshotId: 'snapshot_idle_eviction_c',
@@ -11570,7 +11710,8 @@ describe('createConfiguredTurnExecutor', () => {
             workerControlGateway: new WorkerControlGateway(),
           });
           backend = (runtime.turnExecutor as unknown as { backend: typeof backend }).backend;
-          backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+          backend.requireAttemptId = (packageSnapshotId) =>
+            testEntityId('attempt', `lease-${packageSnapshotId}`);
         }
         const otherRuntime = completeNanoHostPackage({
           ...firstPackage,
@@ -11583,14 +11724,14 @@ describe('createConfiguredTurnExecutor', () => {
             ...secondPackage,
             scope: {
               ...secondPackage.scope,
-              threadId: 'th_review_fresh',
-              agentSessionId: 'as_review_fresh',
+              threadId: testEntityId('th', 'th_review_fresh'),
+              agentSessionId: testEntityId('as', 'as_review_fresh'),
             },
           });
           const effectsBeforePreview = effects.length;
           await expect(
             backend.prepareAgentSessionContinuity!({
-              agentSessionId: 'as_review_fresh',
+              agentSessionId: testEntityId('as', 'as_review_fresh'),
               environmentPackage: freshThreadPackage,
               reuseAllowed: true,
               workspaceId: freshThreadPackage.scope.workspaceId,
@@ -11621,9 +11762,9 @@ describe('createConfiguredTurnExecutor', () => {
           agentSetup: setup,
           scope: {
             ...firstPackage.scope,
-            agentSessionId: 'as_fresh_retirement',
-            threadId: 'thread_fresh_retirement',
-            turnId: 'turn_fresh_retirement',
+            agentSessionId: testEntityId('as', 'as_fresh_retirement'),
+            threadId: 'th_00000000-0000-7723-9174-bd587ef8cd09',
+            turnId: testEntityId('tu', 'turn_fresh_retirement'),
           },
           snapshotId: 'snapshot_fresh_retirement',
         });
@@ -11669,7 +11810,7 @@ describe('createConfiguredTurnExecutor', () => {
           agentManifests: [setup.manifest],
           coreDb,
           createAgentSessionId: () => freshPackage.scope.agentSessionId,
-          createAttemptId: () => 'attempt_fresh_retirement',
+          createAttemptId: () => testEntityId('attempt', 'attempt_fresh_retirement'),
           gatewayConfig: createTestGatewayConfig(),
           maxDispatches: 1,
           providerRegistry: new ProviderRegistry([
@@ -11821,7 +11962,7 @@ describe('createConfiguredTurnExecutor', () => {
           agentSessionCompatibilityKey: `sha256:${'e'.repeat(64)}`,
           agentSessionId: firstPackage.scope.agentSessionId,
           admissionAgentSessionId: secondPackage.scope.agentSessionId,
-          admissionAttemptId: `lease-${secondPackage.snapshotId}`,
+          admissionAttemptId: testEntityId('attempt', `lease-${secondPackage.snapshotId}`),
           environmentPackage: secondPackage,
           threadId: firstPackage.scope.threadId,
           workspaceId: firstPackage.scope.workspaceId,
@@ -11983,11 +12124,11 @@ describe('createConfiguredTurnExecutor', () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const imageRef = `sha256:${'a'.repeat(64)}`;
-    const workspaceId = 'workspace_shared_choice';
-    const threadId = 'thread_shared_choice';
-    const peerThreadId = 'thread_shared_choice_peer';
-    const replacementThreadId = 'thread_shared_choice_replacement';
-    const triggerActor = { id: 'user-factory', kind: 'user' as const };
+    const workspaceId = 'ws_00000000-0000-73e4-b2cc-0a3a87df0c14';
+    const threadId = 'th_00000000-0000-7ce0-93ad-36f3b3bbac03';
+    const peerThreadId = 'th_00000000-0000-7190-abb2-530cd72dffe3';
+    const replacementThreadId = 'th_00000000-0000-7092-a95b-7e34d8e801b0';
+    const triggerActor = { id: 'usr_00000000-0000-7353-b5d8-71f1d581a738', kind: 'user' as const };
     const workSlotRef = workerStorageDefaultWorkSlotRef(workspaceId, threadId);
     try {
       coreDb.sqlite
@@ -12014,9 +12155,10 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      backend.requireAttemptId = (packageSnapshotId) =>
+        testEntityId('attempt', `lease-${packageSnapshotId}`);
       const leaseIdFor = (environmentPackage: AgentEnvironmentPackage) =>
-        `lease-${environmentPackage.snapshotId}`;
+        testEntityId('attempt', `lease-${environmentPackage.snapshotId}`);
       const latestSandboxBindingRef = () =>
         (
           coreDb.sqlite
@@ -12041,11 +12183,11 @@ describe('createConfiguredTurnExecutor', () => {
             image: { kind: 'reference', pullPolicy: 'never', ref: imageRef },
           },
           scope: {
-            agentSessionId: `as_shared_choice_${label}`,
+            agentSessionId: testEntityId('as', `as_shared_choice_${label}`),
             requestId: `request_turn_shared_choice_${label}`,
             threadId: input.threadId ?? threadId,
             triggerActor,
-            turnId: `turn_shared_choice_${label}`,
+            turnId: testEntityId('tu', `turn_shared_choice_${label}`),
             workspaceId,
           },
           snapshotId: `snapshot_shared_choice_${label}`,
@@ -12189,12 +12331,12 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId,
       });
       const reservedOther = reserveWorkerStorageAttachment(coreDb, {
-        agentSessionId: 'as_shared_choice_other_seed',
+        agentSessionId: testEntityId('as', 'as_shared_choice_other_seed'),
         authorizeContributor: () => true,
         expectedRevision: createdOther.revision,
         layout,
         purpose: 'work',
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: 'target_shared_choice',
         storageRef: createdOther.storageRef,
         threadId,
@@ -12208,12 +12350,12 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const peerSlot = workerStorageDefaultWorkSlotRef(workspaceId, peerThreadId);
       const reservedPeer = reserveWorkerStorageAttachment(coreDb, {
-        agentSessionId: 'as_shared_choice_peer_seed',
+        agentSessionId: testEntityId('as', 'as_shared_choice_peer_seed'),
         authorizeContributor: () => true,
         expectedRevision: idleOtherFirst.revision,
         layout,
         purpose: 'work',
-        responsibleUserId: 'user-factory',
+        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
         runtimeTargetId: 'target_shared_choice',
         storageRef: idleOtherFirst.storageRef,
         threadId: peerThreadId,
@@ -12437,31 +12579,31 @@ describe('createConfiguredTurnExecutor', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'd'.repeat(64),
-        agentSessionId: 'as_capacity_guard_resident',
+        agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
         agentSessionRuntimeBindingId: 'binding-capacity-guard',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-capacity-guard',
-        threadId: 'thread_capacity_guard_resident',
+        threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
         timestamp: '2026-10-02T07:57:21.621Z',
-        workspaceId: 'workspace_capacity_guard_resident',
+        workspaceId: 'ws_00000000-0000-7ba9-891a-e2ba53e69f41',
       });
       if (operation === 'unknown') {
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'd'.repeat(64),
-          agentSessionId: 'as_round33_compatible_sibling',
+          agentSessionId: testEntityId('as', 'as_round33_compatible_sibling'),
           agentSessionRuntimeBindingId: 'binding-round33-compatible-sibling',
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-capacity-guard',
-          threadId: 'thread_round33_compatible_sibling',
+          threadId: 'th_00000000-0000-7478-98d3-d3efdca62b71',
           timestamp: '2026-10-02T07:57:21.621Z',
-          workspaceId: 'workspace_capacity_guard_resident',
+          workspaceId: 'ws_00000000-0000-7ba9-891a-e2ba53e69f41',
         });
       }
       coreDb.sqlite.exec("UPDATE agent_session_runtime_bindings SET lifecycle_state = 'open'");
       coreDb.sqlite.exec('UPDATE harness_instance_records SET next_sequence = 3');
       queueNanoHostHarnessOperation(coreDb, {
         body: {
-          agentSessionId: 'as_capacity_guard_resident',
+          agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
           agentSessionRuntimeBindingId: 'binding-capacity-guard',
         },
         harnessInstanceId: 'harness-capacity-guard',
@@ -12496,12 +12638,12 @@ describe('createConfiguredTurnExecutor', () => {
           UPDATE agent_session_runtime_bindings SET lifecycle_state = 'failed', cleanup_state = 'unknown'`);
       }
       const retainedStorage = attachNanoHostStorageFixture(coreDb, {
-        agentSessionId: 'as_capacity_guard_resident',
+        agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
         deploymentId: 'deployment_capacity_guard',
         runtimeTargetId: 'target_capacity_guard',
         sandboxBindingRef: 'sandbox-binding-capacity-guard',
-        threadId: 'thread_capacity_guard_resident',
-        workspaceId: 'workspace_capacity_guard_resident',
+        threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
+        workspaceId: 'ws_00000000-0000-7ba9-891a-e2ba53e69f41',
       });
       // Observe the durable disposition at retirement, before the private row cascades away.
       coreDb.sqlite.exec(`CREATE TEMP TABLE retired_harness_operations (operation_state TEXT);
@@ -12557,10 +12699,10 @@ describe('createConfiguredTurnExecutor', () => {
       ).backend;
       const residentPackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'as_capacity_guard_resident',
-          threadId: 'thread_capacity_guard_resident',
-          turnId: 'turn_capacity_guard_resident',
-          workspaceId: 'workspace_capacity_guard_resident',
+          agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
+          threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
+          turnId: testEntityId('tu', 'turn_capacity_guard_resident'),
+          workspaceId: 'ws_00000000-0000-7ba9-891a-e2ba53e69f41',
         },
         snapshotId: 'snapshot_capacity_guard_resident',
       });
@@ -12581,13 +12723,13 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(`UPDATE scheduler_execution_attempts
         SET binding_ref = 'sandbox-binding-capacity-guard',
           terminal_cause = 'scheduler-restart-backend-cleanup'
-        WHERE agent_session_id = 'as_capacity_guard_resident'`)
+        WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`)
         .run();
       coreDb.sqlite
         .prepare(`UPDATE worker_backend_sessions
         SET sandbox_binding_ref = 'sandbox-binding-capacity-guard', state = 'cleaned',
           workspace_handoff_state = 'complete', physical_cleaned_at = '2026-10-02T08:01:37.559Z',
-          origin_physical_epoch = ? WHERE agent_session_id = 'as_capacity_guard_resident'`)
+          origin_physical_epoch = ? WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`)
         .run(origin);
       const residentKey = (
         coreDb.sqlite
@@ -12603,7 +12745,7 @@ describe('createConfiguredTurnExecutor', () => {
           residentAttemptId
         );
       const oldAttempt = observeExecutionAttempts(coreDb).find(
-        (attempt) => attempt.agent_session_id === 'as_capacity_guard_resident'
+        (attempt) => attempt.agent_session_id === testEntityId('as', 'as_capacity_guard_resident')
       );
       expect(oldAttempt).toBeDefined();
       if (operation === 'unknown')
@@ -12615,7 +12757,7 @@ describe('createConfiguredTurnExecutor', () => {
         .get();
       const oldBackend = coreDb.sqlite
         .prepare(
-          "SELECT * FROM worker_backend_sessions WHERE agent_session_id = 'as_capacity_guard_resident'"
+          `SELECT * FROM worker_backend_sessions WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`
         )
         .get();
       expect(
@@ -12672,7 +12814,7 @@ describe('createConfiguredTurnExecutor', () => {
         store.createThread(
           residentPackage.scope.workspaceId,
           'Independent Pi',
-          'thread_round33_pi'
+          'th_00000000-0000-75c1-9965-6a5e0ce7021b'
         );
         recordWorkspaceOwnerMembership({
           coreDb,
@@ -12682,10 +12824,10 @@ describe('createConfiguredTurnExecutor', () => {
               ? residentPackage.scope.triggerActor.id
               : residentPackage.scope.triggerActor.responsibleUserId!,
         });
-        insertFactoryUser(coreDb, 'user_local');
+        insertFactoryUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001');
         coreDb.sqlite
           .prepare(
-            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,access_level,revision,joined_at,created_at,updated_at) VALUES (?, 'user_local','active','editor',1,?,?,?)"
+            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,access_level,revision,joined_at,created_at,updated_at) VALUES (?, 'usr_00000000-0000-7000-8000-000000000001','active','editor',1,?,?,?)"
           )
           .run(
             residentPackage.scope.workspaceId,
@@ -12701,7 +12843,7 @@ describe('createConfiguredTurnExecutor', () => {
               {
                 body: JSON.stringify({
                   workspaceId: residentPackage.scope.workspaceId,
-                  threadId: 'thread_round33_pi',
+                  threadId: 'th_00000000-0000-75c1-9965-6a5e0ce7021b',
                   agentId: setup.manifest.id,
                   input: 'Independent Pi work.',
                   requestId: '00000000-0000-4000-8000-00000000a234',
@@ -12880,7 +13022,9 @@ describe('createConfiguredTurnExecutor', () => {
             if (!exact) continue;
             nativeCommands.push(exact);
             expect(exact.harnessInstanceId).not.toBe('harness-capacity-guard');
-            expect(exact.body.agentSessionId).not.toBe('as_capacity_guard_resident');
+            expect(exact.body.agentSessionId).not.toBe(
+              testEntityId('as', 'as_capacity_guard_resident')
+            );
             expect(exact.operationId).not.toBe((oldClose as { operation_id: string }).operation_id);
             const wire = runtime.acceptNanoHostHarnessCommand(exact);
             if (exact.operation === 'turn.start') {
@@ -12919,7 +13063,7 @@ describe('createConfiguredTurnExecutor', () => {
                 ).snapshot;
                 expect(produced.scope).toMatchObject({
                   turnId: accepted.id,
-                  threadId: 'thread_round33_pi',
+                  threadId: 'th_00000000-0000-75c1-9965-6a5e0ce7021b',
                   requestId: '00000000-0000-4000-8000-00000000a234',
                 });
                 expect(produced.agent.runtimeKind).toBe('pi');
@@ -13037,10 +13181,10 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
         scope: {
-          agentSessionId: 'as_capacity_guard_desired',
-          threadId: 'thread_capacity_guard_desired',
-          turnId: 'turn_capacity_guard_desired',
-          workspaceId: 'workspace_capacity_guard_desired',
+          agentSessionId: testEntityId('as', 'as_capacity_guard_desired'),
+          threadId: 'th_00000000-0000-7cc2-ae24-9531d997b506',
+          turnId: testEntityId('tu', 'turn_capacity_guard_desired'),
+          workspaceId: 'ws_00000000-0000-78c9-9512-ae197f839de0',
         },
         snapshotId: 'snapshot_capacity_guard_desired',
       });
@@ -13068,11 +13212,11 @@ describe('createConfiguredTurnExecutor', () => {
       }
       // Physical absence cannot settle a live scheduler owner or a current Turn reference.
       coreDb.sqlite.exec(
-        "UPDATE scheduler_execution_attempts SET phase = 'open' WHERE agent_session_id = 'as_capacity_guard_resident'"
+        `UPDATE scheduler_execution_attempts SET phase = 'open' WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`
       );
       expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
       coreDb.sqlite.exec(
-        "UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = 'as_capacity_guard_resident'"
+        `UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`
       );
       for (const field of ['current_turn_id', 'current_attempt_id']) {
         coreDb.sqlite.exec(
@@ -13122,13 +13266,13 @@ describe('createConfiguredTurnExecutor', () => {
       });
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.agent_session_id === 'as_capacity_guard_resident'
+          (attempt) => attempt.agent_session_id === testEntityId('as', 'as_capacity_guard_resident')
         )
       ).toEqual(oldAttempt);
       expect(
         coreDb.sqlite
           .prepare(
-            "SELECT * FROM worker_backend_sessions WHERE agent_session_id = 'as_capacity_guard_resident'"
+            `SELECT * FROM worker_backend_sessions WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`
           )
           .get()
       ).toEqual(oldBackend);
@@ -13177,13 +13321,13 @@ describe('createConfiguredTurnExecutor', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'd'.repeat(64),
-        agentSessionId: 'as_capacity_guard_resident',
+        agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
         agentSessionRuntimeBindingId: 'binding-capacity-guard',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-capacity-guard',
-        threadId: 'thread_capacity_guard_resident',
+        threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
         timestamp: '2026-09-06T00:00:00.000Z',
-        workspaceId: 'workspace_capacity_guard_resident',
+        workspaceId: 'ws_00000000-0000-7ba9-891a-e2ba53e69f41',
       });
       coreDb.sqlite
         .prepare(
@@ -13234,22 +13378,22 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
         scope: {
-          agentSessionId: 'as_capacity_guard_desired',
-          threadId: 'thread_capacity_guard_desired',
-          turnId: 'turn_capacity_guard_desired',
-          workspaceId: 'workspace_capacity_guard_desired',
+          agentSessionId: testEntityId('as', 'as_capacity_guard_desired'),
+          threadId: 'th_00000000-0000-7cc2-ae24-9531d997b506',
+          turnId: testEntityId('tu', 'turn_capacity_guard_desired'),
+          workspaceId: 'ws_00000000-0000-78c9-9512-ae197f839de0',
         },
         snapshotId: 'snapshot_capacity_guard_desired',
       });
 
       const retainedStorage = withStorage
         ? attachNanoHostStorageFixture(coreDb, {
-            agentSessionId: 'as_capacity_guard_resident',
+            agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
             deploymentId: 'deployment_capacity_guard',
             runtimeTargetId: 'target_capacity_guard',
             sandboxBindingRef: 'sandbox-binding-capacity-guard',
-            threadId: 'thread_capacity_guard_resident',
-            workspaceId: 'workspace_capacity_guard_resident',
+            threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
+            workspaceId: 'ws_00000000-0000-7ba9-891a-e2ba53e69f41',
           })
         : null;
       for (const readinessField of ['ready', 'fresh_empty', 'predecessor_fenced']) {
@@ -13272,7 +13416,7 @@ describe('createConfiguredTurnExecutor', () => {
         expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
         coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
         coreDb.sqlite.exec(
-          "UPDATE agent_session_runtime_bindings SET current_attempt_id = 'lease_busy'"
+          `UPDATE agent_session_runtime_bindings SET current_attempt_id = '${testEntityId('attempt', 'lease_busy')}'`
         );
         expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
         coreDb.sqlite.exec('UPDATE agent_session_runtime_bindings SET current_attempt_id = NULL');
@@ -13382,20 +13526,20 @@ describe('createConfiguredTurnExecutor', () => {
       });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'd'.repeat(64),
-        agentSessionId: 'as_capacity_guard_resident',
+        agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
         agentSessionRuntimeBindingId: 'binding-capacity-guard',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-capacity-guard',
-        threadId: 'thread_capacity_guard_resident',
+        threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
         timestamp: '2026-09-06T00:00:00.000Z',
-        workspaceId: 'workspace_capacity_guard_resident',
+        workspaceId: 'ws_00000000-0000-7ba9-891a-e2ba53e69f41',
       });
       if (residentState === 'busy') {
         coreDb.sqlite
           .prepare(
             `UPDATE agent_session_runtime_bindings
-               SET lifecycle_state = 'active', current_turn_id = 'turn_busy',
-                   current_attempt_id = 'lease_busy'
+               SET lifecycle_state = 'active', current_turn_id = 'tu_00000000-0000-7c04-875c-717df339cee2',
+                   current_attempt_id = '${testEntityId('attempt', 'lease_busy')}'
                WHERE agent_session_runtime_binding_id = 'binding-capacity-guard'`
           )
           .run();
@@ -13442,10 +13586,10 @@ describe('createConfiguredTurnExecutor', () => {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
         scope: {
-          agentSessionId: 'as_capacity_guard_desired',
-          threadId: 'thread_capacity_guard_desired',
-          turnId: 'turn_capacity_guard_desired',
-          workspaceId: 'workspace_capacity_guard_desired',
+          agentSessionId: testEntityId('as', 'as_capacity_guard_desired'),
+          threadId: 'th_00000000-0000-7cc2-ae24-9531d997b506',
+          turnId: testEntityId('tu', 'turn_capacity_guard_desired'),
+          workspaceId: 'ws_00000000-0000-78c9-9512-ae197f839de0',
         },
         snapshotId: 'snapshot_capacity_guard_desired',
       });
@@ -13510,14 +13654,14 @@ describe('createConfiguredTurnExecutor', () => {
             agentSessionId,
             threadId,
             turnId,
-            workspaceId: 'workspace_restart_unproved',
+            workspaceId: 'ws_00000000-0000-7050-bc9a-ee2fefbe2fe1',
           },
           snapshotId,
         });
       const firstPackage = packageFor(
-        'as_restart_unproved_old',
-        'thread_restart_unproved_old',
-        'turn_restart_unproved_old',
+        testEntityId('as', 'as_restart_unproved_old'),
+        'th_00000000-0000-7752-b888-31811df1ac3f',
+        testEntityId('tu', 'turn_restart_unproved_old'),
         'snapshot_restart_unproved_old'
       );
       authorizeNanoHostPackage(coreDb, firstPackage);
@@ -13534,7 +13678,8 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      firstBackend.requireAttemptId = (snapshotId) => `lease-${snapshotId}`;
+      firstBackend.requireAttemptId = (snapshotId) =>
+        testEntityId('attempt', `lease-${snapshotId}`);
       anchorNanoHostMaterialization(coreDb, firstBackend, firstPackage);
       const firstMaterialization = await firstBackend.materialize(firstPackage, {
         sandboxBindingRef: factoryPackageBinding(coreDb, firstPackage),
@@ -13599,9 +13744,9 @@ describe('createConfiguredTurnExecutor', () => {
         .run('9'.repeat(64));
       // The first binding retains ready proof for the positive reuse check; the synthetic incompatible Harness owns only restart retirement and has no accepted native proof.
       const unprovedPackage = packageFor(
-        'as_restart_unproved_other_harness',
-        'thread_restart_unproved_other_harness',
-        'turn_restart_unproved_other_harness',
+        testEntityId('as', 'as_restart_unproved_other_harness'),
+        'th_00000000-0000-7faa-b25f-dc7565a66f04',
+        testEntityId('tu', 'turn_restart_unproved_other_harness'),
         'snapshot_restart_unproved_other_harness'
       );
       const unprovedSessionCompatibilityKey = planSessionWorkspaceMaterialization({
@@ -13667,7 +13812,10 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      recoveringBackend.restoreSession(firstPackage, `lease-${firstPackage.snapshotId}`);
+      recoveringBackend.restoreSession(
+        firstPackage,
+        testEntityId('attempt', `lease-${firstPackage.snapshotId}`)
+      );
       await expect(
         recoveringBackend.prepareAgentSessionContinuity?.({
           agentSessionCompatibilityKey: sessionCompatibilityKey,
@@ -13699,9 +13847,9 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       const secondPackage = packageFor(
-        'as_restart_unproved_fresh',
+        testEntityId('as', 'as_restart_unproved_fresh'),
         unprovedPackage.scope.threadId,
-        'turn_restart_unproved_fresh',
+        testEntityId('tu', 'turn_restart_unproved_fresh'),
         'snapshot_restart_unproved_fresh'
       );
       authorizeNanoHostPackage(coreDb, secondPackage);
@@ -13729,8 +13877,8 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
-           SET lifecycle_state = 'active', current_turn_id = 'turn_restart_busy',
-               current_attempt_id = 'lease_restart_busy'`
+           SET lifecycle_state = 'active', current_turn_id = 'tu_00000000-0000-7e5b-8098-dc806c691ee4',
+               current_attempt_id = '${testEntityId('attempt', 'lease_restart_busy')}'`
         )
         .run();
       coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
@@ -13779,13 +13927,13 @@ describe('createConfiguredTurnExecutor', () => {
       ).resolves.toBe('sandbox-replacement-required');
 
       bindNanoHostWorkerLineage(coreDb, secondPackage, {
-        attemptId: 'lease-restart-unproved-fresh',
+        attemptId: testEntityId('attempt', 'lease-restart-unproved-fresh'),
         sandboxBindingRef: 'lease-binding:restart-unproved',
       });
       await expect(
         recoveringBackend.prepareAgentSessionContinuity?.({
           admissionAgentSessionId: secondPackage.scope.agentSessionId,
-          admissionAttemptId: 'lease-restart-unproved-fresh',
+          admissionAttemptId: testEntityId('attempt', 'lease-restart-unproved-fresh'),
           agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
           agentSessionId: unprovedPackage.scope.agentSessionId,
           environmentPackage: secondPackage,
@@ -13800,7 +13948,7 @@ describe('createConfiguredTurnExecutor', () => {
       await expect(
         restartedBackend.prepareAgentSessionContinuity?.({
           admissionAgentSessionId: secondPackage.scope.agentSessionId,
-          admissionAttemptId: 'lease-restart-unproved-fresh',
+          admissionAttemptId: testEntityId('attempt', 'lease-restart-unproved-fresh'),
           agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
           agentSessionId: unprovedPackage.scope.agentSessionId,
           environmentPackage: secondPackage,
@@ -13912,16 +14060,16 @@ describe('createConfiguredTurnExecutor', () => {
               storageRef: selectedStorageRef,
             });
             reserveWorkerStorageAttachment(coreDb, {
-              agentSessionId: 'as_restart_selected_competing',
+              agentSessionId: testEntityId('as', 'as_restart_selected_competing'),
               authorizeContributor: () => true,
               expectedRevision: released.revision,
               layout: released.layout,
               purpose: 'work',
-              responsibleUserId: 'user_fixture',
+              responsibleUserId: 'usr_00000000-0000-7696-8ea8-dab52c9a8217',
               runtimeTargetId: 'target_restart_selected',
               storageRef: selectedStorageRef,
-              threadId: 'thread_restart_selected',
-              workspaceId: 'workspace_restart_selected',
+              threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
+              workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
             });
             concurrentAdvanceApplied = true;
           }
@@ -13977,11 +14125,11 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const scopePackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'as_restart_selected_idle',
-          threadId: 'thread_restart_selected',
-          triggerActor: { kind: 'user', id: 'user_fixture' },
-          turnId: 'turn_restart_selected_previous',
-          workspaceId: 'workspace_restart_selected',
+          agentSessionId: testEntityId('as', 'as_restart_selected_idle'),
+          threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7696-8ea8-dab52c9a8217' },
+          turnId: testEntityId('tu', 'turn_restart_selected_previous'),
+          workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
         },
         snapshotId: 'snapshot_restart_selected_previous',
       });
@@ -13989,23 +14137,23 @@ describe('createConfiguredTurnExecutor', () => {
       const attached = missingStorage
         ? null
         : attachNanoHostStorageFixture(coreDb, {
-            agentSessionId: 'as_restart_selected_idle',
+            agentSessionId: testEntityId('as', 'as_restart_selected_idle'),
             deploymentId: 'deployment_restart_selected',
             runtimeTargetId: 'target_restart_selected',
             sandboxBindingRef: 'sandbox-binding-restart-selected',
-            threadId: 'thread_restart_selected',
-            workspaceId: 'workspace_restart_selected',
+            threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
+            workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
           });
       selectedStorageRef = attached?.storageRef ?? null;
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: '7'.repeat(64),
-        agentSessionId: 'as_restart_selected_idle',
+        agentSessionId: testEntityId('as', 'as_restart_selected_idle'),
         agentSessionRuntimeBindingId: 'binding-restart-selected-idle',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-restart-selected',
-        threadId: 'thread_restart_selected',
+        threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
         timestamp: '2026-09-11T00:00:01.000Z',
-        workspaceId: 'workspace_restart_selected',
+        workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
       });
       // This regression owns selected-storage release without native proof. Missing-fact ready proof
       // must refuse, as the ordinary restart/replacement regression above proves independently.
@@ -14040,20 +14188,20 @@ describe('createConfiguredTurnExecutor', () => {
           imageRef: `sha256:${'4'.repeat(64)}`,
           requiredCapabilities: ['trusted-worker-inference-relay'],
         }),
-        freshAgentSessionId: 'as_restart_selected_next',
+        freshAgentSessionId: testEntityId('as', 'as_restart_selected_next'),
         requestId,
         turn: {
           completedAt: null,
           configVersion: null,
           durationMs: null,
           error: null,
-          id: 'turn_restart_selected_next',
+          id: testEntityId('tu', 'turn_restart_selected_next'),
           items: [],
           startedAt: '2999-09-11T00:00:03.000Z',
           status: 'running' as const,
-          threadId: 'thread_restart_selected',
-          triggerActor: { kind: 'user' as const, id: 'user_fixture' },
-          workspaceId: 'workspace_restart_selected',
+          threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
+          triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7696-8ea8-dab52c9a8217' },
+          workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
         },
         turnInput: 'Continue from the retained restart-selected workspace.',
         workerStorageChoice: selectedChoice,
@@ -14067,19 +14215,22 @@ describe('createConfiguredTurnExecutor', () => {
             input: PrepareAgentSessionForTurnInput
           ): string;
         }
-      ).previewAgentSessionCompatibilityKey('as_restart_selected_idle', previewInput);
+      ).previewAgentSessionCompatibilityKey(
+        testEntityId('as', 'as_restart_selected_idle'),
+        previewInput
+      );
       store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: '2026-09-11T00:00:01.000Z',
         environmentPackageSnapshotId: scopePackage.snapshotId,
-        id: 'as_restart_selected_idle',
+        id: testEntityId('as', 'as_restart_selected_idle'),
         message: null,
         policySnapshotId: 'worker_turn_launch_policy',
         sessionCompatibilityKey: currentCompatibilityKey,
         status: predecessorStatus,
-        threadId: 'thread_restart_selected',
+        threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
         updatedAt: '2026-09-11T00:00:01.000Z',
-        workspaceId: 'workspace_restart_selected',
+        workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
         workspaceRoots: [],
       });
 
@@ -14087,7 +14238,7 @@ describe('createConfiguredTurnExecutor', () => {
         runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend }
       ).backend;
       bindNanoHostWorkerLineage(coreDb, scopePackage, {
-        attemptId: 'attempt_restart_selected_previous',
+        attemptId: testEntityId('attempt', 'attempt_restart_selected_previous'),
         sandboxBindingRef: 'sandbox-binding-restart-selected',
       });
       anchorNanoHostMaterialization(coreDb, historyBackend, scopePackage);
@@ -14095,26 +14246,29 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare('UPDATE worker_backend_sessions SET backend_session_id=? WHERE attempt_id=?')
         .run(
           `nh-${'6'.repeat(16)}-${createHash('sha256').update(scopePackage.snapshotId).digest('hex').slice(0, 16)}`,
-          'attempt_restart_selected_previous'
+          testEntityId('attempt', 'attempt_restart_selected_previous')
         );
       attempts.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: 'attempt_restart_selected_previous',
+        attemptId: testEntityId('attempt', 'attempt_restart_selected_previous'),
         operationId: 'operation_restart_selected_previous',
         submission: true,
       });
-      await closeFactoryAttempt(coreDb, 'attempt_restart_selected_previous');
+      await closeFactoryAttempt(
+        coreDb,
+        testEntityId('attempt', 'attempt_restart_selected_previous')
+      );
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         now: () => '2026-09-11T00:00:02.000Z',
         queueEntryId: 'queue_restart_selected',
         requestId,
         requestedAgentId: 'agent_codex_host',
-        threadId: 'thread_restart_selected',
-        turnId: 'turn_restart_selected_next',
+        threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
+        turnId: testEntityId('tu', 'turn_restart_selected_next'),
         turnInput: 'Continue from the retained restart-selected workspace.',
-        triggerActor: { kind: 'user', id: 'user_fixture' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7696-8ea8-dab52c9a8217' },
         workerStorageChoice: selectedChoice,
-        workspaceId: 'workspace_restart_selected',
+        workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
       });
       const providerRegistry = new ProviderRegistry([
         {
@@ -14141,8 +14295,8 @@ describe('createConfiguredTurnExecutor', () => {
             }).manifest,
           ],
           coreDb,
-          createAgentSessionId: () => 'as_restart_selected_next',
-          createAttemptId: () => 'lease_restart_selected_next',
+          createAgentSessionId: () => testEntityId('as', 'as_restart_selected_next'),
+          createAttemptId: () => testEntityId('attempt', 'lease_restart_selected_next'),
           gatewayConfig: createTestGatewayConfig(),
           maxDispatches: 1,
           now: () => '2999-09-11T00:00:03.000Z',
@@ -14186,7 +14340,7 @@ describe('createConfiguredTurnExecutor', () => {
         'bridge.close',
         'sandbox.delete',
       ]);
-      expect(store.getAgentSession('as_restart_selected_idle').status).toBe(
+      expect(store.getAgentSession(testEntityId('as', 'as_restart_selected_idle')).status).toBe(
         predecessorStatus === 'idle' ? 'closed' : 'failed'
       );
     } finally {
@@ -14249,13 +14403,13 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = () => 'lease-credentials';
+      backend.requireAttemptId = () => testEntityId('attempt', 'lease-credentials');
       const environmentPackage = completeNanoHostPackage({
         scope: {
-          agentSessionId: 'agent-session-credentials',
-          threadId: 'thread-credentials',
-          turnId: 'turn-credentials',
-          workspaceId: 'workspace-credentials',
+          agentSessionId: testEntityId('as', 'agent-session-credentials'),
+          threadId: 'th_00000000-0000-7e27-9ef5-642b88a2b99c',
+          turnId: 'tu_00000000-0000-7cc1-90b4-e57137ac6003',
+          workspaceId: 'ws_00000000-0000-7095-90fc-d79041a2f1c4',
         },
         snapshotId: 'snapshot-credentials',
       });
@@ -14354,7 +14508,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireAttemptId = (snapshotId) => `lease-${snapshotId}`;
+      backend.requireAttemptId = (snapshotId) => testEntityId('attempt', `lease-${snapshotId}`);
       const sandboxIds: string[] = [];
       const policy = {
         filesystem: {
@@ -14384,17 +14538,19 @@ describe('createConfiguredTurnExecutor', () => {
       };
 
       for (const [agentSessionId, snapshotId] of [
-        ['as_wp5_gate_r3', 'aepsnap_factory_dns_lower'],
-        ['AS_WP5_GATE_R3', 'aepsnap_factory_dns_upper'],
+        [testEntityId('as', 'as_wp5_gate_r3'), 'aepsnap_factory_dns_lower'],
+        [testEntityId('as', 'as_wp5_gate_r3_second'), 'aepsnap_factory_dns_upper'],
       ] as const) {
         const environmentPackage = completeNanoHostPackage({
           policy,
-          runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+          runtime: {
+            image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
+          },
           scope: {
             agentSessionId,
-            threadId: `thread_${snapshotId}`,
-            turnId: `turn_${snapshotId}`,
-            workspaceId: `ws_${snapshotId}`,
+            threadId: testEntityId('th', `thread_${snapshotId}`),
+            turnId: testEntityId('tu', `turn_${snapshotId}`),
+            workspaceId: testEntityId('ws', `ws_${snapshotId}`),
           },
           snapshotId,
         });
@@ -14415,7 +14571,7 @@ describe('createConfiguredTurnExecutor', () => {
           backendSessionId: firstPlan.backendSessionId,
           environment: {},
           imageDigest: `sha256:${'b'.repeat(64)}`,
-          leaseId: `lease-${snapshotId}`,
+          leaseId: testEntityId('attempt', `lease-${snapshotId}`),
           packageSnapshotId: snapshotId,
           policyIntent: {
             additionalFilesystemGrants: [
@@ -14438,7 +14594,7 @@ describe('createConfiguredTurnExecutor', () => {
             attachmentGeneration: 1,
             layoutDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
             scopeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-            storageRef: expect.stringMatching(/^wst_[0-9a-f]{32}$/),
+            storageRef: expect.stringMatching(entityIdPattern('wst')),
             targets: [
               {
                 target: '/openkit/threads',
@@ -14545,7 +14701,7 @@ describe('createConfiguredTurnExecutor', () => {
       const privateThread = store.createThread(
         fixture.workspaceId,
         'Foreign private',
-        'thread_foreign_private',
+        'th_00000000-0000-7d43-8173-d017b7b4d592',
         'conversation',
         { privateOwnerUserId: fixture.ownerUserId, visibility: 'private' }
       );
@@ -14565,7 +14721,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId: fixture.workspaceId,
       });
       const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
-        agentSessionId: 'as_foreign_private',
+        agentSessionId: testEntityId('as', 'as_00000000-0000-7a52-acda-ab0e51b27751'),
         authorizeContributor: () => true,
         expectedRevision: created.revision,
         layout,
@@ -14638,7 +14794,7 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           "UPDATE scheduler_execution_attempts SET phase = 'closed', deadline = '2000-01-01T00:00:00.000Z' WHERE attempt_id = ?"
         )
-        .run('lease_admin_expired');
+        .run(testEntityId('attempt', 'lease_admin_expired'));
       await expect(
         fixture.backend.materialize(fixture.environmentPackage, {
           sandboxBindingRef: factoryPackageBinding(fixture.coreDb, fixture.environmentPackage),
@@ -14694,9 +14850,9 @@ describe('createConfiguredTurnExecutor', () => {
         : {}),
       scope: {
         ...resident.scope,
-        agentSessionId: `as_incoming_${path}`,
-        threadId: `thread_incoming_${path}`,
-        turnId: `turn_incoming_${path}`,
+        agentSessionId: testEntityId('as', `as_incoming_${path}`),
+        threadId: testEntityId('th', `thread_incoming_${path}`),
+        turnId: testEntityId('tu', `turn_incoming_${path}`),
       },
       snapshotId: `snapshot_incoming_${path}`,
     });
@@ -14844,7 +15000,7 @@ describe('createConfiguredTurnExecutor', () => {
         })
       : f.runtime;
     const backend = (runtime.turnExecutor as WorkerGovernanceTurnExecutor).executionBackend;
-    const attemptId = `lease_${label}`;
+    const attemptId = testEntityId('attempt', `lease_${label}`);
     const anchor = getWorkerBackendSession(coreDb, attemptId)!;
     expect(anchor.state).toBe('cleaned');
     coreDb.sqlite
@@ -15004,7 +15160,11 @@ describe('createConfiguredTurnExecutor', () => {
       );
       expect(f.effects).toHaveLength(beforeEffects);
       const next = completeNanoHostPackage({
-        scope: { ...pkg.scope, agentSessionId: `as_next_${label}`, turnId: `turn_next_${label}` },
+        scope: {
+          ...pkg.scope,
+          agentSessionId: testEntityId('as', `as_next_${label}`),
+          turnId: testEntityId('tu', `turn_next_${label}`),
+        },
         snapshotId: `snapshot_next_${label}`,
       });
       authorizeNanoHostPackage(coreDb, next);

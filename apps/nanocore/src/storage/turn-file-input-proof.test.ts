@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -5,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { LOCAL_USER_ID } from './fs-layout.js';
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   turnFilePayloadPath,
   verifyTurnFileInput,

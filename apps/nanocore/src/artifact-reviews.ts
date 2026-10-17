@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-
 import {
   type ArtifactMaterialProposal,
   ArtifactMaterialProposalSchema,
@@ -8,6 +7,15 @@ import {
   SubmitArtifactReviewDecisionRequestSchema,
   type SubmitArtifactReviewDecisionResponse,
 } from '@openkit/app-api-schemas';
+import type { ActorRef } from '@openkit/protocol';
+import {
+  ArtifactIdSchema,
+  ArtifactReviewIdSchema,
+  deriveEntityId,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 import type { WorkspaceDb } from './storage/db.js';
@@ -28,9 +36,9 @@ export type ArtifactReviewMediaType = 'text/markdown' | 'text/plain' | 'applicat
 export const ArtifactReviewFollowUpRequestSchema = z
   .object({
     kind: z.literal('artifact-review-follow-up'),
-    workspaceId: z.string().min(1),
-    reviewId: z.string().min(1),
-    artifactId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    reviewId: ArtifactReviewIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
     contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     artifactContent: z.string().min(1).nullable(),
@@ -42,8 +50,8 @@ export const ArtifactReviewFollowUpRequestSchema = z
       })
       .strict()
       .optional(),
-    sourceThreadId: z.string().min(1),
-    sourceTurnId: z.string().min(1),
+    sourceThreadId: ThreadIdSchema,
+    sourceTurnId: TurnIdSchema,
     sourceAgentId: z.string().min(1),
     materialProposal: ArtifactMaterialProposalSchema.nullable(),
     decision: z.enum(['needs_refinement', 'redo']),
@@ -143,6 +151,8 @@ export interface ReplayArtifactReviewDecisionInput {
 
 /** Accepted command and current Artifact content proof for one fresh decision attempt. */
 export type DecideArtifactReviewInput = ReplayArtifactReviewDecisionInput & {
+  /** Complete immutable deciding actor used by the Material save owner. */
+  readonly actor: ActorRef;
   /** Timestamp captured by the first-writer decision attempt. */
   readonly decidedAt: string;
 } & (
@@ -402,12 +412,7 @@ export function deriveArtifactReviewFollowUpTurnId(
   artifactVersion: number,
   requestId: string
 ): string {
-  return deterministicId('tu_artifact_review', [
-    workspaceId,
-    artifactId,
-    artifactVersion,
-    requestId,
-  ]);
+  return deriveEntityId('tu', [workspaceId, artifactId, artifactVersion, requestId]);
 }
 
 /**
@@ -441,7 +446,7 @@ export function deriveArtifactReviewId(
   artifactId: string,
   artifactVersion: number
 ): string {
-  return deterministicId('arev', [workspaceId, artifactId, artifactVersion]);
+  return deriveEntityId('arev', [workspaceId, artifactId, artifactVersion]);
 }
 
 /** Applies a proposal through the existing Material revision owner. @param workspaceDb Open database. @param row Review owner. @param proposal Verified proposal. @param input Decision input. @returns Decision identity. @throws A conflict or recovery error. */
@@ -459,7 +464,7 @@ function applyAcceptedProposal(
   try {
     revisionId = saveWorkspaceMaterialRevision(workspaceDb, {
       acceptedAt: input.decidedAt,
-      actorId: input.actorId,
+      actor: input.actor,
       content: input.artifactContent,
       contentDigest: row.contentDigest,
       expectedRevisionId: proposal.baseRevisionId,
@@ -852,11 +857,6 @@ function toDecisionResponse(
 /** Computes a content digest. @param content Exact UTF-8 content. @returns SHA-256 digest. */
 function contentDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
-}
-
-/** Derives a stable id. @param prefix Identity prefix. @param scope Immutable scope. @returns Deterministic id. */
-function deterministicId(prefix: string, scope: readonly unknown[]): string {
-  return `${prefix}_${createHash('sha256').update(JSON.stringify(scope)).digest('hex').slice(0, 24)}`;
 }
 
 /** Tests one structural error code. @param error Unknown failure. @param code Expected code. @returns Whether the code matches. */

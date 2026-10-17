@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -107,13 +107,15 @@ function writeInternalRoleProfiles(dataRoot: string): void {
 }
 
 function writeUserConfig(dataRoot: string): void {
-  const configRoot = join(dataRoot, 'users', 'user_demo', 'config');
+  const configRoot = join(dataRoot, 'users', 'usr_00000000-0000-7e68-be9b-ac7521cb7be0', 'config');
   mkdirSync(configRoot, { recursive: true });
   writeFileSync(
     join(configRoot, 'user.jsonc'),
     JSON.stringify({
       schemaVersion: 1,
-      workspaces: [{ workspaceId: 'ws_demo', agentId: 'agent_personal' }],
+      workspaces: [
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', agentId: 'agent_personal' },
+      ],
     })
   );
 }
@@ -299,7 +301,7 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeWorkspaceConfig(
       dataRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "schemaVersion": 1,
         "workspace": {
@@ -320,7 +322,7 @@ describe('runtime config loading and reload planning', () => {
 
     expect(snapshot.workspaceConfigs).toEqual([
       expect.objectContaining({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         config: expect.objectContaining({
           workspace: expect.objectContaining({
             roots: [expect.objectContaining({ id: 'data', path: 'files/data' })],
@@ -335,7 +337,7 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeWorkspaceDataSources(
       dataRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "schemaVersion": 1,
         "sources": [
@@ -357,7 +359,7 @@ describe('runtime config loading and reload planning', () => {
 
     expect(snapshot.workspaceDataSourceCatalogs).toEqual([
       expect.objectContaining({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         catalog: expect.objectContaining({
           sources: [expect.objectContaining({ id: 'main-repo', kind: 'git' })],
         }),
@@ -388,15 +390,15 @@ describe('runtime config loading and reload planning', () => {
           },
         ],
       });
-    writeWorkspaceMcpServers(baseRoot, 'ws_demo', catalog(60_000));
-    writeWorkspaceMcpServers(nextRoot, 'ws_demo', catalog(30_000));
+    writeWorkspaceMcpServers(baseRoot, 'ws_00000000-0000-7000-8000-000000000001', catalog(60_000));
+    writeWorkspaceMcpServers(nextRoot, 'ws_00000000-0000-7000-8000-000000000001', catalog(30_000));
 
     const base = loadRuntimeConfig(baseRoot, { version: 1 });
     const next = loadRuntimeConfig(nextRoot, { version: 2 });
 
     expect(base.workspaceMcpServerCatalogs).toEqual([
       expect.objectContaining({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         catalog: expect.objectContaining({
           servers: [expect.objectContaining({ id: 'echo', timeoutMs: 60_000 })],
         }),
@@ -418,7 +420,7 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(nextRoot, 'openai/gpt-5.1');
     writeWorkspaceConfig(
       baseRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "workspace": {
           "name": "Demo Workspace",
@@ -430,7 +432,7 @@ describe('runtime config loading and reload planning', () => {
     );
     writeWorkspaceConfig(
       nextRoot,
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       `{
         "workspace": {
           "name": "Demo Workspace",
@@ -526,11 +528,13 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(
       nextRoot,
       'openai/gpt-5.1',
-      ', "policy": { "workspaceApprovalModes": { "ws_trusted": { "repo.push": "auto_allow" } } }'
+      ', "policy": { "workspaceApprovalModes": { "ws_00000000-0000-779d-821b-9fd29ef901ba": { "repo.push": "auto_allow" } } }'
     );
     const previous = loadRuntimeConfig(baseRoot, { version: 1 });
     const next = loadRuntimeConfig(nextRoot, { version: 2 });
-    expect(next.openKitConfig.policy?.workspaceApprovalModes?.ws_trusted).toEqual({
+    expect(
+      next.openKitConfig.policy?.workspaceApprovalModes?.['ws_00000000-0000-779d-821b-9fd29ef901ba']
+    ).toEqual({
       'repo.push': 'auto_allow',
     });
     const plan = diffRuntimeConfig(previous, next);
@@ -581,6 +585,141 @@ describe('runtime config loading and reload planning', () => {
         path: 'appUpdate',
       }),
     ]);
+  });
+
+  describe('NanoHost startup configuration reload', () => {
+    const initialHost = {
+      bind: { host: '127.0.0.1', port: 3101 },
+      credentialRef: 'fixture-nanohost',
+      credentialSlots: {
+        A: { companionPath: '/fixture/a-companion', secretPath: '/fixture/a-secret' },
+        B: { companionPath: '/fixture/b-companion', secretPath: '/fixture/b-secret' },
+      },
+      deploymentId: 'dep_00000000-0000-7000-8000-000000000001',
+      identityId: 'fixture-host',
+      maxActiveTurnsPerSandbox: 20,
+      rendezvousUrl: 'http://127.0.0.1:3101',
+    };
+    const transitions = [
+      { name: 'addition', previous: undefined, next: initialHost },
+      {
+        name: 'replacement',
+        previous: initialHost,
+        next: {
+          ...initialHost,
+          bind: { host: '127.0.0.1', port: 3102 },
+          credentialRef: 'fixture-successor',
+          credentialSlots: {
+            A: { companionPath: '/fixture/next-a-companion', secretPath: '/fixture/next-a-secret' },
+            B: { companionPath: '/fixture/next-b-companion', secretPath: '/fixture/next-b-secret' },
+          },
+          deploymentId: 'dep_00000000-0000-7000-8000-000000000002',
+          identityId: 'fixture-successor',
+          maxActiveTurnsPerSandbox: 8,
+          rendezvousUrl: 'http://127.0.0.1:3102',
+        },
+      },
+      { name: 'removal', previous: initialHost, next: undefined },
+    ];
+
+    it('applies a capacity-only change without requiring restart', () => {
+      const dataRoot = createDataRoot();
+      try {
+        writeConfiguredServer(
+          dataRoot,
+          'openai/gpt-5.1',
+          `, "nanohost": ${JSON.stringify(initialHost)}`
+        );
+        const manager = createRuntimeConfigManager({ dataRoot });
+        const next = { ...initialHost, maxActiveTurnsPerSandbox: 8 };
+        writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(next)}`);
+
+        const response = manager.reload({ mode: 'strict' });
+
+        expect(response.status).toBe('applied');
+        expect(response.plan.requiresRestart).toEqual([]);
+        expect(manager.status().pendingRestart).toEqual([]);
+        expect(manager.current().openKitConfig.nanohost).toEqual(next);
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    });
+
+    for (const transition of transitions) {
+      const modes =
+        transition.name === 'replacement'
+          ? (['dry-run', 'strict', 'safe'] as const)
+          : (['safe'] as const);
+      for (const mode of modes) {
+        it(`keeps ${transition.name} startup-owned during ${mode} reload`, () => {
+          const dataRoot = createDataRoot();
+          try {
+            writeConfiguredServer(
+              dataRoot,
+              'openai/gpt-5.1',
+              transition.previous ? `, "nanohost": ${JSON.stringify(transition.previous)}` : ''
+            );
+            const manager = createRuntimeConfigManager({ dataRoot });
+            const previous = manager.current();
+            writeConfiguredServer(
+              dataRoot,
+              'openai/gpt-5.1',
+              `, "policy": { "workDataCapture": { "value": "on" } }${
+                transition.next ? `, "nanohost": ${JSON.stringify(transition.next)}` : ''
+              }`
+            );
+
+            const response = manager.reload({
+              dryRun: mode === 'dry-run',
+              mode: mode === 'strict' ? 'strict' : 'safe',
+            });
+
+            expect(response.status).toBe(
+              mode === 'dry-run' ? 'dry-run' : mode === 'strict' ? 'rejected' : 'applied'
+            );
+            const startupPaths = [
+              'bind',
+              'credentialRef',
+              'credentialSlots',
+              'deploymentId',
+              'identityId',
+              'rendezvousUrl',
+            ];
+            expect(response.plan.requiresRestart).toEqual(
+              startupPaths.map((path) =>
+                expect.objectContaining({
+                  action: 'requires-restart',
+                  category: 'restart-required',
+                  path: `nanohost.${path}`,
+                })
+              )
+            );
+            expect(manager.current().openKitConfig.nanohost).toEqual(
+              mode === 'safe' && transition.name === 'replacement'
+                ? { ...transition.previous, maxActiveTurnsPerSandbox: 8 }
+                : transition.previous
+            );
+            expect(
+              captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)
+            ).toEqual({
+              scope: 'server',
+              value: mode === 'safe' ? 'on' : 'off',
+            });
+            if (mode === 'safe') {
+              expect(manager.current().version).toBe(previous.version + 1);
+              expect(manager.status().pendingRestart).toEqual(response.plan.requiresRestart);
+            } else {
+              expect(manager.current()).toBe(previous);
+              expect(manager.status().pendingRestart).toEqual(
+                mode === 'strict' ? response.plan.requiresRestart : []
+              );
+            }
+          } finally {
+            rmSync(dataRoot, { recursive: true, force: true });
+          }
+        });
+      }
+    }
   });
 
   it('classifies agent config changes as session-scoped', () => {
@@ -846,11 +985,16 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const store = createDemoStore({ dataRoot });
     const manager = createRuntimeConfigManager({ captureCoverage: store, dataRoot });
-    const thread = store.createThread('ws_demo', 'Capture reload');
-    const running = store.createTurn('ws_demo', thread.id, 'Keep historical pair', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture reload');
+    const running = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Keep historical pair',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
     expect(captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)).toEqual({
       scope: 'server',
@@ -871,10 +1015,15 @@ describe('runtime config loading and reload planning', () => {
     expect(store.getTurnById(running.id).status).toBe('running');
     expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
 
-    const next = store.createTurn('ws_demo', thread.id, 'Next turn sees on', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const next = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Next turn sees on',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     expect(store.getTurnCaptureCoverage(next.id)).toEqual({ scope: 'server', value: 'on' });
   });
 });

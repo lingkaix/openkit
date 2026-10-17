@@ -47,8 +47,9 @@ async function fixture(
   body: Buffer,
   format: 'file' | 'text' | 'markdown' | 'json' = 'file',
   mediaType = 'text/plain',
-  artifactId = 'ar_selected'
+  sourceId = 'artifact-source-import'
 ) {
+  const artifactId = 'ar_00000000-0000-7000-8000-0000000003ea';
   const root = mkdtempSync(join(tmpdir(), 'artifact-source-files-'));
   roots.push(root);
   const store = createDemoStore({ dataRoot: root });
@@ -76,9 +77,9 @@ async function fixture(
     origin: {
       kind: 'imported',
       sourceKind: 'direct-import',
-      sourceId: requestId,
+      sourceId,
       sourceDigest: digest,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId,
       recordedAt: '2026-10-17T00:00:00.000Z',
     },
@@ -142,8 +143,8 @@ it('prepares a bounded preview and exact streamed original larger than the inlin
   expect(sources).toHaveLength(1);
   const source = sources[0]!;
   expect(source.originalDigest).toBe(expected);
-  expect(source.originalSnapshotPath).toBe('originals/artifacts/ar_selected/1/payload');
-  expect(source.packagePath).toBe('sources/artifacts/ar_selected/1.txt');
+  expect(source.originalSnapshotPath).toBe('originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload');
+  expect(source.packagePath).toBe('sources/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1.txt');
   expect(source.deliveredBytes).toEqual(original.subarray(0, 2048));
   expect(source.projection).toMatchObject({
     representationId: 'original-utf8',
@@ -220,7 +221,7 @@ it.each([
     });
   const files = packageFor(f, [source!]);
   await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
-  const snapshot = join(f.workspaceRoot, 'threads/th_source/turns/tu_source/context-package');
+  const snapshot = join(f.workspaceRoot, 'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package');
   expect(readFileSync(join(snapshot, source!.originalSnapshotPath))).toEqual(body);
   expect(readFileSync(join(snapshot, source!.packagePath))).toEqual(source!.deliveredBytes);
 });
@@ -232,11 +233,11 @@ function packageFor(
 ) {
   return createWorkerContextPackageFiles({
     workspaceId: f.artifact.workspaceId,
-    threadId: 'th_source',
-    turnId: 'tu_source',
-    workerRequestItemId: 'it_source',
+    threadId: 'th_00000000-0000-7000-8000-0000000003fa',
+    turnId: 'tu_00000000-0000-7000-8000-0000000003ff',
+    workerRequestItemId: 'it_00000000-0000-7000-8000-0000000003ef',
     workerRequestBytes: 'Inspect selected originals',
-    includedItemIds: ['it_source'],
+    includedItemIds: ['it_00000000-0000-7000-8000-0000000003ef'],
     contextBudgetTokens: 4096,
     materialSelections: [],
     sourceFiles,
@@ -349,7 +350,7 @@ it('captures nested metadata before callbacks can mutate caller-owned input', as
   });
   expect(source!.source).toMatchObject({ artifactVersion: 1 });
   expect(source!.byteLength).toBe(f.body.length);
-  expect(source!.originalSnapshotPath).toBe('originals/artifacts/ar_selected/1/payload');
+  expect(source!.originalSnapshotPath).toBe('originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload');
   await source!.assertUnchanged();
 });
 
@@ -480,12 +481,14 @@ it.runIf(process.platform === 'linux')(
   }
 );
 
-it('keeps unavailable descriptor bytes fixed even when opaque identifiers require JSON escaping', async () => {
-  const id = '\u0001'.repeat(200);
-  const f = await fixture(Buffer.from([255]), 'file', 'application/octet-stream', id);
+it('keeps unavailable descriptor bytes fixed when source metadata requires JSON escaping', async () => {
+  const sourceId = '\u0001'.repeat(200);
+  const f = await fixture(Buffer.from([255]), 'file', 'application/octet-stream', sourceId);
+  expect(f.artifact.origin).toMatchObject({ kind: 'imported', sourceId });
+  expect(JSON.stringify(f.artifact.origin)).toContain('\\u0001');
   const [source] = await prepareArtifactSourceInputs(f.input);
-  expect(source!.source.reference.objectId).toBe(id);
-  expect(source!.originalSnapshotPath).toBe(`originals/artifacts/${id}/1/payload`);
+  expect(source!.source.reference.objectId).toBe(f.artifact.id);
+  expect(source!.originalSnapshotPath).toBe(`originals/artifacts/${f.artifact.id}/1/payload`);
   expect(Buffer.from(source!.deliveredBytes).toString('utf8')).toBe(
     '{"status":"unavailable","reason":"unsupported"}'
   );

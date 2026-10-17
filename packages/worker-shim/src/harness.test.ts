@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { allocateEntityId } from '@openkit/protocol';
 
 import {
   HarnessSuccessBodySchemas,
@@ -34,6 +35,18 @@ import { NativeStartupAdmission } from './native-startup.js';
 import { WorkerTranscriptWriter } from './transcript.js';
 import { initializeSessionWorkspace, runResidentTurn } from './turn.js';
 import { TURN_TIMELINE_LABELS, TurnTimeline } from './turn-timeline.js';
+
+const fixtureEntityIds = new Map<string, string>();
+/** Allocates a logical fixture once; labels remain test correlation and never become native identity. */
+function fixtureId(kind: 'as' | 'th' | 'tu', key: string): string {
+  const owner = `${kind}:${key}`;
+  let id = fixtureEntityIds.get(owner);
+  if (!id) {
+    id = allocateEntityId(kind);
+    fixtureEntityIds.set(owner, id);
+  }
+  return id;
+}
 
 const loopFixture = vi.hoisted(() => ({
   client: null as SandboxIntegrationClient | null,
@@ -442,8 +455,8 @@ function harnessFixture(
       ...(extra.maxActiveTurns === undefined ? {} : { maxActiveTurns: extra.maxActiveTurns }),
       ...(extra.runtimeEnvironment ? { runtimeEnvironment: extra.runtimeEnvironment } : {}),
       ...(extra.nativeEnvironment ? { nativeEnvironment: extra.nativeEnvironment } : {}),
-      threadId: extra.threadId ?? 'thread-one',
-      workspaceId: 'workspace-one',
+      threadId: extra.threadId ?? 'th_00000000-0000-730e-88b8-d76794f39a2f',
+      workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
     });
   };
   const packagePath = (agentSessionId: string) =>
@@ -534,9 +547,9 @@ function harnessFixture(
         runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot } },
         scope: {
           agentSessionId,
-          threadId: extra.threadId ?? 'thread-one',
+          threadId: extra.threadId ?? 'th_00000000-0000-730e-88b8-d76794f39a2f',
           turnId,
-          workspaceId: 'workspace-one',
+          workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
         },
         workspace: {
           root: sandboxRoot,
@@ -569,11 +582,11 @@ function harnessFixture(
     inferenceToken: credential(`inference-token-${turnId}`),
     leaseId,
     packageSnapshotId: `package-${turnId}`,
-    threadId: 'thread-one',
+    threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
     turnId,
     turnSequence: 0,
     workerControlToken: credential(`control-token-${turnId}`),
-    workspaceId: 'workspace-one',
+    workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
   });
   /** Materializes and starts one Turn. */
   const start = (
@@ -599,9 +612,15 @@ function harnessFixture(
     );
   };
   const referencePath = (agentSessionId: string) =>
-    join(nativeRoot, 'thread-one', adapterId, 'agent-session-references', agentSessionId);
+    join(
+      nativeRoot,
+      'th_00000000-0000-730e-88b8-d76794f39a2f',
+      adapterId,
+      'agent-session-references',
+      agentSessionId
+    );
   return {
-    capturePath: (turnId: string, threadId = 'thread-one') =>
+    capturePath: (turnId: string, threadId = 'th_00000000-0000-730e-88b8-d76794f39a2f') =>
       join(nativeRoot, threadId, adapterId, 'capture', turnId),
     contextRoot,
     fake,
@@ -638,20 +657,22 @@ describe('concurrent Thread Turns', () => {
   it('starts eight independent Thread Turns in one Harness without a lower convenience cap', async () => {
     const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
     const started: string[] = [];
-    const sessions = Array.from({ length: 8 }, (_, index) => `concurrent-session-${index}`);
+    const sessions = Array.from({ length: 8 }, () => allocateEntityId('as'));
+    const threads = sessions.map(() => allocateEntityId('th'));
+    const turns = sessions.map(() => allocateEntityId('tu'));
     try {
       for (const [index, agentSessionId] of sessions.entries()) {
-        expect(
-          await f.open(agentSessionId, { threadId: `concurrent-thread-${index}` })
-        ).toMatchObject({ disposition: 'succeeded' });
+        expect(await f.open(agentSessionId, { threadId: threads[index]! })).toMatchObject({
+          disposition: 'succeeded',
+        });
       }
       f.fake.script.push(...sessions.map(() => ({ kind: 'hold' as const })));
       for (const [index, agentSessionId] of sessions.entries()) {
-        const turnId = `concurrent-turn-${index}`;
-        f.writePackage(agentSessionId, turnId, { threadId: `concurrent-thread-${index}` });
+        const turnId = turns[index]!;
+        f.writePackage(agentSessionId, turnId, { threadId: threads[index]! });
         const result = await f.send('turn.start', {
           ...f.startBody(agentSessionId, turnId),
-          threadId: `concurrent-thread-${index}`,
+          threadId: threads[index]!,
         });
         if (result.disposition === 'succeeded') started.push(agentSessionId);
         expect(result).toMatchObject({ disposition: 'succeeded', body: { state: 'started' } });
@@ -667,8 +688,8 @@ describe('concurrent Thread Turns', () => {
         const index = sessions.indexOf(agentSessionId);
         await f.send('turn.interrupt', {
           ...f.selector(agentSessionId),
-          turnId: `concurrent-turn-${index}`,
-          leaseId: `lease-concurrent-turn-${index}`,
+          turnId: turns[index]!,
+          leaseId: `lease-${turns[index]}`,
           purpose: 'interrupt',
         });
         await f.settle(agentSessionId);
@@ -686,17 +707,19 @@ describe('Thread-local Turn admission and capture', () => {
   it('does not consume a capacity declaration from an unsupported first open', async () => {
     const f = harnessFixture();
     expect(
-      await f.open('unsupported-capacity', {
+      await f.open(fixtureId('as', 'unsupported-capacity'), {
         maxActiveTurns: 2,
         runtimeEnvironment: { HOME: '/untrusted-home' },
       })
     ).toMatchObject({ disposition: 'refused', body: { reasonCode: 'unsupported' } });
     expect(f.fake.residents).toHaveLength(0);
-    expect(await f.open('first-valid-open')).toMatchObject({
+    expect(await f.open(fixtureId('as', 'first-valid-open'))).toMatchObject({
       disposition: 'succeeded',
       body: { maxActiveTurns: 20 },
     });
-    expect(await f.send('session.close', f.selector('first-valid-open'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector(fixtureId('as', 'first-valid-open')))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
   });
@@ -706,51 +729,85 @@ describe('Thread-local Turn admission and capture', () => {
     'failed',
   ] as const)('keeps a sibling running when one Thread reaches %s and closes', async (status) => {
     const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    const sessions = ['sibling-a', 'sibling-b'];
+    const sessions = [fixtureId('as', 'sibling-a'), fixtureId('as', 'sibling-b')];
     try {
       for (const id of sessions)
-        expect(await f.open(id, { threadId: id })).toMatchObject({ disposition: 'succeeded' });
+        expect(await f.open(id, { threadId: fixtureId('th', id) })).toMatchObject({
+          disposition: 'succeeded',
+        });
       f.fake.script.push({ kind: 'hold' }, { kind: status === 'failed' ? 'fail' : 'hold' });
       for (const id of sessions) {
-        f.writePackage(id, `turn-${id}`, { threadId: id });
+        f.writePackage(id, fixtureId('tu', `turn-${id}`), { threadId: fixtureId('th', id) });
         expect(
-          await f.send('turn.start', { ...f.startBody(id, `turn-${id}`), threadId: id })
+          await f.send('turn.start', {
+            ...f.startBody(id, fixtureId('tu', `turn-${id}`)),
+            threadId: fixtureId('th', id),
+          })
         ).toMatchObject({ disposition: 'succeeded' });
       }
       if (status === 'completed') f.fake.residents[1]!.finish();
-      await f.settle('sibling-b');
+      await f.settle(fixtureId('as', 'sibling-b'));
       const sealed = readFileSync(
-        join(f.capturePath('turn-sibling-b', 'sibling-b'), 'events.jsonl')
+        join(
+          f.capturePath(
+            fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`),
+            fixtureId('th', fixtureId('as', 'sibling-b'))
+          ),
+          'events.jsonl'
+        )
       );
       expect(f.integration.finalStatuses).toMatchObject([
-        { body: { status }, lineage: { turnId: 'turn-sibling-b' } },
+        {
+          body: { status },
+          lineage: { turnId: fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`) },
+        },
       ]);
-      expect(await f.send('session.close', f.selector('sibling-b'))).toMatchObject({
-        disposition: 'succeeded',
-      });
-      expect(await f.send('session.inspect', f.selector('sibling-a'))).toMatchObject({
+      expect(await f.send('session.close', f.selector(fixtureId('as', 'sibling-b')))).toMatchObject(
+        {
+          disposition: 'succeeded',
+        }
+      );
+      expect(
+        await f.send('session.inspect', f.selector(fixtureId('as', 'sibling-a')))
+      ).toMatchObject({
         body: { state: 'active', cleanupState: 'clean' },
       });
       expect(f.fake.residents[0]!.closed).toBe(false);
       expect(f.fake.residents[0]!.interrupts).toBe(0);
-      expect(f.integration.calls).not.toContain('clear:sibling-a');
+      expect(f.integration.calls).not.toContain(`clear:${fixtureId('as', 'sibling-a')}`);
       f.fake.residents[0]!.finish();
-      await f.settle('sibling-a');
+      await f.settle(fixtureId('as', 'sibling-a'));
       expect(
-        readFileSync(join(f.capturePath('turn-sibling-b', 'sibling-b'), 'events.jsonl'))
+        readFileSync(
+          join(
+            f.capturePath(
+              fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`),
+              fixtureId('th', fixtureId('as', 'sibling-b'))
+            ),
+            'events.jsonl'
+          )
+        )
       ).toEqual(sealed);
       const first = readFileSync(
-        join(f.capturePath('turn-sibling-a', 'sibling-a'), 'events.jsonl'),
+        join(
+          f.capturePath(
+            fixtureId('tu', `turn-${fixtureId('as', 'sibling-a')}`),
+            fixtureId('th', fixtureId('as', 'sibling-a'))
+          ),
+          'events.jsonl'
+        ),
         'utf8'
       );
-      expect(first).not.toContain('turn-sibling-b');
-      expect(sealed.toString('utf8')).not.toContain('turn-sibling-a');
+      expect(first).not.toContain(fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`));
+      expect(sealed.toString('utf8')).not.toContain(
+        fixtureId('tu', `turn-${fixtureId('as', 'sibling-a')}`)
+      );
     } finally {
       for (const id of sessions) {
         await f.send('turn.interrupt', {
           ...f.selector(id),
-          turnId: `turn-${id}`,
-          leaseId: `lease-turn-${id}`,
+          turnId: fixtureId('tu', `turn-${id}`),
+          leaseId: `lease-${fixtureId('tu', `turn-${id}`)}`,
           purpose: 'interrupt',
         });
         await f.send('session.close', f.selector(id));
@@ -760,25 +817,34 @@ describe('Thread-local Turn admission and capture', () => {
 
   it('reserves the configured bound before asynchronous preparation and releases only the named Turn', async () => {
     const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    const sessions = ['bounded-a', 'bounded-b', 'bounded-c'];
+    const sessions = [
+      fixtureId('as', 'bounded-a'),
+      fixtureId('as', 'bounded-b'),
+      fixtureId('as', 'bounded-c'),
+    ];
     try {
       for (const id of sessions) {
-        expect(await f.open(id, { maxActiveTurns: 2, threadId: id })).toMatchObject({
+        expect(
+          await f.open(id, { maxActiveTurns: 2, threadId: fixtureId('th', id) })
+        ).toMatchObject({
           disposition: 'succeeded',
           body: { maxActiveTurns: 2 },
         });
-        f.writePackage(id, `turn-${id}`, { threadId: id });
+        f.writePackage(id, fixtureId('tu', `turn-${id}`), { threadId: fixtureId('th', id) });
       }
       expect(
-        await f.open('conflicting-capacity', { maxActiveTurns: 8, threadId: 'capacity-other' })
+        await f.open(fixtureId('as', 'conflicting-capacity'), {
+          maxActiveTurns: 8,
+          threadId: fixtureId('th', 'capacity-other'),
+        })
       ).toMatchObject({ disposition: 'refused', body: { reasonCode: 'conflict' } });
       expect(f.fake.residents).toHaveLength(3);
       f.fake.script.push({ kind: 'hold' }, { kind: 'hold' }, { kind: 'hold' });
       const results = await Promise.all(
         sessions.map((id) =>
           f.send('turn.start', {
-            ...f.startBody(id, `turn-${id}`),
-            threadId: id,
+            ...f.startBody(id, fixtureId('tu', `turn-${id}`)),
+            threadId: fixtureId('th', id),
           })
         )
       );
@@ -793,28 +859,33 @@ describe('Thread-local Turn admission and capture', () => {
       expect(f.fake.residents[2]!.turns).toHaveLength(0);
       expect(
         await f.send('turn.interrupt', {
-          ...f.selector('bounded-a'),
-          turnId: 'turn-bounded-a',
-          leaseId: 'lease-turn-bounded-a',
+          ...f.selector(fixtureId('as', 'bounded-a')),
+          turnId: fixtureId('tu', `turn-${fixtureId('as', 'bounded-a')}`),
+          leaseId: `lease-${fixtureId('tu', `turn-${fixtureId('as', 'bounded-a')}`)}`,
           purpose: 'interrupt',
         })
       ).toMatchObject({ disposition: 'succeeded' });
       expect(f.fake.residents[1]!.interrupts).toBe(0);
-      expect(await f.send('session.inspect', f.selector('bounded-b'))).toMatchObject({
+      expect(
+        await f.send('session.inspect', f.selector(fixtureId('as', 'bounded-b')))
+      ).toMatchObject({
         body: { state: 'active' },
       });
       expect(
         await f.send('turn.start', {
-          ...f.startBody('bounded-c', 'turn-bounded-c'),
-          threadId: 'bounded-c',
+          ...f.startBody(
+            fixtureId('as', 'bounded-c'),
+            fixtureId('tu', `turn-${fixtureId('as', 'bounded-c')}`)
+          ),
+          threadId: fixtureId('th', fixtureId('as', 'bounded-c')),
         })
       ).toMatchObject({ disposition: 'succeeded' });
     } finally {
       for (const id of sessions) {
         await f.send('turn.interrupt', {
           ...f.selector(id),
-          turnId: `turn-${id}`,
-          leaseId: `lease-turn-${id}`,
+          turnId: fixtureId('tu', `turn-${id}`),
+          leaseId: `lease-${fixtureId('tu', `turn-${id}`)}`,
           purpose: 'interrupt',
         });
         await f.send('session.close', f.selector(id));
@@ -824,32 +895,48 @@ describe('Thread-local Turn admission and capture', () => {
 
   it('never overwrites a sealed capture when a Turn identity is reused', async () => {
     const f = harnessFixture();
-    await f.open('sealed-session');
-    expect(await f.start('sealed-session', 'sealed-turn')).toMatchObject({
+    await f.open(fixtureId('as', 'sealed-session'));
+    expect(
+      await f.start(fixtureId('as', 'sealed-session'), fixtureId('tu', 'sealed-turn'))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
-    await f.settle('sealed-session');
-    const path = join(f.capturePath('sealed-turn'), 'events.jsonl');
+    await f.settle(fixtureId('as', 'sealed-session'));
+    const path = join(f.capturePath(fixtureId('tu', 'sealed-turn')), 'events.jsonl');
     const sealed = readFileSync(path);
-    expect(await f.start('sealed-session', 'sealed-turn')).toMatchObject({
+    expect(
+      await f.start(fixtureId('as', 'sealed-session'), fixtureId('tu', 'sealed-turn'))
+    ).toMatchObject({
       disposition: 'refused',
       body: { reasonCode: 'dependency_failed' },
     });
-    await f.settle('sealed-session');
+    await f.settle(fixtureId('as', 'sealed-session'));
     expect(f.fake.residents[0]!.turns).toHaveLength(1);
     expect(readFileSync(path)).toEqual(sealed);
-    expect(await f.send('session.close', f.selector('sealed-session'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector(fixtureId('as', 'sealed-session')))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
     expect(readFileSync(path)).toEqual(sealed);
   });
 });
 
-describe('generated session-private output slot', () => {
+describe('generated as_00000000-0000-78db-b351-5366ba974132 output slot', () => {
   it('prepares before native open, clears between Turns, and preserves sibling output', async () => {
     const f = harnessFixture({ outputSlot: true });
-    const output = join(f.sandboxRoot, 'sessions', 'as-a', 'outputs');
-    const sibling = join(f.sandboxRoot, 'sessions', 'as-b', 'outputs');
+    const output = join(
+      f.sandboxRoot,
+      'sessions',
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'outputs'
+    );
+    const sibling = join(
+      f.sandboxRoot,
+      'sessions',
+      'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+      'outputs'
+    );
     const openSession = f.fake.adapter.openSession.bind(f.fake.adapter);
     vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
       expect(existsSync(join(f.sandboxRoot, 'sessions', input.agentSessionId, 'outputs'))).toBe(
@@ -857,17 +944,37 @@ describe('generated session-private output slot', () => {
       );
       return openSession(input);
     });
-    expect((await f.open('as-a')).disposition).toBe('succeeded');
+    expect((await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).disposition).toBe('succeeded');
     expect(existsSync(output)).toBe(true);
-    expect((await f.open('as-b', { threadId: 'thread-two' })).disposition).toBe('succeeded');
+    expect(
+      (
+        await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+          threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+        })
+      ).disposition
+    ).toBe('succeeded');
     writeFileSync(join(sibling, 'sibling.md'), 'Keep sibling output');
     writeFileSync(join(output, 'old.md'), 'Prior Turn output');
-    expect((await f.start('as-a', 'turn-output-1')).disposition).toBe('succeeded');
-    await f.settle('as-a');
+    expect(
+      (
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-728f-b5ef-339045c5c943'
+        )
+      ).disposition
+    ).toBe('succeeded');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(readdirSync(output)).toEqual([]);
     writeFileSync(join(output, 'first.md'), 'First Turn output');
-    expect((await f.start('as-a', 'turn-output-2')).disposition).toBe('succeeded');
-    await f.settle('as-a');
+    expect(
+      (
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-76b2-a87b-0fbc6b7c3277'
+        )
+      ).disposition
+    ).toBe('succeeded');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(readdirSync(output)).toEqual([]);
     expect(readFileSync(join(sibling, 'sibling.md'), 'utf8')).toBe('Keep sibling output');
   });
@@ -876,31 +983,46 @@ describe('generated session-private output slot', () => {
 describe('session.open workspace initialization', () => {
   it('resumes after Sandbox recreation only on the retained native root', async () => {
     const first = harnessFixture();
-    expect(await first.open('as-recreate-predecessor')).toMatchObject({ disposition: 'succeeded' });
-    expect(await first.start('as-recreate-predecessor', 'turn-recreate-1')).toMatchObject({
+    expect(await first.open('as_00000000-0000-7920-9e7e-e8e304a0b149')).toMatchObject({
       disposition: 'succeeded',
     });
-    await first.settle('as-recreate-predecessor');
     expect(
-      await first.send('session.close', first.selector('as-recreate-predecessor'))
+      await first.start(
+        'as_00000000-0000-7920-9e7e-e8e304a0b149',
+        'tu_00000000-0000-79f9-be9c-49132fdf1f25'
+      )
+    ).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await first.settle('as_00000000-0000-7920-9e7e-e8e304a0b149');
+    expect(
+      await first.send('session.close', first.selector('as_00000000-0000-7920-9e7e-e8e304a0b149'))
     ).toMatchObject({ disposition: 'succeeded' });
-    const reference = readFileSync(first.referencePath('as-recreate-predecessor'));
-    const resume = { digest: sha256(reference), locator: 'as-recreate-predecessor' };
+    const reference = readFileSync(first.referencePath('as_00000000-0000-7920-9e7e-e8e304a0b149'));
+    const resume = {
+      digest: sha256(reference),
+      locator: 'as_00000000-0000-7920-9e7e-e8e304a0b149',
+    };
     // Sandbox deletion removes disposable roots but retains the complete data mount.
     rmSync(first.privateRoot, { force: true, recursive: true });
     rmSync(first.sandboxRoot, { force: true, recursive: true });
     const reattached = harnessFixture({ root: first.root });
-    expect(await reattached.open('as-recreate-reattached', { resume })).toMatchObject({
+    expect(
+      await reattached.open('as_00000000-0000-7466-a82d-99bb16868329', { resume })
+    ).toMatchObject({
       body: { nativeHandleDigest: resume.digest, nativeHandleState: 'ready', state: 'open' },
       disposition: 'succeeded',
     });
     expect(Buffer.from(reattached.fake.residents[0]!.input.resumeReference!)).toEqual(reference);
     expect(
-      await reattached.send('session.close', reattached.selector('as-recreate-reattached'))
+      await reattached.send(
+        'session.close',
+        reattached.selector('as_00000000-0000-7466-a82d-99bb16868329')
+      )
     ).toMatchObject({ disposition: 'succeeded' });
     // A fresh association can use the same logical Thread while mounting different bytes.
     const fresh = harnessFixture();
-    expect(await fresh.open('as-recreate-fresh', { resume })).toMatchObject({
+    expect(await fresh.open('as_00000000-0000-7b04-8f8f-87b9304d91f1', { resume })).toMatchObject({
       body: { reasonCode: 'missing' },
       disposition: 'refused',
     });
@@ -909,21 +1031,23 @@ describe('session.open workspace initialization', () => {
     expect(readFileSync(first.referencePath(resume.locator))).toEqual(reference);
     writeFileSync(first.referencePath(resume.locator), 'corrupt reference');
     const corrupt = harnessFixture({ root: first.root });
-    expect(await corrupt.open('as-recreate-corrupt', { resume })).toMatchObject({
-      body: { reasonCode: 'conflict' },
-      disposition: 'refused',
-    });
+    expect(await corrupt.open('as_00000000-0000-792c-9dc4-882c9f8d03c6', { resume })).toMatchObject(
+      {
+        body: { reasonCode: 'conflict' },
+        disposition: 'refused',
+      }
+    );
     expect(corrupt.fake.residents).toHaveLength(0);
     expect(corrupt.integration.loopbacks.size).toBe(0);
   });
 
   it('initializes the source-less empty work slot before the native runtime opens', async () => {
     const fixture = harnessFixture();
-    fixture.writePackage('session-empty', 'initial');
-    const path = join(fixture.sandboxRoot, 'worktrees', 'session-empty');
+    fixture.writePackage('as_00000000-0000-7611-b4c4-b40b4a79bfea', 'initial');
+    const path = join(fixture.sandboxRoot, 'worktrees', 'as_00000000-0000-7611-b4c4-b40b4a79bfea');
     expect(existsSync(path)).toBe(false);
     const nativeEnvironment = { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' };
-    const packagePath = fixture.packagePath('session-empty');
+    const packagePath = fixture.packagePath('as_00000000-0000-7611-b4c4-b40b4a79bfea');
     const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
     manifest.runtime.environment = {
       imageDigest: `sha256:${'a'.repeat(64)}`,
@@ -940,7 +1064,9 @@ describe('session.open workspace initialization', () => {
         expect(input.environment).toMatchObject(nativeEnvironment);
         return await openSession(input);
       });
-    const result = await fixture.open('session-empty', { nativeEnvironment });
+    const result = await fixture.open('as_00000000-0000-7611-b4c4-b40b4a79bfea', {
+      nativeEnvironment,
+    });
     expect(result.disposition).toBe('succeeded');
     expect(boundary).toHaveBeenCalledOnce();
     expect(existsSync(path)).toBe(true);
@@ -955,8 +1081,14 @@ describe('session.open workspace initialization', () => {
     'supply',
   ])('refuses incompatible initial %s before native open', async (part) => {
     const fixture = harnessFixture();
-    fixture.writePackage('session-invalid', 'initial');
-    const path = join(fixture.sandboxRoot, 'sessions', 'session-invalid', 'config', 'package.json');
+    fixture.writePackage('as_00000000-0000-725f-a6dd-f089e553a939', 'initial');
+    const path = join(
+      fixture.sandboxRoot,
+      'sessions',
+      'as_00000000-0000-725f-a6dd-f089e553a939',
+      'config',
+      'package.json'
+    );
     const manifest = JSON.parse(readFileSync(path, 'utf8'));
     if (part === 'scope') manifest.scope.threadId = 'foreign';
     if (part === 'root') delete manifest.workspace.root;
@@ -985,24 +1117,28 @@ describe('session.open workspace initialization', () => {
     )[part];
     if (invariantError)
       await expect(
-        initializeSessionWorkspace(path, join(fixture.sandboxRoot, 'sessions', 'session-invalid'), {
-          agentSessionId: 'session-invalid',
-          threadId: 'thread-one',
-          workspaceId: 'workspace-one',
-        })
+        initializeSessionWorkspace(
+          path,
+          join(fixture.sandboxRoot, 'sessions', 'as_00000000-0000-725f-a6dd-f089e553a939'),
+          {
+            agentSessionId: 'as_00000000-0000-725f-a6dd-f089e553a939',
+            threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+            workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
+          }
+        )
       ).rejects.toThrow(invariantError);
-    const result = await fixture.open('session-invalid');
+    const result = await fixture.open('as_00000000-0000-725f-a6dd-f089e553a939');
     expect(result.disposition).toBe('refused');
     expect(result.body).toMatchObject({ startupFailure: { stage: 'workspace_materialization' } });
     expect(fixture.fake.residents).toHaveLength(0);
   });
   it('returns a workspace materialization fetch refusal before native open', async () => {
     const fixture = harnessFixture();
-    fixture.writePackage('session-git-refusal', 'initial');
+    fixture.writePackage('as_00000000-0000-77a5-af82-67954d86486f', 'initial');
     const path = join(
       fixture.sandboxRoot,
       'sessions',
-      'session-git-refusal',
+      'as_00000000-0000-77a5-af82-67954d86486f',
       'config',
       'package.json'
     );
@@ -1036,7 +1172,7 @@ describe('session.open workspace initialization', () => {
     const previous = process.env.PATH;
     try {
       process.env.PATH = `${bin}:${previous}`;
-      const result = await fixture.open('session-git-refusal');
+      const result = await fixture.open('as_00000000-0000-77a5-af82-67954d86486f');
       expect(result.disposition).toBe('refused');
       expect(result.body).toMatchObject({
         startupFailure: { stage: 'workspace_materialization', reason: 'git_fetch_http_refused' },
@@ -1049,7 +1185,9 @@ describe('session.open workspace initialization', () => {
   });
   it('refuses a missing initial AEP before opening the native runtime', async () => {
     const fixture = harnessFixture();
-    const result = await fixture.open('session-missing', { initialPackage: false });
+    const result = await fixture.open('as_00000000-0000-7f09-9439-f164cde4d1fe', {
+      initialPackage: false,
+    });
     expect(result.disposition).toBe('refused');
     expect(result.body).toMatchObject({
       reasonCode: 'dependency_failed',
@@ -1137,7 +1275,7 @@ describe('Worker Harness loop', () => {
       { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-two' },
       {
         ...command('session.inspect', 1, {
-          agentSessionId: 'as-a',
+          agentSessionId: 'as_00000000-0000-75b0-a387-3019b80ed6d1',
           agentSessionRuntimeBindingId: 'b',
         }),
         harnessInstanceId: 'harness-one',
@@ -1334,11 +1472,15 @@ describe('Worker Harness resident AgentSessions', () => {
     const mapping = { headers: [], bodyFields: [], map: () => undefined };
     Object.assign(fake.adapter, { inferenceRuntimeHintMapping: mapping });
     const f = harnessFixture({ adapter: fake });
-    expect(await f.open('as-mapping')).toMatchObject({ disposition: 'succeeded' });
-    expect(f.integration.loopbacks.get('as-mapping')).toMatchObject({
+    expect(await f.open('as_00000000-0000-7e21-a5ac-a39ca3d5f979')).toMatchObject({
+      disposition: 'succeeded',
+    });
+    expect(f.integration.loopbacks.get('as_00000000-0000-7e21-a5ac-a39ca3d5f979')).toMatchObject({
       inferenceRuntimeHintMapping: mapping,
     });
-    expect(await f.send('session.close', f.selector('as-mapping'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-7e21-a5ac-a39ca3d5f979'))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
   });
@@ -1348,22 +1490,32 @@ describe('Worker Harness resident AgentSessions', () => {
     registryFixture.adapter = fake.adapter;
     try {
       const f = harnessFixture({ adapter: fake, registryAdapterId: 'fixture-fourth' });
-      expect(await f.open('as-a')).toMatchObject({ disposition: 'succeeded' });
+      expect(await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toMatchObject({
+        disposition: 'succeeded',
+      });
       expect(fake.residents[0]?.input.stateRoot).toBe(
-        join(f.nativeRoot, 'thread-one', 'fixture-fourth', 'native')
+        join(f.nativeRoot, 'th_00000000-0000-730e-88b8-d76794f39a2f', 'fixture-fourth', 'native')
       );
-      await f.start('as-a', 'turn-1');
-      await f.settle('as-a');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
       expect(f.integration.finalStatuses).toMatchObject([{ body: { status: 'completed' } }]);
-      expect(readFileSync(join(f.capturePath('turn-1'), 'items.jsonl'), 'utf8')).toContain(
-        'answer-turn-1'
-      );
-      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      expect(
+        readFileSync(
+          join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'items.jsonl'),
+          'utf8'
+        )
+      ).toContain('answer-tu_00000000-0000-7e49-8268-e35715b55d0c');
+      expect(
+        await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
         disposition: 'succeeded',
       });
       // An id without a registry entry is unsupported.
       const unregistered = harnessFixture({ registryAdapterId: 'fixture-fifth' });
-      expect(await unregistered.open('as-c')).toEqual(
+      expect(await unregistered.open('as_00000000-0000-7f6a-bdd8-7ee572509572')).toEqual(
         expect.objectContaining({ body: { reasonCode: 'unsupported' } })
       );
     } finally {
@@ -1373,17 +1525,25 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('delivers the exact admitted logical-model routes and rejects duplicate core models', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(
-      await f.start('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] })
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        { allowedModels: ['model-a', 'model-b'] }
+      )
     ).toMatchObject({ disposition: 'succeeded' });
     expect(f.fake.residents[0]?.turns[0]).toMatchObject({
       llmRoute: { model: 'model-a' },
       allowedLlmRoutes: [{ model: 'model-a' }, { model: 'model-b' }],
     });
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(
-      await f.start('as-a', 'turn-2', { allowedModels: ['model-a', 'model-a'] })
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        { allowedModels: ['model-a', 'model-a'] }
+      )
     ).toMatchObject({ disposition: 'refused' });
     expect(f.fake.residents[0]?.turns).toHaveLength(1);
   });
@@ -1393,7 +1553,9 @@ describe('Worker Harness resident AgentSessions', () => {
       environment: { GITHUB_TOKEN: 'harness-only', HOME: '/home/worker', NO_PROXY: 'internal' },
     });
     expect(
-      await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } })
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+        runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' },
+      })
     ).toMatchObject({
       body: {
         maxActiveTurns: 20,
@@ -1405,15 +1567,15 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     const [resident] = f.fake.residents;
     expect(resident?.input).toMatchObject({
-      agentSessionId: 'as-a',
+      agentSessionId: 'as_00000000-0000-75b0-a387-3019b80ed6d1',
       loopback: {
         capabilityBaseUrl: 'http://127.0.0.1:17892/capabilities',
-        capabilityCredential: credential('capability-as-a'),
+        capabilityCredential: credential('capability-as_00000000-0000-75b0-a387-3019b80ed6d1'),
         inferenceBaseUrl: 'http://127.0.0.1:17892/inference/v1',
-        inferenceCredential: credential('inference-as-a'),
+        inferenceCredential: credential('inference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
       },
       resumeReference: null,
-      stateRoot: join(f.nativeRoot, 'thread-one', ADAPTER, 'native'),
+      stateRoot: join(f.nativeRoot, 'th_00000000-0000-730e-88b8-d76794f39a2f', ADAPTER, 'native'),
     });
     expect(resident?.input.controlRoot.startsWith(f.privateRoot)).toBe(true);
     expect(resident?.input.environment).toMatchObject({
@@ -1424,23 +1586,31 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     expect(resident?.input.environment).not.toHaveProperty('GITHUB_TOKEN');
     expect(JSON.stringify(resident?.input.environment)).not.toContain(
-      credential('capability-as-a')
+      credential('capability-as_00000000-0000-75b0-a387-3019b80ed6d1')
     );
 
-    expect(await f.start('as-a', 'turn-1', { runtimeEnvNames: ['VENDOR_TOKEN'] })).toMatchObject({
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        { runtimeEnvNames: ['VENDOR_TOKEN'] }
+      )
+    ).toMatchObject({
       body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' },
       disposition: 'succeeded',
     });
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(resident?.turns[0]).toMatchObject({
       mcpServerIds: ['echo'],
       llmRoute: { id: 'worker-inference-0', model: 'model-a' },
-      turnId: 'turn-1',
-      turnInput: 'input for turn-1',
+      turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      turnInput: 'input for tu_00000000-0000-7e49-8268-e35715b55d0c',
       workingDirectory: f.sandboxRoot,
     });
-    const digest = sha256('reference-as-a');
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    const digest = sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: {
         childState: 'running',
         cleanupState: 'clean',
@@ -1449,118 +1619,173 @@ describe('Worker Harness resident AgentSessions', () => {
         state: 'open',
       },
     });
-    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
-    expect(statSync(f.referencePath('as-a')).mode & 0o777).toBe(0o600);
-    expect(existsSync(f.packagePath('as-a'))).toBe(false);
+    expect(readFileSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')).toBe(
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
+    );
+    expect(statSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1')).mode & 0o777).toBe(
+      0o600
+    );
+    expect(existsSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
 
-    expect(await f.start('as-a', 'turn-2', { runtimeEnvNames: ['VENDOR_TOKEN'] })).toMatchObject({
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        { runtimeEnvNames: ['VENDOR_TOKEN'] }
+      )
+    ).toMatchObject({
       body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'started' },
     });
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(
       f.integration.finalStatuses.map((status) => [status.lineage.turnId, status.body.status])
     ).toEqual([
-      ['turn-1', 'completed'],
-      ['turn-2', 'completed'],
+      ['tu_00000000-0000-7e49-8268-e35715b55d0c', 'completed'],
+      ['tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 'completed'],
     ]);
     expect(f.integration.boundTokens).toEqual([
       {
-        capabilityToken: credential('capability-token-turn-1'),
-        controlToken: credential('control-token-turn-1'),
-        inferenceToken: credential('inference-token-turn-1'),
+        capabilityToken: credential('capability-token-tu_00000000-0000-7e49-8268-e35715b55d0c'),
+        controlToken: credential('control-token-tu_00000000-0000-7e49-8268-e35715b55d0c'),
+        inferenceToken: credential('inference-token-tu_00000000-0000-7e49-8268-e35715b55d0c'),
       },
       {
-        capabilityToken: credential('capability-token-turn-2'),
-        controlToken: credential('control-token-turn-2'),
-        inferenceToken: credential('inference-token-turn-2'),
+        capabilityToken: credential('capability-token-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'),
+        controlToken: credential('control-token-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'),
+        inferenceToken: credential('inference-token-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'),
       },
     ]);
 
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { childState: 'absent', privateState: 'absent', state: 'closed' },
       disposition: 'succeeded',
     });
     expect(f.integration.calls).toEqual([
-      'register:as-a',
-      'bind:as-a',
-      'drain:as-a',
-      'clear:as-a',
-      'bind:as-a',
-      'drain:as-a',
-      'clear:as-a',
-      'destroy:as-a',
+      'register:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'bind:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'drain:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'clear:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'bind:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'drain:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'clear:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'destroy:as_00000000-0000-75b0-a387-3019b80ed6d1',
     ]);
     expect(resident?.closed).toBe(true);
-    expect(existsSync(join(f.sandboxRoot, 'sessions', 'as-a'))).toBe(false);
+    expect(
+      existsSync(join(f.sandboxRoot, 'sessions', 'as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toBe(false);
     expect(existsSync(resident?.input.controlRoot as string)).toBe(false);
-    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
+    expect(readFileSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')).toBe(
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
+    );
   });
 
   it('resumes a successor from the stored reference and refuses a missing or changed one', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    await f.start('as-a', 'turn-1');
-    await f.settle('as-a');
-    await f.send('session.close', f.selector('as-a'));
-    const digest = sha256('reference-as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'));
+    const digest = sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1');
 
-    expect(await f.open('as-b', { resume: { digest, locator: 'as-a' } })).toMatchObject({
+    expect(
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        resume: { digest, locator: 'as_00000000-0000-75b0-a387-3019b80ed6d1' },
+      })
+    ).toMatchObject({
       body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'open' },
       disposition: 'succeeded',
     });
     expect(Buffer.from(f.fake.residents[1]?.input.resumeReference ?? []).toString()).toBe(
-      'reference-as-a'
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
     );
-    expect(readFileSync(f.referencePath('as-b'), 'utf8')).toBe('reference-as-a');
+    expect(readFileSync(f.referencePath('as_00000000-0000-7f1d-8ec1-f695d6b796c3'), 'utf8')).toBe(
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
+    );
     // A proved predecessor makes the successor established before its first Turn, so a failed
     // first Turn leaves it able to take the next one.
     f.fake.script.push({ kind: 'fail' });
-    await f.start('as-b', 'turn-2');
-    await f.settle('as-b');
-    expect(await f.start('as-b', 'turn-3')).toMatchObject({ disposition: 'succeeded' });
-    await f.settle('as-b');
-    await f.send('session.close', f.selector('as-b'));
+    await f.start(
+      'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+      'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+    );
+    await f.settle('as_00000000-0000-7f1d-8ec1-f695d6b796c3');
+    expect(
+      await f.start(
+        'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+        'tu_00000000-0000-701a-ab45-3210b32e0cff'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as_00000000-0000-7f1d-8ec1-f695d6b796c3');
+    await f.send('session.close', f.selector('as_00000000-0000-7f1d-8ec1-f695d6b796c3'));
 
     const opened = f.fake.residents.length;
-    expect(await f.open('as-c', { resume: { digest, locator: 'as-missing' } })).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'missing' }, disposition: 'refused' })
-    );
-    writeFileSync(f.referencePath('as-a'), 'reference-tampered');
-    expect(await f.open('as-c', { resume: { digest, locator: 'as-a' } })).toEqual(
+    expect(
+      await f.open('as_00000000-0000-7f6a-bdd8-7ee572509572', {
+        resume: { digest, locator: 'as_00000000-0000-7cbd-8a26-b46f3009c280' },
+      })
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'missing' }, disposition: 'refused' }));
+    writeFileSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'reference-tampered');
+    expect(
+      await f.open('as_00000000-0000-7f6a-bdd8-7ee572509572', {
+        resume: { digest, locator: 'as_00000000-0000-75b0-a387-3019b80ed6d1' },
+      })
+    ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
     );
     expect(f.fake.residents).toHaveLength(opened);
     expect(f.integration.loopbacks.size).toBe(0);
     // The Thread was released by each refusal.
-    expect(await f.open('as-c')).toMatchObject({ disposition: 'succeeded' });
+    expect(await f.open('as_00000000-0000-7f6a-bdd8-7ee572509572')).toMatchObject({
+      disposition: 'succeeded',
+    });
   });
 
   it('refuses a resumed open whose runtime does not prove the predecessor reference', async () => {
     const first = harnessFixture();
-    await first.open('as-a');
-    await first.start('as-a', 'turn-1');
-    await first.settle('as-a');
-    await first.send('session.close', first.selector('as-a'));
+    await first.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await first.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await first.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await first.send('session.close', first.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'));
     const f = harnessFixture({
       adapter: fakeAdapter({ resumeHandle: { state: 'pending' } }),
       root: first.root,
     });
     expect(
-      await f.open('as-b', { resume: { digest: sha256('reference-as-a'), locator: 'as-a' } })
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        resume: {
+          digest: sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+          locator: 'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        },
+      })
     ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
     );
     expect(f.fake.residents[0]?.closed).toBe(true);
-    expect(f.integration.calls).toEqual(['register:as-b', 'destroy:as-b']);
-    expect(existsSync(f.referencePath('as-b'))).toBe(false);
+    expect(f.integration.calls).toEqual([
+      'register:as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+      'destroy:as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+    ]);
+    expect(existsSync(f.referencePath('as_00000000-0000-7f1d-8ec1-f695d6b796c3'))).toBe(false);
   });
 
   it('refuses a resumed open whose runtime proves a different ready conversation', async () => {
     const first = harnessFixture();
-    await first.open('as-a');
-    await first.start('as-a', 'turn-1');
-    await first.settle('as-a');
-    await first.send('session.close', first.selector('as-a'));
+    await first.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await first.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await first.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await first.send('session.close', first.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'));
     const f = harnessFixture({
       adapter: fakeAdapter({
         resumeHandle: { reference: Buffer.from('wrong-native-conversation'), state: 'ready' },
@@ -1568,31 +1793,42 @@ describe('Worker Harness resident AgentSessions', () => {
       root: first.root,
     });
     expect(
-      await f.open('as-b', { resume: { digest: sha256('reference-as-a'), locator: 'as-a' } })
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        resume: {
+          digest: sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+          locator: 'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        },
+      })
     ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
     );
     expect(f.fake.residents[0]?.closed).toBe(true);
-    expect(existsSync(f.referencePath('as-b'))).toBe(false);
-    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
+    expect(existsSync(f.referencePath('as_00000000-0000-7f1d-8ec1-f695d6b796c3'))).toBe(false);
+    expect(readFileSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')).toBe(
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
+    );
   });
 
   it('keeps the Thread and fences the Harness when a refused open cannot close its host', async () => {
     const f = harnessFixture({
       adapter: fakeAdapter({ closeFails: true, initialHandle: { state: 'unknown' } }),
     });
-    expect(await f.open('as-a')).toEqual(
+    expect(await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toEqual(
       expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
     );
     expect(f.fake.residents[0]?.closed).toBe(false);
     // Routes are revoked, but the possibly live host keeps its Thread reserved.
     expect(f.integration.loopbacks.size).toBe(0);
     const sibling = harnessFixture({ root: f.root });
-    expect(await sibling.open('as-b')).toEqual(
+    expect(await sibling.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3')).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
     );
     expect(sibling.fake.residents).toHaveLength(0);
-    expect(await f.open('as-c', { threadId: 'thread-two' })).toEqual(
+    expect(
+      await f.open('as_00000000-0000-7f6a-bdd8-7ee572509572', {
+        threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+      })
+    ).toEqual(
       expect.objectContaining({
         body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' },
         disposition: 'refused',
@@ -1627,18 +1863,21 @@ describe('Worker Harness resident AgentSessions', () => {
     }) satisfies WorkerControlFetch);
     const f = harnessFixture({ integration });
     try {
-      await f.open('as-a');
-      await f.start('as-a', 'turn-1');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       await finalEntered.promise;
       const before = heartbeatAttempts;
       await clock.advance(3200);
       expect(heartbeatAttempts).toBe(before);
-      expect(integration.calls).not.toContain('clear:as-a');
+      expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
     } finally {
       releaseFinal.resolve();
       await cleared.promise;
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
     expect(integration.finalStatuses.map((status) => status.body.status)).toEqual(['completed']);
   });
@@ -1710,8 +1949,11 @@ describe('Worker Harness resident AgentSessions', () => {
     }) satisfies WorkerControlFetch);
     const f = harnessFixture({ integration });
     try {
-      await f.open('as-a');
-      await f.start('as-a', 'turn-1');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       await draining.promise;
       await clock.advance(1000);
       await heartbeatEntered.promise;
@@ -1726,7 +1968,7 @@ describe('Worker Harness resident AgentSessions', () => {
       await clock.advance(3200);
       expect.soft(heartbeatAttempts).toBe(before);
       expect.soft(rejectedHeartbeats).toBe(0);
-      expect(integration.calls).not.toContain('clear:as-a');
+      expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
     } finally {
       releaseDrain.resolve();
       releaseHeartbeat.resolve();
@@ -1734,7 +1976,7 @@ describe('Worker Harness resident AgentSessions', () => {
       await cleared.promise;
       terminalSpy.mockRestore();
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
     expect(integration.finalStatuses.map((status) => status.body.status)).toEqual([
       outcome === 'completed' ? 'completed' : 'failed',
@@ -1782,9 +2024,12 @@ describe('Worker Harness resident AgentSessions', () => {
         },
       };
     });
-    await f.open('as-queued');
+    await f.open('as_00000000-0000-7ee5-ae44-934f49fb40cd');
     const clock = controlSchedulingTime();
-    const start = f.start('as-queued', 'turn-queued');
+    const start = f.start(
+      'as_00000000-0000-7ee5-ae44-934f49fb40cd',
+      'tu_00000000-0000-79c3-b36e-c4ac583134e4'
+    );
     try {
       await queued.promise;
       expect(statuses).toEqual(['starting']);
@@ -1794,9 +2039,9 @@ describe('Worker Harness resident AgentSessions', () => {
       if (cancellation === 'interrupt') {
         expect(
           await f.send('turn.interrupt', {
-            ...f.selector('as-queued'),
-            turnId: 'turn-queued',
-            leaseId: 'lease-turn-queued',
+            ...f.selector('as_00000000-0000-7ee5-ae44-934f49fb40cd'),
+            turnId: 'tu_00000000-0000-79c3-b36e-c4ac583134e4',
+            leaseId: 'lease-tu_00000000-0000-79c3-b36e-c4ac583134e4',
             purpose: 'interrupt',
           })
         ).toMatchObject({ disposition: 'succeeded', body: { state: 'interrupted' } });
@@ -1834,13 +2079,16 @@ describe('Worker Harness resident AgentSessions', () => {
         throw failure;
       },
     }));
-    await f.open('as-preparing');
-    const start = f.start('as-preparing', 'turn-preparing');
+    await f.open('as_00000000-0000-7668-ba13-2ec676e2ce87');
+    const start = f.start(
+      'as_00000000-0000-7668-ba13-2ec676e2ce87',
+      'tu_00000000-0000-752c-b4f4-9dede9370a5b'
+    );
     await entered.promise;
     const interruption = f.send('turn.interrupt', {
-      ...f.selector('as-preparing'),
-      turnId: 'turn-preparing',
-      leaseId: 'lease-turn-preparing',
+      ...f.selector('as_00000000-0000-7668-ba13-2ec676e2ce87'),
+      turnId: 'tu_00000000-0000-752c-b4f4-9dede9370a5b',
+      leaseId: 'lease-tu_00000000-0000-752c-b4f4-9dede9370a5b',
       purpose: 'interrupt',
     });
     release.resolve();
@@ -1921,8 +2169,11 @@ describe('Worker Harness resident AgentSessions', () => {
     const f = harnessFixture({ integration });
     f.fake.script.push({ kind: 'hold' });
     try {
-      await f.open('as-a');
-      await f.start('as-a', 'turn-1');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       await started.promise;
       await clock.advance(1000);
       await firstEvent.promise;
@@ -1946,7 +2197,7 @@ describe('Worker Harness resident AgentSessions', () => {
       expect(heartbeats).toHaveLength(accepted);
       terminalSpy.mockRestore();
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
     expect(integration.finalStatuses.at(-1)?.body.status).toBe('completed');
     expect(f.fake.residents[0]?.interrupts).toBe(0);
@@ -1989,7 +2240,12 @@ describe('Worker Harness resident AgentSessions', () => {
       }
       if (url.endsWith('/final-status')) {
         finalRequests.push(body);
-        sealedAtFinal.push(readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8'));
+        sealedAtFinal.push(
+          readFileSync(
+            join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+            'utf8'
+          )
+        );
       }
       if (url.endsWith('/heartbeat')) {
         expect(Date.now() - lastAcceptedAt).toBeLessThan(2500);
@@ -2037,8 +2293,11 @@ describe('Worker Harness resident AgentSessions', () => {
     const f = harnessFixture({ integration });
     f.fake.script.push({ kind: 'hold' });
     try {
-      await f.open('as-a');
-      await f.start('as-a', 'turn-1');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       await started.promise;
       await clock.advance(1000);
       await blocked.promise;
@@ -2060,18 +2319,21 @@ describe('Worker Harness resident AgentSessions', () => {
       await clock.advance(10_250);
       cancellationStarted = true;
       await f.send('turn.interrupt', {
-        ...f.selector('as-a'),
-        turnId: 'turn-1',
-        leaseId: 'lease-turn-1',
+        ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        leaseId: 'lease-tu_00000000-0000-7e49-8268-e35715b55d0c',
         purpose: 'interrupt',
       });
       await cleared.promise;
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
     expect(attempts).toHaveLength(2);
     expect(attempts[1]).toBe(attempts[0]);
-    const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
+    const events = readFileSync(
+      join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+      'utf8'
+    )
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
@@ -2105,7 +2367,10 @@ describe('Worker Harness resident AgentSessions', () => {
     ]);
     expect(integration.finalStatuses).toEqual(finalRequests);
     expect(sealedAtFinal).toEqual([
-      readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8'),
+      readFileSync(
+        join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+        'utf8'
+      ),
     ]);
   });
 
@@ -2143,8 +2408,11 @@ describe('Worker Harness resident AgentSessions', () => {
     }) satisfies WorkerControlFetch);
     const f = harnessFixture({ integration });
     try {
-      await f.open('as-a');
-      await f.start('as-a', 'turn-1');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       await draining.promise;
       await clock.advance(2000);
       expect(authorityLost).toBe(true);
@@ -2153,7 +2421,10 @@ describe('Worker Harness resident AgentSessions', () => {
       await clock.advance(1100);
       expect(heartbeatAttempts).toBe(stopped);
       expect(integration.finalStatuses).toHaveLength(0);
-      const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
+      const events = readFileSync(
+        join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+        'utf8'
+      )
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line));
@@ -2164,7 +2435,7 @@ describe('Worker Harness resident AgentSessions', () => {
     } finally {
       release.resolve();
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
   });
 
@@ -2240,8 +2511,11 @@ describe('Worker Harness resident AgentSessions', () => {
     }) satisfies WorkerControlFetch);
     const f = harnessFixture({ integration });
     try {
-      await f.open('as-a');
-      await f.start('as-a', 'turn-1');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       await draining.promise;
       await clock.advance(1000);
       await eventEntered.promise;
@@ -2250,7 +2524,7 @@ describe('Worker Harness resident AgentSessions', () => {
       await clock.advance(0);
       expect(eventPending).toBe(true);
       expect(finalSequences).toHaveLength(0);
-      expect(integration.calls).not.toContain('clear:as-a');
+      expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
       const before = heartbeats.length;
       await clock.advance(3200);
       expect(heartbeats.length).toBeGreaterThanOrEqual(before + 3);
@@ -2261,9 +2535,12 @@ describe('Worker Harness resident AgentSessions', () => {
       await cleared.promise;
       terminalSpy.mockRestore();
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
-    const terminal = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
+    const terminal = readFileSync(
+      join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+      'utf8'
+    )
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
@@ -2374,8 +2651,11 @@ describe('Worker Harness resident AgentSessions', () => {
     if (kind === 'heartbeat') f.fake.script.push({ kind: 'hold' });
     let start: ReturnType<typeof f.start> | undefined;
     try {
-      await f.open('as-a');
-      start = f.start('as-a', 'turn-1');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      start = f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       if (kind === 'readiness') {
         await requestEntered.promise;
         await clock.advance(10_000);
@@ -2401,7 +2681,7 @@ describe('Worker Harness resident AgentSessions', () => {
         await clock.advance(0);
       }
       expect(requestSettled).toBe(false);
-      expect(integration.calls).not.toContain('clear:as-a');
+      expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
     } finally {
       rejectEvent.resolve();
       releaseJoin.resolve();
@@ -2411,7 +2691,7 @@ describe('Worker Harness resident AgentSessions', () => {
       finalSpy.mockRestore();
       terminalSpy.mockRestore();
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
     expect(requestSettled).toBe(true);
   });
@@ -2438,10 +2718,18 @@ describe('Worker Harness resident AgentSessions', () => {
       return 0;
     });
     const f = harnessFixture({ integration });
-    await f.open('as-a');
-    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
-    await f.settle('as-a');
-    const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    const events = readFileSync(
+      join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+      'utf8'
+    )
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
@@ -2455,19 +2743,33 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('keeps a Turn whose native stop was not proved and fences its binding', async () => {
     const f = harnessFixture({ integration: fakeIntegration({ readyAppendStatus: 409 }) });
-    await f.open('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'stuck' });
-    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
     await vi.waitFor(async () => {
-      expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      expect(
+        await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
         body: { cleanupState: 'unknown', state: 'failed' },
       });
     });
     expect(f.fake.residents[0]?.interrupts).toBe(1);
-    expect(await f.start('as-a', 'turn-2')).toEqual(
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      )
+    ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
     );
-    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
     );
     expect(await f.send('harness.drain', {})).toMatchObject({
@@ -2478,20 +2780,29 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it.each([false, true])('handles rejected settlement with stop proof %s', async (stopProved) => {
     const f = harnessFixture();
-    await f.open('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'reject-settlement', stopProved });
-    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
     await vi.waitFor(() => expect(f.fake.residents[0]?.interrupts).toBe(1));
     // Interrupt invocation precedes asynchronous input cleanup; await the owned outcome.
     await vi.waitFor(async () => {
-      expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      expect(
+        await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
         body: stopProved
           ? { cleanupState: 'clean', state: 'open' }
           : { cleanupState: 'unknown', state: 'failed' },
       });
     });
     expect(
-      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')
+      f.integration.finalStatuses.find(
+        (status) => status.lineage.turnId === 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
     ).toMatchObject({
       body: { status: 'failed', diagnostics: { native: 'native settlement unproved' } },
     });
@@ -2499,8 +2810,15 @@ describe('Worker Harness resident AgentSessions', () => {
       body: { activeTurns: stopProved ? 0 : 1, openSessions: 1 },
     });
     if (!stopProved) {
-      expect(await f.start('as-a', 'turn-2')).toMatchObject({ disposition: 'refused' });
-      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      expect(
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+        )
+      ).toMatchObject({ disposition: 'refused' });
+      expect(
+        await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
         body: { reasonCode: 'cleanup_required' },
         disposition: 'refused',
       });
@@ -2512,15 +2830,20 @@ describe('Worker Harness resident AgentSessions', () => {
     'failed',
   ] as const)('keeps native %s when interrupt races settlement', async (status) => {
     const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    await f.open('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'interrupt-race', status });
-    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
     expect(
       await f.send('turn.interrupt', {
-        ...f.selector('as-a'),
-        leaseId: 'lease-turn-1',
+        ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        leaseId: 'lease-tu_00000000-0000-7e49-8268-e35715b55d0c',
         purpose: 'interrupt',
-        turnId: 'turn-1',
+        turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
       })
     ).toMatchObject({ disposition: 'succeeded' });
     expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status } });
@@ -2528,20 +2851,25 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('refuses an interrupt whose native stop was not proved', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'stuck' });
-    await f.start('as-a', 'turn-1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
     expect(
       await f.send('turn.interrupt', {
-        ...f.selector('as-a'),
-        leaseId: 'lease-turn-1',
+        ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        leaseId: 'lease-tu_00000000-0000-7e49-8268-e35715b55d0c',
         purpose: 'interrupt',
-        turnId: 'turn-1',
+        turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
       })
     ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'cleanup_required' }, disposition: 'refused' })
     );
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { cleanupState: 'unknown', state: 'failed' },
     });
     expect(await f.send('harness.drain', {})).toMatchObject({ body: { activeTurns: 1 } });
@@ -2550,81 +2878,119 @@ describe('Worker Harness resident AgentSessions', () => {
   it('keeps one current binding per Thread across Harness instances and fixes the adapter', async () => {
     const one = harnessFixture();
     const two = harnessFixture({ root: one.root });
-    expect(await one.open('as-a')).toMatchObject({ disposition: 'succeeded' });
-    expect(await two.open('as-b')).toEqual(
+    expect(await one.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toMatchObject({
+      disposition: 'succeeded',
+    });
+    expect(await two.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3')).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
     );
-    expect(await one.open('as-a', { threadId: 'thread-two' })).toEqual(
+    expect(
+      await one.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+        threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+      })
+    ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
     );
     expect(
       await one.send('session.open', {
         agentSessionCompatibilityKey: DIGEST,
         adapterId: 'other',
-        agentSessionId: 'as-x',
+        agentSessionId: 'as_00000000-0000-7c0f-8cd6-40b7b6b21d7a',
         agentSessionRuntimeBindingId: 'binding-as-x',
         capabilityLoopbackCredential: credential('cx'),
         effectiveSetupGeneration: 1,
         inferenceLoopbackCredential: credential('ix'),
         resume: null,
-        threadId: 'thread-x',
-        workspaceId: 'workspace-one',
+        threadId: 'th_00000000-0000-76d0-bc98-c9196d069bf7',
+        workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
       })
     ).toEqual(expect.objectContaining({ body: { reasonCode: 'unsupported' } }));
-    expect(await one.open('as.dotted', { threadId: 'thread-y' })).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'unsupported' } })
-    );
-    await one.send('session.close', one.selector('as-a'));
-    expect(await two.open('as-b')).toMatchObject({ disposition: 'succeeded' });
-    await two.send('session.close', two.selector('as-b'));
+    expect(
+      await one.open('as.dotted', { threadId: 'th_00000000-0000-7b13-a4f5-571fcecd2dda' })
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'unsupported' } }));
+    await one.send('session.close', one.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'));
+    expect(await two.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3')).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await two.send('session.close', two.selector('as_00000000-0000-7f1d-8ec1-f695d6b796c3'));
   });
 
   it('keeps a binding whose runtime created a ready handle at open after a failed first Turn', async () => {
     const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    const digest = sha256('reference-as-a');
-    expect(await f.open('as-a')).toMatchObject({
+    const digest = sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toMatchObject({
       body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'open' },
     });
     f.fake.script.push({ kind: 'fail' });
-    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
-    await f.settle('as-a');
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { nativeHandleDigest: digest, nativeHandleState: 'ready', state: 'open' },
     });
-    expect(await f.start('as-a', 'turn-2')).toMatchObject({ disposition: 'succeeded' });
-    await f.settle('as-a');
-    await f.send('session.close', f.selector('as-a'));
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'));
   });
 
   it('fences a binding whose first Turn did not complete', async () => {
     for (const outcome of ['fail', 'interrupt'] as const) {
       const f = harnessFixture();
-      await f.open('as-a');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
       if (outcome === 'interrupt') {
         f.fake.script.push({ kind: 'hold' });
-        expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+        expect(
+          await f.start(
+            'as_00000000-0000-75b0-a387-3019b80ed6d1',
+            'tu_00000000-0000-7e49-8268-e35715b55d0c'
+          )
+        ).toMatchObject({ disposition: 'succeeded' });
         expect(
           await f.send('turn.interrupt', {
-            ...f.selector('as-a'),
-            leaseId: 'lease-turn-1',
+            ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+            leaseId: 'lease-tu_00000000-0000-7e49-8268-e35715b55d0c',
             purpose: 'interrupt',
-            turnId: 'turn-1',
+            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
           })
         ).toMatchObject({ body: { state: 'interrupted' }, disposition: 'succeeded' });
       } else {
         f.fake.script.push({ kind: outcome });
-        const started = await f.start('as-a', 'turn-1');
+        const started = await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        );
         expect(started.disposition).toBe('succeeded');
-        await f.settle('as-a');
+        await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
       }
-      expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+      expect(
+        await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
         body: { nativeHandleDigest: null, nativeHandleState: 'pending' },
       });
-      expect(await f.start('as-a', 'turn-2'), outcome).toEqual(
+      expect(
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+        ),
+        outcome
+      ).toEqual(
         expect.objectContaining({ body: { reasonCode: 'conflict' }, disposition: 'refused' })
       );
-      expect(existsSync(f.referencePath('as-a'))).toBe(false);
-      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      expect(existsSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
+      expect(
+        await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
         disposition: 'succeeded',
       });
     }
@@ -2632,17 +2998,24 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('keeps a pending binding non-reusable after a refused first native Turn', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'reject' });
-    expect(await f.start('as-a', 'turn-1')).toMatchObject({
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    ).toMatchObject({
       body: {
         reasonCode: 'dependency_failed',
         startupFailure: { reason: 'failed', stage: 'native_spawn' },
       },
       disposition: 'refused',
     });
-    await f.settle('as-a');
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: {
         childState: 'running',
         cleanupState: 'clean',
@@ -2653,15 +3026,24 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     expect(f.fake.residents[0]?.turns).toHaveLength(0);
     expect(
-      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')
+      f.integration.finalStatuses.find(
+        (status) => status.lineage.turnId === 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
     ).toMatchObject({ body: { status: 'failed' } });
-    expect(f.integration.calls).toContain('clear:as-a');
-    expect(existsSync(f.packagePath('as-a'))).toBe(false);
-    expect(await f.start('as-a', 'turn-2')).toMatchObject({
+    expect(f.integration.calls).toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(existsSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      )
+    ).toMatchObject({
       body: { reasonCode: 'conflict' },
       disposition: 'refused',
     });
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { state: 'closed', privateState: 'absent' },
       disposition: 'succeeded',
     });
@@ -2673,18 +3055,24 @@ describe('Worker Harness resident AgentSessions', () => {
   it('retains a bounded redacted first-Turn refusal cause in final-status diagnostics', async () => {
     const f = harnessFixture();
     const runtimeSecret = 'private-vault-value';
-    await f.open('as-a', { runtimeEnvironment: { FIXTURE_SECRET: runtimeSecret } });
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+      runtimeEnvironment: { FIXTURE_SECRET: runtimeSecret },
+    });
     const secrets = [
       runtimeSecret,
-      credential('inference-as-a'),
-      credential('capability-as-a'),
-      credential('control-token-turn-1'),
-      credential('inference-token-turn-1'),
-      credential('capability-token-turn-1'),
+      credential('inference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+      credential('capability-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+      credential('control-token-tu_00000000-0000-7e49-8268-e35715b55d0c'),
+      credential('inference-token-tu_00000000-0000-7e49-8268-e35715b55d0c'),
+      credential('capability-token-tu_00000000-0000-7e49-8268-e35715b55d0c'),
     ];
     const prefix = `Codex setup rejected: ${secrets.join(' ')} Authorization: Bearer unknown-bearer api_key=unknown-key ghp_unknown`;
     f.fake.script.push({ kind: 'reject', error: new Error(`${prefix} ${'界'.repeat(20_000)}`) });
-    const result = await f.start('as-a', 'turn-1', { runtimeEnvNames: ['FIXTURE_SECRET'] });
+    const result = await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      { runtimeEnvNames: ['FIXTURE_SECRET'] }
+    );
     expect(result).toMatchObject({
       body: {
         reasonCode: 'dependency_failed',
@@ -2694,8 +3082,10 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     expect(Object.keys(result.body).sort()).toEqual(['reasonCode', 'startupFailure']);
     expect(result.body.startupFailure).toEqual({ stage: 'native_spawn', reason: 'failed' });
-    await f.settle('as-a');
-    const final = f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    const final = f.integration.finalStatuses.find(
+      (status) => status.lineage.turnId === 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
     expect(final).toMatchObject({
       body: {
         status: 'failed',
@@ -2707,33 +3097,48 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(16 * 1024);
     for (const secret of [...secrets, 'unknown-bearer', 'unknown-key', 'ghp_unknown']) {
       expect(JSON.stringify(final)).not.toContain(secret);
-      expect(readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')).not.toContain(
-        secret
-      );
+      expect(
+        readFileSync(
+          join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+          'utf8'
+        )
+      ).not.toContain(secret);
     }
     expect(diagnostic).toContain('[redacted]');
-    await f.send('session.close', f.selector('as-a'));
+    await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'));
   });
 
   it('keeps an established binding usable and resumable after a refused later native Turn', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    expect(await f.start('as-a', 'turn-established')).toMatchObject({ disposition: 'succeeded' });
-    await f.settle('as-a');
-    const digest = sha256('reference-as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7f5a-8ae5-f5fe10d8fa6b'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    const digest = sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1');
     const before = f.fake.residents[0]?.turns.length ?? 0;
     f.fake.script.push({ kind: 'reject' });
-    expect(await f.start('as-a', 'turn-refused')).toMatchObject({
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7eb4-95e8-3f9483ed62e1'
+      )
+    ).toMatchObject({
       body: {
         reasonCode: 'dependency_failed',
         startupFailure: { stage: 'native_spawn', reason: 'failed' },
       },
       disposition: 'refused',
     });
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(f.fake.residents[0]?.turns).toHaveLength(before);
     expect(f.fake.residents[0]?.interrupts).toBe(0);
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: {
         childState: 'running',
         cleanupState: 'clean',
@@ -2742,40 +3147,70 @@ describe('Worker Harness resident AgentSessions', () => {
         state: 'open',
       },
     });
-    expect(f.integration.calls.at(-1)).toBe('clear:as-a');
-    expect(existsSync(f.packagePath('as-a'))).toBe(false);
-    expect(existsSync(f.contextRoot('as-a'))).toBe(false);
+    expect(f.integration.calls.at(-1)).toBe('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(existsSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
+    expect(existsSync(f.contextRoot('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
     expect(
-      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-refused')
+      f.integration.finalStatuses.find(
+        (status) => status.lineage.turnId === 'tu_00000000-0000-7eb4-95e8-3f9483ed62e1'
+      )
     ).toMatchObject({ body: { status: 'failed' } });
     // The next original-supply Turn requires free occupancy and an undrained Harness.
-    expect(await f.start('as-a', 'turn-reused')).toMatchObject({ disposition: 'succeeded' });
-    await f.settle('as-a');
     expect(
-      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-reused')
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7ebd-a7b3-908bd37e11b9'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      f.integration.finalStatuses.find(
+        (status) => status.lineage.turnId === 'tu_00000000-0000-7ebd-a7b3-908bd37e11b9'
+      )
     ).toMatchObject({ body: { status: 'completed' } });
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { state: 'closed', privateState: 'absent' },
       disposition: 'succeeded',
     });
-    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
-    expect(await f.open('as-b', { resume: { locator: 'as-a', digest } })).toMatchObject({
+    expect(readFileSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')).toBe(
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
+    );
+    expect(
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        resume: { locator: 'as_00000000-0000-75b0-a387-3019b80ed6d1', digest },
+      })
+    ).toMatchObject({
       disposition: 'succeeded',
       body: { nativeHandleState: 'ready', nativeHandleDigest: digest },
     });
     expect(f.fake.residents[1]?.input.resumeReference).toEqual(
-      new Uint8Array(Buffer.from('reference-as-a'))
+      new Uint8Array(Buffer.from('reference-as_00000000-0000-75b0-a387-3019b80ed6d1'))
     );
-    expect(await f.start('as-b', 'turn-successor')).toMatchObject({ disposition: 'succeeded' });
-    await f.settle('as-b');
     expect(
-      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-successor')
+      await f.start(
+        'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+        'tu_00000000-0000-74f0-ab64-2b4dad2c8904'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as_00000000-0000-7f1d-8ec1-f695d6b796c3');
+    expect(
+      f.integration.finalStatuses.find(
+        (status) => status.lineage.turnId === 'tu_00000000-0000-74f0-ab64-2b4dad2c8904'
+      )
     ).toMatchObject({ body: { status: 'completed' } });
-    expect(await f.send('session.inspect', f.selector('as-b'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-7f1d-8ec1-f695d6b796c3'))
+    ).toMatchObject({
       body: { cleanupState: 'clean', nativeHandleState: 'ready', nativeHandleDigest: digest },
     });
-    expect(readFileSync(f.referencePath('as-b'), 'utf8')).toBe('reference-as-a');
-    expect(await f.send('session.close', f.selector('as-b'))).toMatchObject({
+    expect(readFileSync(f.referencePath('as_00000000-0000-7f1d-8ec1-f695d6b796c3'), 'utf8')).toBe(
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
+    );
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-7f1d-8ec1-f695d6b796c3'))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
     expect(await f.send('harness.drain', {})).toMatchObject({
@@ -2785,73 +3220,129 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('interrupts only the exact active Turn, answers after it settled, and keeps the binding', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    await f.start('as-a', 'turn-1');
-    await f.settle('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'hold' });
-    expect(await f.start('as-a', 'turn-2')).toMatchObject({ disposition: 'succeeded' });
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      )
+    ).toMatchObject({ disposition: 'succeeded' });
     const interrupt = (turnId: string, leaseId: string) =>
-      f.send('turn.interrupt', { ...f.selector('as-a'), leaseId, purpose: 'interrupt', turnId });
+      f.send('turn.interrupt', {
+        ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        leaseId,
+        purpose: 'interrupt',
+        turnId,
+      });
 
-    expect(await f.start('as-a', 'turn-3')).toMatchObject({
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-701a-ab45-3210b32e0cff'
+      )
+    ).toMatchObject({
       disposition: 'refused',
       body: { reasonCode: 'busy', exhaustedBound: 'agentSession.activeTurn' },
     });
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       disposition: 'refused',
       body: { reasonCode: 'busy', exhaustedBound: 'agentSession.activeTurn' },
     });
-    expect(await interrupt('turn-2', 'lease-other')).toEqual(
+    expect(await interrupt('tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 'lease-other')).toEqual(
       expect.objectContaining({ body: { reasonCode: 'stale' } })
     );
-    expect(await interrupt('turn-1', 'lease-turn-2')).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'stale' } })
-    );
-    expect(await interrupt('turn-2', 'lease-turn-2')).toMatchObject({
+    expect(
+      await interrupt(
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        'lease-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      )
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'stale' } }));
+    expect(
+      await interrupt(
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        'lease-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      )
+    ).toMatchObject({
       body: { childState: 'running', state: 'interrupted' },
       disposition: 'succeeded',
     });
     expect(f.fake.residents[0]?.interrupts).toBe(1);
     expect(f.integration.finalStatuses.at(-1)).toMatchObject({
       body: { status: 'interrupted' },
-      lineage: { turnId: 'turn-2' },
+      lineage: { turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' },
     });
-    expect(await interrupt('turn-2', 'lease-turn-2')).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'stale' } })
-    );
-    expect(await f.start('as-a', 'turn-3')).toMatchObject({
-      body: { nativeHandleDigest: sha256('reference-as-a'), nativeHandleState: 'ready' },
+    expect(
+      await interrupt(
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        'lease-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      )
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'stale' } }));
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-701a-ab45-3210b32e0cff'
+      )
+    ).toMatchObject({
+      body: {
+        nativeHandleDigest: sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        nativeHandleState: 'ready',
+      },
       disposition: 'succeeded',
     });
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status: 'completed' } });
   });
 
   it('drains by refusing new work while existing bindings still close', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    await f.start('as-a', 'turn-1');
-    await f.settle('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'hold' });
-    await f.start('as-a', 'turn-2');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+    );
     expect(await f.send('harness.drain', {})).toMatchObject({
       body: { activeTurns: 1, openSessions: 1, state: 'draining' },
       disposition: 'succeeded',
     });
-    expect(await f.open('as-b', { threadId: 'thread-two' })).toEqual(
+    expect(
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+      })
+    ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' } })
     );
     await f.send('turn.interrupt', {
-      ...f.selector('as-a'),
-      leaseId: 'lease-turn-2',
+      ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+      leaseId: 'lease-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
       purpose: 'interrupt',
-      turnId: 'turn-2',
+      turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
     });
-    expect(await f.start('as-a', 'turn-3')).toMatchObject({
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-701a-ab45-3210b32e0cff'
+      )
+    ).toMatchObject({
       disposition: 'refused',
       body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' },
     });
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
     expect(await f.send('harness.drain', {})).toMatchObject({
@@ -2862,15 +3353,15 @@ describe('Worker Harness resident AgentSessions', () => {
   it('refuses malformed bodies, reserved runtime names, and excess sessions before any effect', async () => {
     const f = harnessFixture();
     const baseOpen = {
-      ...f.selector('as-a'),
+      ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
       adapterId: ADAPTER,
       agentSessionCompatibilityKey: DIGEST,
       capabilityLoopbackCredential: credential('c'),
       effectiveSetupGeneration: 1,
       inferenceLoopbackCredential: credential('i'),
       resume: null,
-      threadId: 'thread-one',
-      workspaceId: 'workspace-one',
+      threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+      workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
     };
     for (const body of [
       { ...baseOpen, storageRef: 'retired' },
@@ -2890,45 +3381,76 @@ describe('Worker Harness resident AgentSessions', () => {
       'npm_config_nodedir',
       'TMPDIR',
     ]) {
-      expect(await f.open('as-a', { runtimeEnvironment: { [name]: 'value' } }), name).toEqual(
-        expect.objectContaining({ body: { reasonCode: 'unsupported' } })
-      );
+      expect(
+        await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+          runtimeEnvironment: { [name]: 'value' },
+        }),
+        name
+      ).toEqual(expect.objectContaining({ body: { reasonCode: 'unsupported' } }));
     }
     expect(f.fake.residents).toHaveLength(0);
     expect(f.integration.calls).toEqual([]);
 
-    await f.open('as-a');
-    const { turnSequence: _omitted, ...missing } = f.startBody('as-a', 'turn-1');
-    f.writePackage('as-a', 'turn-1');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    const { turnSequence: _omitted, ...missing } = f.startBody(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    f.writePackage(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
     expect(await f.send('turn.start', missing)).toEqual(
       expect.objectContaining({ body: { reasonCode: 'unsupported' } })
     );
     expect(
       await f.send('turn.start', {
-        ...f.startBody('as-a', 'turn-1'),
+        ...f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        ),
         contextPackageId: 'ctxpkg_other',
       })
     ).toEqual(expect.objectContaining({ body: { reasonCode: 'stale' } }));
     expect(
       await f.send('turn.start', {
-        ...f.startBody('as-a', 'turn-1'),
+        ...f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        ),
         agentSessionRuntimeBindingId: 'binding-other',
       })
     ).toEqual(expect.objectContaining({ body: { reasonCode: 'missing' } }));
     expect(
-      await f.send('turn.start', { ...f.startBody('as-a', 'turn-1'), agentSessionId: 'as-other' })
+      await f.send('turn.start', {
+        ...f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        ),
+        agentSessionId: 'as_00000000-0000-78d0-a1c0-373db23f805e',
+      })
     ).toEqual(expect.objectContaining({ body: { reasonCode: 'conflict' } }));
     expect(
-      await f.send('turn.interrupt', { ...f.selector('as-a'), leaseId: 'l', turnId: 't' })
+      await f.send('turn.interrupt', {
+        ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        leaseId: 'l',
+        turnId: 't',
+      })
     ).toEqual(expect.objectContaining({ body: { reasonCode: 'unsupported' } }));
     expect(f.fake.residents[0]?.turns).toHaveLength(0);
 
     for (let index = 1; index < 20; index += 1) {
-      expect(await f.open(`as-${index}`, { threadId: `thread-${index}` })).toMatchObject({
+      expect(
+        await f.open(allocateEntityId('as'), { threadId: allocateEntityId('th') })
+      ).toMatchObject({
         disposition: 'succeeded',
       });
     }
-    expect(await f.open('as-21', { threadId: 'thread-21' })).toMatchObject({
+    expect(
+      await f.open('as_00000000-0000-721c-91b6-b13e82cfda5a', {
+        threadId: 'th_00000000-0000-7835-96fa-6c5acce77e68',
+      })
+    ).toMatchObject({
       disposition: 'refused',
       body: { reasonCode: 'busy', exhaustedBound: 'harness.openSessions' },
     });
@@ -2939,14 +3461,26 @@ describe('Worker Harness resident AgentSessions', () => {
     'invalid_json',
   ] as const)('reports a value-free startup failure for the package: %s', async (reason) => {
     const f = harnessFixture();
-    await f.open('as-a');
-    f.writePackage('as-a', 'turn-1');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    f.writePackage(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
     if (reason === 'missing_file') {
-      rmSync(f.packagePath('as-a'));
+      rmSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'));
     } else {
-      writeFileSync(f.packagePath('as-a'), '{ secret-canary-that-must-not-escape');
+      writeFileSync(
+        f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        '{ secret-canary-that-must-not-escape'
+      );
     }
-    const result = await f.send('turn.start', f.startBody('as-a', 'turn-1'));
+    const result = await f.send(
+      'turn.start',
+      f.startBody(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    );
     expect(result).toMatchObject({
       body: {
         reasonCode: 'dependency_failed',
@@ -2958,17 +3492,26 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(JSON.stringify(result)).not.toContain('secret-canary');
     expect(JSON.stringify(result)).not.toContain(f.root);
     expect(f.fake.residents[0]?.turns).toHaveLength(0);
-    expect(existsSync(f.packagePath('as-a'))).toBe(false);
+    expect(existsSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
   });
 
   it('refuses a Turn whose runtime environment declaration differs from the session', async () => {
     const f = harnessFixture();
-    await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } });
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+      runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' },
+    });
     for (const names of [[], ['VENDOR_TOKEN', 'OTHER_TOKEN'], ['OTHER_TOKEN']]) {
       const g = names.length === 0 ? f : harnessFixture();
-      if (g !== f) await g.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } });
+      if (g !== f)
+        await g.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+          runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' },
+        });
       expect(
-        await g.start('as-a', 'turn-1', { runtimeEnvNames: names }),
+        await g.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c',
+          { runtimeEnvNames: names }
+        ),
         names.join()
       ).toMatchObject({
         body: {
@@ -2982,22 +3525,35 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('fails a Turn whose assistant output carries a session credential or runtime value', async () => {
     for (const leaked of [
-      credential('capability-as-a'),
-      credential('inference-as-a'),
+      credential('capability-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+      credential('inference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
       'vendor-secret',
     ]) {
       const f = harnessFixture();
-      await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } });
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+        runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' },
+      });
       f.fake.script.push({ kind: 'complete', text: `here it is: ${leaked}` });
-      await f.start('as-a', 'turn-1', { runtimeEnvNames: ['VENDOR_TOKEN'] });
-      await f.settle('as-a');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        { runtimeEnvNames: ['VENDOR_TOKEN'] }
+      );
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
       expect(f.integration.finalStatuses).toMatchObject([{ body: { status: 'failed' } }]);
-      expect(readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')).not.toContain(
-        leaked
-      );
-      expect(await f.start('as-a', 'turn-2', { runtimeEnvNames: ['VENDOR_TOKEN'] })).toEqual(
-        expect.objectContaining({ body: { reasonCode: 'conflict' } })
-      );
+      expect(
+        readFileSync(
+          join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+          'utf8'
+        )
+      ).not.toContain(leaked);
+      expect(
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          { runtimeEnvNames: ['VENDOR_TOKEN'] }
+        )
+      ).toEqual(expect.objectContaining({ body: { reasonCode: 'conflict' } }));
     }
   });
 
@@ -3034,14 +3590,20 @@ describe('Worker Harness resident AgentSessions', () => {
     const f = harnessFixture();
     if (status === 'failed') f.fake.script.push({ kind: 'fail' });
     try {
-      await f.open('as-a');
-      await f.start('as-a', 'turn-1');
-      await f.settle('as-a');
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
       expect(f.integration.finalStatuses).toHaveLength(1);
       expect(f.integration.finalStatuses[0]?.body.status).toBe(status);
       expect(f.integration.finalStatuses[0]?.body.diagnostics?.timeline).toBeUndefined();
       expect(snapshot).toHaveBeenCalledTimes(status === 'failed' ? 1 : 0);
-      const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
+      const events = readFileSync(
+        join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+        'utf8'
+      )
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line));
@@ -3080,14 +3642,20 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('preserves JSON and publication when a numeric credential collides with an exit code', async () => {
     const f = harnessFixture();
-    await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: '17' } });
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1', {
+      runtimeEnvironment: { VENDOR_TOKEN: '17' },
+    });
     f.fake.script.push({ kind: 'hold' });
-    await f.start('as-a', 'turn-1', { runtimeEnvNames: ['VENDOR_TOKEN'] });
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      { runtimeEnvNames: ['VENDOR_TOKEN'] }
+    );
     const resident = f.fake.residents[0]!;
     resident.turns[0]!.recordLifecycleFact!({ label: 'host_exit', code: 17 });
     resident.exit();
     await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(1));
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(f.integration.finalStatuses).toHaveLength(1);
     expect(f.integration.finalStatuses[0]?.body.status).toBe('failed');
     const timeline = JSON.parse(f.integration.finalStatuses[0]!.body.diagnostics!.timeline!);
@@ -3098,9 +3666,12 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('publishes a bounded failure timeline after heartbeats and host exit, but none on success', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    await f.start('as-a', 'turn-1');
-    await f.settle('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(f.integration.finalStatuses[0]?.body.diagnostics?.timeline).toBeUndefined();
     const clock = controlSchedulingTime();
     const started = observation();
@@ -3125,7 +3696,10 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     f.fake.script.push({ kind: 'hold' });
     try {
-      await f.start('as-a', 'turn-2');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+      );
       await started.promise;
       const record = f.fake.residents[0]!.turns[1]!.recordLifecycleFact!;
       record({ label: 'native_event' });
@@ -3139,16 +3713,16 @@ describe('Worker Harness resident AgentSessions', () => {
             label: 'host_exit' as const,
             code: 17,
             signal: 'SIGKILL' as const,
-            reason: credential('inference-as-a') as never,
+            reason: credential('inference-as_00000000-0000-75b0-a387-3019b80ed6d1') as never,
           },
-          { payload: credential('inference-as-a') }
+          { payload: credential('inference-as_00000000-0000-75b0-a387-3019b80ed6d1') }
         )
       );
       f.fake.residents[0]?.exit();
       await cleared.promise;
     } finally {
       clock.restore();
-      await f.settle('as-a');
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     }
     const diagnostics = f.integration.finalStatuses[1]?.body.diagnostics;
     expect(diagnostics?.timeline).toEqual(expect.any(String));
@@ -3186,34 +3760,52 @@ describe('Worker Harness resident AgentSessions', () => {
       Buffer.byteLength(JSON.stringify({ timeline: diagnostics!.timeline }))
     ).toBeLessThanOrEqual(4096);
     expect(Buffer.byteLength(JSON.stringify(diagnostics))).toBeLessThan(16 * 1024);
-    expect(JSON.stringify(diagnostics)).not.toContain(credential('inference-as-a'));
+    expect(JSON.stringify(diagnostics)).not.toContain(
+      credential('inference-as_00000000-0000-75b0-a387-3019b80ed6d1')
+    );
   });
 
   it('fails the binding when its resident host ends on its own', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    await f.start('as-a', 'turn-1');
-    await f.settle('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     f.fake.script.push({ kind: 'hold' });
-    await f.start('as-a', 'turn-2');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+    );
     f.fake.residents[0]?.exit();
     await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(2));
     expect(f.integration.finalStatuses[1]).toMatchObject({
       body: { status: 'failed' },
-      lineage: { turnId: 'turn-2' },
+      lineage: { turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4' },
     });
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { childState: 'running', state: 'failed' },
     });
     // The ended host proves its native work stopped, so no native interrupt is needed.
     expect(f.fake.residents[0]?.interrupts).toBe(0);
     // Failed-binding admission rejects before AEP reads; writing new inputs would race the cleanup owner.
-    expect(await f.send('turn.start', f.startBody('as-a', 'turn-3'))).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'conflict' } })
-    );
+    expect(
+      await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-701a-ab45-3210b32e0cff'
+        )
+      )
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'conflict' } }));
     // Close answers busy until the failed Turn finished its cleanup.
     await vi.waitFor(async () => {
-      expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      expect(
+        await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
         disposition: 'succeeded',
       });
     });
@@ -3221,69 +3813,102 @@ describe('Worker Harness resident AgentSessions', () => {
 
   it('reports a changed native handle as unknown and never replaces the stored reference', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    await f.start('as-a', 'turn-1');
-    await f.settle('as-a');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     const resident = f.fake.residents[0] as FakeResident;
     resident.handleOverride = { reference: Buffer.from('reference-changed'), state: 'ready' };
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { nativeHandleDigest: null, nativeHandleState: 'unknown' },
     });
     resident.handleOverride = { state: 'pending' };
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { nativeHandleDigest: null, nativeHandleState: 'unknown' },
     });
-    expect(readFileSync(f.referencePath('as-a'), 'utf8')).toBe('reference-as-a');
+    expect(readFileSync(f.referencePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')).toBe(
+      'reference-as_00000000-0000-75b0-a387-3019b80ed6d1'
+    );
   });
 
   it('cleans up an open that fails and reports close failure as cleanup required', async () => {
     const failing = harnessFixture({ adapter: fakeAdapter({ openFails: true }) });
-    expect(await failing.open('as-a')).toEqual(
+    expect(await failing.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toEqual(
       expect.objectContaining({ body: { reasonCode: 'dependency_failed' } })
     );
-    expect(failing.integration.calls).toEqual(['register:as-a', 'destroy:as-a']);
+    expect(failing.integration.calls).toEqual([
+      'register:as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'destroy:as_00000000-0000-75b0-a387-3019b80ed6d1',
+    ]);
     expect(existsSync(failing.privateRoot) ? readdirSync(failing.privateRoot) : []).toEqual([]);
 
     const conflicting = harnessFixture({
       integration: fakeIntegration({ registerFails: true }),
       root: failing.root,
     });
-    expect(await conflicting.open('as-a')).toEqual(
+    expect(await conflicting.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toEqual(
       expect.objectContaining({ body: { reasonCode: 'conflict' } })
     );
     // Both refusals released the Thread.
     const f = harnessFixture({ root: failing.root });
-    expect(await f.open('as-a')).toMatchObject({ disposition: 'succeeded' });
+    expect(await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toMatchObject({
+      disposition: 'succeeded',
+    });
     (f.fake.residents[0] as FakeResident).closeFails = true;
-    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'cleanup_required' } })
-    );
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'cleanup_required' } }));
     // A failed close leaves an explicit non-reusable binding and a fenced Harness.
     expect(f.integration.loopbacks.size).toBe(0);
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { cleanupState: 'unknown', state: 'failed' },
     });
-    expect(await f.start('as-a', 'turn-1')).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'conflict' } })
-    );
-    expect(await f.open('as-b', { threadId: 'thread-two' })).toEqual(
+    expect(
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    ).toEqual(expect.objectContaining({ body: { reasonCode: 'conflict' } }));
+    expect(
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+      })
+    ).toEqual(
       expect.objectContaining({ body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' } })
     );
   });
 
   it('fences a rejected resident close even when the child is already absent', async () => {
     const f = harnessFixture();
-    expect(await f.open('as-a')).toMatchObject({ disposition: 'succeeded' });
+    expect(await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1')).toMatchObject({
+      disposition: 'succeeded',
+    });
     const resident = f.fake.residents[0] as FakeResident;
     resident.closed = true;
     resident.closeFails = true;
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { reasonCode: 'cleanup_required' },
     });
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+    expect(
+      await f.send('session.inspect', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       body: { cleanupState: 'unknown', state: 'failed' },
     });
-    expect(await f.open('as-b', { threadId: 'thread-two' })).toMatchObject({
+    expect(
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+      })
+    ).toMatchObject({
       body: { reasonCode: 'busy' },
     });
   });
@@ -3329,8 +3954,11 @@ describe('N4b immediate exceptional settlement', () => {
       };
     };
     const f = harnessFixture({ adapter: fake });
-    await f.open('as-a');
-    await f.start('as-a', 'turn-1');
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.start(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
     if (holdEvent) {
       await vi.waitFor(() => expect(eventPending).toBe(true));
       rejectSettlement(new Error('N4b settlement loss during event writing'));
@@ -3343,8 +3971,10 @@ describe('N4b immediate exceptional settlement', () => {
     await vi.waitFor(() =>
       expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status: 'failed' } })
     );
-    await f.settle('as-a');
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
   });
@@ -3568,16 +4198,28 @@ describe('N4b independent route admission probes', () => {
     ],
   ])('refuses %s before native start', async (_label, corrupt) => {
     const f = harnessFixture();
-    await f.open('as-a');
-    f.writePackage('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] });
-    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    f.writePackage(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      { allowedModels: ['model-a', 'model-b'] }
+    );
+    const pkg = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+    );
     pkg.llm.routes.forEach((route: RouteProbePackage['llm']['routes'][number], i: number) => {
       route.id = `route-${i}`;
     });
     (corrupt as (pkg: RouteProbePackage) => void)(pkg);
-    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
-    const result = await f.send('turn.start', f.startBody('as-a', 'turn-1'));
-    await f.settle('as-a');
+    writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+    const result = await f.send(
+      'turn.start',
+      f.startBody(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect({
       disposition: result.disposition,
       nativeStarts: f.fake.residents[0]?.turns.length,
@@ -3589,9 +4231,14 @@ describe('N4b independent route admission probes', () => {
     'direct-external',
   ] as const)('admits the complete %s mode route', async (mode) => {
     const f = harnessFixture();
-    await f.open('as-a');
-    f.writePackage('as-a', 'turn-1');
-    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    f.writePackage(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    );
+    const pkg = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+    );
     pkg.llm.mode = mode;
     const route = pkg.llm.routes[0];
     const authority =
@@ -3608,11 +4255,19 @@ describe('N4b independent route admission probes', () => {
       inputModalities: ['text', 'image', 'audio', 'video', 'pdf'],
       reasoning: true,
     };
-    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
-    expect(await f.send('turn.start', f.startBody('as-a', 'turn-1'))).toMatchObject({
+    writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+    expect(
+      await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        )
+      )
+    ).toMatchObject({
       disposition: 'succeeded',
     });
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes).toEqual([route]);
   });
   it.each([
@@ -3622,9 +4277,15 @@ describe('N4b independent route admission probes', () => {
     ['maxOutputTokens', 9007199254740991, 'succeeded'],
   ] as const)('enforces safe-integer %s limit %s (%s)', async (field, limit, disposition) => {
     const f = harnessFixture();
-    await f.open('as-a');
-    f.writePackage('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] });
-    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    f.writePackage(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      { allowedModels: ['model-a', 'model-b'] }
+    );
+    const pkg = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+    );
     const parameters = {
       contextWindow: 100,
       maxOutputTokens: 50,
@@ -3633,9 +4294,15 @@ describe('N4b independent route admission probes', () => {
       [field]: limit,
     };
     pkg.llm.routes[1].modelParameters = { ...parameters, futureOptional: 'ignored' };
-    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
-    const result = await f.send('turn.start', f.startBody('as-a', 'turn-1'));
-    await f.settle('as-a');
+    writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+    const result = await f.send(
+      'turn.start',
+      f.startBody(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect({
       disposition: result.disposition,
       nativeStarts: f.fake.residents[0]?.turns.length,
@@ -3649,9 +4316,15 @@ describe('N4b independent route admission probes', () => {
 
   it('omits an unknown additive route field from the adapter input', async () => {
     const f = harnessFixture();
-    await f.open('as-a');
-    f.writePackage('as-a', 'turn-1', { allowedModels: ['model-a', 'model-b'] });
-    const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    f.writePackage(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      { allowedModels: ['model-a', 'model-b'] }
+    );
+    const pkg = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+    );
     pkg.llm.routes[1].futureOptional = 'ignored';
     pkg.llm.routes[1].endpoint.futureOptional = 'ignored';
     pkg.llm.routes[1].endpoint.upstream = {
@@ -3666,11 +4339,19 @@ describe('N4b independent route admission probes', () => {
       reasoning: false,
       futureOptional: 'ignored',
     };
-    writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
-    expect(await f.send('turn.start', f.startBody('as-a', 'turn-1'))).toMatchObject({
+    writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+    expect(
+      await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        )
+      )
+    ).toMatchObject({
       disposition: 'succeeded',
     });
-    await f.settle('as-a');
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[1]).toEqual({
       id: 'worker-inference-1',
       model: 'model-b',
@@ -3696,30 +4377,53 @@ describe('N4c local input cleanup proof', () => {
     'complete',
   ] as const)('retains occupancy and fences siblings after %s with failed input cleanup', async (outcome) => {
     const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    await f.open('as-a');
-    await f.open('as-b', { threadId: 'thread-two' });
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+      threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+    });
     f.fake.script.push({ kind: outcome });
-    f.writePackage('as-a', 'turn-cleanup');
-    const inputRoot = join(f.sandboxRoot, 'sessions', 'as-a');
+    f.writePackage(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7284-ad4a-925c8b639663'
+    );
+    const inputRoot = join(f.sandboxRoot, 'sessions', 'as_00000000-0000-75b0-a387-3019b80ed6d1');
     const mode = statSync(inputRoot).mode & 0o777;
     let result: Awaited<ReturnType<typeof f.send>>;
     let inspection: Awaited<ReturnType<typeof f.send>>;
     try {
       // The slots stay writable internally, but their parent cannot unlink them.
       chmodSync(inputRoot, 0o500);
-      result = await f.send('turn.start', f.startBody('as-a', 'turn-cleanup'));
-      await f.settle('as-a');
-      inspection = await f.send('session.inspect', f.selector('as-a'));
+      result = await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7284-ad4a-925c8b639663'
+        )
+      );
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      inspection = await f.send(
+        'session.inspect',
+        f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1')
+      );
     } finally {
       chmodSync(inputRoot, mode);
     }
-    f.writePackage('as-b', 'turn-sibling', { threadId: 'thread-two' });
+    f.writePackage(
+      'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+      'tu_00000000-0000-7844-bcf4-193003261f58',
+      { threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba' }
+    );
     const sibling = await f.send('turn.start', {
-      ...f.startBody('as-b', 'turn-sibling'),
-      threadId: 'thread-two',
+      ...f.startBody(
+        'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+        'tu_00000000-0000-7844-bcf4-193003261f58'
+      ),
+      threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
     });
-    await f.settle('as-b');
-    const newSession = await f.open('as-c', { threadId: 'thread-three' });
+    await f.settle('as_00000000-0000-7f1d-8ec1-f695d6b796c3');
+    const newSession = await f.open('as_00000000-0000-7f6a-bdd8-7ee572509572', {
+      threadId: 'th_00000000-0000-7aec-9e8c-32361ee0a8f2',
+    });
     const drain = await f.send('harness.drain', {});
     expect(result).toMatchObject(
       outcome === 'reject'
@@ -3745,7 +4449,7 @@ describe('N4c local input cleanup proof', () => {
           cleanupState: 'unknown',
           childState: 'running',
           nativeHandleState: 'ready',
-          nativeHandleDigest: sha256('reference-as-a'),
+          nativeHandleDigest: sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
         },
       },
       sibling: { disposition: 'refused', body: { reasonCode: 'busy' } },
@@ -3753,11 +4457,15 @@ describe('N4c local input cleanup proof', () => {
       nativeSiblingStarts: 0,
     });
     expect(
-      f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-cleanup')
+      f.integration.finalStatuses.find(
+        (status) => status.lineage.turnId === 'tu_00000000-0000-7284-ad4a-925c8b639663'
+      )
     ).toMatchObject({ body: { status: outcome === 'reject' ? 'failed' : 'completed' } });
     expect(newSession).toMatchObject({ disposition: 'refused', body: { reasonCode: 'busy' } });
-    expect(f.integration.calls).toContain('clear:as-a');
-    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+    expect(f.integration.calls).toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+    ).toMatchObject({
       disposition: 'refused',
       body: { reasonCode: 'cleanup_required' },
     });
@@ -3767,7 +4475,7 @@ describe('N4c local input cleanup proof', () => {
 describe('shared lifecycle evidence and deadlines', () => {
   it('preserves separate native proofs in the Turn result without inferring close from exit', async () => {
     const f = harnessFixture();
-    f.writePackage('as-evidence', 'turn-evidence');
+    f.writePackage('as_00000000-0000-7b77-b8dc-4e80c02dd4a0', fixtureId('tu', 'turn-evidence'));
     const nativeEvidence = {
       nativeTerminal: true,
       processExited: true,
@@ -3780,14 +4488,14 @@ describe('shared lifecycle evidence and deadlines', () => {
       environment: {},
       integration: f.integration.client,
       lineage: {
-        agentSessionId: 'as-evidence',
+        agentSessionId: 'as_00000000-0000-7b77-b8dc-4e80c02dd4a0',
         packageSnapshotId: 'package-turn-evidence',
-        threadId: 'thread-one',
-        turnId: 'turn-evidence',
-        workspaceId: 'workspace-one',
+        threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+        turnId: fixtureId('tu', 'turn-evidence'),
+        workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
       },
       onStarted() {},
-      packagePath: f.packagePath('as-evidence'),
+      packagePath: f.packagePath('as_00000000-0000-7b77-b8dc-4e80c02dd4a0'),
       resident: {
         exited: new Promise(() => undefined),
         childState: () => 'absent',
@@ -3814,7 +4522,7 @@ describe('shared lifecycle evidence and deadlines', () => {
         inferenceToken: 'inference',
         capabilityToken: 'capability',
       },
-      turnDirectory: join(f.privateRoot, 'turn-evidence'),
+      turnDirectory: join(f.privateRoot, fixtureId('tu', 'turn-evidence')),
     });
     expect(result).toEqual({ status: 'failed', nativeEvidence });
     expect(f.integration.finalStatuses.at(-1)?.body).not.toHaveProperty('nativeEvidence');
@@ -3836,8 +4544,11 @@ describe('shared lifecycle evidence and deadlines', () => {
       childState: () => 'absent',
       nativeEvidence: () => nativeEvidence,
     }));
-    await f.open('as-binding-evidence');
-    const inspection = await f.send('session.inspect', f.selector('as-binding-evidence'));
+    await f.open('as_00000000-0000-708b-8224-d45a1b21af30');
+    const inspection = await f.send(
+      'session.inspect',
+      f.selector('as_00000000-0000-708b-8224-d45a1b21af30')
+    );
     expect(inspection).toMatchObject({
       body: { childState: 'absent' },
     });
@@ -3845,11 +4556,16 @@ describe('shared lifecycle evidence and deadlines', () => {
       true
     );
     expect(inspection.body).not.toHaveProperty('nativeEvidence');
-    expect(await f.send('session.close', f.selector('as-binding-evidence'))).toMatchObject({
+    expect(
+      await f.send('session.close', f.selector('as_00000000-0000-708b-8224-d45a1b21af30'))
+    ).toMatchObject({
       disposition: 'refused',
       body: { reasonCode: 'cleanup_required' },
     });
-    const failedInspection = await f.send('session.inspect', f.selector('as-binding-evidence'));
+    const failedInspection = await f.send(
+      'session.inspect',
+      f.selector('as_00000000-0000-708b-8224-d45a1b21af30')
+    );
     expect(failedInspection).toMatchObject({
       body: { cleanupState: 'unknown', state: 'failed' },
     });
@@ -3885,17 +4601,20 @@ describe('shared lifecycle evidence and deadlines', () => {
         },
       };
     });
-    await f.open('as-stop');
+    await f.open('as_00000000-0000-7d9b-8598-5f5520f7c847');
     f.fake.script.push({ kind: 'hold' });
     const clock = controlSchedulingTime();
     let interruption: ReturnType<typeof f.send> | undefined;
     try {
-      await f.start('as-stop', 'turn-stop');
+      await f.start(
+        'as_00000000-0000-7d9b-8598-5f5520f7c847',
+        'tu_00000000-0000-76aa-848a-d7a68cae2589'
+      );
       interruption = f.send('turn.interrupt', {
-        ...f.selector('as-stop'),
-        leaseId: 'lease-turn-stop',
+        ...f.selector('as_00000000-0000-7d9b-8598-5f5520f7c847'),
+        leaseId: 'lease-tu_00000000-0000-76aa-848a-d7a68cae2589',
         purpose: 'interrupt',
-        turnId: 'turn-stop',
+        turnId: 'tu_00000000-0000-76aa-848a-d7a68cae2589',
       });
       await entered.promise;
       expect(deadline).toBeDefined();
@@ -3906,7 +4625,9 @@ describe('shared lifecycle evidence and deadlines', () => {
       expect(deadline!.remainingMs()).toBe(4_000);
       await clock.advance(4_000);
       await interruption;
-      expect(await f.send('session.inspect', f.selector('as-stop'))).toMatchObject({
+      expect(
+        await f.send('session.inspect', f.selector('as_00000000-0000-7d9b-8598-5f5520f7c847'))
+      ).toMatchObject({
         body: { cleanupState: 'unknown', state: 'failed' },
       });
       expect(deadline!.remainingMs()).toBe(0);
@@ -3929,12 +4650,12 @@ describe('shared lifecycle evidence and deadlines', () => {
     const client = new WorkerControlClient({
       baseUrl: '/worker-control',
       lineage: {
-        agentSessionId: 'as-tail',
+        agentSessionId: 'as_00000000-0000-79c9-966e-d16fa517d688',
         packageSnapshotId: 'package-tail',
         requestId: null,
-        threadId: 'thread-one',
-        turnId: 'turn-tail',
-        workspaceId: 'workspace-one',
+        threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+        turnId: 'tu_00000000-0000-7b81-ad78-531a4942d24d',
+        workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
       },
       token: 'control',
       fetch: async (_url, init) => {
@@ -4030,7 +4751,7 @@ describe('shared lifecycle evidence and deadlines', () => {
   });
 });
 
-describe('session-static public native environment', () => {
+describe('as_00000000-0000-7365-a591-c8020c856a67 public native environment', () => {
   // Exact child bootstrap names from pinned OpenShell child_env.rs; use distinct CA paths.
   const managedBootstrap = {
     ALL_PROXY: 'http://10.200.0.1:3128',
@@ -4057,7 +4778,9 @@ describe('session-static public native environment', () => {
     const f = harnessFixture({
       environment: { ...managedBootstrap, UNRELATED_HOST_SETTING: 'host-only' },
     });
-    expect(await f.open('as-bootstrap', { nativeEnvironment })).toMatchObject({
+    expect(
+      await f.open('as_00000000-0000-7e6b-9e5f-56743ec556be', { nativeEnvironment })
+    ).toMatchObject({
       disposition: 'succeeded',
     });
     const environment = f.fake.residents[0]!.input.environment;
@@ -4075,7 +4798,7 @@ describe('session-static public native environment', () => {
       { runtimeEnvironment: { [name]: 'untrusted' } },
     ]) {
       const f = harnessFixture({ environment: managedBootstrap });
-      expect(await f.open('as-bootstrap-conflict', extra)).toMatchObject({
+      expect(await f.open('as_00000000-0000-79fc-bd0a-8bf48c7b5215', extra)).toMatchObject({
         disposition: 'refused',
         body: { reasonCode: 'unsupported' },
       });
@@ -4090,7 +4813,9 @@ describe('session-static public native environment', () => {
     { nativeEnvironment: { SETTING: 'public' }, runtimeEnvironment: { SETTING: 'credential' } },
   ])('refuses protected or credential-colliding public delivery before child creation: %j', async (extra) => {
     const f = harnessFixture();
-    expect(await f.open('as-public', extra)).toMatchObject({ disposition: 'refused' });
+    expect(await f.open('as_00000000-0000-7446-a6b2-77ec480a07fc', extra)).toMatchObject({
+      disposition: 'refused',
+    });
     expect(f.fake.residents).toHaveLength(0);
   });
 
@@ -4102,11 +4827,16 @@ describe('session-static public native environment', () => {
   ] as const)('refuses %s session/AEP public delivery before native work', async (variant) => {
     const f = harnessFixture();
     await f.open(
-      'as-public',
+      'as_00000000-0000-7446-a6b2-77ec480a07fc',
       variant === 'missing' ? {} : { nativeEnvironment: { SETTING: 'session' } }
     );
-    f.writePackage('as-public', 'turn-public');
-    const pkg = JSON.parse(readFileSync(f.packagePath('as-public'), 'utf8'));
+    f.writePackage(
+      'as_00000000-0000-7446-a6b2-77ec480a07fc',
+      'tu_00000000-0000-7982-9f56-89708739a5cb'
+    );
+    const pkg = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), 'utf8')
+    );
     if (variant !== 'omitted-package')
       pkg.runtime.environment = {
         imageDigest: `sha256:${'a'.repeat(64)}`,
@@ -4118,8 +4848,16 @@ describe('session-static public native environment', () => {
               ? { SETTING: 'session', EXTRA: '' }
               : { SETTING: 'session' },
       };
-    writeFileSync(f.packagePath('as-public'), JSON.stringify(pkg));
-    expect(await f.send('turn.start', f.startBody('as-public', 'turn-public'))).toMatchObject({
+    writeFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), JSON.stringify(pkg));
+    expect(
+      await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-7446-a6b2-77ec480a07fc',
+          'tu_00000000-0000-7982-9f56-89708739a5cb'
+        )
+      )
+    ).toMatchObject({
       disposition: 'refused',
     });
     expect(f.fake.residents[0]?.turns).toHaveLength(0);
@@ -4127,28 +4865,59 @@ describe('session-static public native environment', () => {
 
   it('checks exact values on every Turn and never mutates an already resident map', async () => {
     const f = harnessFixture();
-    await f.open('as-public', { nativeEnvironment: { SETTING: 'session', EMPTY: '' } });
-    f.writePackage('as-public', 'turn-public');
-    const pkg = JSON.parse(readFileSync(f.packagePath('as-public'), 'utf8'));
+    await f.open('as_00000000-0000-7446-a6b2-77ec480a07fc', {
+      nativeEnvironment: { SETTING: 'session', EMPTY: '' },
+    });
+    f.writePackage(
+      'as_00000000-0000-7446-a6b2-77ec480a07fc',
+      'tu_00000000-0000-7982-9f56-89708739a5cb'
+    );
+    const pkg = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), 'utf8')
+    );
     pkg.runtime.environment = {
       imageDigest: `sha256:${'a'.repeat(64)}`,
       defaultsDigest: `sha256:${'b'.repeat(64)}`,
       values: { EMPTY: '', SETTING: 'session' },
       inertMetadata: true,
     };
-    writeFileSync(f.packagePath('as-public'), JSON.stringify(pkg));
-    expect(await f.send('turn.start', f.startBody('as-public', 'turn-public'))).toMatchObject({
+    writeFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), JSON.stringify(pkg));
+    expect(
+      await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-7446-a6b2-77ec480a07fc',
+          'tu_00000000-0000-7982-9f56-89708739a5cb'
+        )
+      )
+    ).toMatchObject({
       disposition: 'succeeded',
     });
-    await f.settle('as-public');
-    f.writePackage('as-public', 'turn-changed');
-    const changed = JSON.parse(readFileSync(f.packagePath('as-public'), 'utf8'));
+    await f.settle('as_00000000-0000-7446-a6b2-77ec480a07fc');
+    f.writePackage(
+      'as_00000000-0000-7446-a6b2-77ec480a07fc',
+      'tu_00000000-0000-74a4-be6b-7e0d730e577e'
+    );
+    const changed = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), 'utf8')
+    );
     changed.runtime.environment = {
       ...pkg.runtime.environment,
       values: { SETTING: 'changed', EMPTY: '' },
     };
-    writeFileSync(f.packagePath('as-public'), JSON.stringify(changed));
-    expect(await f.send('turn.start', f.startBody('as-public', 'turn-changed'))).toMatchObject({
+    writeFileSync(
+      f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'),
+      JSON.stringify(changed)
+    );
+    expect(
+      await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-7446-a6b2-77ec480a07fc',
+          'tu_00000000-0000-74a4-be6b-7e0d730e577e'
+        )
+      )
+    ).toMatchObject({
       disposition: 'refused',
     });
     expect(f.fake.residents[0]?.input.environment.SETTING).toBe('session');
@@ -4157,11 +4926,13 @@ describe('session-static public native environment', () => {
 
   it('applies benign and empty values only to the addressed child', async () => {
     const f = harnessFixture();
-    const opened = await f.open('as-public', {
+    const opened = await f.open('as_00000000-0000-7446-a6b2-77ec480a07fc', {
       nativeEnvironment: { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' },
     });
     expect(opened.disposition).toBe('succeeded');
-    await f.open('as-sibling', { threadId: 'thread-sibling' });
+    await f.open('as_00000000-0000-7ab7-b38f-79a3e328c12f', {
+      threadId: 'th_00000000-0000-7c33-b001-514907f3409a',
+    });
     expect(f.fake.residents[0]?.input.environment.HELLO_NATIVE).toBe('hello');
     expect(f.fake.residents[0]?.input.environment.EMPTY_NATIVE).toBe('');
     expect(f.fake.residents[1]?.input.environment.HELLO_NATIVE).toBeUndefined();
@@ -4171,16 +4942,29 @@ describe('session-static public native environment', () => {
 
 it('projects canonical effort and empty advertised levels while parsing a per-Turn package', async () => {
   const f = harnessFixture();
-  await f.open('as-a');
-  f.writePackage('as-a', 'turn-1');
-  const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+  await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+  f.writePackage(
+    'as_00000000-0000-75b0-a387-3019b80ed6d1',
+    'tu_00000000-0000-7e49-8268-e35715b55d0c'
+  );
+  const pkg = JSON.parse(
+    readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+  );
   pkg.llm.reasoningEffort = 'none';
   pkg.llm.routes[0].reasoningEffortLevels = [];
-  writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
-  expect(await f.send('turn.start', f.startBody('as-a', 'turn-1'))).toMatchObject({
+  writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+  expect(
+    await f.send(
+      'turn.start',
+      f.startBody(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    )
+  ).toMatchObject({
     disposition: 'succeeded',
   });
-  await f.settle('as-a');
+  await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
   expect(f.fake.residents[0]?.turns).toHaveLength(1);
   expect(f.fake.residents[0]?.turns[0]?.reasoningEffort).toBe('none');
   expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[0]?.reasoningEffortLevels).toEqual([]);
@@ -4191,13 +4975,24 @@ it.each([
   'route',
 ])('rejects an unknown %s effort before native Turn effects', async (where) => {
   const f = harnessFixture();
-  await f.open('as-a');
-  f.writePackage('as-a', 'turn-1');
-  const pkg = JSON.parse(readFileSync(f.packagePath('as-a'), 'utf8'));
+  await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+  f.writePackage(
+    'as_00000000-0000-75b0-a387-3019b80ed6d1',
+    'tu_00000000-0000-7e49-8268-e35715b55d0c'
+  );
+  const pkg = JSON.parse(
+    readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+  );
   if (where === 'turn') pkg.llm.reasoningEffort = 'ultra';
   else pkg.llm.routes[0].reasoningEffortLevels = ['ultra'];
-  writeFileSync(f.packagePath('as-a'), JSON.stringify(pkg));
-  await f.send('turn.start', f.startBody('as-a', 'turn-1'));
-  await f.settle('as-a');
+  writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+  await f.send(
+    'turn.start',
+    f.startBody(
+      'as_00000000-0000-75b0-a387-3019b80ed6d1',
+      'tu_00000000-0000-7e49-8268-e35715b55d0c'
+    )
+  );
+  await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
   expect(f.fake.residents[0]?.turns).toHaveLength(0);
 });

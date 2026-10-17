@@ -66,6 +66,7 @@ import {
   useUpdateKnowledge,
   workspaceKeys,
 } from './data';
+import { NotebookHistoryPanel } from './NotebookHistoryPanel';
 
 const KIND_LABEL: Record<KnowledgeItem['kind'], string> = {
   preference: 'Preferences',
@@ -272,19 +273,30 @@ const EMPTY_RESOLVE_DRAFT: ResolveDraft = { conflictId: null, resolution: '', re
 
 type AddDraft = {
   adding: boolean;
+  baseRevision: string | null;
+  knowledgePageId: string | null;
   title: string;
   content: string;
+  sourceReference: string | null;
 };
 
-const EMPTY_ADD_DRAFT: AddDraft = { adding: false, title: '', content: '' };
+const EMPTY_ADD_DRAFT: AddDraft = {
+  adding: false,
+  baseRevision: null,
+  knowledgePageId: null,
+  title: '',
+  content: '',
+  sourceReference: null,
+};
 
 type EditDraft = {
   entry: KnowledgeItem | null;
+  baseRevision: string | null;
   title: string;
   content: string;
 };
 
-const EMPTY_EDIT_DRAFT: EditDraft = { entry: null, title: '', content: '' };
+const EMPTY_EDIT_DRAFT: EditDraft = { entry: null, baseRevision: null, title: '', content: '' };
 
 /**
  * Knowledge Store slice (WP-6, board 14).
@@ -316,7 +328,13 @@ export function KnowledgeScreen() {
   const writePending =
     create.isPending || update.isPending || remove.isPending || proposalDecision.isPending;
   const entryWriteBlocked =
-    checking || failed || writePending || knowledge.isError || knowledge.isFetching || !workspaceId;
+    checking ||
+    failed ||
+    writePending ||
+    knowledge.isError ||
+    knowledge.isFetching ||
+    !workspaceId ||
+    !knowledge.data?.notebookRevision;
   const proposalWriteBlocked = entryWriteBlocked || attention.isFetching || attention.isError;
   const connectionBlocked = checking || failed;
   const pagePending =
@@ -327,6 +345,17 @@ export function KnowledgeScreen() {
     claimsCatalog.isPending ||
     conflictsCatalog.isPending ||
     indexesCatalog.isPending;
+
+  const sourceOptions = (sourcesCatalog.isSuccess ? sourcesCatalog.data : []).flatMap((source) =>
+    source.workspaceId === workspaceId && source.contentDigest
+      ? [{ id: `source:${source.id}@${source.contentDigest}`, label: source.title }]
+      : []
+  );
+  const selectedSourceAvailable =
+    !addDraft.sourceReference ||
+    sourceOptions.some((source) => source.id === addDraft.sourceReference);
+  const selectedSourceReady =
+    selectedSourceAvailable && (!addDraft.sourceReference || !sourcesCatalog.isFetching);
 
   function resetForm(targetId: string) {
     clearAddDraft(targetId);
@@ -340,16 +369,24 @@ export function KnowledgeScreen() {
 
   /** Create one entry, or replay the exact Workspace-bound command after unknown failure. */
   function save(command?: CreateKnowledgeCommand) {
+    if (!command && !selectedSourceReady) return;
     const next =
       command ??
-      (workspaceId && addDraft.title.trim() && addDraft.content.trim()
+      (workspaceId &&
+      addDraft.baseRevision &&
+      addDraft.knowledgePageId &&
+      addDraft.title.trim() &&
+      addDraft.content.trim()
         ? {
             workspaceId,
             input: {
               requestId: createRequestId(),
+              baseRevision: addDraft.baseRevision,
+              knowledgePageId: addDraft.knowledgePageId,
               kind: 'preference' as const,
               title: addDraft.title.trim(),
               content: addDraft.content.trim(),
+              ...(addDraft.sourceReference ? { sourceReferences: [addDraft.sourceReference] } : {}),
             },
           }
         : undefined);
@@ -363,7 +400,13 @@ export function KnowledgeScreen() {
 
   /** Prefill the edit form from one exact authoritative entry. */
   function startEditing(entry: KnowledgeItem) {
-    setEditDraft({ entry, title: entry.title, content: entry.content });
+    if (!knowledge.data?.notebookRevision) return;
+    setEditDraft({
+      entry,
+      baseRevision: knowledge.data.notebookRevision,
+      title: entry.title,
+      content: entry.content,
+    });
     update.reset();
   }
 
@@ -377,7 +420,7 @@ export function KnowledgeScreen() {
   function saveEdit(command?: UpdateKnowledgeCommand) {
     let next = command;
     if (!next) {
-      if (!workspaceId || !editing) return;
+      if (!workspaceId || !editing || !editDraft.baseRevision) return;
       const titleChanged = editDraft.title !== editing.title;
       const contentChanged = editDraft.content !== editing.content;
       const nextTitle = editDraft.title.trim();
@@ -393,6 +436,7 @@ export function KnowledgeScreen() {
         knowledgeEntryId: editing.id,
         input: {
           requestId: createRequestId(),
+          baseRevision: editDraft.baseRevision,
           ...(titleChanged ? { title: nextTitle } : {}),
           ...(contentChanged ? { content: nextContent } : {}),
         },
@@ -463,7 +507,7 @@ export function KnowledgeScreen() {
       (editDraft.content === editing.content || editDraft.content.trim())
   );
 
-  const entries = knowledge.data ?? [];
+  const entries = knowledge.data?.items ?? [];
   const byKind = groupByKind(entries);
   const knowledgeProposals = attention.data?.filter((row) => row.source.type === 'knowledge') ?? [];
 
@@ -492,7 +536,16 @@ export function KnowledgeScreen() {
             <Button
               size="sm"
               isDisabled={entryWriteBlocked}
-              onPress={() => setAddDraft((current) => ({ ...current, adding: true }))}
+              onPress={() => {
+                const baseRevision = knowledge.data?.notebookRevision;
+                if (!baseRevision) return;
+                setAddDraft((current) => ({
+                  ...current,
+                  adding: true,
+                  baseRevision,
+                  knowledgePageId: `notes/${createRequestId()}`,
+                }));
+              }}
             >
               Add knowledge
             </Button>
@@ -500,6 +553,7 @@ export function KnowledgeScreen() {
         />
       )}
       <div className={pagePending ? 'hidden' : undefined}>
+        <NotebookHistoryPanel workspaceId={workspaceId} />
         {addDraft.adding ? (
           <Card className="flex flex-col gap-3">
             <Eyebrow>New preference</Eyebrow>
@@ -517,6 +571,26 @@ export function KnowledgeScreen() {
               isDisabled={entryWriteBlocked}
               placeholder="What should agents remember?"
             />
+            <Select
+              label="Registered source"
+              items={[{ id: 'none', label: 'No registered source' }, ...sourceOptions]}
+              selectedKey={addDraft.sourceReference ?? 'none'}
+              isDisabled={entryWriteBlocked || sourcesCatalog.isFetching || sourcesCatalog.isError}
+              onSelectionChange={(key) =>
+                setAddDraft((current) => ({
+                  ...current,
+                  sourceReference: key === null || key === 'none' ? null : String(key),
+                }))
+              }
+            />
+            <p className="text-xs text-fg-muted">
+              Register a source below, then select it here to keep its reference with this entry.
+            </p>
+            {!selectedSourceAvailable ? (
+              <p className="text-xs text-fg-muted">
+                The selected source is unavailable. Select a current source before saving.
+              </p>
+            ) : null}
             {failedCreate ? (
               <fieldset disabled={entryWriteBlocked} className="contents">
                 <ErrorBanner
@@ -528,7 +602,12 @@ export function KnowledgeScreen() {
             <div className="flex gap-2">
               <Button
                 size="sm"
-                isDisabled={entryWriteBlocked || !addDraft.title.trim() || !addDraft.content.trim()}
+                isDisabled={
+                  entryWriteBlocked ||
+                  !selectedSourceReady ||
+                  !addDraft.title.trim() ||
+                  !addDraft.content.trim()
+                }
                 onPress={() => save()}
               >
                 Save
@@ -626,11 +705,16 @@ export function KnowledgeScreen() {
                                     variant="negative"
                                     isDisabled={entryWriteBlocked}
                                     onPress={() => {
-                                      if (!workspaceId) return;
+                                      if (!workspaceId || !knowledge.data?.notebookRevision) return;
                                       removeEntry({
                                         workspaceId,
                                         knowledgeEntryId: entry.id,
-                                        input: { requestId: createRequestId() },
+                                        input: {
+                                          requestId: createRequestId(),
+                                          baseRevision: knowledge.data.notebookRevision,
+                                          expectedContentDigest: entry.contentDigest,
+                                          confirmRemoval: true,
+                                        },
                                       });
                                     }}
                                   >
@@ -697,7 +781,11 @@ export function KnowledgeScreen() {
           workspaceId={workspaceId}
           currentEntries={knowledge.isSuccess ? entries : []}
         />
-        <KnowledgeManagerPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
+        <KnowledgeManagerPanel
+          connectionBlocked={connectionBlocked}
+          workspaceId={workspaceId}
+          currentEntries={knowledge.isSuccess ? entries : []}
+        />
 
         {attention.isLoading ? (
           <Skeleton lines={2} />
@@ -1685,9 +1773,11 @@ function KnowledgeRetrievalPanel({
 function KnowledgeManagerPanel({
   workspaceId,
   connectionBlocked,
+  currentEntries,
 }: {
   workspaceId: string | null;
   connectionBlocked: boolean;
+  currentEntries: KnowledgeItem[];
 }) {
   const answer = useAnswerKnowledgeManager();
   const suggest = useSuggestKnowledgeRepairs();
@@ -1807,7 +1897,40 @@ function KnowledgeManagerPanel({
           </Button>
         </div>
       </Card>
-      {answerResult ? <p className="text-sm text-fg">{answerResult.answer}</p> : null}
+      {answerResult ? (
+        <Card className="flex flex-col gap-2">
+          <p className="text-sm text-fg">{answerResult.answer}</p>
+          {answerResult.citations.length ? (
+            <ol aria-label="Citations" className="flex flex-col gap-2">
+              {answerResult.citations.map((citation) => {
+                const entry =
+                  citation.reference.scopeId === `page/workspace/${workspaceId}`
+                    ? currentEntries.find(
+                        (candidate) => candidate.id === citation.reference.objectId
+                      )
+                    : undefined;
+                return (
+                  <li key={`${citation.reference.scopeId}:${citation.reference.objectId}`}>
+                    <p className="text-sm font-bold text-fg-strong">{citation.title}</p>
+                    <p className="text-sm text-fg">{citation.excerpt}</p>
+                    {entry ? (
+                      <Link
+                        aria-label={`View current content: ${citation.title}`}
+                        href={`#${encodeURIComponent(knowledgeContentId(workspaceId, entry.id))}`}
+                        className="text-sm text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                      >
+                        View current content
+                      </Link>
+                    ) : (
+                      <p className="text-xs text-fg-muted">Current content unavailable.</p>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          ) : null}
+        </Card>
+      ) : null}
       {suggestResult
         ? suggestResult.suggestions.map((row) => (
             <p key={row.id} className="text-sm text-fg">

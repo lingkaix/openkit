@@ -13,6 +13,7 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -21,9 +22,10 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ZodError } from 'zod';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
@@ -31,8 +33,12 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
-import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
+import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -50,6 +56,7 @@ import {
 } from './workspace-export.js';
 import { loadWorkspaceFileRecords } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
+import { importVerifiedWorkspace } from './workspace-transfer-routes.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';
 
@@ -66,13 +73,13 @@ function authForUser(userId: string): BetterAuthServer {
 /** Returns the smallest complete workspace export input. */
 function minimalExportInput(
   exportRoot: string,
-  workspaceId = 'ws_demo',
-  exportId = 'wsexp_demo'
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001',
+  exportId = 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4'
 ): Parameters<typeof writeWorkspaceExportTree>[0] {
   return {
     exportRoot,
     exportId,
-    sourceDeploymentId: 'dep_source',
+    sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
     createdAt: timestamp,
     workspace: {
       id: workspaceId,
@@ -114,7 +121,7 @@ function minimalExportInput(
 function knowledgeSource(id: string): Record<string, unknown> {
   return {
     id,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     kind: 'document',
     title: 'Boundary source',
     uri: null,
@@ -131,8 +138,9 @@ function knowledgeSource(id: string): Record<string, unknown> {
 /** Creates a file-backed route store containing the legacy demo workspace. */
 function createBoundaryStore(dataRoot: string): FsStore {
   const store = new FsStore({ dataRoot });
-  const demo = createDemoWorkspaceForUser('user_local');
+  const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   store.importWorkspaceSnapshot({
+    ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
     workspace: demo.workspace,
     threads: [demo.thread],
     knowledge: demo.knowledge,
@@ -155,7 +163,11 @@ function boundaryAuthority(dataRoot: string, workspaceId: string) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId,
+  });
   boundaryDatabases.push(coreDb);
   return coreDb;
 }
@@ -270,7 +282,7 @@ function tarHeaderWithDeclaredSize(header: Buffer, size: number): Buffer {
 
 /** Creates one compressed tar fixture without touching a filesystem. */
 async function archiveWithEntry(
-  header: { name: string; type: 'file' | 'symlink'; linkname?: string },
+  header: { name: string; type: 'file' | 'symlink'; linkname?: string; prefix?: string },
   content = Buffer.alloc(0)
 ): Promise<Buffer> {
   const rawHeader = Buffer.alloc(512);
@@ -283,6 +295,7 @@ async function archiveWithEntry(
   if (header.linkname) rawHeader.write(header.linkname, 157, 100, 'utf8');
   rawHeader.write('ustar\0', 257, 6, 'ascii');
   rawHeader.write('00', 263, 2, 'ascii');
+  if (header.prefix) rawHeader.write(header.prefix, 345, 155, 'utf8');
   const canonicalHeader = tarHeaderWithDeclaredSize(rawHeader, content.byteLength);
   const padding = Buffer.alloc((512 - (content.byteLength % 512)) % 512);
   return zstdCompressSync(Buffer.concat([canonicalHeader, content, padding, Buffer.alloc(1024)]));
@@ -298,7 +311,7 @@ describe('workspace export filesystem boundaries', () => {
         ...minimalExportInput(join(parent, 'source-export')),
         knowledgeSources: [knowledgeSource(unsafeId)],
       })
-    ).toThrow(/safe path segment/i);
+    ).toThrow(ZodError);
 
     expect(() =>
       writeWorkspaceExportTree({
@@ -312,7 +325,7 @@ describe('workspace export filesystem boundaries', () => {
   it('rejects an unsafe persisted source id before reading material outside the export', () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-import-source-boundary-'));
     const exportRoot = join(parent, 'export');
-    const safeId = 'ks_safe';
+    const safeId = 'ks_00000000-0000-72dd-a2ca-ce0fb9e172c1';
     const unsafeId = '../../../outside-source';
     writeWorkspaceExportTree({
       ...minimalExportInput(exportRoot),
@@ -346,9 +359,9 @@ describe('workspace export filesystem boundaries', () => {
     expect(() =>
       readWorkspaceImportSnapshot({
         verified: verifyWorkspaceExportTree({ exportRoot }),
-        targetWorkspaceId: 'ws_imported',
+        targetWorkspaceId: 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5',
       })
-    ).toThrow(/safe path segment/i);
+    ).toThrow(ZodError);
   });
 
   it('requires a fresh real export directory so stale files cannot leak', () => {
@@ -364,7 +377,13 @@ describe('workspace export filesystem boundaries', () => {
     const exportRoot = join(parent, 'export');
     mkdirSync(join(exportRoot, 'records'), { recursive: true });
     writeFileSync(join(exportRoot, 'records', 'knowledge-proposals.jsonl'), '{"stale":true}\n');
-    const staleArtifact = join(exportRoot, 'artifacts', 'ar_stale', 'files', 'content.md');
+    const staleArtifact = join(
+      exportRoot,
+      'artifacts',
+      'ar_00000000-0000-7061-bae6-24a979165303',
+      'files',
+      'content.md'
+    );
     mkdirSync(dirname(staleArtifact), { recursive: true });
     writeFileSync(staleArtifact, 'stale artifact');
 
@@ -390,7 +409,9 @@ describe('workspace export filesystem boundaries', () => {
     expect(() =>
       writeWorkspaceExportTree({
         ...minimalExportInput(exportRoot),
-        knowledgeSourceMaterials: [{ sourceId: 'ks_missing', content: 'partial content' }],
+        knowledgeSourceMaterials: [
+          { sourceId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb', content: 'partial content' },
+        ],
       })
     ).toThrow(/references missing source/i);
     expect(existsSync(exportRoot)).toBe(false);
@@ -502,7 +523,9 @@ describe('workspace export filesystem boundaries', () => {
     writeFileSync(marker, 'keep');
     symlinkSync(external, join(dataRoot, 'workspaces'));
 
-    expect(() => loadWorkspaceFileRecords(dataRoot, 'user_local')).toThrow();
+    expect(() =>
+      loadWorkspaceFileRecords(dataRoot, 'usr_00000000-0000-7000-8000-000000000001')
+    ).toThrow();
     expect(readFileSync(marker, 'utf8')).toBe('keep');
   });
 });
@@ -511,11 +534,15 @@ describe('workspace export route boundaries', () => {
   it('streams one zstd workspace archive from the verified export', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-archive-'));
     const store = createBoundaryStore(dataRoot);
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const exportResponse = await app.request(
       ...operationRequest(
         'workspace.export',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
         }
@@ -527,7 +554,7 @@ describe('workspace export route boundaries', () => {
       'server',
       'exports',
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       exported.exportId
     );
     const verified = verifyWorkspaceExportTree({ exportRoot });
@@ -540,7 +567,7 @@ describe('workspace export route boundaries', () => {
     ]);
 
     const response = await app.request(
-      `/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+      `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exported.exportId}/archive`
     );
 
     expect(response.status, await response.clone().text()).toBe(200);
@@ -563,27 +590,48 @@ describe('workspace export route boundaries', () => {
   it('round-trips Unicode and USTAR prefix paths through the strict archive importer', async () => {
     const sourceDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-unicode-source-'));
     const sourceStore = createBoundaryStore(sourceDataRoot);
-    const sourceCoreDb = boundaryAuthority(sourceDataRoot, 'ws_demo');
+    const sourceCoreDb = boundaryAuthority(
+      sourceDataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     const sourceApp = createApp({
       coreDb: sourceCoreDb,
       dataRoot: sourceDataRoot,
       store: sourceStore,
     });
-    const pagePath = `knowledge/pages/分类/${'a'.repeat(90)}.md`;
-    const sourcePage = join(sourceDataRoot, 'workspaces', 'ws_demo', pagePath);
-    mkdirSync(dirname(sourcePage), { recursive: true });
-    writeFileSync(
-      sourcePage,
-      '---\ntype: "RepoConvention"\ntitle: "Unicode archive"\n---\nPortable.\n'
+    const pagePath = `knowledge/pages/${'a'.repeat(60)}/${'b'.repeat(60)}.md`;
+    const notebookResponse = await sourceApp.request(
+      ...operationRequest('knowledge.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
+    expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
+    const { notebookRevision } = await notebookResponse.json();
+    const created = await sourceApp.request(
+      ...operationRequest(
+        'knowledge.create',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          baseRevision: notebookRevision,
+          knowledgePageId: pagePath.slice('knowledge/pages/'.length, -3),
+          kind: 'project-context',
+          title: 'Unicode archive',
+          content: 'Portable.',
+        },
+        { headers: { 'x-openkit-request-id': '00000000-0000-4000-8000-000000000991' } }
+      )
+    );
+    expect(created.status, await created.clone().text()).toBe(200);
     // Create the handle through its native owner so the fixture includes real persisted creator attribution.
     const exportedResponse = await sourceApp.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' })
+      ...operationRequest('workspace.export', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(exportedResponse.status, await exportedResponse.clone().text()).toBe(200);
     const { exportId } = await exportedResponse.json();
     const archiveResponse = await sourceApp.request(
-      `/api/app/workspaces/ws_demo/exports/${exportId}/archive`
+      `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exportId}/archive`
     );
     expect(archiveResponse.status, await archiveResponse.clone().text()).toBe(200);
     const archive = Buffer.from(await archiveResponse.arrayBuffer());
@@ -602,48 +650,170 @@ describe('workspace export route boundaries', () => {
     });
 
     expect(targetResponse.status, await targetResponse.clone().text()).toBe(200);
+
+    // Archive intake owns UTF-8 paths; Notebook pages retain their narrower S61 grammar.
+    const unicodePrefix = 'attachments/分类';
+    const unicodeName = `${'c'.repeat(90)}.bin`;
+    const unicodePath = `${unicodePrefix}/${unicodeName}`;
+    const exactBytes = Buffer.from([0, 255, 128, 13, 10, 65]);
+    const unicodeArchive = await archiveWithEntry(
+      { name: unicodeName, prefix: unicodePrefix, type: 'file' },
+      exactBytes
+    );
+    expect(Buffer.byteLength(unicodePath)).toBeGreaterThan(100);
+    expect(readTarRegularFiles(zstdDecompressSync(unicodeArchive)).get(unicodePath)).toEqual(
+      exactBytes
+    );
+    const staged = await stageWorkspaceArchive(
+      new Request('http://localhost/archive', {
+        method: 'POST',
+        headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+        body: unicodeArchive,
+      }),
+      targetDataRoot
+    );
+    try {
+      expect(readFileSync(join(staged.exportRoot, unicodePath))).toEqual(exactBytes);
+    } finally {
+      staged.remove();
+    }
   });
 
   it('fails closed when a worker-backed Turn has no S39 trace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-s39-'));
     const store = createBoundaryStore(dataRoot);
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Export an untraced worker Turn', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Export an untraced worker Turn',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const session = store.createAgentSession({
-      id: 'as_export_missing_trace',
+      id: 'as_00000000-0000-7191-a06d-dfd2a31b7d87',
       agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       status: 'busy',
       message: null,
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
     store.updateTurn(turn.id, { agentSessionId: session.id });
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     app.onError((error) => new Response(error.message, { status: 500 }));
 
     const response = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
 
     expect(response.status).toBe(500);
     expect(await response.text()).toBe('Worker Context Package coverage is incomplete.');
-    expect(readdirSync(join(dataRoot, 'server', 'exports', 'workspaces', 'ws_demo'))).toEqual([]);
+    expect(
+      readdirSync(
+        join(dataRoot, 'server', 'exports', 'workspaces', 'ws_00000000-0000-7000-8000-000000000001')
+      )
+    ).toEqual([]);
   });
 });
 
 describe('workspace import route handles', () => {
+  it.each([
+    'legacy',
+    'ws_00000000-0000-7000-8000-000000000001',
+  ])('refuses a verified portable PermissionDecision with invalid kind %s before Workspace publication', (decisionId) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-permission-kind-'));
+    const sourceWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const store = createBoundaryStore(dataRoot);
+    const coreDb = boundaryAuthority(dataRoot, sourceWorkspaceId);
+    const workspaceDb = openWorkspaceDb(dataRoot, sourceWorkspaceId);
+    try {
+      applyScopedMigrations(workspaceDb);
+      const input = minimalExportInput(join(dataRoot, 'verified-export'));
+      input.permissionDecisions = [
+        {
+          action: 'runtime.launch',
+          approvalId: null,
+          auditEventId: null,
+          contextSummary: {},
+          createdAt: timestamp,
+          decisionId,
+          enforcementPoint: 'worker.launch',
+          ownerScope: 'workspace',
+          policyEngineVersion: 'nanocore-policy:v1',
+          policySnapshotId: 'policy_source',
+          reasonCode: 'approved',
+          requiredApprovalKind: null,
+          resourceSummary: {},
+          result: 'allow',
+          subjectSummary: {},
+          workspaceId: sourceWorkspaceId,
+        },
+      ];
+      const verified = writeWorkspaceExportTree(input);
+      const beforeWorkspaces = store.listWorkspaces();
+      const beforePaths = readdirSync(join(dataRoot, 'workspaces')).sort();
+      const beforeDecisions = workspaceDb.sqlite
+        .prepare('SELECT * FROM permission_decisions')
+        .all();
+      let refusal: unknown;
+      try {
+        importVerifiedWorkspace({
+          authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          coreDb,
+          dataRoot,
+          requestId: '00000000-0000-4000-8000-000000000001',
+          store,
+          verified,
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(ZodError);
+      expect((refusal as ZodError).issues.some((issue) => issue.path.includes('decisionId'))).toBe(
+        true
+      );
+      expect(store.listWorkspaces()).toEqual(beforeWorkspaces);
+      expect(readdirSync(join(dataRoot, 'workspaces')).sort()).toEqual(beforePaths);
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM permission_decisions').all()).toEqual(
+        beforeDecisions
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('adds a missing root index while preserving imported reserved Markdown bytes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-okf-index-'));
     const store = createBoundaryStore(dataRoot);
-    const exportId = 'wsexp_missing_okf_index';
-    const exportRoot = join(dataRoot, 'server', 'exports', 'workspaces', 'ws_demo', exportId);
+    const exportId = 'wsexp_00000000-0000-7834-999b-c5b532335d3f';
+    const exportRoot = join(
+      dataRoot,
+      'server',
+      'exports',
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      exportId
+    );
     const nestedIndex = '# Imported topic index\n\nKeep this navigation byte-for-byte.\n';
-    const nestedLog = '# Imported topic log\n\nKeep this history byte-for-byte.\n';
-    const input = minimalExportInput(exportRoot, 'ws_demo', exportId);
+    const nestedLog = '# Imported topic log\n\n## 2026-10-16\n* Keep this history byte-for-byte.\n';
+    const input = minimalExportInput(
+      exportRoot,
+      'ws_00000000-0000-7000-8000-000000000001',
+      exportId
+    );
     mkdirSync(dirname(exportRoot), { recursive: true });
     const verified = writeWorkspaceExportTree({
       ...input,
@@ -657,16 +827,16 @@ describe('workspace import route handles', () => {
       },
     });
 
-    const coreDb = boundaryAuthority(dataRoot, 'ws_demo');
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const coreDb = boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(workspaceDb);
       // This intentionally index-less portable tree still belongs to an explicitly recorded creator.
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: 'user_local' },
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceDb,
-        callId: `cap_storage_export_${exportId}`,
-        workspaceId: 'ws_demo',
+        callId: deriveEntityId('cap', ['storage_export', exportId]),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         family: 'storage',
         operation: 'workspace.export.write',
         capabilityId: 'storage.workspace_export',
@@ -679,14 +849,15 @@ describe('workspace import route handles', () => {
         call,
         records: [
           {
-            usageId: `use_storage_export_files_${exportId}`,
+            usageId: allocateEntityId('use'),
             category: 'storage',
             unit: 'files',
             quantity: verified.checkedFiles.length,
             source: 'workspace-export-inventory',
+            providerRef: 'nanocore-storage',
           },
           {
-            usageId: `use_storage_export_bytes_${exportId}`,
+            usageId: allocateEntityId('use'),
             category: 'storage',
             unit: 'bytes',
             quantity: verified.manifest.contentInventory.reduce(
@@ -694,6 +865,7 @@ describe('workspace import route handles', () => {
               0
             ),
             source: 'workspace-export-inventory',
+            providerRef: 'nanocore-storage',
           },
         ],
       });
@@ -713,25 +885,31 @@ describe('workspace import route handles', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId }),
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            exportId,
+          }),
         }
       )
     );
 
     expect(response.status, await response.clone().text()).toBe(200);
     const result = (await response.json()) as { importedWorkspaceId: string };
-    const pagesRoot = join(
-      dataRoot,
-      'workspaces',
-      result.importedWorkspaceId,
-      'knowledge',
-      'pages'
-    );
-    expect(readFileSync(join(pagesRoot, 'index.md'), 'utf8')).toBe(
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        result.importedWorkspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const published = notebook.readRevision(notebook.publishedRevision()).files;
+    expect(published['topic/index.md']).toBe(nestedIndex);
+    expect(published['topic/log.md']).toBe(nestedLog);
+    expect(published['index.md']).toBe(
       '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n'
     );
-    expect(readFileSync(join(pagesRoot, 'topic', 'index.md'), 'utf8')).toBe(nestedIndex);
-    expect(readFileSync(join(pagesRoot, 'topic', 'log.md'), 'utf8')).toBe(nestedLog);
   });
 
   it.each([
@@ -745,14 +923,24 @@ describe('workspace import route handles', () => {
       'server',
       'exports',
       'workspaces',
-      'ws_demo',
-      'wsexp_foreign'
+      'ws_00000000-0000-7000-8000-000000000001',
+      'wsexp_00000000-0000-7ff3-8360-12a1e48c7212'
     );
     mkdirSync(dirname(exportRoot), { recursive: true });
-    writeWorkspaceExportTree(minimalExportInput(exportRoot, 'ws_demo', 'wsexp_foreign'));
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    writeWorkspaceExportTree(
+      minimalExportInput(
+        exportRoot,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'wsexp_00000000-0000-7ff3-8360-12a1e48c7212'
+      )
+    );
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const beforeWorkspaceIds = store.listWorkspaces().map((workspace) => workspace.id);
-    const collisionRoot = join(dataRoot, 'workspaces', 'ws_imported_ws_demo');
+    const collisionRoot = join(dataRoot, 'workspaces', 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6');
 
     const response = await app.request(
       route === 'dry-run'
@@ -762,8 +950,8 @@ describe('workspace import route handles', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          sourceWorkspaceId: 'ws_demo',
-          exportId: 'wsexp_foreign',
+          sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          exportId: 'wsexp_00000000-0000-7ff3-8360-12a1e48c7212',
         }),
       }
     );
@@ -782,25 +970,33 @@ describe('workspace import route handles', () => {
   ] as const)('rejects %s when the requested %s disagrees with the manifest', async (route, field) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-handle-'));
     const store = createBoundaryStore(dataRoot);
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const exportResponse = await app.request(
       ...operationRequest(
         'workspace.export',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
         }
       )
     );
     const exported = (await exportResponse.json()) as { exportId: string };
-    const requestedWorkspaceId = field === 'sourceWorkspaceId' ? 'ws_wrong_handle' : 'ws_demo';
-    const requestedExportId = field === 'exportId' ? 'wsexp_wrong_handle' : exported.exportId;
+    const requestedWorkspaceId =
+      field === 'sourceWorkspaceId'
+        ? 'ws_00000000-0000-7c9c-8b21-98b89a411f54'
+        : 'ws_00000000-0000-7000-8000-000000000001';
+    const requestedExportId =
+      field === 'exportId' ? 'wsexp_00000000-0000-7e45-af93-499cc25a9930' : exported.exportId;
     const originalRoot = join(
       dataRoot,
       'server',
       'exports',
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       exported.exportId
     );
     const requestedRoot = join(
@@ -834,18 +1030,22 @@ describe('workspace import route handles', () => {
   it('skips an orphan final workspace path when choosing a collision id', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-orphan-'));
     const store = createBoundaryStore(dataRoot);
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const exportResponse = await app.request(
       ...operationRequest(
         'workspace.export',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
         }
       )
     );
     const exported = (await exportResponse.json()) as { exportId: string };
-    const orphanRoot = join(dataRoot, 'workspaces', 'ws_imported_ws_demo');
+    const orphanRoot = join(dataRoot, 'workspaces', 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6');
     mkdirSync(orphanRoot, { recursive: true });
     writeFileSync(join(orphanRoot, 'orphan.txt'), 'keep');
 
@@ -856,13 +1056,18 @@ describe('workspace import route handles', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId: exported.exportId }),
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            exportId: exported.exportId,
+          }),
         }
       )
     );
 
     expect(response.status, await response.clone().text()).toBe(200);
-    expect(await response.json()).toMatchObject({ importedWorkspaceId: 'ws_imported_ws_demo_2' });
+    expect(await response.json()).toMatchObject({
+      importedWorkspaceId: 'ws_d35c66bc-f928-5565-925a-1d8b792c6ada',
+    });
     expect(readFileSync(join(orphanRoot, 'orphan.txt'), 'utf8')).toBe('keep');
   });
 
@@ -886,25 +1091,25 @@ describe('workspace import route handles', () => {
             kind
           )
            VALUES
-             ('user_local', 'Local', 'local@example.com', false, ?, ?, 'human'),
-             ('user_other', 'Other', 'other@example.com', false, ?, ?, 'human')`
+             ('usr_00000000-0000-7000-8000-000000000001', 'Local', 'local@example.com', false, ?, ?, 'local'),
+             ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.com', false, ?, ?, 'human')`
         )
         .run(now, now, now, now);
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
-        workspaceId: 'ws_demo',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_other',
-        workspaceId: 'ws_imported_ws_demo',
+        ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+        workspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
       });
       const app = createApp({ coreDb, dataRoot, store });
       const exportResponse = await app.request(
         ...operationRequest(
           'workspace.export',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
           }
@@ -919,18 +1124,23 @@ describe('workspace import route handles', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId: exported.exportId }),
+            body: JSON.stringify({
+              sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              exportId: exported.exportId,
+            }),
           }
         )
       );
 
       expect(response.status, await response.clone().text()).toBe(200);
-      expect(await response.json()).toMatchObject({ importedWorkspaceId: 'ws_imported_ws_demo_2' });
+      expect(await response.json()).toMatchObject({
+        importedWorkspaceId: 'ws_d35c66bc-f928-5565-925a-1d8b792c6ada',
+      });
       expect(
         coreDb.sqlite
           .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-          .get('ws_imported_ws_demo')
-      ).toEqual({ owner_user_id: 'user_other' });
+          .get('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6')
+      ).toEqual({ owner_user_id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -941,11 +1151,15 @@ describe('workspace archive import boundaries', () => {
   it('uses private staging modes and removes only the owned request directory', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-staging-'));
     const store = createBoundaryStore(dataRoot);
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const exportResponse = await app.request(
       ...operationRequest(
         'workspace.export',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
         }
@@ -953,7 +1167,7 @@ describe('workspace archive import boundaries', () => {
     );
     const exported = (await exportResponse.json()) as { exportId: string };
     const archiveResponse = await app.request(
-      `/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+      `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exported.exportId}/archive`
     );
     const archive = new Uint8Array(await archiveResponse.arrayBuffer());
     let closeBody = () => {};
@@ -1007,7 +1221,11 @@ describe('workspace archive import boundaries', () => {
   ] as const)('rejects a tar %s and removes request staging', async (_label, header) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-malicious-'));
     const store = createBoundaryStore(dataRoot);
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const archive = await archiveWithEntry(
       header,
       header.type === 'file' ? Buffer.from('bad') : undefined
@@ -1046,11 +1264,15 @@ describe('workspace archive import boundaries', () => {
   it('rejects non-block-aligned bytes after the tar end marker', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-tail-'));
     const store = createBoundaryStore(dataRoot);
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const exportResponse = await app.request(
       ...operationRequest(
         'workspace.export',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
         }
@@ -1058,7 +1280,7 @@ describe('workspace archive import boundaries', () => {
     );
     const exported = (await exportResponse.json()) as { exportId: string };
     const archiveResponse = await app.request(
-      `/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+      `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exported.exportId}/archive`
     );
     const malformed = zstdCompressSync(
       Buffer.concat([
@@ -1126,7 +1348,11 @@ describe('workspace archive import boundaries', () => {
   it('requires a mutating request id before staging the archive body', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-request-id-'));
     const store = createBoundaryStore(dataRoot);
-    const app = createApp({ coreDb: boundaryAuthority(dataRoot, 'ws_demo'), dataRoot, store });
+    const app = createApp({
+      coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
+      dataRoot,
+      store,
+    });
     const beforeWorkspaceIds = store.listWorkspaces().map((workspace) => workspace.id);
 
     const response = await app.request('/api/app/workspace-archives/import', {
@@ -1153,10 +1379,10 @@ describe('workspace portable authority boundaries', () => {
       applyMigrations(targetCoreDb);
       const now = Date.now();
       const users = [
-        ['user_source_owner', 'Source owner'],
-        ['user_source_active', 'Source active member'],
-        ['user_source_removed', 'Source removed member'],
-        ['user_target_importer', 'Target importer'],
+        ['usr_00000000-0000-7f08-b276-13c309e8c61d', 'Source owner'],
+        ['usr_00000000-0000-7f91-bf04-0eeba702f745', 'Source active member'],
+        ['usr_00000000-0000-7a07-a29f-1a147d72df71', 'Source removed member'],
+        ['usr_00000000-0000-7dff-a6fb-e1fa9c56d0f0', 'Target importer'],
       ] as const;
       for (const coreDb of [sourceCoreDb, targetCoreDb]) {
         const insertUser = coreDb.sqlite.prepare(
@@ -1173,7 +1399,7 @@ describe('workspace portable authority boundaries', () => {
       const sourceWorkspace = sourceStore.createWorkspace('Portable authority source');
       recordWorkspaceOwnerMembership({
         coreDb: sourceCoreDb,
-        ownerUserId: 'user_source_owner',
+        ownerUserId: 'usr_00000000-0000-7f08-b276-13c309e8c61d',
         workspaceId: sourceWorkspace.id,
       });
       const insertMember = sourceCoreDb.sqlite.prepare(
@@ -1184,7 +1410,7 @@ describe('workspace portable authority boundaries', () => {
       );
       insertMember.run(
         sourceWorkspace.id,
-        'user_source_active',
+        'usr_00000000-0000-7f91-bf04-0eeba702f745',
         'active',
         'editor',
         timestamp,
@@ -1194,7 +1420,7 @@ describe('workspace portable authority boundaries', () => {
       );
       insertMember.run(
         sourceWorkspace.id,
-        'user_source_removed',
+        'usr_00000000-0000-7a07-a29f-1a147d72df71',
         'removed',
         'viewer',
         timestamp,
@@ -1211,10 +1437,10 @@ describe('workspace portable authority boundaries', () => {
           ) VALUES (?, ?, ?, 'viewer', ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(
-          'inv_source_importer',
+          'inv_00000000-0000-7a35-a611-d2ba2eb6fec6',
           sourceWorkspace.id,
-          'user_target_importer',
-          'user_source_owner',
+          'usr_00000000-0000-7dff-a6fb-e1fa9c56d0f0',
+          'usr_00000000-0000-7f08-b276-13c309e8c61d',
           '2099-01-01T00:00:00.000Z',
           timestamp,
           timestamp
@@ -1231,17 +1457,17 @@ describe('workspace portable authority boundaries', () => {
           'source-session-token',
           now,
           now,
-          'user_source_owner'
+          'usr_00000000-0000-7f08-b276-13c309e8c61d'
         );
       createOpenKitAccessTokenRecord(sourceCoreDb, {
         expiresAt: '2099-01-01T00:00:00.000Z',
-        ownerUserId: 'user_source_owner',
+        ownerUserId: 'usr_00000000-0000-7f08-b276-13c309e8c61d',
         scope: 'workspace',
         tokenId: 'token_source_authority',
         workspaceIds: [sourceWorkspace.id],
       });
       const sourceApp = createApp({
-        auth: authForUser('user_source_owner'),
+        auth: authForUser('usr_00000000-0000-7f08-b276-13c309e8c61d'),
         coreDb: sourceCoreDb,
         dataRoot: sourceDataRoot,
         mode: 'server',
@@ -1257,7 +1483,7 @@ describe('workspace portable authority boundaries', () => {
       expect(exportResponse.status, await exportResponse.clone().text()).toBe(200);
       const exported = (await exportResponse.json()) as { exportId: string };
       const sourceEditorApp = createApp({
-        auth: authForUser('user_source_active'),
+        auth: authForUser('usr_00000000-0000-7f91-bf04-0eeba702f745'),
         coreDb: sourceCoreDb,
         dataRoot: sourceDataRoot,
         mode: 'server',
@@ -1284,7 +1510,7 @@ describe('workspace portable authority boundaries', () => {
 
       const targetStore = new FsStore({ dataRoot: targetDataRoot });
       const targetApp = createApp({
-        auth: authForUser('user_target_importer'),
+        auth: authForUser('usr_00000000-0000-7dff-a6fb-e1fa9c56d0f0'),
         coreDb: targetCoreDb,
         dataRoot: targetDataRoot,
         mode: 'server',
@@ -1338,7 +1564,7 @@ describe('workspace portable authority boundaries', () => {
         {
           accessLevel: 'editor',
           status: 'active',
-          userId: 'user_target_importer',
+          userId: 'usr_00000000-0000-7dff-a6fb-e1fa9c56d0f0',
           workspaceId: imported.importedWorkspaceId,
         },
       ]);
@@ -1351,7 +1577,10 @@ describe('workspace portable authority boundaries', () => {
           )
           .all()
       ).toEqual([
-        { ownerUserId: 'user_target_importer', workspaceId: imported.importedWorkspaceId },
+        {
+          ownerUserId: 'usr_00000000-0000-7dff-a6fb-e1fa9c56d0f0',
+          workspaceId: imported.importedWorkspaceId,
+        },
       ]);
       expect(
         targetCoreDb.sqlite.prepare('SELECT invitation_id FROM workspace_invitations').all()
@@ -1364,7 +1593,7 @@ describe('workspace portable authority boundaries', () => {
         currentWorkspaceAuthority(
           targetCoreDb,
           imported.importedWorkspaceId,
-          { id: 'user_source_owner', kind: 'user' },
+          { id: 'usr_00000000-0000-7f08-b276-13c309e8c61d', kind: 'user' },
           'workspace.read',
           true
         )

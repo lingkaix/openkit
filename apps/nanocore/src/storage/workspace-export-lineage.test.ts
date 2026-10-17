@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   constants,
   copyFileSync,
@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { RuntimeEvidenceRecordSchema } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   ArtifactReviewFollowUpRequestSchema,
   deriveArtifactReviewFollowUpTurnId,
@@ -38,6 +38,9 @@ import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { bindImportedWorkspaceNotebookTraces } from '../knowledge/notebook-workspace-portability.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from '../knowledge/okf.js';
 import {
   importAgentEnvironmentPackageSnapshots,
   requireAgentEnvironmentPackageSnapshot,
@@ -58,6 +61,7 @@ import {
   listWorkspaceReconciliationRecords,
 } from '../runtime/workspace-reconciliation-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
@@ -84,20 +88,20 @@ import {
 const timestamp = '2026-07-12T00:00:00.000Z';
 const source = {
   approvalId: 'apr_source',
-  approvalItemId: 'it_approval_source',
-  artifactId: 'ar_source',
+  approvalItemId: 'it_00000000-0000-75b1-b567-8dba93fffe22',
+  artifactId: 'ar_00000000-0000-7e0d-8050-96f36ec9a01f',
   goalId: 'goal_source',
-  grantId: 'grant_source',
-  itemId: 'it_source',
-  intentItemId: 'it_goal_intent_source',
-  planItemId: 'it_goal_plan_source',
-  sessionId: 'as_source',
+  grantId: 'grant_00000000-0000-71be-bfe5-1605cc1e0b9b',
+  itemId: 'it_00000000-0000-7cab-8553-ff29f1f63940',
+  intentItemId: 'it_00000000-0000-7142-be4d-40072e2d9c43',
+  planItemId: 'it_00000000-0000-71d5-ae7d-8065ab8c1eac',
+  sessionId: 'as_00000000-0000-7d81-8a02-21a51fa74819',
   taskId: 'task_source',
-  threadId: 'th_source',
-  turnId: 'tu_source',
-  workspaceId: 'ws_source',
+  threadId: 'th_00000000-0000-76e4-9cab-bf0f18349249',
+  turnId: 'tu_00000000-0000-72a5-8d51-50bb4c19b084',
+  workspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
 } as const;
-const targetWorkspaceId = 'ws_imported';
+const targetWorkspaceId = 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5';
 
 /** Extends fixed descriptive source objects; the declared backend summary remains an open consumed map. */
 function annotateSyncSource(value: unknown): unknown {
@@ -166,7 +170,7 @@ function createLineageExportInput(
     threadId: source.threadId,
     turnId: source.turnId,
     type: 'user-message',
-    actor: { kind: 'user', id: 'user_source' },
+    actor: { kind: 'user', id: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2' },
     status: 'completed',
     text: 'Keep lineage portable.',
     createdAt: timestamp,
@@ -226,7 +230,7 @@ function createLineageExportInput(
     id: source.turnId,
     workspaceId: source.workspaceId,
     threadId: source.threadId,
-    triggerActor: { kind: 'user', id: 'user_local' } as const,
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
     items: [item, planItem, artifactReferenceItem, approvalItem, intentItem],
     status: 'completed',
     error: null,
@@ -268,8 +272,8 @@ function createLineageExportInput(
     },
     agentSetup,
     agentSessionId: source.sessionId,
-    triggerActor: { kind: 'user', id: 'user_local' },
-    userId: 'user_local',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     backend: {
       kind: 'openshell',
     },
@@ -279,7 +283,8 @@ function createLineageExportInput(
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
-  environmentPackage.scope.itemId = missing === 'aep-item' ? 'it_missing' : source.itemId;
+  environmentPackage.scope.itemId =
+    missing === 'aep-item' ? 'it_00000000-0000-7cd6-8d25-15aa6e49eadb' : source.itemId;
   const session = {
     id: source.sessionId,
     agentId: 'agent_codex_host',
@@ -311,8 +316,8 @@ function createLineageExportInput(
   };
   return {
     exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-workspace-lineage-')), 'export'),
-    exportId: 'wsexp_lineage',
-    sourceDeploymentId: 'dep_source',
+    exportId: 'wsexp_00000000-0000-79ba-8f8a-90eaf5674095',
+    sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
     createdAt: timestamp,
     workspace: {
       id: source.workspaceId,
@@ -384,7 +389,8 @@ function createLineageExportInput(
       {
         id: 'ras_source',
         workspaceId: source.workspaceId,
-        turnId: missing === 'resolved-turn' ? 'tu_missing' : source.turnId,
+        turnId:
+          missing === 'resolved-turn' ? 'tu_00000000-0000-7577-9378-7e96d0d15fd2' : source.turnId,
         requestId: 'request_source',
         agentId: 'agent_codex_host',
         logicalModelId: agentSetup.logicalModels.preferredLogicalModelId,
@@ -419,7 +425,8 @@ function createLineageExportInput(
         workspaceId: source.workspaceId,
         turnId: source.turnId,
         threadId: source.threadId,
-        agentSessionId: missing === 'aep-session' ? 'as_missing' : source.sessionId,
+        agentSessionId:
+          missing === 'aep-session' ? 'as_00000000-0000-7fdd-8f71-4a23eb7a922b' : source.sessionId,
         agentId: environmentPackage.agent.agentId,
         packageId: environmentPackage.packageId,
         runtimeKind: environmentPackage.agent.runtimeKind,
@@ -433,9 +440,12 @@ function createLineageExportInput(
     ],
     capabilityCalls: [
       {
-        id: 'cap_source',
+        id: 'cap_00000000-0000-711a-9c64-db220d6b90dc',
         workspaceId: source.workspaceId,
-        threadId: missing === 'capability-thread' ? 'th_missing' : source.threadId,
+        threadId:
+          missing === 'capability-thread'
+            ? 'th_00000000-0000-70ca-938d-c2a0530f9882'
+            : source.threadId,
         turnId: source.turnId,
         itemId: source.itemId,
         agentId: 'agent_codex_host',
@@ -457,16 +467,19 @@ function createLineageExportInput(
     ],
     usageRecords: [
       {
-        id: 'use_source',
+        id: 'use_00000000-0000-7833-a8fc-60af429f21b9',
         workspaceId: source.workspaceId,
-        responsibleUserId: 'user_source',
+        responsibleUserId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
         threadId: source.threadId,
         turnId: source.turnId,
         itemId: source.itemId,
-        capabilityCallId: 'cap_source',
+        capabilityCallId: 'cap_00000000-0000-711a-9c64-db220d6b90dc',
         requestId: null,
         agentId: 'agent_codex_host',
-        agentSessionId: missing === 'usage-session' ? 'as_missing' : source.sessionId,
+        agentSessionId:
+          missing === 'usage-session'
+            ? 'as_00000000-0000-7fdd-8f71-4a23eb7a922b'
+            : source.sessionId,
         sourceIds: [],
         category: 'runtime',
         unit: 'sandbox_sessions',
@@ -511,7 +524,8 @@ function createLineageExportInput(
         id: 'rte_source',
         workspaceId: source.workspaceId,
         threadId: source.threadId,
-        turnId: missing === 'runtime-turn' ? 'tu_missing' : source.turnId,
+        turnId:
+          missing === 'runtime-turn' ? 'tu_00000000-0000-7577-9378-7e96d0d15fd2' : source.turnId,
         goalId: source.goalId,
         taskId: null,
         agentSessionId: source.sessionId,
@@ -551,14 +565,15 @@ function createLineageExportInput(
         checkpointId: `${source.workspaceId}:${source.threadId}:${source.turnId}`,
         workspaceId: source.workspaceId,
         threadId: source.threadId,
-        turnId: missing === 'checkpoint-turn' ? 'tu_missing' : source.turnId,
+        turnId:
+          missing === 'checkpoint-turn' ? 'tu_00000000-0000-7577-9378-7e96d0d15fd2' : source.turnId,
         goalId: null,
         taskId: null,
         requestId: 'request_source',
         requestInputHash: 'sha256:request-source',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: missing ? null : 'worker_source',
+        workerSessionId: missing ? null : source.sessionId,
         contextDigest: 'sha256:context',
         stopReason: null,
         diagnosticsSummary: null,
@@ -573,8 +588,8 @@ function createLineageExportInput(
         workspaceId: source.workspaceId,
         repositoryResourceId: 'repo_source',
         approvalRowId: missing === 'git-approval' ? 'apr_missing' : source.approvalId,
-        policyDecisionId: 'pd_source',
-        actorId: 'user_local',
+        policyDecisionId: 'pd_00000000-0000-71e9-8af0-d6fdfffbf30e',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
         remoteSummary: 'Portable repository origin',
         sourceRef: 'HEAD',
         targetBranch: 'main',
@@ -596,7 +611,7 @@ function createLineageExportInput(
         auditEventId: null,
         contextSummary: {},
         createdAt: timestamp,
-        decisionId: 'pd_source',
+        decisionId: 'pd_00000000-0000-71e9-8af0-d6fdfffbf30e',
         enforcementPoint: 'worker.launch',
         ownerScope: 'workspace',
         policyEngineVersion: 'nanocore-policy:v1',
@@ -622,7 +637,10 @@ function createLineageExportInput(
           protectedBranchPatterns: ['main'],
           requireReviewLinkage: true,
           stagingStrategy: 'staging-root',
-          vaultGrantRef: missing === 'repository-grant' ? 'grant_missing' : source.grantId,
+          vaultGrantRef:
+            missing === 'repository-grant'
+              ? 'grant_00000000-0000-7278-b714-46e2d53cb316'
+              : source.grantId,
         },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -638,7 +656,11 @@ function createLineageExportInput(
         backendKind: 'openshell',
         strategy: 'git',
         changedPaths: [],
-        artifactIds: [missing === 'sync-artifact' ? 'ar_missing' : source.artifactId],
+        artifactIds: [
+          missing === 'sync-artifact'
+            ? 'ar_00000000-0000-7aa2-bfd7-c36b2d13b35a'
+            : source.artifactId,
+        ],
         logRefs: [],
         testOutputRefs: [],
         ignoredOutputs: [],
@@ -659,7 +681,11 @@ function createLineageExportInput(
         changedPaths: [],
         patch: null,
         bundle: null,
-        artifactIds: [missing === 'sync-artifact' ? 'ar_missing' : source.artifactId],
+        artifactIds: [
+          missing === 'sync-artifact'
+            ? 'ar_00000000-0000-7aa2-bfd7-c36b2d13b35a'
+            : source.artifactId,
+        ],
         evidenceRefs: [{ kind: 'worker', ref: source.turnId }],
         redaction: { status: 'no-sensitive-content-found', notes: [] },
         createdAt: timestamp,
@@ -667,7 +693,7 @@ function createLineageExportInput(
     ],
     vaultReferences: [
       {
-        sourceReferenceId: 'vault_source',
+        sourceReferenceId: 'vault_00000000-0000-7845-abcc-649025182be0',
         displayName: 'Portable secret',
         secretKind: 'api-key',
         backendKind: 'encrypted-file',
@@ -678,13 +704,17 @@ function createLineageExportInput(
     vaultGrants: [
       {
         grantId: source.grantId,
-        vaultReferenceId: 'vault_source',
+        issuance: 'target',
+        vaultReferenceId: 'vault_00000000-0000-7845-abcc-649025182be0',
         ownerScope: 'workspace',
         workspaceId: source.workspaceId,
         userId: null,
         subjectSummary: null,
         targetAgentId: null,
-        targetAgentSessionId: missing === 'vault-session' ? 'as_missing' : source.sessionId,
+        targetAgentSessionId:
+          missing === 'vault-session'
+            ? 'as_00000000-0000-7fdd-8f71-4a23eb7a922b'
+            : source.sessionId,
         targetCapabilityId: null,
         allowedInjectionPaths: [],
         lifetime: 'agent-session',
@@ -710,7 +740,7 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
   return readWorkspaceImportSnapshot({
     verified,
     targetWorkspaceId,
-    targetServerId: 'server_target',
+    targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
   });
 }
 
@@ -730,20 +760,57 @@ function createWorkResourceLineageExportInput(
   sourceSnapshotRoot?: string
 ): WriteWorkspaceExportTreeInput {
   const input = createLineageExportInput();
-  const materialId = 'mat_source';
-  const baseRevisionId = 'mrev_source_1';
-  const appliedRevisionId = 'mrev_source_2';
+  const materialId = 'mat_00000000-0000-7807-b767-6378f3fcdcf3';
+  const baseRevisionId = 'mrev_00000000-0000-72e5-99f1-5042ef903012';
+  const appliedRevisionId = 'mrev_00000000-0000-713f-80f9-10c92c9be966';
   const baseContent = '# Portable base\n';
   const appliedContent = '# Portable\n';
   const baseContentDigest = `sha256:${createHash('sha256').update(baseContent).digest('hex')}`;
   const appliedContentDigest = `sha256:${createHash('sha256').update(appliedContent).digest('hex')}`;
   const knowledgePageId = 'knowledge_portable_source';
-  const knowledgeContent = '# Retained portable knowledge\n\nUse the retained package bytes.\n';
+  const knowledgeSourceRefs: string[] = [];
+  const knowledgeContent = serializeUserAuthoredKnowledgePage(
+    {
+      id: knowledgePageId,
+      kind: 'project-context',
+      title: 'Retained portable Knowledge',
+      content: '# Retained portable knowledge\n\nUse the retained package bytes.\n',
+      sourceReferences: knowledgeSourceRefs,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    { kind: 'workspace', workspaceId: source.workspaceId }
+  );
   const knowledgeContentDigest = `sha256:${createHash('sha256')
     .update(knowledgeContent)
     .digest('hex')}`;
-  const knowledgeSourceRefs = ['https://example.com/retained-portable-knowledge'];
-  const retrievalTraceId = 'krt_00000000-0000-4000-8000-000000000001';
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
+  });
+  const notebookRevision = notebook.initialize({
+    files: { [`${knowledgePageId}.md`]: knowledgeContent },
+    metadata: {
+      summary: 'Current Notebook archive fixture',
+      producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      authority: { kind: 'direct', instructionReference: 'test:current-notebook-s39' },
+      changeRequest: { requestId: randomUUID(), inputDigest: knowledgeContentDigest },
+      sourceReferences: knowledgeSourceRefs,
+    },
+  });
+  const notebookFiles = notebook.readRevision(notebookRevision).files;
+  onTestFinished(() => rmSync(dirname(input.exportRoot), { recursive: true, force: true }));
+  input.knowledge = [
+    parseOwnedKnowledgeEntry(
+      `knowledge/pages/${knowledgePageId}.md`,
+      knowledgePageId,
+      knowledgeContent
+    ),
+  ];
+  input.workspace = {
+    ...input.workspace,
+    counts: { ...input.workspace.counts, knowledgeEntryCount: input.knowledge.length },
+  };
+  const retrievalTraceId = 'krt_00000000-0000-780e-b78f-51422afca1e9';
   const workerRequest = serializeStructuredWorkerDelegationRequest(
     createStructuredWorkerDelegationRequest({
       acceptanceCriteria: ['Preserve the portable Material graph.'],
@@ -772,7 +839,7 @@ function createWorkResourceLineageExportInput(
       (candidate) => (candidate as { id?: string }).id === source.itemId
     ) as Record<string, unknown>),
     type: 'user-message',
-    actor: { kind: 'user', id: 'user_local' },
+    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     text: workerRequest,
   };
   input.itemRevisions = input.itemRevisions.map((candidate) =>
@@ -903,6 +970,7 @@ function createWorkResourceLineageExportInput(
         content: knowledgeContent,
         contentDigest: knowledgeContentDigest,
         knowledgePageId,
+        notebookRevision,
         sourceRefs: knowledgeSourceRefs,
       },
     ],
@@ -1086,7 +1154,7 @@ function createWorkResourceLineageExportInput(
   ];
   input.workspaceMaterialRevisions = [
     {
-      authorId: 'user_local',
+      authorId: 'usr_00000000-0000-7000-8000-000000000001',
       content: baseContent,
       contentDigest: baseContentDigest,
       createdAt: timestamp,
@@ -1098,7 +1166,7 @@ function createWorkResourceLineageExportInput(
       workspaceId: source.workspaceId,
     },
     {
-      authorId: 'user_local',
+      authorId: 'usr_00000000-0000-7000-8000-000000000001',
       content: appliedContent,
       contentDigest: appliedContentDigest,
       createdAt: timestamp,
@@ -1132,7 +1200,7 @@ function createWorkResourceLineageExportInput(
       createdAt: timestamp,
       decidedAt: timestamp,
       decision: 'accepted',
-      decisionActorId: 'user_local',
+      decisionActorId: 'usr_00000000-0000-7000-8000-000000000001',
       decisionRequestId: 'request_review_accept',
       feedback: null,
       followUpTurnId: null,
@@ -1147,7 +1215,10 @@ function createWorkResourceLineageExportInput(
   input.portableFileState = {
     claims: new Map(),
     conflicts: new Map(),
-    nativeKnowledgePages: new Map([[`knowledge/pages/${knowledgePageId}.md`, knowledgeContent]]),
+    notebookRevision,
+    nativeKnowledgePages: new Map(
+      Object.entries(notebookFiles).map(([path, content]) => [`knowledge/pages/${path}`, content])
+    ),
     observations: new Map(),
     retrievalTraceFiles: new Map([
       [
@@ -1156,11 +1227,11 @@ function createWorkResourceLineageExportInput(
           caller: 'task-mode',
           createdAt: timestamp,
           excluded: [],
-          notebookRevision: null,
+          notebookRevision,
           queryContext: {
-            serverId: 'dep_source',
+            serverId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
             workspaceId: source.workspaceId,
-            actor: { kind: 'user', id: 'user_local' },
+            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             threadId: source.threadId,
             turnId: source.turnId,
           },
@@ -1180,7 +1251,7 @@ function createWorkResourceLineageExportInput(
                 scopeId: `page/workspace/${source.workspaceId}`,
                 objectId: knowledgePageId,
               },
-              revision: knowledgeContentDigest,
+              revision: notebookRevision,
               sourceReferences: knowledgeSourceRefs,
             },
           ],
@@ -1206,13 +1277,13 @@ function createWorkResourceLineageExportInput(
       schemaVersion: 1,
       workspace: { name: 'Lineage workspace', defaultAgentId: null },
     }),
-    workspaceSchema: null,
+    workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   };
   if (followUp) {
     const decisionRequestId = followUp.decisionRequestId ?? 'request_review_redo';
     const prefixedImportRequest = decisionRequestId.startsWith('import-lineage:');
     const followUpTurnId = prefixedImportRequest
-      ? 'tu_follow_up_source'
+      ? 'tu_00000000-0000-79a4-aa5f-28ed1f60437c'
       : deriveArtifactReviewFollowUpTurnId(
           source.workspaceId,
           source.artifactId,
@@ -1222,7 +1293,7 @@ function createWorkResourceLineageExportInput(
     const workerRequestId = prefixedImportRequest
       ? 'request_follow_up_source'
       : deriveArtifactReviewWorkerRequestId(decisionRequestId);
-    const followUpItemId = 'it_follow_up_source';
+    const followUpItemId = 'it_00000000-0000-7698-af18-5a72021d626f';
     const followUpRequest = serializeArtifactReviewFollowUpRequest({
       kind: 'artifact-review-follow-up',
       workspaceId: source.workspaceId,
@@ -1248,7 +1319,7 @@ function createWorkResourceLineageExportInput(
       turnId: followUpTurnId,
       type: 'user-message',
       status: 'completed',
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       text: followUpRequest,
       createdAt: timestamp,
       completedAt: timestamp,
@@ -1260,7 +1331,7 @@ function createWorkResourceLineageExportInput(
         id: followUpTurnId,
         workspaceId: source.workspaceId,
         threadId: source.threadId,
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         items: [followUpItem],
         status: 'completed',
         error: null,
@@ -1569,7 +1640,7 @@ describe('workspace auxiliary lineage reminting', () => {
     input.threads = input.threads.map((thread) => ({
       ...(thread as Record<string, unknown>),
       visibility: 'private',
-      privateOwnerUserId: 'another-user',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
     }));
     expect(() => writeWorkspaceExportTree(input)).toThrow(
       'Private Thread history requires a separately authorized export.'
@@ -1621,13 +1692,16 @@ describe('workspace auxiliary lineage reminting', () => {
     const externalRefs = [
       {
         kind: 'sandbox-image',
-        scope: { ownerScope: 'server', deploymentId: 'dep_other' },
+        scope: { ownerScope: 'server', deploymentId: 'dep_00000000-0000-7eae-88cf-8a657760c635' },
         locator: 'sha256:source-image',
         edge: 'association',
       },
       {
         kind: 'artifact',
-        scope: { workspaceId: source.workspaceId, deploymentId: 'dep_other' },
+        scope: {
+          workspaceId: source.workspaceId,
+          deploymentId: 'dep_00000000-0000-7eae-88cf-8a657760c635',
+        },
         locator: source.artifactId,
         edge: 'association',
       },
@@ -1872,7 +1946,7 @@ describe('workspace auxiliary lineage reminting', () => {
       ts: timestamp,
       seq: defect === 'sequence' ? 2 : 1,
       obs: 'sidecar',
-      turnId: defect === 'turn' ? 'tu_missing' : source.turnId,
+      turnId: defect === 'turn' ? 'tu_00000000-0000-7577-9378-7e96d0d15fd2' : source.turnId,
       parent: defect === 'parent' ? 'missing-parent' : source.itemId,
       ...(defect === 'bundle'
         ? {
@@ -1927,21 +2001,24 @@ describe('workspace auxiliary lineage reminting', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    input.knowledge = [knowledge];
+    input.knowledge = [...input.knowledge, knowledge];
     input.workspace = {
       ...input.workspace,
-      counts: { ...input.workspace.counts, knowledgeEntryCount: 1 },
+      counts: { ...input.workspace.counts, knowledgeEntryCount: input.knowledge.length },
     };
     input.portableFileState!.nativeKnowledgePages.set(
       `knowledge/pages/${knowledge.id}.md`,
-      serializeUserAuthoredKnowledgePage(knowledge)
+      serializeUserAuthoredKnowledgePage(knowledge, {
+        kind: 'workspace',
+        workspaceId: input.workspace.id,
+      })
         .replace(
           `source_refs: ${JSON.stringify(knowledge.sourceReferences)}`,
           `source_refs:\n  - ${JSON.stringify(knowledge.sourceReferences[0])}`
         )
         .replace(
-          'scope: "workspace"',
-          'scope: "workspace"\nsources:\n  - id: retained-source\n    credibility:\n      author: human:owner'
+          `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: source.workspaceId })}`,
+          `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: source.workspaceId })}\nsources:\n  - id: retained-source\n    credibility:\n      author: human:owner`
         )
     );
 
@@ -1956,7 +2033,9 @@ describe('workspace auxiliary lineage reminting', () => {
     ].find(([path]) => path === `knowledge/pages/${knowledge.id}.md`)!;
 
     expect(targetTrace.contextPackageDigest).not.toBe(sourceTrace.contextPackageDigest);
-    expect(imported.knowledge[0]?.sourceReferences).toEqual([expectedReference]);
+    expect(imported.knowledge.find((entry) => entry.id === knowledge.id)?.sourceReferences).toEqual(
+      [expectedReference]
+    );
     expect(parseOwnedKnowledgeEntry(pagePath, knowledge.id, pageContent).sourceReferences).toEqual([
       expectedReference,
     ]);
@@ -2156,7 +2235,7 @@ describe('workspace auxiliary lineage reminting', () => {
             readWorkspaceImportSnapshot({
               verified: unsafeVerified,
               targetWorkspaceId,
-              targetServerId: 'server_target',
+              targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
             })
           )
           .toThrow('Agent environment package snapshot is not redacted');
@@ -2175,7 +2254,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const imported = readWorkspaceImportSnapshot({
       verified,
       targetWorkspaceId,
-      targetServerId: 'server_target',
+      targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
     });
     expect(JSON.stringify(imported)).not.toContain('annotation');
     expect(imported.artifactReviews[0]?.materialProposal).not.toHaveProperty('annotation');
@@ -2307,8 +2386,8 @@ describe('workspace auxiliary lineage reminting', () => {
           objectId: '0',
         },
       });
-      expect(material.originalSnapshotPath).not.toContain('mat_source');
-      expect(material.packagePath).not.toContain('mat_source');
+      expect(material.originalSnapshotPath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
+      expect(material.packagePath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
       const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
       expect(JSON.parse(descriptorText).source).toEqual(binary.source.reference);
       expect(binary.projection.deliveredDigest).toBe(
@@ -2324,10 +2403,74 @@ describe('workspace auxiliary lineage reminting', () => {
     }
   });
 
+  it('imports an S39 archive selection pinned to the actual current Notebook commit', () => {
+    const input = createWorkResourceLineageExportInput();
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
+    });
+    const sourceRevision = notebook.publishedRevision();
+    const content = notebook.readRevision(sourceRevision).files['knowledge_portable_source.md'];
+    const verified = writeWorkspaceExportTree(input);
+    expect(notebook.publishedRevision()).toBe(sourceRevision);
+    expect(verified.manifest.knowledgeNotebookRevision).toBe(sourceRevision);
+    const sourceManifestPath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/package.json`;
+    const sourceManifestText = verified.fileContents.get(sourceManifestPath)!;
+    expect(JSON.parse(sourceManifestText).knowledgeSelections).toEqual([
+      expect.objectContaining({ notebookRevision: sourceRevision }),
+    ]);
+    const imported = readWorkspaceImportSnapshot({
+      verified,
+      targetWorkspaceId,
+      targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
+    });
+    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-current-notebook-s39-target-'));
+    onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
+    writeWorkspacePortableFileState(targetRoot, imported.portableFileState);
+    expect(() => verifyImportedWorkerContextPackageSnapshot(imported, targetRoot)).not.toThrow();
+    const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
+      ([path]) => path.endsWith('/context-package.json')
+    )![1];
+    const trace = parseWorkerContextPackageTrace(JSON.parse(traceText));
+    const targetPage = imported.portableFileState.nativeKnowledgePages.get(
+      'knowledge/pages/knowledge_portable_source.md'
+    )!;
+    expect(trace.workspaceId).toBe(targetWorkspaceId);
+    expect(trace.requestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
+    expect(trace.knowledgeSelections).toEqual([
+      expect.objectContaining({
+        knowledgePageId: 'knowledge_portable_source',
+        contentDigest: `sha256:${createHash('sha256').update(targetPage).digest('hex')}`,
+      }),
+    ]);
+    expect(verified.fileContents.get(sourceManifestPath)).toBe(sourceManifestText);
+    expect(JSON.parse(sourceManifestText).knowledgeSelections[0].notebookRevision).toBe(
+      sourceRevision
+    );
+    expect(notebook.readRevision(sourceRevision).files['knowledge_portable_source.md']).toBe(
+      content
+    );
+  });
+
   it('remints one complete Material, Review, and S39 imported-history graph', () => {
     const input = createWorkResourceLineageExportInput();
     const sourceRetrievalTrace = [...input.portableFileState!.retrievalTraceFiles.values()][0]!;
     const imported = importLineage(input);
+    const targetKnowledgeContent = imported.portableFileState.nativeKnowledgePages.get(
+      'knowledge/pages/knowledge_portable_source.md'
+    )!;
+    expect(
+      parseOwnedKnowledgeEntry(
+        'knowledge/pages/knowledge_portable_source.md',
+        'knowledge_portable_source',
+        targetKnowledgeContent
+      )
+    ).toEqual(input.knowledge[0]);
+    expect(
+      parseOkfDocument({ path: 'knowledge_portable_source.md', content: targetKnowledgeContent })
+    ).toMatchObject({
+      ok: true,
+      document: { frontmatter: { scope: { kind: 'workspace', workspaceId: targetWorkspaceId } } },
+    });
     const material = imported.workspaceMaterials[0];
     const revisions = imported.workspaceMaterialRevisions;
     const binding = imported.threadMaterialBindings[0];
@@ -2344,7 +2487,7 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).not.toThrow();
 
     expect(material?.workspaceId).toBe(targetWorkspaceId);
-    expect(material?.materialId).not.toBe('mat_source');
+    expect(material?.materialId).not.toBe('mat_00000000-0000-7807-b767-6378f3fcdcf3');
     expect(revisions).toHaveLength(2);
     expect(revisions[0]?.content).toBe('# Portable base\n');
     expect(revisions[1]).toMatchObject({
@@ -2381,7 +2524,7 @@ describe('workspace auxiliary lineage reminting', () => {
       traceId: sourceRetrievalTrace.traceId,
       requestDigest: sourceRetrievalTrace.requestDigest,
       queryContext: {
-        serverId: 'server_target',
+        serverId: 'dep_00000000-0000-7000-8000-000000000002',
         workspaceId: targetWorkspaceId,
         threadId: imported.threads[0]?.id,
         turnId: imported.turns[0]?.id,
@@ -2402,17 +2545,17 @@ describe('workspace auxiliary lineage reminting', () => {
       knowledgeSelectionInput: {
         retrievalTraceRef: {
           scopeId: `retrieval-trace/turn/${targetWorkspaceId}/${imported.threads[0]?.id}/${imported.turns[0]?.id}`,
-          objectId: 'krt_00000000-0000-4000-8000-000000000001',
+          objectId: 'krt_00000000-0000-780e-b78f-51422afca1e9',
         },
       },
       knowledgeSelections: [
         {
           contentDigest: `sha256:${createHash('sha256')
-            .update('# Retained portable knowledge\n\nUse the retained package bytes.\n')
+            .update(targetKnowledgeContent)
             .digest('hex')}`,
           knowledgePageId: 'knowledge_portable_source',
           packagePath: 'knowledge/pages/knowledge_portable_source.md',
-          sourceRefs: ['https://example.com/retained-portable-knowledge'],
+          sourceRefs: [],
         },
       ],
       materialSelections: [
@@ -2458,16 +2601,17 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(imported.portableFileState.nativeKnowledgePages).toEqual(
       new Map([
         [
-          'knowledge/pages/knowledge_portable_source.md',
-          '# Retained portable knowledge\n\nUse the retained package bytes.\n',
+          'knowledge/pages/index.md',
+          input.portableFileState!.nativeKnowledgePages.get('knowledge/pages/index.md')!,
         ],
+        ['knowledge/pages/knowledge_portable_source.md', targetKnowledgeContent],
       ])
     );
     expect(
       imported.portableFileState.workerContextPackageFiles.get(
         `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
       )
-    ).toBe('# Retained portable knowledge\n\nUse the retained package bytes.\n');
+    ).toBe(targetKnowledgeContent);
     expect(imported.turnEvents[0]?.[1][2]?.data).toMatchObject({
       itemId: imported.turns[0]?.items[0]?.id,
       item: imported.turns[0]?.items[0],
@@ -2480,18 +2624,50 @@ describe('workspace auxiliary lineage reminting', () => {
       artifactId: imported.artifacts[0]?.id,
     });
 
+    // Re-export uses the actual target commit, as the public import publisher does.
+    const targetNotebook = new KnowledgeNotebook({
+      repositoryPath: join(stagedRoot, 'knowledge', 'notebook.git'),
+    });
+    const targetNotebookFiles = Object.fromEntries(
+      [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
+        path.slice('knowledge/pages/'.length),
+        content,
+      ])
+    );
+    const targetRevision = targetNotebook.initialize({
+      files: targetNotebookFiles,
+      metadata: {
+        summary: 'Imported Notebook archive fixture',
+        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        authority: { kind: 'direct', instructionReference: 'test:reexport-notebook-s39' },
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(targetNotebookFiles)).digest('hex')}`,
+        },
+        sourceReferences: [],
+      },
+    });
+    const reExportFileState = {
+      ...imported.portableFileState,
+      notebookRevision: targetRevision,
+      retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
+        workspaceRoot: stagedRoot,
+        workspaceId: targetWorkspaceId,
+        traces: imported.portableFileState.retrievalTraceFiles,
+      }),
+    };
     const reExported = writeWorkspaceExportTree({
       agentEnvironmentPackageSnapshots: imported.agentEnvironmentPackageSnapshots,
       agentSessions: imported.agentSessions,
       artifactReviews: imported.artifactReviews,
       artifacts: imported.artifacts,
       createdAt: timestamp,
-      exportId: 'wsexp_imported_history',
+      exportId: 'wsexp_00000000-0000-75d0-b908-ecd78e49177b',
       exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-reexported-history-')), 'export'),
       itemRevisions: imported.itemRevisions,
       knowledge: imported.knowledge,
-      portableFileState: imported.portableFileState,
-      sourceDeploymentId: 'server_target',
+      portableFileState: reExportFileState,
+      sourceDeploymentId: 'dep_00000000-0000-7000-8000-000000000002',
       threadMaterialBindings: imported.threadMaterialBindings,
       threads: imported.threads,
       turnEvents: imported.turnEvents,
@@ -2502,9 +2678,16 @@ describe('workspace auxiliary lineage reminting', () => {
       workspaceMaterializationRecords: imported.workspaceMaterializationRecords,
       workspaceMaterials: imported.workspaceMaterials,
     });
+    for (const [path, bytes] of reExported.fileContents) {
+      if (path.includes('/retrieval-traces/') && path.endsWith('.json')) {
+        expect(JSON.parse(bytes).queryContext.serverId).toBe(
+          reExported.manifest.sourceDeploymentId
+        );
+      }
+    }
     const reimported = readWorkspaceImportSnapshot({
       verified: reExported,
-      targetWorkspaceId: 'ws_reimported',
+      targetWorkspaceId: 'ws_00000000-0000-75c2-b6dd-fdd26f61df2a',
       targetServerId: 'server_reimport_target',
     });
     const reimportedRoot = mkdtempSync(join(tmpdir(), 'openkit-reimported-history-package-'));
@@ -2512,9 +2695,26 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(() =>
       verifyImportedWorkerContextPackageSnapshot(reimported, reimportedRoot)
     ).not.toThrow();
-    expect(reimported.workspaceMaterialRevisions.map((revision) => revision.content)).toEqual(
-      imported.workspaceMaterialRevisions.map((revision) => revision.content)
+    expect(reimported.workspaceMaterialRevisions).toHaveLength(
+      imported.workspaceMaterialRevisions.length
     );
+    const importedBase = imported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === null
+    );
+    const reimportedBase = reimported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === null
+    );
+    expect(importedBase).toBeDefined();
+    expect(reimportedBase).toBeDefined();
+    expect(reimportedBase?.content).toBe(importedBase!.content);
+    const importedChild = imported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === importedBase!.revisionId
+    );
+    const reimportedChild = reimported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === reimportedBase!.revisionId
+    );
+    expect(importedChild).toBeDefined();
+    expect(reimportedChild?.content).toBe(importedChild!.content);
     expect(
       [...reimported.portableFileState.workerContextPackageFiles.entries()].find(([path]) =>
         path.endsWith('/context-package.json')
@@ -2569,7 +2769,7 @@ describe('workspace auxiliary lineage reminting', () => {
     input.artifacts = [
       ...input.artifacts,
       {
-        id: 'ar_other',
+        id: 'ar_00000000-0000-7dcf-9e49-194b732024ae',
         workspaceId: source.workspaceId,
         threadId: null,
         turnId: null,
@@ -2586,7 +2786,7 @@ describe('workspace auxiliary lineage reminting', () => {
           sourceKind: 'direct-import',
           sourceId: 'request_other_artifact',
           sourceDigest: contentDigest,
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           requestId: 'request_other_artifact',
           recordedAt: timestamp,
         },
@@ -2598,7 +2798,10 @@ describe('workspace auxiliary lineage reminting', () => {
       turnId,
       events.map((event) =>
         event.data.type === 'item-delta' && event.data.deltaKind === 'artifact-updated'
-          ? { ...event, data: { ...event.data, artifactId: 'ar_other' } }
+          ? {
+              ...event,
+              data: { ...event.data, artifactId: 'ar_00000000-0000-7dcf-9e49-194b732024ae' },
+            }
           : event
       ),
     ]);
@@ -2616,7 +2819,7 @@ describe('workspace auxiliary lineage reminting', () => {
           ...(input.workspaceMaterialRevisions ?? []),
           {
             ...(input.workspaceMaterialRevisions?.[1] as Record<string, unknown>),
-            revisionId: 'mrev_source_fork',
+            revisionId: 'mrev_00000000-0000-7269-8285-6d92cf591190',
           },
         ];
       },
@@ -2637,7 +2840,7 @@ describe('workspace auxiliary lineage reminting', () => {
       alter: (input: WriteWorkspaceExportTreeInput) => {
         input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
           ...(review as Record<string, unknown>),
-          appliedMaterialRevisionId: 'mrev_missing',
+          appliedMaterialRevisionId: 'mrev_00000000-0000-7dd6-ad6d-05f41582f248',
         }));
       },
     },
@@ -2655,7 +2858,7 @@ describe('workspace auxiliary lineage reminting', () => {
       alter: (input: WriteWorkspaceExportTreeInput) => {
         input.threadMaterialBindings = (input.threadMaterialBindings ?? []).map((binding) => ({
           ...(binding as Record<string, unknown>),
-          latestQueuedRevisionId: 'mrev_source_1',
+          latestQueuedRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
         }));
       },
     },
@@ -2704,7 +2907,7 @@ describe('workspace auxiliary lineage reminting', () => {
           {
             ...(input.turns[0] as Record<string, unknown>),
             agentSessionId: null,
-            id: 'tu_untraced_follow_up',
+            id: 'tu_00000000-0000-77d9-ad4d-ea2f2a5f70aa',
             items: [],
           },
         ];
@@ -2713,7 +2916,7 @@ describe('workspace auxiliary lineage reminting', () => {
           appliedMaterialRevisionId: null,
           decision: 'redo',
           feedback: 'Try again.',
-          followUpTurnId: 'tu_untraced_follow_up',
+          followUpTurnId: 'tu_00000000-0000-77d9-ad4d-ea2f2a5f70aa',
         }));
       },
     },
@@ -2724,12 +2927,12 @@ describe('workspace auxiliary lineage reminting', () => {
         input.workspaceMaterialRevisions = [baseRevision];
         input.workspaceMaterials = (input.workspaceMaterials ?? []).map((material) => ({
           ...(material as Record<string, unknown>),
-          currentRevisionId: 'mrev_source_1',
+          currentRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
           lastMutationRequestId: baseRevision.createdByRequestId,
         }));
         input.threadMaterialBindings = (input.threadMaterialBindings ?? []).map((binding) => ({
           ...(binding as Record<string, unknown>),
-          latestQueuedRevisionId: 'mrev_source_1',
+          latestQueuedRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
         }));
         input.artifacts = input.artifacts.map((artifact) => ({
           ...(artifact as Record<string, unknown>),
@@ -2768,19 +2971,19 @@ describe('workspace auxiliary lineage reminting', () => {
   });
 
   it.each([
-    ['aep-item', 'it_missing'],
+    ['aep-item', 'it_00000000-0000-7cd6-8d25-15aa6e49eadb'],
     ['aep-session', /lineage|as_missing/i],
-    ['capability-thread', 'th_missing'],
-    ['checkpoint-turn', 'tu_missing'],
+    ['capability-thread', 'th_00000000-0000-70ca-938d-c2a0530f9882'],
+    ['checkpoint-turn', 'tu_00000000-0000-7577-9378-7e96d0d15fd2'],
     ['git-approval', 'apr_missing'],
     ['permission-approval', 'apr_missing'],
-    ['repository-grant', 'grant_missing'],
-    ['resolved-turn', 'tu_missing'],
-    ['runtime-turn', 'tu_missing'],
-    ['sync-artifact', 'ar_missing'],
-    ['usage-session', 'as_missing'],
+    ['repository-grant', 'grant_00000000-0000-7278-b714-46e2d53cb316'],
+    ['resolved-turn', 'tu_00000000-0000-7577-9378-7e96d0d15fd2'],
+    ['runtime-turn', 'tu_00000000-0000-7577-9378-7e96d0d15fd2'],
+    ['sync-artifact', 'ar_00000000-0000-7aa2-bfd7-c36b2d13b35a'],
+    ['usage-session', 'as_00000000-0000-7fdd-8f71-4a23eb7a922b'],
     ['vault-approval', 'apr_missing'],
-    ['vault-session', 'as_missing'],
+    ['vault-session', 'as_00000000-0000-7fdd-8f71-4a23eb7a922b'],
   ] as const)('fails closed when %s references state outside the export', (missing, error) => {
     expect(() => importLineage(createLineageExportInput(missing))).toThrow(error);
   });
@@ -2915,7 +3118,7 @@ describe('workspace auxiliary lineage reminting', () => {
       },
       {
         ...(input.capabilityCalls?.[0] as Record<string, unknown>),
-        id: 'cap_source_same_cache_lineage',
+        id: 'cap_00000000-0000-7571-b976-68dc4eb78315',
         packageSnapshotId,
         runtimeOriginRef: sourceOriginRef,
         runtimeCacheLineageRef: sourceCacheLineageRef,
@@ -3046,7 +3249,7 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(failedRaw.binaryFileContents.get(rawPath)).toEqual(rawBytes);
     const importedFailed = readWorkspaceImportSnapshot({
       verified: failedRaw,
-      targetWorkspaceId: 'ws_imported_failed_provenance',
+      targetWorkspaceId: 'ws_00000000-0000-7aa7-be6a-dcdb6a885d4a',
     });
     const importedFailedRaw = importedFailed.evidenceBundles.find(
       (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
@@ -3066,7 +3269,7 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(() =>
       readWorkspaceImportSnapshot({
         verified: { ...failedRaw, fileContents: mismatchedOwnerFiles },
-        targetWorkspaceId: 'ws_imported_mismatched_provenance',
+        targetWorkspaceId: 'ws_00000000-0000-70ec-b895-5081a8a2dcea',
       })
     ).toThrow(/Runtime provenance bundle linkage is incomplete/);
     for (const mismatch of [
@@ -3080,7 +3283,7 @@ describe('workspace auxiliary lineage reminting', () => {
       expect(() =>
         readWorkspaceImportSnapshot({
           verified: { ...failedRaw, fileContents },
-          targetWorkspaceId: 'ws_imported_mismatched_runtime',
+          targetWorkspaceId: 'ws_00000000-0000-7545-858a-3d46b350bbc3',
         })
       ).toThrow(/Runtime provenance bundle linkage is incomplete/);
     }
@@ -3117,7 +3320,7 @@ describe('workspace auxiliary lineage reminting', () => {
           fileContents: duplicateFiles,
           binaryFileContents: duplicateBinary,
         },
-        targetWorkspaceId: 'ws_imported_duplicate_provenance',
+        targetWorkspaceId: 'ws_00000000-0000-7f94-8d9a-a38dbeb79435',
       })
     ).toThrow(/Runtime provenance bundle linkage is incomplete/);
 
@@ -3131,12 +3334,15 @@ describe('workspace auxiliary lineage reminting', () => {
       runtimeEvidence: [],
     });
     expect(() =>
-      readWorkspaceImportSnapshot({ verified: unlinked, targetWorkspaceId: 'ws_unlinked' })
+      readWorkspaceImportSnapshot({
+        verified: unlinked,
+        targetWorkspaceId: 'ws_00000000-0000-7643-964e-afa983ac66f6',
+      })
     ).toThrow(/runtime provenance.*link/i);
 
     const alternateImport = readWorkspaceImportSnapshot({
       verified,
-      targetWorkspaceId: 'ws_imported_alternate',
+      targetWorkspaceId: 'ws_00000000-0000-7f0d-9740-60fe82c12b26',
     });
     expect(alternateImport.capabilityCalls[0]?.runtimeCacheLineageRef).not.toBe(
       imported.capabilityCalls[0]?.runtimeCacheLineageRef
@@ -3157,7 +3363,10 @@ describe('workspace auxiliary lineage reminting', () => {
       ],
     });
     expect(() =>
-      readWorkspaceImportSnapshot({ verified: unmatched, targetWorkspaceId: 'ws_unmatched' })
+      readWorkspaceImportSnapshot({
+        verified: unmatched,
+        targetWorkspaceId: 'ws_00000000-0000-7655-ba52-0131487ca8c0',
+      })
     ).toThrow(/runtime origin.*normalized index/i);
   });
 });
@@ -3188,7 +3397,7 @@ describe('slice 1d portable call fields', () => {
           retryIndex: 0,
           outputBegan: true,
           terminalResult: 'succeeded',
-          usageRecordIds: ['use_source'],
+          usageRecordIds: ['use_00000000-0000-7833-a8fc-60af429f21b9'],
         },
       ],
     };
@@ -3203,7 +3412,7 @@ describe('slice 1d portable call fields', () => {
           'future.example/evidence': { label: 'retained' },
         },
       },
-      { ...input.capabilityCalls![0], id: 'cap_absent' },
+      { ...input.capabilityCalls![0], id: 'cap_00000000-0000-7ff2-b713-d35db1d00ca0' },
     ];
     const sourceDb = openWorkspaceDb(
       mkdtempSync(join(tmpdir(), 'gateway-call-source-')),
@@ -3223,7 +3432,7 @@ describe('slice 1d portable call fields', () => {
             'openkit.gateway/routeLineage': lineage,
             'future.example/evidence': { label: 'retained' },
           }),
-          'cap_source'
+          'cap_00000000-0000-711a-9c64-db220d6b90dc'
         );
       input.capabilityCalls = listWorkspaceCapabilityCalls(sourceDb, source.workspaceId);
     } finally {
@@ -3244,22 +3453,29 @@ describe('slice 1d portable call fields', () => {
         usageRecords: snapshot.usageRecords,
       });
       const imported = listWorkspaceCapabilityCalls(db, targetWorkspaceId);
-      expect(imported.find((call) => call.id === 'cap_source')).toMatchObject({
+      expect(
+        imported.find((call) => call.id === 'cap_00000000-0000-711a-9c64-db220d6b90dc')
+      ).toMatchObject({
         systemPromptDigest: digest,
         extensions: {
           'openkit.gateway/routeLineage': lineage,
           'future.example/evidence': { label: 'retained' },
         },
       });
-      expect(imported.find((call) => call.id === 'cap_absent')).not.toHaveProperty(
-        'systemPromptDigest'
-      );
-      expect(imported.find((call) => call.id === 'cap_absent')).not.toHaveProperty('extensions');
+      expect(
+        imported.find((call) => call.id === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0')
+      ).not.toHaveProperty('systemPromptDigest');
+      expect(
+        imported.find((call) => call.id === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0')
+      ).not.toHaveProperty('extensions');
       const row = db.sqlite
         .prepare(
           'SELECT system_prompt_digest, extensions_json FROM capability_calls WHERE call_id = ?'
         )
-        .get('cap_source') as { system_prompt_digest: string; extensions_json: string };
+        .get('cap_00000000-0000-711a-9c64-db220d6b90dc') as {
+        system_prompt_digest: string;
+        extensions_json: string;
+      };
       expect(row.system_prompt_digest).toBe(digest);
       expect(JSON.parse(row.extensions_json)).toEqual({
         'openkit.gateway/routeLineage': lineage,
@@ -3273,7 +3489,7 @@ describe('slice 1d portable call fields', () => {
 
 it('carries current Goal records through portability without changing approved bytes or restoring grants', () => {
   const input = createLineageExportInput();
-  const goalThread = 'th_goal_portable';
+  const goalThread = 'th_00000000-0000-720d-b93a-e3ab6e5c756b';
   const commitment = {
     intentBasis: { revision: 0, intent: 'Review the schema' },
     cards: [{ cardId: 'gc_portable', revision: 0, description: 'Review', priority: 0 }],
@@ -3293,13 +3509,26 @@ it('carries current Goal records through portability without changing approved b
         goalId: 'g_portable',
         workspaceId: source.workspaceId,
         threadId: goalThread,
-        responsibleUserId: 'user_source',
-        responsibleActorContext: { kind: 'session', userId: 'user_source' },
+        responsibleUserId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
+        responsibleActorContext: {
+          kind: 'session',
+          userId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
+        },
         intent: 'Review current schema',
         intentRevision: 1,
         intentHistory: [
-          { revision: 0, intent: 'Review the schema', actorId: 'user_source', at: timestamp },
-          { revision: 1, intent: 'Review current schema', actorId: 'user_source', at: timestamp },
+          {
+            revision: 0,
+            intent: 'Review the schema',
+            actorId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
+            at: timestamp,
+          },
+          {
+            revision: 1,
+            intent: 'Review current schema',
+            actorId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
+            at: timestamp,
+          },
         ],
         activePlanVersionId: 'gp_portable',
         proposedPlanVersionId: null,
@@ -3363,9 +3592,9 @@ it('carries current Goal records through portability without changing approved b
   expect('pendingRequests' in imported.goalState).toBe(false);
   // Lost ordinary history remains missing; its committed result must still be portable.
   const absentFact = {
-    id: 'tu_missing_task',
+    id: 'tu_00000000-0000-70da-9270-28693b06ee06',
     workspaceId: source.workspaceId,
-    threadId: 'th_missing_task',
+    threadId: 'th_00000000-0000-749e-a37d-2ae7769a39a8',
     status: 'failed',
     error: { code: 'worker_failed', message: 'Retained failure' },
     completedAt: timestamp,
@@ -3387,7 +3616,7 @@ it('carries current Goal records through portability without changing approved b
   expect(absentHistory.turnIds.has(absentFact.id)).toBe(false);
   input.goalState = {
     ...(input.goalState as Record<string, unknown>),
-    terminalFacts: [{ ...absentFact, workspaceId: 'ws_foreign' }],
+    terminalFacts: [{ ...absentFact, workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405' }],
   };
   expect(() =>
     importLineage({

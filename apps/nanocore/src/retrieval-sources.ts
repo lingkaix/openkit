@@ -28,6 +28,8 @@ export interface ProductRetrievalInput {
   /** A model result requires an exact currently readable destination Thread. */
   outputThreadId?: string | undefined;
   families: readonly ('conversation' | 'artifact' | 'material')[];
+  /** The ordinary Assistant history binding forbids administrator source overrides. */
+  administratorOverride?: false;
 }
 /** One source-owned storage home and current read-eligibility inventory. */
 export interface ProductRetrievalScope {
@@ -77,9 +79,12 @@ export function collectProductRetrievalScopes(
     );
   requireRead(input, 'workspace.read');
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-  const administrator = input.coreDb
-    ? isCurrentDeploymentAdministrator(input.coreDb, actor)
-    : actor.kind === 'local';
+  const administrator =
+    input.administratorOverride === false
+      ? false
+      : input.coreDb
+        ? isCurrentDeploymentAdministrator(input.coreDb, actor)
+        : actor.kind === 'local';
   const destination = input.outputThreadId
     ? store.getThread(workspaceId, input.outputThreadId)
     : null;

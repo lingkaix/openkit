@@ -1,55 +1,95 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ActorRef } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { KnowledgeEntrySchema } from '@openkit/protocol';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from './auth/identity.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
-import { closeRetrievalServices } from './retrieval-service.js';
+import { admitKnowledgeRetrieval } from './retrieval-knowledge-adapter.js';
+import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
+import { type CoreDb, openCoreDb } from './storage/db.js';
 import {
   type KnowledgeRetrievalAccess,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
+import { applyMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
-const REQUEST_ACTOR = { kind: 'local', userId: 'user_local' } as const;
 const NOW = '2026-10-15T00:00:00.000Z';
 
 const testRoots: string[] = [];
+const testDbs: CoreDb[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await closeRetrievalServices();
+  for (const db of testDbs.splice(0)) db.sqlite.close();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('canonical local retrieval identity', () => {
+  it('requires the exact canonical local actor pair before generation access', () => {
+    const f = createFixture('local-identity');
+    const access = { ...f.access, coreDb: undefined };
+    expect(() => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access })).not.toThrow();
+    for (const actorId of [
+      'user_local',
+      'usr_00000000-0000-4000-8000-000000000001',
+      'usr_00000000-0000-7000-8000-000000000002',
+    ]) {
+      expect(() =>
+        admitKnowledgeRetrieval({
+          workspaceId: f.workspaceId,
+          access: { ...access, actor: { kind: 'user', id: actorId } },
+        })
+      ).toThrow('Knowledge retrieval access denied.');
+    }
+    expect(() =>
+      admitKnowledgeRetrieval({
+        workspaceId: f.workspaceId,
+        access: { ...access, requestActor: undefined },
+      })
+    ).toThrow('Knowledge retrieval access denied.');
+  });
 });
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   it('enumerates lexical matches before sensitivity, conflict, freshness, and budget dispositions', async () => {
     const fixture = createFixture('enumeration');
-    const selected = createEntry(fixture, 'Selected evidence', 'selection-marker selection-marker');
-    const overflow = createEntry(fixture, 'Overflow evidence', 'selection-marker');
-    const stale = createEntry(
+    const selected = await createEntry(
+      fixture,
+      'Selected evidence',
+      'selection-marker selection-marker'
+    );
+    const overflow = await createEntry(fixture, 'Overflow evidence', 'selection-marker');
+    const stale = await createEntry(
       fixture,
       'Selection marker stale evidence',
       'selection-marker selection-marker selection-marker'
     );
-    const conflicted = createEntry(
+    const conflicted = await createEntry(
       fixture,
       'Selection marker conflicted evidence',
       'selection-marker selection-marker selection-marker selection-marker'
     );
-    const sensitive = createEntry(
+    const sensitive = await createEntry(
       fixture,
       'Selection marker private evidence',
       'selection-marker selection-marker selection-marker selection-marker selection-marker'
     );
-    updatePageFields(fixture, stale.id, { freshness: 'stale' });
-    updatePageFields(fixture, conflicted.id, { freshness: 'stale' });
-    updatePageFields(fixture, sensitive.id, {
+    await updatePageFields(fixture, stale.id, { freshness: 'stale' });
+    await updatePageFields(fixture, conflicted.id, { freshness: 'stale' });
+    await updatePageFields(fixture, sensitive.id, {
       freshness: 'stale',
       sensitivity: 'confidential',
     });
     fixture.store.recordKnowledgeConflict({
-      id: 'kf_governance_first_match',
+      id: 'kf_00000000-0000-7c2b-96dc-273a402e04ac',
       workspaceId: fixture.workspaceId,
       subjectReferences: [`knowledge:${conflicted.id}`, `knowledge:${sensitive.id}`],
       sourceReferences: [],
@@ -89,12 +129,12 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
 
   it('moves a pin first without changing either kernel score', async () => {
     const fixture = createFixture('pin-score');
-    const higher = createEntry(
+    const higher = await createEntry(
       fixture,
       'Release cadence release cadence',
       'release cadence release cadence'
     );
-    const pinned = createEntry(fixture, 'Other notes', 'release cadence');
+    const pinned = await createEntry(fixture, 'Other notes', 'release cadence');
     const ordinary = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'release cadence'),
       limit: 2,
@@ -122,13 +162,13 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   it('uses active-only defaults and one generation for explicit app state inspection', async () => {
     const fixture = createFixture('states');
     const pages = {
-      active: createEntry(fixture, 'Active state', 'state-marker'),
-      draft: createEntry(fixture, 'Draft state', 'state-marker'),
-      archived: createEntry(fixture, 'Archived state', 'state-marker'),
-      superseded: createEntry(fixture, 'Superseded state', 'state-marker'),
+      active: await createEntry(fixture, 'Active state', 'state-marker'),
+      draft: await createEntry(fixture, 'Draft state', 'state-marker'),
+      archived: await createEntry(fixture, 'Archived state', 'state-marker'),
+      superseded: await createEntry(fixture, 'Superseded state', 'state-marker'),
     };
     for (const state of ['draft', 'archived', 'superseded'] as const) {
-      updatePageFields(fixture, pages[state].id, {
+      await updatePageFields(fixture, pages[state].id, {
         openkit_status: state,
         status: state === 'draft' ? 'draft' : 'deprecated',
       });
@@ -173,20 +213,20 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       'Private destination',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: fixture.userId }
     );
     const sourceThread = fixture.store.createThread(
       fixture.workspaceId,
       'Private source',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'workspace' }
     );
     fixture.access.outputThreadId = destination.id;
     const material = 'source audience material';
     const source = fixture.store.createKnowledgeSource(
       {
-        id: 'ks_00000000-0000-4000-8000-000000000501',
+        id: 'ks_00000000-0000-78f8-b8d2-1dd7a79cb16e',
         workspaceId: fixture.workspaceId,
         kind: 'document',
         title: 'Private source',
@@ -201,13 +241,13 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       },
       material
     );
-    const sourcePage = createEntry(
+    const sourcePage = await createEntry(
       fixture,
       'Audience source page',
       'audience-marker source-backed',
       [`source:${source.id}@${source.contentDigest}`]
     );
-    const control = createEntry(fixture, 'Audience control page', 'audience-marker control');
+    const control = await createEntry(fixture, 'Audience control page', 'audience-marker control');
     const before = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),
       limit: 20,
@@ -216,7 +256,10 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       expect.arrayContaining([sourcePage.id, control.id])
     );
 
-    Object.assign(sourceThread, { privateOwnerUserId: 'user_other' });
+    Object.assign(sourceThread, {
+      visibility: 'private',
+      privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+    });
     const after = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),
       limit: 20,
@@ -227,19 +270,19 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     expect(JSON.stringify(after)).not.toContain('source-backed');
   });
 
+  // Fresh attributed import of 1001 Git pages measured 81s; this is fixture setup, not a retrieval deadline.
   it('returns a typed failure and writes no trace when lexical enumeration exceeds 1000 matches', async () => {
-    const fixture = createFixture('enumeration-incomplete');
+    const initialKnowledge = Array.from({ length: 1001 }, (_, index) => ({
+      id: `bulk-${String(index).padStart(4, '0')}`,
+      kind: 'project-context' as const,
+      title: `Bulk ${index}`,
+      content: 'enumeration-overflow',
+      createdAt: NOW,
+      updatedAt: NOW,
+    }));
+    const fixture = createFixture('enumeration-incomplete', initialKnowledge);
     const traceThread = fixture.store.createThread(fixture.workspaceId, 'Enumeration trace owner');
     fixture.access.outputThreadId = traceThread.id;
-    const seed = createEntry(fixture, 'Bulk seed', 'enumeration-overflow');
-    const template = readPage(fixture, seed.id);
-    for (let index = 0; index < 1000; index += 1) {
-      const id = `bulk-${String(index).padStart(4, '0')}`;
-      writeFileSync(
-        pagePath(fixture, id),
-        copyCanonicalPage(template, id, `Bulk ${index}`, 'enumeration-overflow')
-      );
-    }
     const failedTraceId = traceId(10);
 
     await expect(
@@ -253,34 +296,67 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       status: 503,
     });
     expect(readTraceBytes(fixture)).not.toContain(failedTraceId);
-  });
+  }, 180_000);
 
-  it('returns a typed failure and writes no successful trace when canonical bytes change in flight', async () => {
+  it('keeps selection and its trace at the pinned commit across a later content publication', async () => {
     const fixture = createFixture('concurrent-change');
-    const page = createEntry(
-      fixture,
-      'Concurrent page',
-      `before-change-marker\n${'x'.repeat(6 * 1024 * 1024)}`
-    );
-    const failedTraceId = traceId(11);
+    const page = await createEntry(fixture, 'Concurrent page', 'before-change-marker');
+    const pinnedRevision = fixture.notebook.publishedRevision();
+    const pinnedBytes = readPage(fixture, page.id);
+    const retrievalTraceId = traceId(11);
     const traceThread = fixture.store.createThread(fixture.workspaceId, 'Concurrent trace owner');
     fixture.access.outputThreadId = traceThread.id;
-    const pending = retrieveWorkspaceKnowledge({
+    const service = getRetrievalService(fixture.dataRoot, fixture.workspaceRoot);
+    const publish = service.publish.bind(service);
+    // Keep the real kernel publication; change current content at its exact completion boundary.
+    vi.spyOn(service, 'publish').mockImplementationOnce(async (...args) => {
+      const generation = await publish(...args);
+      await operation(fixture, 'knowledge.update', {
+        baseRevision: fixture.notebook.publishedRevision(),
+        knowledgeEntryId: page.id,
+        content: 'after-change-marker',
+      });
+      return generation;
+    });
+    const result = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'before-change-marker'),
-      traceId: failedTraceId,
+      traceId: retrievalTraceId,
     });
-
-    await waitForRetrievalStage(fixture);
-    fixture.store.updateKnowledgeEntry(fixture.workspaceId, page.id, {
-      content: 'after-change-marker',
+    const selectedEvidence = {
+      reference: pageReference(fixture, page.id),
+      revision: pinnedRevision,
+      contentDigest: sha256(pinnedBytes),
+      sourceReferences: [],
+    };
+    expect(result.notebookRevision).toBe(pinnedRevision);
+    expect(result.selected).toEqual([expect.objectContaining(selectedEvidence)]);
+    expect(result.excluded).toEqual([]);
+    expect(result.retrievalTraceRef).toEqual({
+      scopeId: `retrieval-trace/thread/${fixture.workspaceId}/${traceThread.id}`,
+      objectId: retrievalTraceId,
     });
-
-    await expect(pending).rejects.toMatchObject({
-      code: 'knowledge_retrieval_failed',
-      status: 409,
+    const retainedTrace = JSON.parse(
+      readFileSync(
+        join(
+          fixture.workspaceRoot,
+          'threads',
+          traceThread.id,
+          'retrieval-traces',
+          `${retrievalTraceId}.json`
+        ),
+        'utf8'
+      )
+    );
+    expect(retainedTrace).toMatchObject({
+      traceId: retrievalTraceId,
+      notebookRevision: pinnedRevision,
     });
-    expect(readTraceBytes(fixture)).not.toContain(failedTraceId);
-    expect(readPage(fixture, page.id)).toContain('after-change-marker');
+    expect(retainedTrace.selected).toEqual([selectedEvidence]);
+    expect(fixture.notebook.publishedRevision()).not.toBe(pinnedRevision);
+    const currentBytes = readPage(fixture, page.id);
+    expect(currentBytes).toContain('after-change-marker');
+    expect(currentBytes).not.toContain('before-change-marker');
+    expect(sha256(currentBytes)).not.toBe(sha256(pinnedBytes));
   });
 });
 
@@ -290,66 +366,135 @@ interface Fixture {
   workspaceRoot: string;
   store: FsStore;
   access: KnowledgeRetrievalAccess;
+  userId: string;
+  notebook: KnowledgeNotebook;
+  app: ReturnType<typeof createApp>;
 }
 
-function createFixture(label: string): Fixture {
+function createFixture(
+  label: string,
+  initialKnowledge: Parameters<typeof notebookImportFixture>[0]['knowledge'] = []
+): Fixture {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-retrieval-governance-${label}-`));
   testRoots.push(dataRoot);
+  const coreDb = openCoreDb(dataRoot);
+  testDbs.push(coreDb);
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace(label);
+  const workspaceId = testEntityId('ws', label);
+  const workspace = initialKnowledge.length
+    ? store.importWorkspaceSnapshot({
+        ...notebookImportFixture({ workspaceId, knowledge: initialKnowledge, userId }),
+        workspace: {
+          id: workspaceId,
+          name: label,
+          kind: 'general',
+          status: 'active',
+          counts: {
+            threadCount: 0,
+            artifactCount: 0,
+            knowledgeEntryCount: initialKnowledge.length,
+          },
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        knowledge: initialKnowledge,
+        threads: [],
+        turns: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+      })
+    : store.createWorkspace(label, {
+        requestId: randomUUID(),
+        producer: { kind: 'user', id: userId },
+        instructionReference: 'test-fixture:retrieval-governance',
+      });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   return {
     dataRoot,
     workspaceId: workspace.id,
-    workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
+    workspaceRoot,
     store,
-    access: { store, actor: ACTOR, requestActor: REQUEST_ACTOR },
+    userId,
+    notebook: new KnowledgeNotebook({
+      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+    }),
+    app: createApp({ coreDb, dataRoot, store }),
+    access: {
+      store,
+      coreDb,
+      actor: { kind: 'user', id: userId },
+      requestActor: { kind: 'local', userId },
+    },
   };
 }
 
-function createEntry(
+/** Uses the actual native command/header and current shared Core root for every page publication. */
+async function operation(fixture: Fixture, name: string, input: Record<string, unknown>) {
+  const response = await fixture.app.request(`/api/app/operations/${name}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+    body: JSON.stringify({ workspaceId: fixture.workspaceId, ...input }),
+  });
+  expect(response.status, await response.clone().text()).toBe(200);
+  return response.json();
+}
+
+/** Publishes source-free or source-admitted human evidence at the exact current base. */
+async function createEntry(
   fixture: Fixture,
   title: string,
   content: string,
-  sourceReferences?: string[]
+  sourceReferences: string[] = []
 ) {
-  return fixture.store.createKnowledgeEntry(fixture.workspaceId, {
-    kind: 'project-context',
-    title,
-    content,
-    ...(sourceReferences ? { sourceReferences } : {}),
+  const files = fixture.notebook.inspectRevision(fixture.notebook.publishedRevision()).entries;
+  return KnowledgeEntrySchema.parse(
+    await operation(fixture, 'knowledge.create', {
+      baseRevision: fixture.notebook.publishedRevision(),
+      knowledgePageId: `page-${String(Object.keys(files).length).padStart(4, '0')}`,
+      kind: 'project-context',
+      title,
+      content,
+      sourceReferences,
+    })
+  );
+}
+
+/** Observes the same exact published Git bytes used by the retrieval owner. */
+function readPage(fixture: Fixture, id: string): string {
+  return fixture.notebook.readRevision(fixture.notebook.publishedRevision(), [`${id}.md`]).files[
+    `${id}.md`
+  ]!;
+}
+
+/** Keeps each native publication within the existing changed-file bound. */
+async function publishPages(
+  fixture: Fixture,
+  changes: readonly { path: string; content: string }[]
+) {
+  return operation(fixture, 'knowledge.notebook.update', {
+    baseRevision: fixture.notebook.publishedRevision(),
+    changes,
+    summary: 'Governed retrieval fixture',
   });
 }
 
-function pagePath(fixture: Fixture, id: string): string {
-  return join(fixture.workspaceRoot, 'knowledge', 'pages', `${id}.md`);
-}
-
-function readPage(fixture: Fixture, id: string): string {
-  return readFileSync(pagePath(fixture, id), 'utf8');
-}
-
-function updatePageFields(
+async function updatePageFields(
   fixture: Fixture,
   id: string,
   fields: Readonly<Record<string, string>>
-): void {
+): Promise<void> {
   let content = readPage(fixture, id);
   for (const [field, value] of Object.entries(fields)) {
     const expression = new RegExp(`^${field}: .+$`, 'm');
     if (!expression.test(content)) throw new Error(`Fixture field is missing: ${field}.`);
     content = content.replace(expression, `${field}: ${JSON.stringify(value)}`);
   }
-  writeFileSync(pagePath(fixture, id), content);
-}
-
-function copyCanonicalPage(template: string, id: string, title: string, body: string): string {
-  const boundary = template.lastIndexOf('\n---\n');
-  if (boundary < 0) throw new Error('Canonical Knowledge fixture has no body boundary.');
-  const frontmatter = template
-    .slice(0, boundary + '\n---\n'.length)
-    .replace(/^title: .+$/m, `title: ${JSON.stringify(title)}`)
-    .replace(/^openkit_entry_id: .+$/m, `openkit_entry_id: ${JSON.stringify(id)}`);
-  return `${frontmatter}${body}\n`;
+  await publishPages(fixture, [{ path: `${id}.md`, content }]);
 }
 
 function retrievalInput(fixture: Fixture, query: string) {
@@ -402,29 +547,10 @@ function findNamedFiles(root: string, name: string, suffix = false): string[] {
   return paths;
 }
 
-async function waitForRetrievalStage(fixture: Fixture): Promise<void> {
-  const root = join(fixture.workspaceRoot, 'indexes', 'retrieval');
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (hasStagingDirectory(root)) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  throw new Error('Timed out while waiting for Retrieval Kernel publication staging.');
-}
-
-function hasStagingDirectory(root: string): boolean {
-  if (!existsSync(root)) return false;
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (entry.isDirectory() && entry.name.startsWith('.stage-')) return true;
-    if (entry.isDirectory() && hasStagingDirectory(join(root, entry.name))) return true;
-  }
-  return false;
-}
-
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }
 
 function traceId(index: number): string {
-  return `krt_00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+  return testEntityId('krt', `retrieval-trace-${index}`);
 }

@@ -1,8 +1,12 @@
 import {
+  ArtifactIdSchema,
+  ItemIdSchema,
   ItemSchema,
   ProductTurnSchema,
   ReasoningEffortSchema,
+  ThreadIdSchema,
   TurnFileInputsSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
@@ -15,7 +19,7 @@ export const MAX_CONVERSATION_FILE_METADATA_BYTES = 1_048_576;
 /** One immutable Artifact version referenced by a conversation submission. */
 export const ConversationArtifactReferenceSchema = z
   .object({
-    artifactId: z.string().min(1),
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
   })
   .strict();
@@ -47,7 +51,7 @@ export const ConversationTargetSchema = z
     description: z.string().min(1).nullable(),
     availability: z.enum(['available', 'busy', 'unavailable']),
     unavailableReason: z.string().min(1).nullable(),
-    threadId: z.string().min(1).nullable(),
+    threadId: ThreadIdSchema.nullable(),
     profileId: z.string().min(1).nullable(),
     logicalModels: z.array(ConversationModelChoiceSchema),
     defaultLogicalModelId: z.string().min(1).nullable(),
@@ -59,8 +63,8 @@ export const ConversationTargetSchema = z
 /** Context-sensitive target catalog returned to the shared Composer. */
 export const ConversationTargetCatalogSchema = z
   .object({
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1).nullable(),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema.nullable(),
     targets: z.array(ConversationTargetSchema),
     defaultTargetRef: z.string().min(1),
   })
@@ -120,7 +124,7 @@ export const ChatModeOutcomeSchema = z.enum([
 export const ChatModeHandoffSchema = z.object({
   targetMode: z.enum(['task', 'goal']),
   reason: z.string().min(1),
-  statusItemId: z.string().min(1),
+  statusItemId: ItemIdSchema,
 });
 
 /** Response returned after Core Assistant records one Chat Mode outcome. */
@@ -130,10 +134,10 @@ export const SubmitConversationResponseSchema = z.object({
   turn: ProductTurnSchema,
   item: ItemSchema,
   handoff: ChatModeHandoffSchema.nullable(),
-  originatingWorkspaceId: z.string().min(1),
-  originatingThreadId: z.string().min(1),
-  receivingWorkspaceId: z.string().min(1),
-  receivingThreadId: z.string().min(1),
+  originatingWorkspaceId: WorkspaceIdSchema,
+  originatingThreadId: ThreadIdSchema,
+  receivingWorkspaceId: WorkspaceIdSchema,
+  receivingThreadId: ThreadIdSchema,
   targetRef: z.string().min(1),
   logicalModelId: z.string().min(1).nullable(),
 });

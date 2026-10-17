@@ -3,11 +3,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -19,8 +19,12 @@ function fixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-  const db = openWorkspaceDb(dataRoot, 'ws_demo');
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
+  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   const content = 'Cutover exact bytes';
   const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
@@ -29,7 +33,7 @@ function fixture() {
     kind: 'text',
     sensitivity: 'internal',
     requestId: randomUUID(),
-    actorId: 'user_local',
+    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     acceptedAt: new Date().toISOString(),
   });
   const { revisionId } = saveWorkspaceMaterialRevision(db, {
@@ -38,7 +42,7 @@ function fixture() {
     contentDigest,
     expectedRevisionId: null,
     requestId: randomUUID(),
-    actorId: 'user_local',
+    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     acceptedAt: new Date().toISOString(),
   });
   const app = createApp({ coreDb, dataRoot, store });
@@ -48,9 +52,9 @@ function fixture() {
 it('removes all eleven authorized former Material bindings without a row or receipt write', async () => {
   const f = fixture();
   try {
-    const base = '/api/app/workspaces/ws_demo';
+    const base = '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001';
     const material = `${base}/materials/${f.materialId}`;
-    const thread = `${base}/threads/th_demo`;
+    const thread = `${base}/threads/th_00000000-0000-7000-8000-000000000001`;
     const cases = [
       [`${base}/materials`, 'GET', null],
       [`${base}/materials`, 'POST', { title: 'Retired', kind: 'text', sensitivity: 'internal' }],
@@ -115,8 +119,11 @@ it('removes all eleven authorized former Material bindings without a row or rece
 it('reaches all eleven canonical Material outcomes and exact binding replay', async () => {
   const f = fixture();
   try {
-    const selectors = { workspaceId: 'ws_demo', materialId: f.materialId };
-    const thread = { ...selectors, threadId: 'th_demo' };
+    const selectors = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      materialId: f.materialId,
+    };
+    const thread = { ...selectors, threadId: 'th_00000000-0000-7000-8000-000000000001' };
     const call = async (
       id: Parameters<typeof operationRequest>[0],
       input: object,
@@ -128,7 +135,10 @@ it('reaches all eleven canonical Material outcomes and exact binding replay', as
       expect(response.status, id).toBe(status);
       return response.json();
     };
-    expect((await call('material.list', { workspaceId: 'ws_demo' })).materials).toHaveLength(1);
+    expect(
+      (await call('material.list', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }))
+        .materials
+    ).toHaveLength(1);
     expect((await call('material.read', selectors)).material.materialId).toBe(f.materialId);
     expect((await call('material.revision-list', selectors)).revisions).toHaveLength(1);
     expect(
@@ -138,7 +148,7 @@ it('reaches all eleven canonical Material outcomes and exact binding replay', as
     const created = await call(
       'material.create',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: randomUUID(),
         title: 'Canonical',
         kind: 'text',
@@ -164,8 +174,8 @@ it('reaches all eleven canonical Material outcomes and exact binding replay', as
     expect(await call('material.bind', bind)).toEqual(bound);
     expect(f.store.listCommandRequests()).toEqual(receipt);
     const read = await call('material.thread-read', {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
     });
     expect(read.material).toMatchObject({
       resource: { materialId: f.materialId },

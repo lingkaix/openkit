@@ -18,10 +18,10 @@ function envelopeFixture(): unknown {
   return {
     schemaVersion: 1,
     recordType: 'workspace',
-    id: 'ws_demo',
+    id: 'ws_00000000-0000-7000-8000-000000000001',
     ownerScope: 'workspace',
     lineage: {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       requestId: 'req_demo',
     },
     createdAt: '2026-07-04T00:00:00.000Z',
@@ -42,7 +42,7 @@ describe('schema evolution record envelope', () => {
     const parsed = parseRecordEnvelope(envelopeFixture());
 
     expect(parsed.futureOptionalField).toBe('preserve me');
-    expect(parsed.lineage.workspaceId).toBe('ws_demo');
+    expect(parsed.lineage.workspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
   });
 
   it('fails closed for unsupported required features', () => {
@@ -83,6 +83,16 @@ describe('schema evolution record envelope', () => {
     ).toEqual([feature]);
   });
 
+  it('registers inert recurring history and requires explicit reader support', () => {
+    const feature = 'workspace.recurring-triggers.v1';
+    expect(() => assertRegisteredRequiredFeatures([feature])).not.toThrow();
+    const envelope = { ...envelopeFixture(), requiredFeatures: [feature] };
+    expect(() => parseRecordEnvelope(envelope)).toThrow(`Unsupported required feature: ${feature}`);
+    expect(
+      parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
+    ).toEqual([feature]);
+  });
+
   it('keeps the required-feature registry aligned with the accepted spec table', () => {
     const spec = readFileSync(
       new URL('../../../docs/specs/20260703-schema_evolution_record_envelope.md', import.meta.url),
@@ -109,7 +119,7 @@ describe('schema evolution record envelope', () => {
     });
 
     expect(rewritten).toMatchObject({
-      id: 'ws_demo',
+      id: 'ws_00000000-0000-7000-8000-000000000001',
       updatedAt: '2026-07-04T01:00:00.000Z',
       futureOptionalField: 'preserve me',
       extensions: {

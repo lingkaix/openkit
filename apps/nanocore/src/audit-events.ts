@@ -1,7 +1,13 @@
-import { randomUUID } from 'node:crypto';
-import { type AuditEvent, AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  type AuditEvent,
+  AuditEventSchema,
+  allocateEntityId,
+  type KnowledgeOwnerScope,
+  RequestIdSchema,
+} from '@openkit/protocol';
 
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
 import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
 
 /** Input for recording one server-owned audit event. */
@@ -44,6 +50,8 @@ export interface RecordServerAuditEventInput {
   resource?: string | null;
   /** Positive authority revision after the mutation when applicable. */
   resourceRevision?: number | null;
+  /** Exact notebook admission facts, never page bodies or a reusable permission. */
+  notebookAdmission?: AuditEvent['notebookAdmission'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -98,6 +106,8 @@ export interface RecordWorkspaceAuditEventInput {
   resource?: string | null;
   /** Positive authority revision after the mutation when applicable. */
   resourceRevision?: number | null;
+  /** Exact notebook admission facts, never page bodies or a reusable permission. */
+  notebookAdmission?: AuditEvent['notebookAdmission'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -121,11 +131,27 @@ export interface RecordWorkspaceAuditEventInput {
 export function recordWorkspaceAuditEvent(input: RecordWorkspaceAuditEventInput): AuditEvent {
   const { workspaceDb: _workspaceDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, {
+    kind: 'workspace',
+    workspaceId: input.workspaceDb.workspaceId,
+  });
+  if (input.notebookAdmission && input.workspaceId !== input.workspaceDb.workspaceId)
+    throw new Error('Notebook Audit owner does not match its Workspace database.');
 
   return recordAuditEvent(input.workspaceDb.sqlite, {
     ...input,
     workspaceId: input.workspaceId,
   });
+}
+
+/** Records existing-Audit facts in the original User database without changing Memory ownership. */
+export function recordUserAuditEvent(
+  input: Omit<RecordServerAuditEventInput, 'coreDb' | 'workspaceId'> & { readonly userDb: UserDb }
+): AuditEvent {
+  const { userDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
+  assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, { kind: 'user', userId: userDb.userId });
+  return recordAuditEvent(userDb.sqlite, { ...input, workspaceId: null });
 }
 
 /**
@@ -139,6 +165,7 @@ export function recordAppAuditEvent(
 ): AuditEvent {
   const { sqlite: _sqlite, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, null);
 
   return recordAuditEvent(input.sqlite, {
     ...input,
@@ -155,6 +182,7 @@ export function recordAppAuditEvent(
 export function recordServerAuditEvent(input: RecordServerAuditEventInput): AuditEvent {
   const { coreDb: _coreDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, { kind: 'server' });
 
   return recordAuditEvent(input.coreDb.sqlite, {
     ...input,
@@ -162,59 +190,72 @@ export function recordServerAuditEvent(input: RecordServerAuditEventInput): Audi
   });
 }
 
+/** Keeps new notebook admission evidence in its existing exact database owner; facts confer no permission. */
+function assertNotebookAuditScope(
+  admission: AuditEvent['notebookAdmission'],
+  ownerScope: KnowledgeOwnerScope | null
+): void {
+  if (admission && !isDeepStrictEqual(admission.ownerScope, ownerScope))
+    throw new Error('Notebook Audit owner does not match its database.');
+}
+
 /**
  * Lists workspace audit events as protocol records for export.
  *
  * @param workspaceDb Workspace database that owns the events.
  * @param workspaceId Workspace id to export.
+ * @param coreDb Optional transactional home of Workspace-attributed lifecycle Audit.
  * @returns Protocol audit events in stable storage order.
  */
 export function listWorkspaceAuditEvents(
   workspaceDb: WorkspaceDb,
-  workspaceId: string
+  workspaceId: string,
+  coreDb?: CoreDb
 ): AuditEvent[] {
-  return workspaceDb.sqlite
-    .prepare(
-      `SELECT
-        audit_event_id,
-        workspace_id,
-        protocol_version,
-        thread_id,
-        turn_id,
-        item_id,
-        capability_call_id,
-        permission_decision_id,
-        vault_grant_id,
-        request_id,
-        actor_json,
-        subject_json,
-        agent_id,
-        agent_session_id,
-        category,
-        action,
-        resource,
-        resource_revision,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        created_at,
-        occurred_at
-      FROM audit_events
-      WHERE workspace_id = ?
-      ORDER BY created_at, audit_event_id`
-    )
-    .all(workspaceId)
-    .map(auditEventFromRow);
+  const events = listSqliteAuditEvents(workspaceDb.sqlite, workspaceId);
+  if (coreDb) events.push(...listSqliteAuditEvents(coreDb.sqlite, workspaceId));
+  return events.sort(
+    (left, right) =>
+      (left.createdAt ?? '').localeCompare(right.createdAt ?? '') || left.id.localeCompare(right.id)
+  );
+}
+
+/**
+ * Selects the accepted portable Workspace Audit sources without exporting deployment access history.
+ *
+ * @param workspaceDb Workspace-local Audit authority.
+ * @param workspaceId Exact selected Workspace.
+ * @param coreDb Optional home of the recurring transaction exception.
+ * @returns Portable Audit events in stable export order.
+ */
+export function listPortableWorkspaceAuditEvents(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  coreDb?: CoreDb
+): AuditEvent[] {
+  const events = listSqliteAuditEvents(workspaceDb.sqlite, workspaceId);
+  if (coreDb) events.push(...listSqliteAuditEvents(coreDb.sqlite, workspaceId, true));
+  return events.sort(
+    (left, right) =>
+      (left.createdAt ?? '').localeCompare(right.createdAt ?? '') || left.id.localeCompare(right.id)
+  );
 }
 
 /**
  * Lists every audit event stored in one SQLite handle.
  *
- * @param sqlite Core, Workspace, or app database handle.
+ * @param sqlite Core, User, Workspace, or App database handle.
+ * @param workspaceId Selects one Workspace in SQL before decoding any event content.
+ * @param portableRecurringOnly Restricts Core rows to accepted recurring actions and retained subject identity before decoding.
  * @returns Protocol audit events in stable storage order.
  */
-export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
+export function listSqliteAuditEvents(
+  sqlite: CoreDb['sqlite'],
+  workspaceId?: string,
+  portableRecurringOnly = false
+): AuditEvent[] {
+  if (portableRecurringOnly && workspaceId === undefined)
+    throw new Error('Portable recurring Audit requires a Workspace selector.');
   return sqlite
     .prepare(
       `SELECT
@@ -236,16 +277,34 @@ export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
         action,
         resource,
         resource_revision,
+        notebook_admission_json,
         outcome,
         severity,
         summary,
         error_code,
         created_at,
         occurred_at
-      FROM audit_events
+      FROM audit_events event
+      ${workspaceId === undefined ? '' : 'WHERE workspace_id = ?'}
+      ${
+        portableRecurringOnly
+          ? `AND (
+        (action IN ('recurring.schedule.create', 'recurring.schedule.edit',
+          'recurring.schedule.pause', 'recurring.schedule.resume', 'recurring.schedule.delete')
+          AND EXISTS (SELECT 1 FROM recurring_schedules source
+            WHERE source.workspace_id = event.workspace_id AND source.id = event.resource))
+        OR (action = 'recurring.occurrence.terminal'
+          AND EXISTS (SELECT 1 FROM recurring_occurrences source
+            WHERE source.workspace_id = event.workspace_id AND source.id = event.resource))
+        OR (action = 'recurring.expired-range.record'
+          AND EXISTS (SELECT 1 FROM recurring_expired_ranges source
+            WHERE source.workspace_id = event.workspace_id AND source.id = event.resource))
+      )`
+          : ''
+      }
       ORDER BY created_at, audit_event_id`
     )
-    .all()
+    .all(...(workspaceId === undefined ? [] : [workspaceId]))
     .map(auditEventFromRow);
 }
 
@@ -277,6 +336,7 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         action,
         resource,
         resource_revision,
+        notebook_admission_json,
         outcome,
         severity,
         summary,
@@ -332,7 +392,7 @@ function recordAuditEvent(
   const createdAt = (input.now ?? new Date()).toISOString();
   const occurredAt = (input.occurredAt ?? input.now ?? new Date()).toISOString();
   const event = AuditEventSchema.parse({
-    id: input.auditEventId ?? `aud_${randomUUID()}`,
+    id: input.auditEventId ?? allocateEntityId('aud'),
     workspaceId: input.workspaceId,
     protocolVersion: input.protocolVersion,
     threadId: input.threadId ?? null,
@@ -350,6 +410,7 @@ function recordAuditEvent(
     action: input.action,
     resource: input.resource ?? null,
     resourceRevision: input.resourceRevision ?? null,
+    ...(input.notebookAdmission ? { notebookAdmission: input.notebookAdmission } : {}),
     outcome: input.outcome,
     severity: input.severity ?? 'info',
     summary: input.summary,
@@ -391,13 +452,14 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         action,
         resource,
         resource_revision,
+        notebook_admission_json,
         outcome,
         severity,
         summary,
         error_code,
         created_at,
         occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.id,
@@ -418,6 +480,7 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
       event.action,
       event.resource,
       event.resourceRevision,
+      event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
       event.outcome,
       event.severity,
       event.summary,
@@ -454,6 +517,9 @@ function auditEventFromRow(row: unknown): AuditEvent {
     action: event.action,
     resource: event.resource,
     resourceRevision: event.resource_revision ?? null,
+    ...(event.notebook_admission_json
+      ? { notebookAdmission: JSON.parse(String(event.notebook_admission_json)) }
+      : {}),
     outcome: event.outcome,
     severity: event.severity,
     summary: event.summary,

@@ -1,10 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -14,8 +13,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ItemSchema, PROTOCOL_VERSION } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { ensureLayout } from './fs-layout.js';
 import { parseCanonicalWorkspaceHistory } from './workspace-file-records.js';
@@ -42,13 +42,13 @@ function createBoundaryFixture() {
   const firstThread = store.createThread(firstWorkspace.id, 'First boundary thread');
   const firstTurn = store.createTurn(firstWorkspace.id, firstThread.id, 'First boundary turn', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const secondWorkspace = store.createWorkspace('Second boundary workspace');
   const secondThread = store.createThread(secondWorkspace.id, 'Second boundary thread');
   const secondTurn = store.createTurn(secondWorkspace.id, secondThread.id, 'Second boundary turn', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
 
   return {
@@ -69,70 +69,126 @@ function createBoundaryFixture() {
   };
 }
 
+/** Fresh import supplies actual User attribution; no materialized page directory initializes content. */
+function createNotebookBoundaryFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-notebook-'));
+  onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+  const source = new FsStore();
+  const workspace = source.createWorkspace('Notebook boundary workspace');
+  const store = new FsStore({ dataRoot });
+  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+  const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
+  return {
+    dataRoot,
+    workspace,
+    store,
+    workspaceRoot,
+    repositoryPath,
+    notebook: new KnowledgeNotebook({ repositoryPath }),
+    initialize: (files: Record<string, string>) =>
+      store.importWorkspaceSnapshot({
+        workspace,
+        threads: [],
+        turns: [],
+        knowledge: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+        initialNotebookFiles: files,
+        notebookInitialization: {
+          requestId: randomUUID(),
+          producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          instructionReference: 'fixture:workspace-import',
+        },
+      }),
+  };
+}
+
 describe('workspace file-record write and load boundaries', () => {
-  it('ensures the OKF v0.2 root index once and preserves valid human-authored bytes', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-index-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('OKF index workspace');
-    const pagesRoot = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages');
+  // Fresh navigation and body-only normalization belong to notebook-initialization.test.ts, under the Notebook owner's Content, Revisions And History section.
+  it('preserves the authored Git index during Thread writes without adopting materialized bytes', () => {
+    const f = createNotebookBoundaryFixture();
+    const authored = '---\nokf_version: "0.2"\n---\n# Team knowledge\n\nKeep this navigation.\n';
+    f.initialize({ 'index.md': authored });
+    const revision = f.notebook.publishedRevision();
+    const pagesRoot = join(f.workspaceRoot, 'knowledge', 'pages');
     const indexPath = join(pagesRoot, 'index.md');
 
-    expect(readFileSync(indexPath, 'utf8')).toBe('---\nokf_version: "0.2"\n---\n# Knowledge\n');
+    expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
+    expect(existsSync(indexPath)).toBe(false);
+    mkdirSync(pagesRoot, { recursive: true });
+    const materialized = '# Materialized navigation is not content authority.\n';
+    writeFileSync(indexPath, materialized);
+    f.store.createThread(f.workspace.id, 'Do not adopt the materialized index');
 
-    const authored = '---\nokf_version: "0.2"\n---\n# Team knowledge\n\nKeep this navigation.\n';
-    writeFileSync(indexPath, authored);
-    store.createThread(workspace.id, 'Do not rewrite the index');
-    expect(readFileSync(indexPath, 'utf8')).toBe(authored);
+    expect(f.notebook.publishedRevision()).toBe(revision);
+    expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
+    expect(readFileSync(indexPath, 'utf8')).toBe(materialized);
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    expect(reopened.listThreads(f.workspace.id)).toEqual(f.store.listThreads(f.workspace.id));
+    expect(f.notebook.publishedRevision()).toBe(revision);
+    expect(readFileSync(indexPath, 'utf8')).toBe(materialized);
 
     rmSync(indexPath);
-    mkdirSync(join(pagesRoot, 'topic'));
-    writeFileSync(join(pagesRoot, 'topic', 'page.md'), '---\ntype: Topic\n---\n# Topic\n');
-    store.createThread(workspace.id, 'Recreate the missing index');
-    expect(readFileSync(indexPath, 'utf8')).toBe(
-      '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n'
-    );
+    reopened.createThread(f.workspace.id, 'Do not recreate a materialized index');
+    expect(existsSync(indexPath)).toBe(false);
+    expect(f.notebook.publishedRevision()).toBe(revision);
+    expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
   });
 
-  it('adds only the v0.2 version block to a body-only root index', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-body-index-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Body index workspace');
-    const indexPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages', 'index.md');
-    const body = '# Hand-written index\n\nKeep every body byte.\n';
-    writeFileSync(indexPath, body);
+  it('does not repair corrupt published Git from materialized pages during Thread writes', () => {
+    const f = createNotebookBoundaryFixture();
+    const authored = '---\nokf_version: "0.2"\n---\n# Retained navigation\n';
+    f.initialize({ 'index.md': authored });
+    const indexPath = join(f.workspaceRoot, 'knowledge', 'pages', 'index.md');
+    mkdirSync(join(f.workspaceRoot, 'knowledge', 'pages'), { recursive: true });
+    writeFileSync(indexPath, authored);
+    const publishedPath = join(f.repositoryPath, 'refs', 'heads', 'published');
+    const corruptRef = `${'0'.repeat(40)}\n`;
+    writeFileSync(publishedPath, corruptRef);
 
-    store.createThread(workspace.id, 'Version the existing index');
+    expect(() => f.store.createThread(f.workspace.id, 'Do not repair the Notebook')).toThrow(
+      'Notebook recovery required.'
+    );
 
-    expect(readFileSync(indexPath, 'utf8')).toBe(`---\nokf_version: "0.2"\n---\n${body}`);
+    expect(() => f.notebook.publishedRevision()).toThrow('Notebook recovery required.');
+    expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow('Notebook recovery required.');
+    expect(readFileSync(publishedPath, 'utf8')).toBe(corruptRef);
+    expect(readFileSync(indexPath, 'utf8')).toBe(authored);
   });
 
   it.each([
     '---\nokf_version: ["0.2"]\n---\n# Invalid scalar\n',
     '---\nokf_version: "0.1"\n---\n# Conflicting version\n',
     '---\nokf_version: "0.2"\n# Unclosed frontmatter\n',
-  ])('rejects an invalid root index before writing other canonical records', (content) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-invalid-index-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Invalid index workspace');
-    const indexPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages', 'index.md');
-    const threadsRoot = join(dataRoot, 'workspaces', workspace.id, 'threads');
-    const originalThreads = store.listThreads(workspace.id);
-    const originalDirectories = readdirSync(threadsRoot);
-    writeFileSync(indexPath, content);
+  ])('rejects an invalid initial root index before publishing the Workspace', (content) => {
+    const f = createNotebookBoundaryFixture();
+    const originalWorkspaces = f.store.listWorkspaces();
+    const files = { 'index.md': content };
 
-    expect(() => store.createThread(workspace.id, 'Reject the index')).toThrow();
-    expect(readFileSync(indexPath, 'utf8')).toBe(content);
-    expect(readdirSync(threadsRoot)).toEqual(originalDirectories);
-    expect(new FsStore({ dataRoot }).listThreads(workspace.id)).toEqual(originalThreads);
+    expect(() => f.initialize(files)).toThrow('Notebook invalid request.');
+    expect(files['index.md']).toBe(content);
+    expect(existsSync(f.workspaceRoot)).toBe(false);
+    expect(f.store.listWorkspaces()).toEqual(originalWorkspaces);
+    expect(new FsStore({ dataRoot: f.dataRoot }).listWorkspaces()).toEqual(originalWorkspaces);
   });
   it('does not fall back to owner-nested workspace records when the canonical root is absent', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-no-fallback-'));
     const seedStore = new FsStore({ dataRoot });
     const workspace = seedStore.createWorkspace('Legacy nested workspace');
     const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
-    const ownerNestedRoot = join(dataRoot, 'users', 'user_local', 'workspaces', workspace.id);
+    const ownerNestedRoot = join(
+      dataRoot,
+      'users',
+      'usr_00000000-0000-7000-8000-000000000001',
+      'workspaces',
+      workspace.id
+    );
 
-    mkdirSync(join(dataRoot, 'users', 'user_local', 'workspaces'), { recursive: true });
+    mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'workspaces'), {
+      recursive: true,
+    });
     renameSync(canonicalRoot, ownerNestedRoot);
 
     expect(existsSync(canonicalRoot)).toBe(false);
@@ -155,7 +211,7 @@ describe('workspace file-record write and load boundaries', () => {
 
     switch (family) {
       case 'AgentSession': {
-        const id = 'as_cross_workspace_boundary';
+        const id = 'as_00000000-0000-7b0f-96e7-3f6551c1efa7';
         const original = store.createAgentSession({
           id,
           agentId: 'agent_codex_host',
@@ -189,7 +245,7 @@ describe('workspace file-record write and load boundaries', () => {
       }
 
       case 'artifact': {
-        const id = 'ar_cross_workspace_boundary';
+        const id = 'ar_00000000-0000-7466-96a2-e0274de2cc84';
         const original = store.createArtifact({
           id,
           workspaceId: first.workspace.id,
@@ -245,7 +301,7 @@ describe('workspace file-record write and load boundaries', () => {
       }
 
       case 'knowledge source': {
-        const id = 'ks_cross_workspace_boundary';
+        const id = 'ks_00000000-0000-7d9a-90f6-cb95212c42e2';
         const originalMaterial = 'The first workspace owns this source material.';
         const original = store.createKnowledgeSource(
           {
@@ -308,7 +364,7 @@ describe('workspace file-record write and load boundaries', () => {
     const { dataRoot, first, second, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const original = store.createItem({
-      id: 'it_revision_boundary',
+      id: 'it_00000000-0000-7c6d-b3b1-e8c48c8b327a',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
       turnId: first.turn.id,
@@ -322,7 +378,7 @@ describe('workspace file-record write and load boundaries', () => {
     const operation = () => {
       switch (violation) {
         case 'id':
-          store.updateItem(original.id, { id: 'it_changed_revision_boundary' } as never);
+          store.updateItem(original.id, { id: 'it_00000000-0000-75cc-9039-96ddac89d51f' } as never);
           break;
         case 'type':
           store.createItem({
@@ -354,7 +410,7 @@ describe('workspace file-record write and load boundaries', () => {
         case 'invalid create schema':
           store.createItem({
             ...original,
-            id: 'it_invalid_create_boundary',
+            id: 'it_00000000-0000-7c32-92fd-418f5c9c8e1c',
             status: 'not-an-item-status',
           } as never);
           break;
@@ -372,33 +428,33 @@ describe('workspace file-record write and load boundaries', () => {
   it.each([
     {
       name: 'user-message actor',
-      currentResponsibleUserId: 'user_local',
+      currentResponsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       original: {
         type: 'user-message',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         text: 'Original user message.',
       },
-      changed: { actor: { kind: 'user', id: 'user_other' } },
+      changed: { actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' } },
     },
     {
       name: 'approval-decision actor',
-      currentResponsibleUserId: 'user_local',
+      currentResponsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       original: {
         type: 'approval-decision',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         causationId: 'req_approval_original',
         approvalRequestId: 'apr_attribution_boundary',
         decision: 'granted',
         decidedAt: '2026-01-01T00:00:00.000Z',
       },
-      changed: { actor: { kind: 'user', id: 'user_other' } },
+      changed: { actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' } },
     },
     {
       name: 'approval-decision causationId',
-      currentResponsibleUserId: 'user_local',
+      currentResponsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       original: {
         type: 'approval-decision',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         causationId: 'req_approval_original',
         approvalRequestId: 'apr_attribution_boundary',
         decision: 'granted',
@@ -408,10 +464,10 @@ describe('workspace file-record write and load boundaries', () => {
     },
     {
       name: 'user-input-request responsibleUserId',
-      currentResponsibleUserId: 'user_other',
+      currentResponsibleUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       original: {
         type: 'user-input-request',
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         userInputRequestId: 'uir_attribution_boundary',
         prompt: 'Confirm the immutable attribution.',
         questions: [
@@ -425,27 +481,27 @@ describe('workspace file-record write and load boundaries', () => {
           },
         ],
       },
-      changed: { responsibleUserId: 'user_other' },
+      changed: { responsibleUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
     },
     {
       name: 'user-input-response actor',
-      currentResponsibleUserId: 'user_other',
+      currentResponsibleUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       original: {
         type: 'user-input-response',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         causationId: 'req_user_input_original',
         userInputRequestId: 'uir_attribution_boundary',
         answers: { question_attribution_boundary: ['Yes'] },
         answeredAt: '2026-01-01T00:00:00.000Z',
       },
-      changed: { actor: { kind: 'user', id: 'user_other' } },
+      changed: { actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' } },
     },
     {
       name: 'user-input-response causationId',
-      currentResponsibleUserId: 'user_local',
+      currentResponsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       original: {
         type: 'user-input-response',
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         causationId: 'req_user_input_original',
         userInputRequestId: 'uir_attribution_boundary',
         answers: { question_attribution_boundary: ['Yes'] },
@@ -471,7 +527,7 @@ describe('workspace file-record write and load boundaries', () => {
     );
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const item = ItemSchema.parse({
-      id: 'it_attribution_boundary',
+      id: 'it_00000000-0000-7fc4-aae8-dd5cf69e5992',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -484,7 +540,7 @@ describe('workspace file-record write and load boundaries', () => {
     const supportingRequest =
       changedItem.type === 'user-input-response'
         ? ItemSchema.parse({
-            id: 'it_attribution_supporting_request',
+            id: 'it_00000000-0000-7562-879d-36174aa716fa',
             workspaceId: workspace.id,
             threadId: thread.id,
             turnId: turn.id,
@@ -544,12 +600,12 @@ describe('workspace file-record write and load boundaries', () => {
     const { dataRoot, first, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const request = store.createItem({
-      id: 'it_reload_user_input_request',
+      id: 'it_00000000-0000-77d0-8f57-fa3818abb424',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
       turnId: first.turn.id,
       type: 'user-input-request',
-      responsibleUserId: 'user_local',
+      responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       status: 'completed',
       userInputRequestId: 'uir_reload_foreign_response',
       prompt: 'Confirm the responsible user.',
@@ -567,12 +623,12 @@ describe('workspace file-record write and load boundaries', () => {
       completedAt: timestamp,
     });
     const response = ItemSchema.parse({
-      id: 'it_reload_user_input_response',
+      id: 'it_00000000-0000-7d43-84e8-cc9f1f1a67e0',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
       turnId: first.turn.id,
       type: 'user-input-response',
-      actor: { kind: 'user', id: 'user_other' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
       causationId: 'req_reload_foreign_response',
       status: 'completed',
       userInputRequestId: request.userInputRequestId,
@@ -594,7 +650,7 @@ describe('workspace file-record write and load boundaries', () => {
     const { first, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const original = store.createItem({
-      id: 'it_failed_append_boundary',
+      id: 'it_00000000-0000-72d9-a1ba-fc94cc09ebec',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
       turnId: first.turn.id,
@@ -638,7 +694,7 @@ describe('workspace file-record write and load boundaries', () => {
     const { dataRoot, first, second, store } = createBoundaryFixture();
     const patch =
       field === 'id'
-        ? { id: 'tu_changed_identity_boundary' }
+        ? { id: 'tu_00000000-0000-7d05-b7b7-98b9d4579c71' }
         : field === 'workspaceId'
           ? { workspaceId: second.workspace.id }
           : field === 'threadId'
@@ -672,7 +728,7 @@ describe('workspace file-record write and load boundaries', () => {
     const { dataRoot, first, second, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const session = store.createAgentSession({
-      id: 'as_update_identity_boundary',
+      id: 'as_00000000-0000-76dd-90ec-52fddf601ff7',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
@@ -683,7 +739,7 @@ describe('workspace file-record write and load boundaries', () => {
     });
     const patch =
       field === 'id'
-        ? { id: 'as_changed_identity_boundary' }
+        ? { id: 'as_00000000-0000-7436-a03e-9057e5ce1f82' }
         : field === 'workspaceId'
           ? { workspaceId: second.workspace.id }
           : field === 'threadId'
@@ -702,7 +758,7 @@ describe('workspace file-record write and load boundaries', () => {
     const { dataRoot, first, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const firstSession = store.createAgentSession({
-      id: 'as_current_boundary_first',
+      id: 'as_00000000-0000-747a-8276-9839920addd4',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
@@ -711,7 +767,7 @@ describe('workspace file-record write and load boundaries', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const secondSessionId = 'as_current_boundary_second';
+    const secondSessionId = 'as_00000000-0000-70e6-a30a-3a20e4fcde16';
 
     expect
       .soft(() =>
@@ -745,7 +801,7 @@ describe('workspace file-record write and load boundaries', () => {
     const { first, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const predecessor = store.createAgentSession({
-      id: 'as_successor_boundary_predecessor',
+      id: 'as_00000000-0000-7cfe-9caa-d56ef5ebfb5d',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
@@ -756,7 +812,7 @@ describe('workspace file-record write and load boundaries', () => {
     });
     const closedPredecessor = store.updateAgentSession(predecessor.id, { status: 'closed' });
     const successor = store.createAgentSession({
-      id: 'as_successor_boundary_current',
+      id: 'as_00000000-0000-7e61-83f5-32cd2f5b5f35',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
@@ -776,7 +832,7 @@ describe('workspace file-record write and load boundaries', () => {
     const { dataRoot, first, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const session = store.createAgentSession({
-      id: 'as_terminal_boundary',
+      id: 'as_00000000-0000-7914-bbcc-ec35419944b8',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
       threadId: first.thread.id,
@@ -806,22 +862,22 @@ describe('workspace file-record write and load boundaries', () => {
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const threadId =
       violation === 'missing thread'
-        ? 'th_missing_create_lineage'
+        ? 'th_00000000-0000-7444-aba1-895da857a04e'
         : violation.includes('cross-workspace')
           ? second.thread.id
           : first.thread.id;
     const turnId =
       violation === 'missing turn'
-        ? 'tu_missing_create_lineage'
+        ? 'tu_00000000-0000-72bf-9b0b-cd9581385489'
         : violation === 'cross-workspace lineage'
           ? second.turn.id
           : null;
     const id =
       family === 'AgentSession'
-        ? 'as_invalid_create_lineage'
+        ? 'as_00000000-0000-7d39-83f3-8b9ab89088f6'
         : family === 'artifact'
-          ? 'ar_invalid_create_lineage'
-          : 'ks_invalid_create_lineage';
+          ? 'ar_00000000-0000-7079-8b12-81b344b6a5e1'
+          : 'ks_00000000-0000-7c89-a9fd-b9379d38d369';
 
     const operation = () => {
       if (family === 'AgentSession') {
@@ -902,7 +958,7 @@ describe('workspace file-record write and load boundaries', () => {
     switch (family) {
       case 'item': {
         const item = store.createItem({
-          id: 'it_cross_lineage_event',
+          id: 'it_00000000-0000-78f6-9e01-ea1ec12708fe',
           workspaceId: second.workspace.id,
           threadId: second.thread.id,
           turnId: second.turn.id,
@@ -924,7 +980,7 @@ describe('workspace file-record write and load boundaries', () => {
 
       case 'artifact': {
         const artifact = store.createArtifact({
-          id: 'ar_cross_lineage_event',
+          id: 'ar_00000000-0000-7393-a5cd-4fbe2a969e4c',
           workspaceId: second.workspace.id,
           threadId: second.thread.id,
           turnId: second.turn.id,
@@ -957,7 +1013,7 @@ describe('workspace file-record write and load boundaries', () => {
 
       case 'AgentSession': {
         const agentSession = store.createAgentSession({
-          id: 'as_cross_lineage_event',
+          id: 'as_00000000-0000-7fee-91c8-74b960d30b20',
           agentId: 'agent_codex_host',
           workspaceId: second.workspace.id,
           threadId: second.thread.id,
@@ -1013,7 +1069,7 @@ describe('workspace file-record write and load boundaries', () => {
 
     if (family === 'artifact') {
       const artifact = store.createArtifact({
-        id: 'ar_missing_event_state',
+        id: 'ar_00000000-0000-70b9-84c0-0dc43cac0400',
         workspaceId: first.workspace.id,
         threadId: first.thread.id,
         turnId: first.turn.id,
@@ -1044,7 +1100,7 @@ describe('workspace file-record write and load boundaries', () => {
       recordRoot = join(first.root, 'artifacts', artifact.id);
     } else {
       const agentSession = store.createAgentSession({
-        id: 'as_missing_event_state',
+        id: 'as_00000000-0000-7a30-87a3-5ec55741b8c7',
         agentId: 'agent_codex_host',
         workspaceId: first.workspace.id,
         threadId: first.thread.id,
@@ -1082,7 +1138,7 @@ describe('workspace file-record write and load boundaries', () => {
 
     if (duplicateAuthority === 'turn items') {
       const item = store.createItem({
-        id: 'it_embedded_turn_boundary',
+        id: 'it_00000000-0000-7456-9649-697d49ec361e',
         workspaceId: first.workspace.id,
         threadId: first.thread.id,
         turnId: first.turn.id,
@@ -1105,7 +1161,7 @@ describe('workspace file-record write and load boundaries', () => {
       writeFileSync(turnPath, `${JSON.stringify(turnRecord, null, 2)}\n`);
     } else {
       const artifact = store.createArtifact({
-        id: 'ar_embedded_body_boundary',
+        id: 'ar_00000000-0000-78bf-b0ac-55525ed5cf3c',
         workspaceId: first.workspace.id,
         threadId: first.thread.id,
         turnId: first.turn.id,

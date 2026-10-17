@@ -13,10 +13,10 @@ import { useWorkspaceStore } from '../workspace-store';
 const TIMESTAMP = '2026-07-21T00:00:00.000Z';
 
 const ARTIFACT = {
-  id: 'artifact1',
-  workspaceId: 'ws1',
-  threadId: 'th1',
-  turnId: 'turn1',
+  id: 'ar_00000000-0000-7253-b8ba-33c62b659edd',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  turnId: 'tu_00000000-0000-7758-92a1-1414360a0f8b',
   kind: 'report',
   title: 'Release notes draft',
   status: 'ready',
@@ -27,8 +27,8 @@ const ARTIFACT = {
   lastMutationRequestId: 'req_artifact',
   origin: {
     kind: 'turn-output',
-    threadId: 'th1',
-    turnId: 'turn1',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+    turnId: 'tu_00000000-0000-7758-92a1-1414360a0f8b',
     requestId: 'req_artifact',
   },
   createdAt: TIMESTAMP,
@@ -36,13 +36,13 @@ const ARTIFACT = {
 };
 
 const REVIEW = {
-  workspaceId: 'ws1',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   reviewId: 'review1',
-  artifactId: 'artifact1',
+  artifactId: 'ar_00000000-0000-7253-b8ba-33c62b659edd',
   artifactVersion: 1,
   contentDigest: ARTIFACT.contentDigest,
-  sourceThreadId: 'th1',
-  sourceTurnId: 'turn1',
+  sourceThreadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+  sourceTurnId: 'tu_00000000-0000-7758-92a1-1414360a0f8b',
   sourceAgentId: 'agent1',
   materialProposal: null,
   decision: null,
@@ -62,9 +62,9 @@ const PROPOSAL_ARTIFACT = {
 };
 
 const MATERIAL_BASE_REVISION = {
-  workspaceId: 'ws1',
-  materialId: 'material_release_notes',
-  revisionId: 'revision_base',
+  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  materialId: 'mat_00000000-0000-7afa-a16b-33440db6a104',
+  revisionId: 'mrev_00000000-0000-78fe-9799-54f80643d746',
   parentRevisionId: null,
   mediaType: 'text/markdown' as const,
   contentDigest: `sha256:${'c'.repeat(64)}`,
@@ -75,7 +75,7 @@ const MATERIAL_BASE_REVISION = {
 
 const MATERIAL_CURRENT_REVISION = {
   ...MATERIAL_BASE_REVISION,
-  revisionId: 'revision_user_newer',
+  revisionId: 'mrev_00000000-0000-703d-9648-6c0618855188',
   parentRevisionId: MATERIAL_BASE_REVISION.revisionId,
   contentDigest: `sha256:${'d'.repeat(64)}`,
   createdAt: '2026-07-21T00:01:00.000Z',
@@ -107,7 +107,7 @@ function makeClient(
     operations: {
       'material.read': vi.fn().mockResolvedValue({
         material: {
-          workspaceId: 'ws1',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
           materialId: MATERIAL_BASE_REVISION.materialId,
           title: 'Release notes',
           kind: 'markdown',
@@ -134,7 +134,7 @@ function makeClient(
       'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [REVIEW] }),
       'artifact.review.decide': vi.fn().mockResolvedValue({
         reviewId: 'review1',
-        artifactId: 'artifact1',
+        artifactId: 'ar_00000000-0000-7253-b8ba-33c62b659edd',
         artifactVersion: 1,
         decision: 'accepted',
         followUpTurnId: null,
@@ -144,28 +144,32 @@ function makeClient(
       'workspace.list': vi
         .fn()
         .mockResolvedValueOnce({
-          items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
-            effectiveRole: 'owner',
-            membershipRevision: 1,
-            ownerUserId: 'user_local',
-            registryRevision: 1,
-          })),
+          items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map(
+            (workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+              registryRevision: 1,
+            })
+          ),
         })
         .mockImplementation(
           (overrides.operations?.['workspace.list'] as
             | CoreClient['operations']['workspace.list']
             | undefined) ??
             vi.fn().mockResolvedValue({
-              items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
+              items: [
+                { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+              ].map((workspace) => ({
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -222,7 +226,7 @@ describe('Artifact Review S14', () => {
           revisionId: string;
         }) => {
           if (
-            workspaceId === 'ws1' &&
+            workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
             materialId === MATERIAL_BASE_REVISION.materialId &&
             revisionId === MATERIAL_BASE_REVISION.revisionId
           ) {
@@ -240,7 +244,10 @@ describe('Artifact Review S14', () => {
         'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     const proposal = await screen.findByRole('region', { name: /reviewed artifact proposal/i });
     const base = screen.getByRole('region', { name: /recorded base revision/i });
@@ -251,7 +258,7 @@ describe('Artifact Review S14', () => {
     expect(base).toHaveTextContent(MATERIAL_BASE_REVISION.revisionId);
     expect(getWorkspaceMaterialRevision).toHaveBeenCalledTimes(1);
     expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       materialId: MATERIAL_BASE_REVISION.materialId,
       revisionId: MATERIAL_BASE_REVISION.revisionId,
     });
@@ -282,7 +289,10 @@ describe('Artifact Review S14', () => {
         'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     const unavailable = await screen.findByRole('alert');
     expect(unavailable).toHaveTextContent(/review (?:is )?unavailable|recovery required/i);
@@ -315,7 +325,9 @@ describe('Artifact Review S14', () => {
       artifactVersion: PROPOSAL_REVIEW.artifactVersion,
       decision,
       followUpTurnId:
-        decision === 'needs_refinement' || decision === 'redo' ? 'turn_follow_up' : null,
+        decision === 'needs_refinement' || decision === 'redo'
+          ? 'tu_00000000-0000-72d1-b818-434d696c7933'
+          : null,
     });
     const client = makeClient({
       operations: {
@@ -324,7 +336,10 @@ describe('Artifact Review S14', () => {
         'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     const action = await screen.findByRole('button', { name: label });
     if (feedback) {
@@ -340,7 +355,7 @@ describe('Artifact Review S14', () => {
 
     await waitFor(() =>
       expect(submitArtifactReviewDecision).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         artifactId: PROPOSAL_REVIEW.artifactId,
         artifactVersion: PROPOSAL_REVIEW.artifactVersion,
         ...(feedback ? { decision, feedback } : { decision }),
@@ -371,7 +386,10 @@ describe('Artifact Review S14', () => {
       .fn()
       .mockImplementation(
         async ({ workspaceId, materialId }: { workspaceId: string; materialId: string }) => {
-          if (workspaceId === 'ws1' && materialId === MATERIAL_CURRENT_REVISION.materialId) {
+          if (
+            workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
+            materialId === MATERIAL_CURRENT_REVISION.materialId
+          ) {
             return {
               material: {
                 workspaceId,
@@ -401,14 +419,14 @@ describe('Artifact Review S14', () => {
           revisionId: string;
         }) => {
           if (
-            workspaceId === 'ws1' &&
+            workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
             materialId === MATERIAL_BASE_REVISION.materialId &&
             revisionId === MATERIAL_BASE_REVISION.revisionId
           ) {
             return { revision: MATERIAL_BASE_REVISION };
           }
           if (
-            workspaceId === 'ws1' &&
+            workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
             materialId === MATERIAL_CURRENT_REVISION.materialId &&
             revisionId === MATERIAL_CURRENT_REVISION.revisionId
           ) {
@@ -428,7 +446,10 @@ describe('Artifact Review S14', () => {
         'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     await user.click(await screen.findByRole('button', { name: /^accept$/i }));
 
@@ -444,24 +465,24 @@ describe('Artifact Review S14', () => {
     );
     expect(getWorkspaceMaterial).toHaveBeenCalledTimes(1);
     expect(getWorkspaceMaterial).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       materialId: MATERIAL_CURRENT_REVISION.materialId,
     });
     expect(getWorkspaceMaterialRevision).toHaveBeenCalledTimes(2);
     expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       materialId: MATERIAL_BASE_REVISION.materialId,
       revisionId: MATERIAL_BASE_REVISION.revisionId,
     });
     expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       materialId: MATERIAL_CURRENT_REVISION.materialId,
       revisionId: MATERIAL_CURRENT_REVISION.revisionId,
     });
     expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
     expect(submitArtifactReviewDecision).toHaveBeenCalledTimes(1);
     expect(submitArtifactReviewDecision).toHaveBeenNthCalledWith(1, {
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       artifactId: PROPOSAL_REVIEW.artifactId,
       artifactVersion: PROPOSAL_REVIEW.artifactVersion,
       ...{ decision: 'accepted' },
@@ -482,7 +503,7 @@ describe('Artifact Review S14', () => {
     await user.click(reject);
     await waitFor(() => expect(submitArtifactReviewDecision).toHaveBeenCalledTimes(2));
     expect(submitArtifactReviewDecision).toHaveBeenNthCalledWith(2, {
-      workspaceId: 'ws1',
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       artifactId: PROPOSAL_REVIEW.artifactId,
       artifactVersion: PROPOSAL_REVIEW.artifactVersion,
       ...{ decision: 'rejected' },
@@ -495,9 +516,9 @@ describe('Artifact Review S14', () => {
     const decidedReview = {
       ...PROPOSAL_REVIEW,
       decision: 'accepted' as const,
-      decisionActorId: 'user_reviewer',
+      decisionActorId: 'usr_00000000-0000-7706-800d-9f6504ae7325',
       decidedAt: '2026-07-21T00:02:00.000Z',
-      appliedMaterialRevisionId: 'revision_applied',
+      appliedMaterialRevisionId: 'mrev_00000000-0000-73b6-951f-12d3bf78a1d3',
     };
     const listArtifactReviews = vi
       .fn()
@@ -514,7 +535,10 @@ describe('Artifact Review S14', () => {
         'artifact.review-list': listArtifactReviews,
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     await user.click(await screen.findByRole('button', { name: /^accept$/i }));
     await waitFor(() => expect(listArtifactReviews).toHaveBeenCalledTimes(2));
@@ -539,9 +563,9 @@ describe('Artifact Review S14', () => {
     const decidedReview = {
       ...PROPOSAL_REVIEW,
       decision: 'accepted' as const,
-      decisionActorId: 'user_reviewer',
+      decisionActorId: 'usr_00000000-0000-7706-800d-9f6504ae7325',
       decidedAt: '2026-07-21T00:02:00.000Z',
-      appliedMaterialRevisionId: 'revision_applied',
+      appliedMaterialRevisionId: 'mrev_00000000-0000-73b6-951f-12d3bf78a1d3',
     };
     const client = makeClient({
       operations: {
@@ -549,7 +573,10 @@ describe('Artifact Review S14', () => {
         'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [decidedReview] }),
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     const status = await screen.findByRole('status', { name: /artifact review/i });
     expect(status).toHaveTextContent(/approved/i);
@@ -607,13 +634,16 @@ describe('Artifact Review S14', () => {
       const decidedReview = {
         ...PROPOSAL_REVIEW,
         decision,
-        decisionActorId: 'user_reviewer',
+        decisionActorId: 'usr_00000000-0000-7706-800d-9f6504ae7325',
         decidedAt: '2026-07-21T00:02:00.000Z',
         feedback:
           decision === 'needs_refinement' || decision === 'redo' ? 'Revise this output.' : null,
         followUpTurnId:
-          decision === 'needs_refinement' || decision === 'redo' ? 'turn_follow_up' : null,
-        appliedMaterialRevisionId: decision === 'accepted' ? 'revision_applied' : null,
+          decision === 'needs_refinement' || decision === 'redo'
+            ? 'tu_00000000-0000-72d1-b818-434d696c7933'
+            : null,
+        appliedMaterialRevisionId:
+          decision === 'accepted' ? 'mrev_00000000-0000-73b6-951f-12d3bf78a1d3' : null,
       };
       const client = makeClient({
         core: {},
@@ -623,7 +653,10 @@ describe('Artifact Review S14', () => {
           'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [decidedReview] }),
         },
       });
-      renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+      renderApp(
+        '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+        client
+      );
 
       const status = await screen.findByRole('status', { name: /artifact review/i });
       const chip = within(status).queryByText(new RegExp(`^${statusText}$`, 'i'));
@@ -650,7 +683,10 @@ describe('Artifact Review S14', () => {
         'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     const actions = await Promise.all(
       [/^accept$/i, /request refinement/i, /^redo$/i, /^reject$/i, /^defer$/i].map((name) =>
@@ -668,7 +704,10 @@ describe('Artifact Review S14', () => {
         'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     const actions = await Promise.all(
       [/^accept$/i, /request refinement/i, /^redo$/i, /^reject$/i, /^defer$/i].map((name) =>
@@ -691,7 +730,10 @@ describe('Artifact Review S14', () => {
         'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      client
+    );
 
     const actions = await Promise.all(
       [/^accept$/i, /request refinement/i, /^redo$/i, /^reject$/i, /^defer$/i].map((name) =>

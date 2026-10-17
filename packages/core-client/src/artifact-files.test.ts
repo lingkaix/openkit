@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from './client.js';
 import { ApiCallError, ProtocolValidationError } from './errors.js';
@@ -14,15 +15,17 @@ const originals = JSON.parse(
 }>;
 const original = originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
 const bytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
+const workspaceId = allocateEntityId('ws');
+const artifactId = allocateEntityId('ar');
 const metadata = {
-  workspaceId: 'ws_demo',
+  workspaceId,
   requestId: 'raw-import-request',
   title: 'An original + file.bin',
   mediaType: 'application/octet-stream',
   byteLength: original.size,
   contentDigest: original.sha256,
 };
-const selector = { workspaceId: 'ws_demo', artifactId: 'ar_exact', artifactVersion: 3 };
+const selector = { workspaceId, artifactId, artifactVersion: 3 };
 
 /** Uses fixed producer metadata, independent of the client parser. */
 function downloadHeaders(): Record<string, string> {
@@ -59,7 +62,7 @@ describe('Artifact binary client bindings', () => {
       expect(Buffer.from(await new Response(init?.body).arrayBuffer())).toEqual(
         Buffer.from(entry.patternHex.repeat(entry.repeats), 'hex')
       );
-      return Response.json({ artifactId: 'ar_exact', artifactVersion: 1 }, { status: 201 });
+      return Response.json({ artifactId, artifactVersion: 1 }, { status: 201 });
     });
     const client = createCoreClient({
       baseUrl: 'http://127.0.0.1',
@@ -71,7 +74,7 @@ describe('Artifact binary client bindings', () => {
         { ...metadata, byteLength: entry.size, contentDigest: entry.sha256 },
         body
       )
-    ).resolves.toEqual({ artifactId: 'ar_exact', artifactVersion: 1 });
+    ).resolves.toEqual({ artifactId, artifactVersion: 1 });
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
@@ -95,8 +98,8 @@ describe('Artifact binary client bindings', () => {
         const url = new URL(String(input));
         expect(url.pathname).toBe('/api/app/operations/artifact.download');
         expect(Object.fromEntries(url.searchParams)).toEqual({
-          workspaceId: 'ws_demo',
-          artifactId: 'ar_exact',
+          workspaceId,
+          artifactId,
           artifactVersion: '3',
         });
         expect(init?.method).toBe('GET');
@@ -117,7 +120,7 @@ describe('Artifact binary client bindings', () => {
     expect(Buffer.from(await new Response(result.body).arrayBuffer())).toEqual(bytes);
     expect(pulls).toBe(1);
     expect(client.artifactFiles.browserDownloadUrl(selector)).toBe(
-      'http://127.0.0.1/api/app/operations/artifact.download?workspaceId=ws_demo&artifactId=ar_exact&artifactVersion=3'
+      `http://127.0.0.1/api/app/operations/artifact.download?workspaceId=${workspaceId}&artifactId=${artifactId}&artifactVersion=3`
     );
   });
 
@@ -169,8 +172,7 @@ describe('Artifact binary client bindings', () => {
   it('validates the accepted import response instead of inventing a usable version', async () => {
     const client = createCoreClient({
       baseUrl: 'http://127.0.0.1',
-      fetch: async () =>
-        Response.json({ artifactId: 'ar_exact', artifactVersion: 2 }, { status: 201 }),
+      fetch: async () => Response.json({ artifactId, artifactVersion: 2 }, { status: 201 }),
     });
     await expect(client.artifactFiles.import(metadata, bytes)).rejects.toBeInstanceOf(
       ProtocolValidationError

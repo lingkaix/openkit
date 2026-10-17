@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
@@ -72,11 +73,15 @@ it('derives Artifact metadata views with bound identity omitted and feedback ref
     ['workspaceId', 'requestId']
   );
   expect(
-    decision.safeParse({ artifactId: 'ar_review', artifactVersion: 1, decision: 'redo' }).success
+    decision.safeParse({
+      artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+      artifactVersion: 1,
+      decision: 'redo',
+    }).success
   ).toBe(false);
   expect(
     decision.safeParse({
-      artifactId: 'ar_review',
+      artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
       artifactVersion: 1,
       decision: 'redo',
       feedback: 'Try again.',
@@ -86,22 +91,36 @@ it('derives Artifact metadata views with bound identity omitted and feedback ref
 
 describe('automation, scheduler and recovery definitions', () => {
   it('uses strict complete inputs and preserves model-view validation and mutation posture', () => {
+    const workspaceId = allocateEntityId('ws');
+    const threadId = allocateEntityId('th');
+    const automationId = allocateEntityId('auto');
     const cases = [
       ['automation.list', {}, false],
       [
         'automation.create',
-        { workspaceId: 'ws_demo', name: 'Morning', cron: '*', prompt: 'Work' },
+        {
+          workspaceId,
+          threadId,
+          name: 'Morning',
+          intervalSeconds: 60,
+          prompt: 'Work',
+        },
         true,
       ],
-      ['automation.update', { automationId: 'auto_one', status: 'enabled' }, true],
-      ['automation.delete', { automationId: 'auto_one' }, true],
-      ['scheduler.list', { workspaceId: 'ws_demo' }, false],
-      ['scheduler.retry', { workspaceId: 'ws_demo', queueEntryId: 'queue_one' }, true],
-      ['scheduler.cancel', { workspaceId: 'ws_demo', queueEntryId: 'queue_one' }, true],
+      ['automation.update', { automationId, expectedRevision: 1, status: 'paused' }, true],
+      ['automation.delete', { automationId }, true],
+      ['scheduler.list', { workspaceId }, false],
+      ['scheduler.retry', { workspaceId, queueEntryId: 'queue_one' }, true],
+      ['scheduler.cancel', { workspaceId, queueEntryId: 'queue_one' }, true],
       ['recovery.worker-list', {}, false],
       [
         'recovery.checkpoint-retry',
-        { workspaceId: 'ws_demo', threadId: 'th_one', turnId: 'tu_one', requestId: 'req_one' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-72dd-bb30-52b75b130790',
+          turnId: 'tu_00000000-0000-758f-aacd-ffed207941ea',
+          requestId: 'req_one',
+        },
         true,
       ],
     ] as const;
@@ -109,7 +128,12 @@ describe('automation, scheduler and recovery definitions', () => {
       const definition = PRODUCT_OPERATION_DEFINITIONS[id];
       expect(definition.mutating).toBe(mutating);
       expect(definition.inputSchema.safeParse(input).success).toBe(true);
-      expect(definition.inputSchema.safeParse({ ...input, userId: 'caller' }).success).toBe(false);
+      expect(
+        definition.inputSchema.safeParse({
+          ...input,
+          userId: 'usr_00000000-0000-7ad7-ba5f-fa99ffbd2c06',
+        }).success
+      ).toBe(false);
       expect(
         operationModelInput(definition.inputSchema, []).safeParse({ ...input, invented: true })
           .success
@@ -165,14 +189,17 @@ it('derives complete strict Generative model views and preserves the schema coll
 it('retains deletion confirmation refinements in complete and model inputs and refuses caller authority selectors', () => {
   const schema = WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS['workspace.delete'].inputSchema;
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     requestId: '00000000-0000-4000-8000-000000000023',
     expectedRegistryRevision: 3,
-    confirmation: 'permanently-delete-workspace:ws_demo:3',
+    confirmation: 'permanently-delete-workspace:ws_00000000-0000-7000-8000-000000000001:3',
   };
   expect(schema.safeParse(input).success).toBe(true);
   expect(
-    schema.safeParse({ ...input, confirmation: 'permanently-delete-workspace:ws_demo:2' }).success
+    schema.safeParse({
+      ...input,
+      confirmation: 'permanently-delete-workspace:ws_00000000-0000-7000-8000-000000000001:2',
+    }).success
   ).toBe(false);
   expect(schema.safeParse({ ...input, expectedRegistryRevision: 0 }).success).toBe(false);
   expect(schema.safeParse({ ...input, administratorEligible: true }).success).toBe(false);
@@ -183,14 +210,22 @@ it('retains deletion confirmation refinements in complete and model inputs and r
   expect(
     model.safeParse({
       expectedRegistryRevision: 3,
-      confirmation: 'permanently-delete-workspace:ws_demo:2',
+      confirmation: 'permanently-delete-workspace:ws_00000000-0000-7000-8000-000000000001:2',
     }).success
   ).toBe(false);
   const disable = WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS['user.disable'].inputSchema;
-  expect(disable.safeParse({ targetUserId: 'target', requestId: input.requestId }).success).toBe(
-    true
-  );
-  expect(disable.safeParse({ userId: 'target', requestId: input.requestId }).success).toBe(false);
+  expect(
+    disable.safeParse({
+      targetUserId: 'usr_01890f3e-0000-7000-8000-000000000001',
+      requestId: input.requestId,
+    }).success
+  ).toBe(true);
+  expect(
+    disable.safeParse({
+      userId: 'usr_00000000-0000-7e74-a359-c1b196ff8ccb',
+      requestId: input.requestId,
+    }).success
+  ).toBe(false);
 });
 
 it('rejects a bootstrap-secret credential mixed with another credential during composition', () => {

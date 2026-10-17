@@ -12,8 +12,8 @@ import {
   resolveProviderSubscriptionFamily,
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
-import type { ActorRef, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import type { ActorRef, TurnSchema } from '@openkit/protocol';
+import { isEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -45,6 +45,7 @@ import {
   isLoopbackHost,
 } from './auth/middleware.js';
 import { registerNanoHostTransportAdmissionRoutes } from './auth/nanohost-transport-admission.js';
+import { fenceNanoHostTransportAuthority } from './auth/nanohost-transport-lifecycle.js';
 import {
   createNanoHostTransportSessionAuthority,
   type NanoHostTransportSessionAuthority,
@@ -72,7 +73,6 @@ import {
   RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
-import { registerConversationFileRoutes } from './conversation-file-routes.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { AutomationStore } from './lib/automation-store.js';
@@ -116,7 +116,7 @@ import {
   markSchedulerAttemptForTerminalTurn,
   markSchedulerExecutionAttemptClosing,
 } from './runtime/execution-attempt-records.js';
-import { createGoalCoordinator } from './runtime/goal-coordinator.js';
+import { createGoalCoordinator, type GoalWorkerCandidate } from './runtime/goal-coordinator.js';
 import {
   advanceGoalForThread,
   checkGoalCommandIntent,
@@ -188,7 +188,6 @@ import {
   openWorkspaceDb,
   type WorkspaceDb,
 } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -210,8 +209,6 @@ import {
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
-
-type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 
 /**
  * Process-local NanoHost transport session authority owned by one Hono app.
@@ -255,7 +252,11 @@ function createBrowserCors(
   mode: CoreMode,
   configuredOrigins: readonly string[]
 ): ReturnType<typeof cors> {
-  const allowedCors = cors({ credentials: true, origin: (origin) => origin });
+  const allowedCors = cors({
+    credentials: true,
+    exposeHeaders: ['X-OpenKit-Content-Digest'],
+    origin: (origin) => origin,
+  });
 
   return async (context, next) => {
     const origin = context.req.header('origin') ?? '';
@@ -323,24 +324,6 @@ function isProductWorkAdmissionRequest(method: string, path: string): boolean {
 }
 
 /**
- * Rejects project-only operations for lightweight Quick Chat workspaces.
- *
- * @param workspace Workspace record selected by the request.
- * @param action Project-only action summary for the user-facing error.
- * @throws TurnStartValidationError when the workspace is Quick Chat.
- */
-function assertProjectWorkspace(workspace: WorkspaceRecord, action: string): void {
-  if (workspace.kind !== 'quick-chat') {
-    return;
-  }
-
-  throw new TurnStartValidationError(
-    'workspace_kind_not_supported',
-    `Quick Chat workspace cannot ${action}. Create or select a project workspace.`
-  );
-}
-
-/**
  * Projects manifest-owned worker readiness into the Worker Coordinator candidate shape.
  *
  * @param store Store that owns workspace resources.
@@ -390,6 +373,8 @@ function workerCoordinatorCandidates(
  * Construction options for the Hono app.
  */
 export interface CreateAppOptions {
+  /** Explicit canonical identity for an embedded fixture without Core storage; production resolves the recorded local User. */
+  localUserId?: string;
   mode?: CoreMode;
   auth?: BetterAuthServer;
   coreDb?: CoreDb;
@@ -646,7 +631,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const sharedStore =
     options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   const workspaceMutationAdmission =
-    options.workspaceMutationAdmission ?? new WorkspaceMutationAdmission();
+    options.workspaceMutationAdmission ??
+    options.automationStore?.mutationAdmission ??
+    new WorkspaceMutationAdmission();
+  if (
+    options.automationStore &&
+    (options.automationStore.coreDb !== options.coreDb ||
+      options.automationStore.mutationAdmission !== workspaceMutationAdmission)
+  )
+    throw new Error(
+      'Recurring schedules require the application Core database and Workspace mutation fence.'
+    );
   if (dataRoot) {
     restoreWorkspaceDeletionMutationAdmission({
       dataRoot,
@@ -654,16 +649,23 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     });
   }
+  let localUserId: string | undefined;
   if (mode === 'local') {
+    localUserId = options.coreDb ? ensureLocalUser(options.coreDb) : options.localUserId;
+    if (
+      !isEntityId('usr', localUserId) ||
+      (options.coreDb && options.localUserId !== undefined && options.localUserId !== localUserId)
+    ) {
+      throw new Error('App construction requires the unique canonical local User authority.');
+    }
     if (options.coreDb) {
-      ensureLocalUser(options.coreDb);
       ensureUserQuickChatWorkspace({
         coreDb: options.coreDb,
         store: sharedStore,
-        userId: LOCAL_USER_ID,
+        userId: localUserId,
       });
     } else {
-      sharedStore.ensureQuickChatWorkspace(LOCAL_USER_ID);
+      sharedStore.ensureQuickChatWorkspace(localUserId);
     }
   }
   const startupOpenKitConfig =
@@ -724,6 +726,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       }
     : undefined;
   const authMiddlewareOptions = {
+    ...(localUserId === undefined ? {} : { localUserId }),
     ...(accessTokenVerifier ? { accessTokenVerifier } : {}),
     ...(options.coreDb
       ? {
@@ -830,7 +833,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
-  const automationStore = options.automationStore ?? new AutomationStore();
+  const automationStore =
+    options.automationStore ??
+    (options.coreDb ? new AutomationStore(options.coreDb, workspaceMutationAdmission) : undefined);
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
   const workerMcpGateway =
@@ -839,6 +844,43 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
     options.nanohostTransportSessionAuthority ?? createNanoHostTransportSessionAuthority();
+  // A real startup-config mismatch ends this App lifetime's NanoHost authority, even when strict reload rejects the candidate or a later file edit restores it. Dry-run remains observational.
+  let nanoHostRestartRequired = false;
+  const admitNanoHostSession = nanohostTransportSessionAuthority.admit.bind(
+    nanohostTransportSessionAuthority
+  );
+  nanohostTransportSessionAuthority.admit = (input) =>
+    nanoHostRestartRequired
+      ? {
+          connectionGeneration: input.connectionGeneration,
+          identityId: input.identityId,
+          role: 'rejected',
+        }
+      : admitNanoHostSession(input);
+  const reloadRuntimeConfig = runtimeConfigManager.reload.bind(runtimeConfigManager);
+  runtimeConfigManager.reload = (input) => {
+    const response = reloadRuntimeConfig(input);
+    if (
+      !input.dryRun &&
+      response.plan.requiresRestart.some((change) => change.path.startsWith('nanohost.'))
+    ) {
+      nanoHostRestartRequired = true;
+      const identityId = startupOpenKitConfig.nanohost?.identityId;
+      if (identityId) {
+        if (options.coreDb) {
+          fenceNanoHostTransportAuthority(
+            options.coreDb,
+            nanohostTransportSessionAuthority,
+            identityId,
+            new Date().toISOString()
+          );
+        } else {
+          nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
+        }
+      }
+    }
+    return response;
+  };
   if (options.coreDb && startupOpenKitConfig.nanohost) {
     const coreDb = options.coreDb;
     const targetId = startupOpenKitConfig.nanohost.identityId;
@@ -1280,10 +1322,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     get: (key: 'actor') => AuthVariables['actor'] | undefined;
   }): RuntimeConfigFileService {
     const store = requestStore(c);
-
+    const actor = c.get('actor');
+    if (!actor) throw new Error('Runtime configuration requires an authenticated canonical User.');
     return new RuntimeConfigFileService({
       dataRoot,
-      userId: c.get('actor')?.userId ?? LOCAL_USER_ID,
+      userId: actor.userId,
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       runtimeConfigManager,
       readRuntimeConfigStatus: () => runtimeConfigManager.status(),
@@ -1635,6 +1678,25 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     providerCredentialConfigured,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     services: goalServices,
+    workerCandidates: (workspaceId, userId) => {
+      const snapshot = runtimeConfig();
+      return currentWorkerCoordinatorCandidates(sharedStore, workspaceId, {
+        userId,
+      }).flatMap<GoalWorkerCandidate>((candidate) => {
+        const runtime = snapshot.agentManifests.find(
+          (manifest) => manifest.id === candidate.agentId
+        )?.runtime.kind;
+        if (runtime !== 'codex' && runtime !== 'opencode') return [];
+        return [
+          {
+            agentId: candidate.agentId,
+            runtime,
+            readiness: candidate.readiness,
+            reasons: candidate.readiness === 'ready' ? [] : ['Current Worker setup is not ready.'],
+          },
+        ];
+      });
+    },
     taskTool: (goalId, coordinatorTurnId) =>
       createCoordinatorTaskTool({
         store: sharedStore,
@@ -1673,7 +1735,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   const chatService = createConversationService({
     providerCredentialConfigured,
-    assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
     workspaceMutationAdmission,
@@ -1690,7 +1751,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const pendingAssistantDelivery = { startTurn: chatService.acceptPendingInput };
 
   const taskStart = createTaskStartOperation({
-    assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
     workspaceMutationAdmission,
@@ -1862,16 +1922,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     fileAdmission,
   });
 
-  registerConversationFileRoutes({
-    app,
-    coreDb: options.coreDb,
-    requestStore,
-    workspaceMutationAdmission,
-    conversationService: chatService,
-    fileAdmission,
-    dataRoot,
-  });
-
   registerOperationJsonRoutes({
     fileAdmission,
     diagnosticsServices,
@@ -1907,7 +1957,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     turnExecutor,
 
     app,
-    automationStore,
+    ...(automationStore ? { automationStore } : {}),
     conversationService: chatService,
     taskStart,
     pendingRequestServices,
@@ -1962,7 +2012,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     turnExecutor,
 
     app,
-    automationStore,
+    ...(automationStore ? { automationStore } : {}),
     conversationService: chatService,
     taskStart,
     pendingRequestServices,

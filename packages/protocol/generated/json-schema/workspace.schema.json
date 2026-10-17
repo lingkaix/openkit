@@ -4,7 +4,7 @@
   "properties": {
     "id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
     "name": {
       "type": "string",
@@ -19,7 +19,7 @@
         "research",
         "operations",
         "general",
-        "quick-chat"
+        "personal"
       ]
     },
     "status": {
@@ -60,11 +60,11 @@
       "properties": {
         "sourceDeploymentId": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         "sourceWorkspaceId": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         "exportCreatedAt": {
           "type": "string",

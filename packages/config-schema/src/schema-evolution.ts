@@ -1,3 +1,14 @@
+import {
+  AgentSessionIdSchema,
+  ArtifactIdSchema,
+  CapabilityCallIdSchema,
+  ItemIdSchema,
+  PermissionDecisionIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  VaultGrantIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /**
@@ -21,6 +32,18 @@ export interface RequiredFeatureDefinition {
  * Known required features used by fail-closed readers.
  */
 export const REQUIRED_FEATURE_REGISTRY = {
+  'openkit.knowledge-owner-scope.v1': {
+    id: 'openkit.knowledge-owner-scope.v1',
+    status: 'active',
+    description:
+      'Knowledge records retain exact User, Workspace or Server ownership and source restrictions.',
+  },
+  'openkit.knowledge-git-notebook.v1': {
+    id: 'openkit.knowledge-git-notebook.v1',
+    status: 'active',
+    description:
+      'Notebook Git revisions own page content, exact-base publication and retained history.',
+  },
   'agent.resource-catalog.v1': {
     id: 'agent.resource-catalog.v1',
     status: 'active',
@@ -71,6 +94,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     status: 'active',
     description: 'Audit retention is controlled by a legal-hold policy.',
   },
+  'workspace.recurring-triggers.v1': {
+    id: 'workspace.recurring-triggers.v1',
+    status: 'active',
+    description:
+      'Workspace export includes inert recurring definitions and exact occurrence and expired-range history.',
+  },
   'workspace.generative-kernel.v1': {
     id: 'workspace.generative-kernel.v1',
     status: 'active',
@@ -100,18 +129,18 @@ export const RecordOwnerScopeSchema = z.enum(['server', 'user', 'workspace', 'or
  */
 export const RecordLineageSchema = z
   .object({
-    workspaceId: z.string().min(1).optional(),
-    threadId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-    itemId: z.string().min(1).optional(),
-    artifactId: z.string().min(1).optional(),
+    workspaceId: WorkspaceIdSchema.optional(),
+    threadId: ThreadIdSchema.optional(),
+    turnId: TurnIdSchema.optional(),
+    itemId: ItemIdSchema.optional(),
+    artifactId: ArtifactIdSchema.optional(),
     knowledgeId: z.string().min(1).optional(),
     agentId: z.string().min(1).optional(),
-    agentSessionId: z.string().min(1).optional(),
+    agentSessionId: AgentSessionIdSchema.optional(),
     aepSnapshotId: z.string().min(1).optional(),
-    capabilityCallId: z.string().min(1).optional(),
-    policyDecisionId: z.string().min(1).optional(),
-    vaultGrantId: z.string().min(1).optional(),
+    capabilityCallId: CapabilityCallIdSchema.optional(),
+    policyDecisionId: PermissionDecisionIdSchema.optional(),
+    vaultGrantId: VaultGrantIdSchema.optional(),
     requestId: z.string().min(1).optional(),
     evidenceBundleId: z.string().min(1).optional(),
   })

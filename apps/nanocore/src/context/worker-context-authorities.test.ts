@@ -44,23 +44,23 @@ describe('worker Context Package authority reader', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
 
     try {
       const turn = store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Run worker',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null,
-        { turnId: 'tu_current' }
+        { turnId: 'tu_00000000-0000-72cd-966c-00128857206d' }
       );
       const session = store.createAgentSession({
-        id: 'as_current',
+        id: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
         agentId: 'agent_codex_host',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         status: 'busy',
         message: null,
         createdAt: turn.startedAt!,
@@ -89,7 +89,7 @@ describe('worker Context Package authority reader', () => {
       const snapshotsRoot = join(
         dataRoot,
         'workspaces',
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'runtime',
         'agent-sessions',
         session.id,
@@ -109,7 +109,10 @@ describe('worker Context Package authority reader', () => {
 
       let exportError: unknown;
       try {
-        listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo');
+        listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
       } catch (error) {
         exportError = error;
       }
@@ -122,16 +125,32 @@ describe('worker Context Package authority reader', () => {
           ]),
         },
       });
-      expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toEqual(
-        record.snapshot
-      );
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          record.snapshotId
+        )
+      ).toEqual(record.snapshot);
       // Historical delivery names its snapshot even after the reusable session pointer advances.
       store.updateAgentSession(session.id, { environmentPackageSnapshotId: 'aepsnap_later' });
-      expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toEqual(
-        record.snapshot
-      );
-      expect(reader.readAgentEnvironmentPackage('ws_demo', 'aepsnap_missing')).toBeNull();
-      expect(reader.readAgentEnvironmentPackage('ws_other', record.snapshotId)).toBeNull();
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          record.snapshotId
+        )
+      ).toEqual(record.snapshot);
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'aepsnap_missing'
+        )
+      ).toBeNull();
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-71f5-922f-6fd42f52f580',
+          record.snapshotId
+        )
+      ).toBeNull();
       expect(readFileSync(selectedPath, 'utf8')).toBe(selectedBytes);
       expect(readFileSync(historicalPath, 'utf8')).toBe(historicalBytes);
 
@@ -139,7 +158,12 @@ describe('worker Context Package authority reader', () => {
       delete invalidSelected.snapshot.observability.captureCoverage;
       invalidSelected.contentDigest = snapshotDigest(invalidSelected.snapshot);
       writeFileSync(selectedPath, JSON.stringify(invalidSelected));
-      expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toBeNull();
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          record.snapshotId
+        )
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -151,7 +175,7 @@ describe('worker Context Package authority reader', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_other');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71f5-922f-6fd42f52f580');
 
     try {
       expect(() =>
@@ -198,7 +222,7 @@ describe('S39 exact source owner map', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     try {
       const admission = new FileStorageAdmission(dataRoot, () => 0n);
@@ -209,13 +233,13 @@ describe('S39 exact source owner map', () => {
       const otherStage = join(dataRoot, 'private-other-input');
       writeFileSync(otherStage, original);
       const turn = store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Read original',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null,
         {
-          turnId: 'tu_source',
+          turnId: 'tu_00000000-0000-7000-8000-0000000003ff',
           fileInputs: [
             {
               name: 'source.bin',
@@ -238,9 +262,9 @@ describe('S39 exact source owner map', () => {
       const artifactText = '# Source artifact\n';
       const artifactDigest = `sha256:${createHash('sha256').update(artifactText).digest('hex')}`;
       store.createArtifact({
-        id: 'ar_source',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: 'ar_00000000-0000-7000-8000-0000000003eb',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         kind: 'file',
         title: 'Source',
@@ -252,7 +276,7 @@ describe('S39 exact source owner map', () => {
         lastMutationRequestId: 'artifact_create',
         origin: {
           kind: 'turn-output',
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           requestId: 'artifact_create',
         },
@@ -261,7 +285,7 @@ describe('S39 exact source owner map', () => {
       });
       const material = createWorkspaceMaterial(workspaceDb, {
         acceptedAt: timestamp,
-        actorId: 'user_local',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
         kind: 'text',
         requestId: 'material_create',
         sensitivity: 'internal',
@@ -271,7 +295,7 @@ describe('S39 exact source owner map', () => {
       const materialDigest = `sha256:${createHash('sha256').update(materialText).digest('hex')}`;
       const revision = saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: timestamp,
-        actorId: 'user_local',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
         content: materialText,
         contentDigest: materialDigest,
         expectedRevisionId: null,
@@ -281,7 +305,7 @@ describe('S39 exact source owner map', () => {
       const later = 'Later revision';
       saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: timestamp,
-        actorId: 'user_local',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
         content: later,
         contentDigest: `sha256:${createHash('sha256').update(later).digest('hex')}`,
         expectedRevisionId: revision.revisionId,
@@ -291,7 +315,7 @@ describe('S39 exact source owner map', () => {
       const reader = createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb });
       const artifact = sourceInventory({
         kind: 'artifact',
-        reference: { scopeId: 'artifact/workspace/ws_demo', objectId: 'ar_source' },
+        reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000001', objectId: 'ar_00000000-0000-7000-8000-0000000003eb' },
         artifactVersion: 1,
       });
       expect(reader.readSourceFile!(artifact)).toEqual({
@@ -309,7 +333,7 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'material',
-            reference: { scopeId: 'material/workspace/ws_demo', objectId: material.materialId },
+            reference: { scopeId: 'material/workspace/ws_00000000-0000-7000-8000-000000000001', objectId: material.materialId },
             revisionId: revision.revisionId,
           })
         )
@@ -320,7 +344,7 @@ describe('S39 exact source owner map', () => {
       });
       const input = sourceInventory({
         kind: 'turn-input',
-        reference: { scopeId: 'input/turn/ws_demo/th_demo/tu_source', objectId: '0' },
+        reference: { scopeId: 'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff', objectId: '0' },
       });
       expect(reader.readSourceFile!(input)).toEqual({
         originalDigest,
@@ -331,7 +355,7 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'turn-input',
-            reference: { scopeId: 'input/turn/ws_demo/th_demo/tu_source', objectId: '2' },
+            reference: { scopeId: 'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff', objectId: '2' },
           })
         )
       ).toBeNull();
@@ -339,14 +363,14 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'artifact',
-            reference: { scopeId: 'artifact/workspace/ws_other', objectId: 'ar_source' },
+            reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000402', objectId: 'ar_00000000-0000-7000-8000-0000000003eb' },
             artifactVersion: 1,
           })
         )
       ).toBeNull();
       // An addressed proof scans only that ordinal. Whole-trace admission still checks every selected source.
       writeFileSync(
-        turnFilePayloadPath(join(dataRoot, 'workspaces/ws_demo'), 'th_demo', turn.id, 1),
+        turnFilePayloadPath(join(dataRoot, 'workspaces/ws_00000000-0000-7000-8000-000000000001'), 'th_00000000-0000-7000-8000-000000000001', turn.id, 1),
         Buffer.from([0, 254, 1])
       );
       expect(reader.readSourceFile!(input)).toEqual({
@@ -358,12 +382,12 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'turn-input',
-            reference: { scopeId: 'input/turn/ws_demo/th_demo/tu_source', objectId: '1' },
+            reference: { scopeId: 'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff', objectId: '1' },
           })
         )
       ).toBeNull();
       writeFileSync(
-        turnFilePayloadPath(join(dataRoot, 'workspaces/ws_demo'), 'th_demo', turn.id, 0),
+        turnFilePayloadPath(join(dataRoot, 'workspaces/ws_00000000-0000-7000-8000-000000000001'), 'th_00000000-0000-7000-8000-000000000001', turn.id, 0),
         Buffer.from([0, 254, 1])
       );
       expect(reader.readSourceFile!(input)).toBeNull();

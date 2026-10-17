@@ -82,7 +82,11 @@ test('App update preflight maps one strict empty-input administrator read', asyn
   const preflight = operationCatalog.find((entry) => entry.id === 'app-update.preflight');
   assert.equal(preflight.mutating, false);
   assert.deepEqual(preflight.inputSchema.parse({}), {});
-  assert.equal(preflight.inputSchema.safeParse({ workspaceId: 'ws_private' }).success, false);
+  assert.equal(
+    preflight.inputSchema.safeParse({ workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f' })
+      .success,
+    false
+  );
   assert.equal(preflight.inputSchema.safeParse({ requestId: 'not-an-input' }).success, false);
   let captured;
   const observation = {
@@ -124,8 +128,8 @@ test('pending request commands forward exact path identities and bodies', async 
   assert.equal(answer.clientMethod, 'operations.question.answer');
   assert.equal(withdraw.clientMethod, 'operations.pending-request.withdraw');
   const scope = {
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     requestId: '00000000-0000-4000-8000-000000000003',
   };
   const answers = { choice: ['left'] };
@@ -231,7 +235,10 @@ test('native environment administration maps exact public reads and revision-bou
     ['update', updateInput],
   ]);
   assert.equal(
-    read.inputSchema.safeParse({ ...readInput, workspaceId: 'ws_other' }).success,
+    read.inputSchema.safeParse({
+      ...readInput,
+      workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+    }).success,
     false
   );
   assert.equal(
@@ -246,8 +253,11 @@ test('Worker environment discovery preserves admin scope and exact target routin
   const status = operationCatalog.find((entry) => entry.id === 'worker-environment.status');
   assert.ok(status);
   assert.match(status.requiredAccess, /deployment admin.*Workspace.*source-audience/);
-  const storageRef = `wst_${'a'.repeat(32)}`;
-  const input = status.inputSchema.parse({ workspaceId: 'ws_engineering', storageRef });
+  const storageRef = 'wst_00000000-0000-7000-8000-000000000001';
+  const input = status.inputSchema.parse({
+    workspaceId: 'ws_00000000-0000-7a39-a8d3-cf329f50118b',
+    storageRef,
+  });
   let observed;
   const result = await status.handler(
     {
@@ -262,7 +272,9 @@ test('Worker environment discovery preserves admin scope and exact target routin
     },
     input
   );
-  assert.deepEqual(observed, [{ workspaceId: 'ws_engineering', storageRef }]);
+  assert.deepEqual(observed, [
+    { workspaceId: 'ws_00000000-0000-7a39-a8d3-cf329f50118b', storageRef },
+  ]);
   assert.deepEqual(result, { inspected: true });
   assert.equal(
     status.inputSchema.safeParse({ ...input, hostPath: '/private/other' }).success,
@@ -290,7 +302,7 @@ test('conversation.submit forwards the exact Worker storage choice on the shared
   assert.ok(operation);
   assert.equal(operation.appOperationId, 'conversation.submit');
   assert.equal(operation.clientMethod, 'operations.conversation.submit');
-  const storageRef = `wst_${'a'.repeat(32)}`;
+  const storageRef = 'wst_00000000-0000-7000-8000-000000000001';
   const workerStorageChoice = {
     expectedRevision: 4,
     kind: 'selected',
@@ -302,8 +314,8 @@ test('conversation.submit forwards the exact Worker storage choice on the shared
     input: 'Implement the focused Task Mode fix.',
     requestId: '11111111-1111-4111-8111-111111111111',
     targetRef: 'new-task-worker',
-    threadId: 'th_demo',
-    workspaceId: 'ws_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     workerStorageChoice,
   };
   assert.deepEqual(operation.inputSchema.parse(input).workerStorageChoice, workerStorageChoice);
@@ -336,8 +348,8 @@ test('conversation.submit forwards the exact Worker storage choice on the shared
     input: 'Implement the focused Task Mode fix.',
     requestId: '11111111-1111-4111-8111-111111111111',
     targetRef: 'new-task-worker',
-    threadId: 'th_demo',
-    workspaceId: 'ws_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   assert.equal('workerStorageChoice' in omitted, false);
 });
@@ -352,7 +364,11 @@ test('catalog configuration application requires exact human confirmation and fo
   const contentDigest = `sha256:${'a'.repeat(64)}`;
   const input = {
     requestId: '11111111-1111-4111-8111-111111111111',
-    candidate: { artifactId: 'candidate', artifactVersion: 1, contentDigest },
+    candidate: {
+      artifactId: 'ar_00000000-0000-7000-8000-000000000088',
+      artifactVersion: 1,
+      contentDigest,
+    },
     confirmation: { action: 'administration.configuration.apply', contentDigest },
   };
   assert.equal(
@@ -403,13 +419,13 @@ test('Worker environment preparation and activation use the global Agent contrac
   const target = { agentId: 'codex', kind: 'agent' };
   const requestId = '11111111-1111-4111-8111-111111111111';
   const prepareInput = prepare.inputSchema.parse({
-    administrationThreadId: 'thread_admin',
+    administrationThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
     configuration,
     declaration: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'d'.repeat(64)}` },
     replaceNow: {
       prompt: 'Continue the current work with browser support.',
-      threadId: 'thread_work',
-      workspaceId: 'ws_engineering',
+      threadId: 'th_00000000-0000-7112-bb40-3c1f2ad81e88',
+      workspaceId: 'ws_00000000-0000-7a39-a8d3-cf329f50118b',
     },
     requestId,
     target,
@@ -433,7 +449,10 @@ test('Worker environment preparation and activation use the global Agent contrac
   );
   assert.deepEqual(observedPrepare, [prepareInput]);
   assert.equal(
-    prepare.inputSchema.safeParse({ ...prepareInput, workspaceId: 'ws_path' }).success,
+    prepare.inputSchema.safeParse({
+      ...prepareInput,
+      workspaceId: 'ws_00000000-0000-7f29-bd5e-f9ef21ea57f9',
+    }).success,
     false
   );
   assert.equal(
@@ -452,9 +471,9 @@ test('Worker environment preparation and activation use the global Agent contrac
   );
 
   const recoverInput = recover.inputSchema.parse({
-    administrationThreadId: 'thread_admin_recovery',
+    administrationThreadId: 'th_00000000-0000-7517-9a5a-1c5686fe112c',
     recoverFrom: {
-      artifactId: 'artifact_authored',
+      artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
       artifactVersion: 1,
       contentDigest: `sha256:${'e'.repeat(64)}`,
     },
@@ -475,11 +494,13 @@ test('Worker environment preparation and activation use the global Agent contrac
   );
 
   const activation = {
-    affectedStorage: [{ expectedRevision: 4, storageRef: `wst_${'a'.repeat(32)}` }],
+    affectedStorage: [
+      { expectedRevision: 4, storageRef: 'wst_00000000-0000-7000-8000-000000000001' },
+    ],
     configuration,
     replaceNow: prepareInput.replaceNow,
     resolvedCandidate: {
-      artifactId: 'artifact_resolved',
+      artifactId: 'ar_00000000-0000-7fd1-9bc1-cf5509dbe80c',
       artifactVersion: 1,
       contentDigest: `sha256:${'f'.repeat(64)}`,
     },
@@ -827,8 +848,11 @@ test('one catalog covers the checked App API and public Core projection', async 
     (entry) => entry.id === 'knowledge.proposal.decide'
   );
   const proposalDecisionInput = {
-    workspaceId: 'workspace_1',
+    workspaceId: 'ws_00000000-0000-7588-a4ef-fda698630734',
     proposalId: 'proposal_1',
+    baseRevision: '1'.repeat(40),
+    candidateRevision: '2'.repeat(40),
+    proposalDigest: `sha256:${'b'.repeat(64)}`,
     requestId: '00000000-0000-4000-8000-000000000001',
     decision: 'accepted',
   };
@@ -842,7 +866,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   );
   assert.equal(
     proposalDecision.inputSchema.safeParse({
-      workspaceId: 'workspace_1',
+      workspaceId: 'ws_00000000-0000-7588-a4ef-fda698630734',
       proposalId: 'proposal_1',
       decision: 'accepted',
     }).success,
@@ -852,12 +876,14 @@ test('one catalog covers the checked App API and public Core projection', async 
     (entry) => entry.id === 'knowledge.proposal.reverse'
   );
   const proposalReverseInput = {
-    workspaceId: 'workspace_1',
+    workspaceId: 'ws_00000000-0000-7588-a4ef-fda698630734',
     proposalId: 'proposal_1',
+    baseRevision: '2'.repeat(40),
     requestId: '00000000-0000-4000-8000-000000000002',
-    reviewId: 'review_1',
+    reviewId: 'kr_00000000-0000-5000-8000-000000000001',
     knowledgePageId: 'lessons/release-review',
     expectedContentDigest: `sha256:${'a'.repeat(64)}`,
+    confirmRemoval: true,
   };
   assert.equal(proposalReverse.clientMethod, 'operations.knowledge.proposal.reverse');
   assert.equal(proposalReverse.appOperationId, 'knowledge.proposal.reverse');
@@ -1057,12 +1083,16 @@ test('my admin-token operations use strict canonical-user schemas and client met
       operation.requiredAccess,
       'canonical user: implicit local actor or server-admin bearer token'
     );
-    const input = action === 'list' ? {} : { tokenId: 'tok_admin' };
+    const input = action === 'list' ? {} : { tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' };
     for (const extra of [{ cookie: 'session' }, { authorization: 'bearer' }, { unknown: true }]) {
       assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
     }
     if (action === 'list') {
-      assert.equal(operation.inputSchema.safeParse({ tokenId: 'tok_admin' }).success, false);
+      assert.equal(
+        operation.inputSchema.safeParse({ tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' })
+          .success,
+        false
+      );
     } else {
       assert.deepEqual(
         Object.keys(operation.inputSchema.shape),
@@ -1097,8 +1127,8 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
   const response = {
     items: [
       {
-        tokenId: 'tok_admin',
-        ownerUserId: 'user_local',
+        tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
         status: 'active',
@@ -1112,11 +1142,11 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
         lastUsedSource: null,
       },
     ],
-    defaultTokenId: 'tok_admin',
+    defaultTokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
   };
   for (const action of ['list', 'default']) {
     const args = ['ops', 'call', `token.my-admin-${action}`, '--input', '-'];
-    const input = action === 'list' ? {} : { tokenId: 'tok_admin' };
+    const input = action === 'list' ? {} : { tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' };
     const url = `http://127.0.0.1:3456/api/app/operations/token.my-admin-${action}`;
     const method = 'POST';
     const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
@@ -1175,7 +1205,11 @@ test('workspace leave uses the canonical-user schema and client method', async (
     'canonical user: implicit local actor or server-admin bearer token'
   );
   const requestId = '11111111-1111-4111-8111-111111111111';
-  const input = { workspaceId: 'ws_demo', expectedRevision: 1, requestId };
+  const input = {
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    expectedRevision: 1,
+    requestId,
+  };
   for (const extra of [
     { userId: 'other' },
     { cookie: 'session' },
@@ -1185,7 +1219,10 @@ test('workspace leave uses the canonical-user schema and client method', async (
     assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
   }
   assert.equal(
-    operation.inputSchema.safeParse({ workspaceId: 'ws_demo', requestId }).success,
+    operation.inputSchema.safeParse({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      requestId,
+    }).success,
     false
   );
   assert.equal(operation.inputSchema.safeParse({ expectedRevision: 1, requestId }).success, false);
@@ -1214,8 +1251,8 @@ test('workspace leave uses the canonical-user schema and client method', async (
 test('bundled workspace leave preserves typed transport, request IDs, and auth denials', async () => {
   const response = {
     member: {
-      workspaceId: 'ws_demo',
-      userId: 'user_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       invitationId: null,
       status: 'removed',
       accessLevel: 'editor',
@@ -1232,7 +1269,7 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
   const requestId = '11111111-1111-4111-8111-111111111111';
   for (const supplied of [undefined, requestId]) {
     const input = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       expectedRevision: 1,
       ...(supplied ? { requestId: supplied } : {}),
     };
@@ -1265,7 +1302,11 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
     const denied = await runCli(
       args,
       { ...env, OPENKIT_NANOCORE_TOKEN: token },
-      JSON.stringify({ workspaceId: 'ws_demo', expectedRevision: 1, requestId }),
+      JSON.stringify({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        expectedRevision: 1,
+        requestId,
+      }),
       [
         dataModule(`
         globalThis.fetch = async (url, options) => {
@@ -1304,13 +1345,26 @@ test('own invitation operations use canonical-user schemas and client methods', 
     );
     assert.equal(operation.mutating, action !== 'list');
     const input =
-      action === 'list' ? {} : { invitationId: 'inv_demo', requestId, expectedRevision: 1 };
-    for (const extra of [{ workspaceId: 'ws_other' }, { userId: 'other' }, { cookie: 'session' }]) {
+      action === 'list'
+        ? {}
+        : {
+            invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220',
+            requestId,
+            expectedRevision: 1,
+          };
+    for (const extra of [
+      { workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
+      { userId: 'other' },
+      { cookie: 'session' },
+    ]) {
       assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
     }
     if (action !== 'list') {
       assert.equal(
-        operation.inputSchema.safeParse({ invitationId: 'inv_demo', requestId }).success,
+        operation.inputSchema.safeParse({
+          invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220',
+          requestId,
+        }).success,
         false
       );
       assert.equal(
@@ -1343,11 +1397,11 @@ test('own invitation operations use canonical-user schemas and client methods', 
 test('bundled own invitation calls preserve typed transport and canonical auth denials', async () => {
   for (const action of ['list', 'accept', 'decline']) {
     const invitation = {
-      invitationId: 'inv_demo',
-      workspaceId: 'ws_demo',
-      inviteeUserId: 'user_demo',
+      invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      inviteeUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       proposedAccessLevel: 'editor',
-      inviterUserId: 'owner_demo',
+      inviterUserId: 'usr_00000000-0000-7000-8000-000000000088',
       revision: 2,
       createdAt: '2026-09-14T00:00:00.000Z',
       updatedAt: '2026-09-14T00:00:00.000Z',
@@ -1358,7 +1412,10 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
       revokedAt: null,
     };
     const response = action === 'list' ? { items: [] } : { invitation };
-    const input = action === 'list' ? {} : { invitationId: 'inv_demo', expectedRevision: 1 };
+    const input =
+      action === 'list'
+        ? {}
+        : { invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220', expectedRevision: 1 };
     const args = ['ops', 'call', `workspace.my-invitation-${action}`, '--input', '-'];
     const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
     const result = await runCli(args, env, JSON.stringify(input), [
@@ -1437,8 +1494,8 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
   );
   assert.equal(
     artifactReviewDecision?.inputSchema.safeParse({
-      workspaceId: 'ws_demo',
-      artifactId: 'artifact_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 1,
       requestId: 'request_review',
       decision: 'accepted',
@@ -1447,8 +1504,8 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
   );
   assert.equal(
     artifactReviewDecision?.inputSchema.safeParse({
-      workspaceId: 'ws_demo',
-      artifactId: 'artifact_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 0,
       requestId: 'request_review',
       decision: 'accepted',
@@ -1490,7 +1547,7 @@ test('restricted Material content operations fail before content-bearing transpo
     [
       'material.create',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: 'req_create',
         title: 'Restricted notes',
         kind: 'markdown',
@@ -1499,15 +1556,19 @@ test('restricted Material content operations fail before content-bearing transpo
     ],
     [
       'material.revision-read',
-      { workspaceId: 'ws_demo', materialId: 'material_demo', revisionId: 'revision_demo' },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+        revisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
+      },
     ],
     [
       'material.revision-save',
       {
-        workspaceId: 'ws_demo',
-        materialId: 'material_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
         requestId: 'req_save',
-        expectedRevisionId: 'revision_demo',
+        expectedRevisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
         contentDigest: `sha256:${'a'.repeat(64)}`,
         content: 'Restricted notes',
       },
@@ -1524,7 +1585,10 @@ test('restricted Material content operations fail before content-bearing transpo
   assert.deepEqual(contentCalls, []);
   assert.deepEqual(
     metadataCalls,
-    Array(2).fill({ workspaceId: 'ws_demo', materialId: 'material_demo' })
+    Array(2).fill({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+    })
   );
 });
 
@@ -1535,8 +1599,8 @@ test('credential.store accepts one token or one complete recovery envelope and s
   const envelope = {
     kind: 'openkit-admin-recovery',
     requestId: '07a6f7d1-7375-5cf7-8705-270d269c22c9',
-    tokenId: '019957ff-2000-7000-8000-000000000001',
-    ownerUserId: 'user_active',
+    tokenId: 'tok_019957ff-2000-5000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     expiresAt: '2026-09-02T12:00:00.000Z',
     token,
   };
@@ -1770,8 +1834,23 @@ for (const [label, executable] of [
     assert.equal(recovery.properties.kind.const, 'openkit-admin-recovery');
     assert.equal(recovery.properties.requestId.type, 'string');
     assert.equal(recovery.properties.requestId.format, 'uuid');
-    assert.equal(recovery.properties.tokenId.format, 'uuid');
-    assert.equal(recovery.properties.ownerUserId.minLength, 1);
+    assert.equal(
+      new RegExp(recovery.properties.tokenId.pattern).test(
+        'tok_019957ff-2000-5000-8000-000000000001'
+      ),
+      true
+    );
+    assert.equal(
+      new RegExp(recovery.properties.tokenId.pattern).test('019957ff-2000-5000-8000-000000000001'),
+      false
+    );
+    assert.equal(
+      new RegExp(recovery.properties.ownerUserId.pattern).test(
+        'usr_00000000-0000-7000-8000-000000000001'
+      ),
+      true
+    );
+    assert.equal(new RegExp(recovery.properties.ownerUserId.pattern).test('user_active'), false);
     assert.equal(recovery.properties.expiresAt.format, 'date-time');
 
     const { operationCatalog } = await operations();
@@ -1806,15 +1885,15 @@ for (const [label, executable] of [
       assert.equal(result.code, 0, result.stdout + result.stderr);
       assert.ok(JSON.parse(result.stdout).data.some((entry) => entry.id === 'caller.read'));
     }
-    for (const input of [{}, { workspaceId: 'ws_owned' }]) {
+    for (const input of [{}, { workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9' }]) {
       const data = {
-        userId: 'user_caller',
+        userId: 'usr_00000000-0000-796a-8487-52dc9d36188f',
         credential: { kind: 'token', scope: 'server-admin' },
         ...(input.workspaceId
           ? {
               workspace: {
-                workspaceId: 'ws_owned',
-                ownerUserId: 'user_caller',
+                workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9',
+                ownerUserId: 'usr_00000000-0000-796a-8487-52dc9d36188f',
                 membershipStatus: null,
                 accessCause: 'administrator',
                 observedAt: '2026-10-15T00:00:00.000Z',
@@ -1853,7 +1932,7 @@ for (const [label, executable] of [
     const rejected = await runCli(
       ['ops', 'call', 'caller.read', '--input', '-'],
       {},
-      '{"userId":"user_other"}',
+      '{"userId":"usr_00000000-0000-73d4-904a-d4c4b905df7c"}',
       [
         dataModule(
           "globalThis.fetch = async () => { process.stderr.write('caller-invalid-input-network\\n'); throw new Error('Invalid caller input reached network'); };"
@@ -1913,6 +1992,8 @@ test('Artifact CLI transfers import and download originals through the bundled c
   const sourcePath = join(root, 'source.bin');
   const destinationPath = join(root, 'original.bin');
   writeFileSync(sourcePath, bytes);
+  const workspaceId = protocol.allocateEntityId('ws');
+  const artifactId = protocol.allocateEntityId('ar');
   const env = {
     OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456',
     OPENKIT_NANOCORE_TOKEN: 'okt_artifact_fixture',
@@ -1928,7 +2009,7 @@ test('Artifact CLI transfers import and download originals through the bundled c
         if (headers.get('x-openkit-request-id') !== 'cli-raw-import') throw new Error('request identity changed');
         const body = Buffer.from(await new Response(options.body).arrayBuffer());
         if (!body.equals(Buffer.from('${bytes.toString('hex')}', 'hex'))) throw new Error('original changed');
-        return Response.json({ artifactId: 'ar_cli', artifactVersion: 1 }, { status: 201 });
+        return Response.json({ artifactId: '${artifactId}', artifactVersion: 1 }, { status: 201 });
       }
       if (parsed.pathname !== '/api/app/operations/artifact.download' || options.method !== 'GET') throw new Error('unexpected download');
       if (parsed.searchParams.get('artifactVersion') !== '1' || parsed.searchParams.has('requestId')) throw new Error('selector changed');
@@ -1939,7 +2020,7 @@ test('Artifact CLI transfers import and download originals through the bundled c
     ['ops', 'call', 'artifact.import', '--input', '-'],
     env,
     JSON.stringify({
-      workspaceId: 'ws_demo',
+      workspaceId,
       requestId: 'cli-raw-import',
       title: 'Original',
       mediaType: 'application/octet-stream',
@@ -1950,13 +2031,13 @@ test('Artifact CLI transfers import and download originals through the bundled c
     [fetchModule]
   );
   assert.equal(uploaded.code, 0, uploaded.stdout + uploaded.stderr);
-  assert.deepEqual(JSON.parse(uploaded.stdout).data, { artifactId: 'ar_cli', artifactVersion: 1 });
+  assert.deepEqual(JSON.parse(uploaded.stdout).data, { artifactId, artifactVersion: 1 });
   const downloaded = await runCli(
     ['ops', 'call', 'artifact.download', '--input', '-'],
     env,
     JSON.stringify({
-      workspaceId: 'ws_demo',
-      artifactId: 'ar_cli',
+      workspaceId,
+      artifactId,
       artifactVersion: 1,
       destinationPath,
     }),
@@ -1988,15 +2069,17 @@ test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local
   assert.equal(upload.clientMethod, 'artifactFiles.import');
   assert.equal(download.clientMethod, 'artifactFiles.download');
   assert.equal(download.mutating, true, 'writing the destination is a local mutation');
+  const workspaceId = protocol.allocateEntityId('ws');
+  const artifactId = protocol.allocateEntityId('ar');
   const metadata = {
-    workspaceId: 'ws_demo',
+    workspaceId,
     requestId: 'artifact-cli-import',
     title: 'Exact binary',
     mediaType: 'application/octet-stream',
     byteLength: original.size,
     contentDigest: original.sha256,
   };
-  const selector = { workspaceId: 'ws_demo', artifactId: 'ar_binary', artifactVersion: 1 };
+  const selector = { workspaceId, artifactId, artifactVersion: 1 };
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
     fetch: async (input, init) => {
@@ -2034,7 +2117,7 @@ test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local
   assert.equal(Object.hasOwn(client.operations, 'artifact.download'), false);
   assert.deepEqual(
     await upload.handler({ client }, upload.inputSchema.parse({ ...metadata, sourcePath })),
-    { artifactId: 'ar_binary', artifactVersion: 1 }
+    { artifactId, artifactVersion: 1 }
   );
   assert.deepEqual(
     await download.handler(
@@ -2125,14 +2208,22 @@ test('portable archive operations stream bytes and refuse local path replacement
 
   await download.handler(
     { client },
-    { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath }
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+      destinationPath,
+    }
   );
   assert.deepEqual(readFileSync(destinationPath), bytes);
   assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
   await assert.rejects(
     download.handler(
       { client },
-      { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath }
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+        destinationPath,
+      }
     ),
     (error) => error.code === 'archive_destination_exists'
   );
@@ -2172,7 +2263,11 @@ test('portable archive operations stream bytes and refuse local path replacement
     await assert.rejects(
       download.handler(
         { client: raceClient },
-        { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath: raceDestination }
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+          destinationPath: raceDestination,
+        }
       ),
       (error) => error.code === 'archive_download_failed'
     );
@@ -2201,7 +2296,11 @@ test('portable archive operations stream bytes and refuse local path replacement
   await assert.rejects(
     download.handler(
       { client: partialClient },
-      { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath: partialDestination }
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+        destinationPath: partialDestination,
+      }
     ),
     (error) => error.code === 'archive_download_failed'
   );
@@ -2548,15 +2647,15 @@ test('token create and rotate require named delivery and preflight before the pu
       action === 'create'
         ? {
             scope: 'workspace',
-            workspaceIds: ['ws_demo'],
-            ownerUserId: 'user_demo',
+            workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+            ownerUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
             expiresAt: '2027-01-01T00:00:00.000Z',
           }
-        : { graceSeconds: 60, tokenId: 'tok_old' };
+        : { graceSeconds: 60, tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18' };
     const input = {
       ...body,
       destination: 'automation',
-      ...(action === 'rotate' ? { tokenId: 'tok_old' } : {}),
+      ...(action === 'rotate' ? { tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18' } : {}),
     };
     for (const destination of [undefined, '', 'admin', '../admin', 'okt_fake_secret']) {
       assert.equal(operation.inputSchema.safeParse({ ...input, destination }).success, false);
@@ -2565,8 +2664,8 @@ test('token create and rotate require named delivery and preflight before the pu
       operation.inputSchema.safeParse({ ...input, baseUrl: 'https://other.example' }).success,
       false
     );
-    const record = { tokenId: 'tok_new' };
-    const rotatedRecord = { tokenId: 'tok_old' };
+    const record = { tokenId: 'tok_00000000-0000-7d69-9a9a-2f137ff87b29' };
+    const rotatedRecord = { tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18' };
     const response = {
       token: 'okt_fake_issued',
       record,
@@ -2816,10 +2915,10 @@ for (const platform of ['darwin', 'linux']) {
       OPENKIT_NANOCORE_TOKEN: 'okt_fake_admin',
     };
     const record = {
-      tokenId: 'tok_new',
-      ownerUserId: 'user_demo',
+      tokenId: 'tok_00000000-0000-7d69-9a9a-2f137ff87b29',
+      ownerUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       status: 'active',
       issuedAt: '2026-09-14T00:00:00.000Z',
       expiresAt: '2027-01-01T00:00:00.000Z',
@@ -2843,18 +2942,28 @@ for (const platform of ['darwin', 'linux']) {
     for (const action of ['create', 'rotate']) {
       const body =
         action === 'create'
-          ? { scope: 'workspace', workspaceIds: ['ws_demo'], expiresAt: record.expiresAt }
-          : { graceSeconds: 60, tokenId: 'tok_old' };
+          ? {
+              scope: 'workspace',
+              workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+              expiresAt: record.expiresAt,
+            }
+          : { graceSeconds: 60, tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18' };
       const input = {
         ...body,
         destination: 'automation',
-        ...(action === 'rotate' ? { tokenId: 'tok_old' } : {}),
+        ...(action === 'rotate' ? { tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18' } : {}),
       };
       const response = {
         token: `okt_fake_${action}`,
         record,
         ...(action === 'rotate'
-          ? { rotatedRecord: { ...record, tokenId: 'tok_old', status: 'rotated' } }
+          ? {
+              rotatedRecord: {
+                ...record,
+                tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18',
+                status: 'rotated',
+              },
+            }
           : {}),
       };
       const url = `${endpoint}/api/app/operations/token.${action}`;
@@ -2926,15 +3035,15 @@ for (const platform of ['darwin', 'linux']) {
     } = isolatedCredentialLayout(root, platform);
     const input = {
       token: 'okt_bootstrap_canary_do_not_print',
-      ownerUserId: 'user_owner',
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       displayName: 'Owner',
       email: 'owner@example.test',
       password: 'password-canary-do-not-print',
       tokenExpiresAt: '2027-01-01T00:00:00.000Z',
     };
     const record = {
-      tokenId: 'tok_bootstrap',
-      ownerUserId: 'user_owner',
+      tokenId: 'tok_00000000-0000-73ae-8509-478b478934e3',
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       scope: 'server-admin',
       workspaceIds: [],
       status: 'active',
@@ -3012,8 +3121,8 @@ test('bundled token delivery reports preflight and post-issuance storage failure
   assert.equal(preflight.code, 2);
   assert.equal(JSON.parse(preflight.stdout).error.code, 'credential_storage_unavailable');
   const record = {
-    tokenId: 'tok_new',
-    ownerUserId: 'user_demo',
+    tokenId: 'tok_00000000-0000-7d69-9a9a-2f137ff87b29',
+    ownerUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
     scope: 'server-admin',
     workspaceIds: [],
     status: 'active',
@@ -3157,8 +3266,17 @@ test('the bundled CLI rejects obsolete os-keychain Vault responses', async () =>
 });
 
 for (const [operation, required] of [
-  ['vault.secret-create', { workspaceId: 'ws_demo', secretKind: 'github-token' }],
-  ['vault.secret-rotate', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
+  [
+    'vault.secret-create',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', secretKind: 'github-token' },
+  ],
+  [
+    'vault.secret-rotate',
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+    },
+  ],
 ]) {
   test(`bundled ${operation} rejects malformed secret input without disclosure or transport`, async () => {
     const material = 'review-fake-canary';
@@ -3191,13 +3309,21 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
   for (const [operation, input] of [
     [
       'vault.secret-create',
-      { workspaceId: 'ws_demo', secretKind: 'github-token', material },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        secretKind: 'github-token',
+        material,
+      },
       '/secrets',
     ],
     [
       'vault.secret-rotate',
-      { workspaceId: 'ws_demo', referenceId: 'vault_test', material },
-      '/secrets/vault_test/rotate',
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+        material,
+      },
+      '/secrets/vault_00000000-0000-7be8-b8c8-3d3005ec3f3c/rotate',
     ],
   ]) {
     const result = await runCli(
@@ -3212,8 +3338,8 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
       globalThis.fetch = async (url, options) => {
         if (url !== 'http://nanocore.example/api/app/operations/${operation}' || options.method !== 'POST') throw new Error('Wrong transport');
         const body = JSON.parse(options.body);
-        if (body.material !== ${JSON.stringify(material)} || body.workspaceId !== 'ws_demo' || (${JSON.stringify(operation)} === 'vault.secret-rotate' && body.referenceId !== 'vault_test')) throw new Error('Wrong body');
-        return Response.json({ protocolVersion: '0.5.0', code: 'vault_mutation_failed', message: body.material }, { status: 409 });
+        if (body.material !== ${JSON.stringify(material)} || body.workspaceId !== 'ws_00000000-0000-7000-8000-000000000001' || (${JSON.stringify(operation)} === 'vault.secret-rotate' && body.referenceId !== 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c')) throw new Error('Wrong body');
+        return Response.json({ protocolVersion: '0.6.0', code: 'vault_mutation_failed', message: body.material }, { status: 409 });
       };
     `),
       ]
@@ -3277,14 +3403,14 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
   const target = { agentId: 'codex', kind: 'agent' };
   const requestId = '11111111-1111-4111-8111-111111111111';
   const prepareInput = {
-    administrationThreadId: 'thread_admin',
+    administrationThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
     configuration,
     declaration: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'d'.repeat(64)}` },
     requestId,
     target,
   };
   const resolvedCandidate = {
-    artifactId: 'artifact_resolved',
+    artifactId: 'ar_00000000-0000-7fd1-9bc1-cf5509dbe80c',
     artifactVersion: 1,
     contentDigest: `sha256:${'f'.repeat(64)}`,
   };
@@ -3306,7 +3432,7 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     activationConfirmation,
     affectedStorage: [],
     authoredCandidate: {
-      artifactId: 'artifact_authored',
+      artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
       artifactVersion: 1,
       contentDigest: `sha256:${'e'.repeat(64)}`,
     },
@@ -3408,7 +3534,7 @@ test('the bundled CLI downloads a portable archive only to a new exact destinati
   const bytes = Buffer.from([40, 181, 47, 253]);
   const fetchStub = dataModule(`
     globalThis.fetch = async (url, options) => {
-      if (url !== 'http://nanocore.example/api/app/workspaces/ws_demo/exports/wsexp_demo/archive') throw new Error('unexpected URL');
+      if (url !== 'http://nanocore.example/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/wsexp_00000000-0000-7693-ae39-6c3f6020c3c4/archive') throw new Error('unexpected URL');
       if (options.method !== 'GET') throw new Error('unexpected method');
       return new Response(Uint8Array.from([40, 181, 47, 253]), {
         headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
@@ -3420,7 +3546,11 @@ test('the bundled CLI downloads a portable archive only to a new exact destinati
     OPENKIT_NANOCORE_URL: 'http://nanocore.example',
     OPENKIT_NANOCORE_TOKEN: '',
   };
-  const input = JSON.stringify({ workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath });
+  const input = JSON.stringify({
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+    destinationPath,
+  });
 
   const downloaded = await runCli(args, env, input, [fetchStub]);
   assert.equal(downloaded.code, 0);
@@ -3688,30 +3818,38 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
       'workspace.dashboard',
       'workspace.dashboard',
       'workspace.dashboard',
-      { workspaceId: 'ws_team' },
-      [{ workspaceId: 'ws_team' }],
+      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' },
+      [{ workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' }],
     ],
     [
       'thread.dashboard',
       'thread.dashboard',
       'thread.dashboard',
-      { workspaceId: 'ws_team', threadId: 'th_shared' },
-      [{ workspaceId: 'ws_team', threadId: 'th_shared' }],
+      {
+        workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c',
+        threadId: 'th_00000000-0000-74b3-a7b1-84ca4d6ac0b0',
+      },
+      [
+        {
+          workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c',
+          threadId: 'th_00000000-0000-74b3-a7b1-84ca4d6ac0b0',
+        },
+      ],
     ],
     ['app.search', 'app.search', 'app.search', { query: 'needle' }, [{ query: 'needle' }]],
     [
       'conversation.navigation',
       'conversation.navigation',
       'conversation.navigation',
-      { workspaceId: 'ws_team' },
-      [{ workspaceId: 'ws_team' }],
+      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' },
+      [{ workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' }],
     ],
     [
       'worker.list',
       'worker.list',
       'worker.list',
-      { workspaceId: 'ws_team' },
-      [{ workspaceId: 'ws_team' }],
+      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' },
+      [{ workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' }],
     ],
   ]) {
     const entry = operationCatalog.find((candidate) => candidate.id === id);
@@ -3745,7 +3883,10 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     assert.deepEqual(observed, args);
     assert.deepEqual(result, { items: [] });
     assert.equal(
-      entry.inputSchema.safeParse({ ...input, privateOwnerUserId: 'user_other' }).success,
+      entry.inputSchema.safeParse({
+        ...input,
+        privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      }).success,
       false
     );
   }
@@ -3753,14 +3894,25 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
 
 test('bundled dashboard and search reads retain authorization errors without leaking credentials', async () => {
   for (const [operation, input, path] of [
-    ['workspace.dashboard', { workspaceId: 'ws_team' }, '/api/app/operations/workspace.dashboard'],
+    [
+      'workspace.dashboard',
+      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' },
+      '/api/app/operations/workspace.dashboard',
+    ],
     [
       'thread.dashboard',
-      { workspaceId: 'ws_team', threadId: 'th_private' },
+      {
+        workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c',
+        threadId: 'th_00000000-0000-7915-b626-0b698e2552dc',
+      },
       '/api/app/operations/thread.dashboard',
     ],
     ['app.search', { query: 'private needle' }, '/api/app/operations/app.search'],
-    ['worker.list', { workspaceId: 'ws_team' }, '/api/app/operations/worker.list'],
+    [
+      'worker.list',
+      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' },
+      '/api/app/operations/worker.list',
+    ],
   ]) {
     for (const status of [401, 403, 404]) {
       const result = await runCli(
@@ -3775,7 +3927,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         globalThis.fetch = async (url, options) => {
           if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' || operation === 'worker.list' || operation === 'app.search' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
-          return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+          return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.6.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };
       `),
         ]
@@ -3809,7 +3961,10 @@ test('Goal publishes precisely its ten derived semantic operations and retires s
     ].sort()
   );
   const read = operationCatalog.find((operation) => operation.id === 'goal.read');
-  const input = { workspaceId: 'ws_test', threadId: 'th_test' };
+  const input = {
+    workspaceId: 'ws_00000000-0000-796a-8af7-97608a790532',
+    threadId: 'th_00000000-0000-7264-9729-c1391de4f71e',
+  };
   let observed;
   const result = await read.handler(
     {
@@ -3832,7 +3987,7 @@ test('automation deletion derives strict CLI input and maps the bodyless HTTP su
   const { operationCatalog } = await operations();
   const operation = operationCatalog.find((entry) => entry.id === 'automation.delete');
   assert.equal(operation.clientMethod, 'operations.automation.delete');
-  const input = { automationId: 'auto_deleted' };
+  const input = { automationId: 'auto_00000000-0000-706c-8ede-0e40a6e7c886' };
   assert.deepEqual(operation.inputSchema.parse(input), input);
   assert.equal(operation.inputSchema.safeParse({ ...input, force: true }).success, false);
   const requests = [];

@@ -6,6 +6,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 
 - `execution-attempt.ts` establishes exact prepared Native attempt authority below the dispatcher from a caller-supplied authorized admission. It records an optional submission intent without inventing acceptance, a cleanup fence, or Workspace membership.
 - `demo-store.ts` creates an isolated `FsStore` and explicitly seeds the Demo Workspace fixture.
+- `notebook-import.ts` creates current canonical page bytes and explicit User attribution for synthetic Workspace import fixtures. Retained archive bytes still use the verified import owner; this fixture supplies no current authorization or Review decision.
 - `git-repository.ts` seeds a writable Git repository with one resolvable HEAD commit.
 - `agent-environment.ts` records deterministic production-shaped AEP snapshots for scheduler recovery fixtures. Requested workspace input ids use pinned, credential-free remote Git catalog sources supported by NanoHost; the fixture creates no host repository.
 - `goal-intent.ts` creates a completed user Turn and initial objective Item so Goal fixtures bind a real `createdByItemId` and `currentIntentItemId` lineage.
@@ -42,3 +43,9 @@ Simulated and metadata-only consumers may explicitly install `withTestPreparedNa
 The HTTP MCP fixture exposes server-observed header snapshots for exact bearer and raw-header replacement assertions. These observations contain only synthetic test canaries and stay fixture-local.
 
 `recordTestAgentEnvironmentPackage` accepts an explicit Core database when the test exercises a storage or physical runtime consumer. Use the same Core owner as the Workspace and executor so the package retains that data root's deployment and admission facts; its standalone default remains for package-only fixtures.
+
+`local-user.ts` explicitly seeds a canonical fixture User for tests that assert exact identity bytes, then invokes the production recorded-User owner. Local identity lifecycle tests use the production initializer directly. The fixture supplies no production default or alternate identifier mechanism.
+
+`createAppWithLocalIdentity` supplies only the explicit local fixture identity when a test has no Core database. Tests of production runtime or configuration defaults use it without simulated-provider or environment injection. Existing Core and server authority remain caller-owned.
+
+`entity-ids.ts` allocates shared-codec IDs once for process-local fixture keys. Setup and assertions share those exact allocations. It declares no owner derivation and supplies no cross-process replay authority; process-boundary tests pass the recorded IDs explicitly.

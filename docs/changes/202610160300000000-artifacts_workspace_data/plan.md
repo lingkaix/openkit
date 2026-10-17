@@ -12,24 +12,31 @@ This record preserves execution context for lane L-AW. It adds no design authori
 
 The engineer assigned P17, P18, and P27 in that order: arbitrary-file Artifacts and upload admission; exact authorized Worker input delivery; Artifact and Material Web review. Use the recommended product decisions and the accepted large-file ruling. Only raw LLM output counts toward the per-Turn output bound. Large files remain exact retained bytes, with bounded model projections and on-demand references.
 
+## Intent Revision 2026-10-16
+
+The coordinator transferred P27 to L-WEB and retained the D01 file-input changes in L-AW. The coordinator authorized vertical ownership of large-file carriage, raw-output observation and bounded generic digest-window scanning, plus the narrow P18 retrieval and admission seams. The engineer requires conservative local final-request estimates without a network count request or refusal for unknown accounting. Explicit native PNG/JPEG input is admitted only for a selected model declaring image input. Knowledge excerpts wait for L-AK's canonical Notebook commit reader.
+
+The coordinator's 20:15Z instruction combines ready candidates that touch the same modules. Gates cover complete changed owner modules and changed packages, plus Web e2e for Web changes; they do not repeat whole-application suites. P14 landed before this feature and is included by normal merge. Express landing replaces branch CI; main-push CI remains required after landing.
+
+## Intent Revision 2026-10-16 23:35Z
+
+The coordinator accepted the D01/P19 boundary: later Assistant Task proposals remain brief-only. Their confirmation states in one line that private files are excluded and the User can attach files explicitly when selecting a Worker. Originals remain on their accepted Assistant Turn. Explicit Worker selection retains the existing confirmed file-handoff contract; P19 adds no file-transfer state.
+
 ## Owners
 
 [Work Resource Interaction](../../specs/20260713-work_resource_interaction_model.md), [Storage Layout](../../specs/20260703-storage_layout_record_ownership.md), [Worker Context Package](../../specs/20260703-worker_context_package.md), [Session-Static Materialization](../../specs/20260704-session_static_workspace_materialization.md), [NanoHost Data Boundary](../../specs/20260801-nanohost_workspace_data_boundary.md), [Workspace Data Sources](../../specs/20260704-workspace_data_source_catalog.md), [Worker Reliability](../../specs/20260531-worker_turn_reliability_envelope.md), and [Web Projection](../../specs/20260628-web_product_surface_projection.md) govern implementation.
 
 ## Increments
 
-1. Land the exact any-file Artifact lifecycle: reserve-aware admission, streamed capture and download, immutable publication and replay, independent raw-output accounting, exact credential admission, and portability.
-2. Land D01 client file drafts and Turn-owned immutable inputs. A helper implements this in its own branch.
-3. Land safe ZIP folder intake. A second helper implements this in its own branch.
-4. Land authorized per-Turn read-only snapshots, bounded source projections, exact input lineage and delivery, PDF text and explicit vision views, and failure/refusal behavior.
+1. Land the combined P17 feature: exact any-file Artifact lifecycle and upload admission, bounded Core/NanoHost/helper streaming, raw-output accounting, D01 client drafts and immutable Turn-owned inputs, explicit bounded ZIP intake, and their portability and Web bindings.
+2. Land the reviewed P18 source snapshots, bounded read/search views, isolated PDF text, conservative complete-request admission and explicit PNG/JPEG delivery after integration with P17 and main.
+3. Land Notebook-pinned Knowledge excerpts after L-AK supplies the canonical commit reader.
 
-The coordinator transferred P27 Artifact and Material Web review to L-WEB on 2026-10-16. L-AW retains the file-input portions of the Composer and chat screens. The original assignment above remains intent history.
-
-Each increment includes owner alignment, local guides, focused regressions, integration checks, independent review, and exact-head full CI before landing. Landing protocol v2 prepares shared integration, generation, gates, independent review and full CI before acquiring the final landing window. Cross-lane changes require coordinated ownership.
+Each increment includes owner alignment, local guides, regressions, complete affected module/package checks and independent review. Express landing runs the exact-head local gate before acquiring the window. Clean main merges follow the coordinator's gate and review carry rules. No branch CI or PR is dispatched.
 
 ## Checkpoint
 
-The fixture and oracle branch at 3b8ea153 is merged. No production change has landed. Backups through c2ac67d6 are pushed, and main a1f2c6b8 is merged. D01 has its own pushed branch; ZIP implementation f9309891 is pushed and awaits its separate integration. Exact file storage, streaming and raw accounting are implemented and under integration checks. D01 and ZIP are separate landable features.
+The fixture and oracle branch at 3b8ea153 is normally merged. Combined P17 is committed and pushed, includes the landed P14 and Goal changes, and has independent preparation approval. The final local gate and preserved Web browser cases remain required; no production landing is claimed. P18 preparation candidates are independently reviewed and are being normally merged in a separate worktree. Knowledge excerpt work waits for the real Notebook binding. Default App PDF/image isolation remains an engineer question; host-native tests do not qualify that deployment.
 
 ## Verification
 
@@ -37,4 +44,4 @@ Use the prior frozen corpus under `tests/fixtures/large-context/` for byte, size
 
 ## Next Action
 
-Complete the first-feature integration checks, regenerate the API and CLI, obtain exact-head independent review and run full branch CI before acquiring the landing window. Preserve the same session, attempt, no-follow, replay and live-Turn fences across Core, NanoHost and helper streaming.
+Finish the combined P17 complete owner checks, review the final integration delta and run the exact-head local gate with Web e2e. Acquire the landing window only after the required checks pass, then land through the express script, release and watch main-push CI. Preserve the existing session, attempt, no-follow and live-Turn constraints across bounded file streaming. Continue P18 integration independently.

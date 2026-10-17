@@ -1,3 +1,9 @@
+import {
+  DataRootBackupIdSchema,
+  DeploymentIdSchema,
+  WorkspaceExportIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import {
   type ParseRecordEnvelopeOptions,
@@ -7,7 +13,7 @@ import {
 } from './schema-evolution.js';
 
 /** Current workspace export format version. */
-export const WORKSPACE_EXPORT_FORMAT_VERSION = 2;
+export const WORKSPACE_EXPORT_FORMAT_VERSION = 3;
 
 /** Current data-root backup manifest format version. */
 export const DATA_ROOT_BACKUP_FORMAT_VERSION = 1;
@@ -36,11 +42,14 @@ export const WorkspaceExportInventoryEntrySchema = z
 
 /** Workspace export manifest record. */
 export const WorkspaceExportManifestSchema = RecordEnvelopeSchema.safeExtend({
+  id: WorkspaceExportIdSchema,
   recordType: z.literal('workspace-export'),
   ownerScope: z.literal('workspace'),
-  lineage: RecordLineageSchema.extend({ workspaceId: z.string().min(1) }).passthrough(),
-  sourceDeploymentId: z.string().min(1),
-  workspaceId: z.string().min(1),
+  lineage: RecordLineageSchema.extend({ workspaceId: WorkspaceIdSchema }).passthrough(),
+  sourceDeploymentId: DeploymentIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  /** Published source Notebook commit; inert provenance after clone/remint. */
+  knowledgeNotebookRevision: z.string().min(1).optional(),
   exportCreatedAt: z.string().datetime({ offset: true }),
   exportFormatVersion: z.literal(WORKSPACE_EXPORT_FORMAT_VERSION),
   contentInventory: z.array(WorkspaceExportInventoryEntrySchema),
@@ -71,9 +80,10 @@ export type WorkspaceExportManifest = z.infer<typeof WorkspaceExportManifestSche
 
 /** Data-root backup manifest record. */
 export const DataRootBackupManifestSchema = RecordEnvelopeSchema.safeExtend({
+  id: DataRootBackupIdSchema,
   recordType: z.literal('data-root-backup'),
   ownerScope: z.literal('server'),
-  sourceDeploymentId: z.string().min(1),
+  sourceDeploymentId: DeploymentIdSchema,
   backupStartedAt: z.string().datetime({ offset: true }),
   backupCompletedAt: z.string().datetime({ offset: true }),
   backupMode: z.enum(['cold', 'hot']),

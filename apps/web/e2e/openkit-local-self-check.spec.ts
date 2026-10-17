@@ -1,4 +1,10 @@
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import { createHash } from 'node:crypto';
+import {
+  StartTaskModeResponseSchema,
+  ThreadDashboardResponseSchema,
+} from '@openkit/app-api-schemas';
+import { createCoreClient, createRequestId } from '@openkit/core-client';
+import { ThreadSchema } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -15,7 +21,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Verifies the fixed local Workspace, Thread, and secret-safe Debug inspection path.
+ * Verifies private Assistant reuse, member navigation, refused undisclosed handoff, and safe Debug inspection.
  *
  * Contract: docs/specs/20260529-test_strategy.md
  */
@@ -33,19 +39,55 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Create workspace$/ }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
-  await page.getByRole('button', { name: /^New conversation$/ }).click();
+  const firstOpening = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
+  );
+  await page.getByRole('button', { name: /^Assistant$/ }).click();
+  const assistant = ThreadSchema.parse(await (await firstOpening).json());
+  expect(assistant.visibility).toBe('private');
+  const selector = { workspaceId: assistant.workspaceId, threadId: assistant.id };
+  const client = createCoreClient({ baseUrl: stack.coreUrl });
+  expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
+
+  await page.getByRole('button', { name: /^Members$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+  await page.getByRole('button', { name: /^Back to app$/ }).click();
+  const secondOpening = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
+  );
+  // The opener precedes the retained Timeline row with the same visible title.
+  await page
+    .getByRole('button', { name: /^Assistant$/ })
+    .first()
+    .click();
+  expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
+  expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
   await page.getByRole('button', { name: /^Send message$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Story thread' })).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(
+    page.getByText(
+      'Explicit disclosure admission is required before private Assistant input becomes shared Task work.',
+      { exact: true }
+    )
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: assistant.name })).toBeVisible();
+  expect(
+    (await client.operations['thread.list']({ workspaceId: assistant.workspaceId })).items.map(
+      (thread) => ({ id: thread.id, visibility: thread.visibility })
+    )
+  ).toEqual([{ id: assistant.id, visibility: 'private' }]);
 
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^General$/ }).click();
   await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
-  await expect(page.getByLabel('Display name')).toHaveValue('Story Workspace');
+  // The heading renders before the separate Workspace read supplies the form.
+  await expect(page.getByLabel('Display name')).toHaveValue('Story Workspace', {
+    timeout: 15_000,
+  });
   await page.getByRole('button', { name: /^Debug$/ }).click();
   await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Runtime evidence' })).toBeVisible();
@@ -72,8 +114,10 @@ interface MaterialRevision {
 interface ProposalArtifactSummary {
   /** Artifact identity exposed by the browser review route. */
   id: string;
-  /** Exact proposal bytes rendered by the review surface. */
-  content: { body: string };
+  /** Immutable version selected for the exact original download. */
+  version: number;
+  /** Digest of the proposal original, independent of its storage form. */
+  contentDigest: string;
 }
 
 /** Minimal Review projection needed to select the exact revision-2 proposals. */
@@ -129,6 +173,22 @@ async function getJson<T>(path: string, input?: Record<string, unknown>): Promis
   return JSON.parse(body) as T;
 }
 
+/** Downloads the exact authorized proposal original and verifies its digest before comparing applied Material bytes. */
+async function proposalOriginal(artifact: ProposalArtifactSummary): Promise<string> {
+  if (!stack) throw new Error('The isolated Web stack is not running.');
+  const query = new URLSearchParams({
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    artifactId: artifact.id,
+    artifactVersion: String(artifact.version),
+  });
+  const response = await fetch(`${stack.coreUrl}/api/app/operations/artifact.download?${query}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get('x-openkit-content-digest')).toBe(artifact.contentDigest);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(artifact.contentDigest);
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+}
+
 /**
  * Creates and saves one Material through the visible route.
  *
@@ -145,7 +205,7 @@ async function createMaterial(
   title: string,
   content: string
 ): Promise<MaterialSummary> {
-  await page.goto(`${stack?.webUrl}/materials/ws_demo/${threadId}`);
+  await page.goto(`${stack?.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
   await page
     .getByRole('button', { name: /^New Material$/ })
     .first()
@@ -159,7 +219,7 @@ async function createMaterial(
 
   const response = await getJson<{ materials: MaterialSummary[] }>(
     '/api/app/operations/material.list',
-    { workspaceId: 'ws_demo' }
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
   );
   const material = response.materials.find((candidate) => candidate.title === title);
   expect(material, `Material ${title} must be server-visible after browser save`).toBeTruthy();
@@ -176,7 +236,7 @@ async function createMaterial(
 async function materialRevisions(materialId: string): Promise<MaterialRevision[]> {
   return (
     await getJson<{ revisions: MaterialRevision[] }>('/api/app/operations/material.revision-list', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: materialId,
     })
   ).revisions;
@@ -196,44 +256,83 @@ async function materialRevision(
   return (
     await getJson<{ revision: MaterialRevisionView }>(
       '/api/app/operations/material.revision-read',
-      { workspaceId: 'ws_demo', materialId: materialId, revisionId: revisionId }
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: materialId,
+        revisionId: revisionId,
+      }
     )
   ).revision;
 }
 
 /**
- * Starts one visible Task Turn and observes its emitted question after ordinary Turn completion.
+ * Admits direct Task work in the explicitly bound Thread and observes its terminal question.
  *
  * @param page Browser page connected to the isolated Web app.
- * @param threadId Thread that owns the Turn.
+ * @param threadId Explicitly bound Thread that owns the Task Turn.
  * @param input Exact user-visible Task request.
- * @returns Resolves after a 202 response, visible question, and verified terminal Turn prove non-vacuity.
- * @throws When browser submission, the Task response, question rendering, or terminal proof fails.
+ * @returns Resolves after a 202 response, visible question, and verified terminal Turn.
+ * @throws When Task admission, question rendering, or terminal proof fails.
  */
 async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
-  await page.goto(`${stack?.webUrl}/tasks/ws_demo/${threadId}`);
-  await page.getByRole('textbox', { name: 'Message' }).fill(input);
-  const turnResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
-  );
-  await page.getByRole('button', { name: /^Send message$/ }).click();
-  const response = await turnResponse;
+  if (!stack) throw new Error('The isolated Web stack is not running.');
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const requestId = createRequestId();
+  const response = await page.request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
+    headers: { 'x-openkit-request-id': requestId },
+    data: { workspaceId, threadId, input, requestId },
+  });
   const responseBody = await response.text();
   expect(response.status(), `Task Turn start response: ${responseBody}`).toBe(202);
-  const submission = SubmitConversationResponseSchema.parse(JSON.parse(responseBody));
-  expect(submission.receivingThreadId).toBe(threadId);
+  const submission = StartTaskModeResponseSchema.parse(JSON.parse(responseBody));
+  expect(submission.turn).toMatchObject({ workspaceId, threadId });
+  await page.goto(`${stack.webUrl}/tasks/${workspaceId}/${threadId}`);
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText("Couldn't send that message. Try again.")).toHaveCount(0);
   const turn = await getJson<{ status: string; contextPackageDigest: string | null }>(
     '/api/app/operations/turn.read',
-    { workspaceId: 'ws_demo', threadId, turnId: submission.turn.id }
+    { workspaceId, threadId, turnId: submission.turn.id }
   );
   expect(turn.status).toBe('completed');
   expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+}
+
+/** Reads canonical Turn ids before this isolated fixture answers a pending question. */
+async function threadTurnIds(threadId: string): Promise<Set<string>> {
+  const dashboard = ThreadDashboardResponseSchema.parse(
+    await getJson('/api/app/operations/thread.dashboard', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId,
+    })
+  );
+  return new Set(dashboard.turns.map((turn) => turn.id));
+}
+
+/** The answer acknowledgement resolves the question before its separate outcome-delivery Turn finishes. Wait for that real Turn before restarting Core or reading its outputs. */
+async function waitForAnswerTurn(
+  threadId: string,
+  priorTurnIds: ReadonlySet<string>
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const dashboard = ThreadDashboardResponseSchema.parse(
+          await getJson('/api/app/operations/thread.dashboard', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId,
+          })
+        );
+        const delivered = dashboard.turns.filter((turn) => !priorTurnIds.has(turn.id));
+        return delivered.length === 1 && delivered[0]!.status === 'completed';
+      },
+      {
+        timeout: 15_000,
+        message: 'The answer must complete its separate canonical outcome-delivery Turn.',
+      }
+    )
+    .toBe(true);
 }
 
 /**
@@ -249,7 +348,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const browserRuntimeErrors: string[] = [];
   page.on('pageerror', (error) => browserRuntimeErrors.push(error.message));
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
-  const threadId = 'th_demo';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
   const revisionOneContent = '# Release note\n\nRevision one.';
   const revisionTwoContent =
     '# Release note\n\nRevision two, saved after revision one was delivered.';
@@ -275,9 +374,13 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
       return false;
     const input = response.request().postDataJSON();
-    return input.workspaceId === 'ws_demo' && input.threadId === threadId;
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' && input.threadId === threadId
+    );
   });
-  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   const projectionResponse = await materialProjectionResponse;
   const projectionBody = await projectionResponse.text();
   await expect(
@@ -306,7 +409,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
       return false;
     const input = response.request().postDataJSON();
-    return input.workspaceId === 'ws_demo' && input.materialId === primary.materialId;
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+      input.materialId === primary.materialId
+    );
   });
   await page.getByRole('button', { name: /^Save$/ }).click();
   const revisionTwoSave = await saveResponse;
@@ -340,8 +446,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .locator('dd')
   ).toHaveText('Unknown / none / not available');
 
-  await page.goto(`${stack.webUrl}/tasks/ws_demo/${threadId}`);
+  await page.goto(`${stack.webUrl}/tasks/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
+  const beforeAnswer = await threadTurnIds(threadId);
   const answerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const answer = await answerResponse;
@@ -349,13 +456,15 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     true
   );
   // The answer response precedes the separate canonical Item refresh on a shared test host.
-  await expect(page.getByText('You answered').last()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('You answered')).toHaveCount(1, { timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
+  await waitForAnswerTurn(threadId, beforeAnswer);
   await stack.restartCore();
   await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
+  const beforeSecondAnswer = await threadTurnIds(threadId);
   const secondAnswerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const secondAnswer = await secondAnswerResponse;
@@ -363,12 +472,14 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     secondAnswer.ok(),
     `Second worker user-input response ${secondAnswer.status()}: ${await secondAnswer.text()}`
   ).toBe(true);
-  await expect(page.getByText('You answered').last()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('You answered')).toHaveCount(2, { timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
+
+  await waitForAnswerTurn(threadId, beforeSecondAnswer);
 
   const artifacts = (
     await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })
   ).items;
   const proposals = (
@@ -377,7 +488,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
         const reviews = (
           await getJson<{ reviews: ProposalReviewSummary[] }>(
             '/api/app/operations/artifact.review-list',
-            { workspaceId: 'ws_demo', artifactId: artifact.id }
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', artifactId: artifact.id }
           )
         ).reviews;
         return reviews.some(
@@ -389,7 +500,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
   ).filter((artifact): artifact is ProposalArtifactSummary => artifact !== null);
   expect(proposals).toHaveLength(2);
-  await page.goto(`${stack.webUrl}/goals/ws_demo/${threadId}/artifacts/${proposals[0]!.id}`);
+  const proposalTexts = await Promise.all(proposals.map(proposalOriginal));
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`
+  );
   await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toBeVisible();
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
@@ -412,8 +526,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
   await page.setViewportSize(previousViewport);
 
-  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
-  await expect(materialEditor).toHaveValue(proposals[0]!.content.body);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
+  await expect(materialEditor).toHaveValue(proposalTexts[0]!);
   const revisionsAfterApply = await materialRevisions(primary.materialId);
   expect(revisionsAfterApply).toHaveLength(3);
   const appliedRevisions = revisionsAfterApply.filter(
@@ -426,12 +542,12 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(materialRevision(primary.materialId, appliedRevision.revisionId)).resolves.toEqual(
     expect.objectContaining({
       revisionId: appliedRevision.revisionId,
-      content: proposals[0]!.content.body,
+      content: proposalTexts[0]!,
     })
   );
   const materialAfterApply = (
     await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: primary.materialId,
     })
   ).material;
@@ -453,7 +569,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   );
   const materialAfterUserSave = (
     await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: primary.materialId,
     })
   ).material;
@@ -462,11 +578,13 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     .map((revision) => revision.revisionId)
     .sort();
 
-  await page.goto(`${stack.webUrl}/goals/ws_demo/${threadId}/artifacts/${proposals[1]!.id}`);
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[1]!.id}`
+  );
   const reviewedProposal = page.getByRole('region', { name: /reviewed artifact proposal/i });
   const recordedBase = page.getByRole('region', { name: /recorded base revision/i });
   await expect(reviewedProposal).toBeVisible();
-  await expect(reviewedProposal).toContainText(proposals[1]!.content.body);
+  await expect(reviewedProposal).toContainText(proposalTexts[1]!);
   await expect(recordedBase).toContainText(revisionTwoContent);
   await page.getByRole('button', { name: /^Accept$/ }).click();
   await expect(page.getByText(/conflict|changed since the proposal base/i)).toBeVisible();
@@ -477,29 +595,32 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   );
   const materialAfterConflict = (
     await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materialId: primary.materialId,
     })
   ).material;
   expect(materialAfterConflict.currentRevisionId).toBe(userRevision.revisionId);
-  expect(
-    (
-      await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
-        workspaceId: 'ws_demo',
-      })
-    ).items.find((artifact) => artifact.id === proposals[1]!.id)?.content.body
-  ).toBe(proposals[1]!.content.body);
+  const retainedProposal = (
+    await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    })
+  ).items.find((artifact) => artifact.id === proposals[1]!.id)!;
+  expect(retainedProposal.version).toBe(proposals[1]!.version);
+  expect(retainedProposal.contentDigest).toBe(proposals[1]!.contentDigest);
+  expect(await proposalOriginal(retainedProposal)).toBe(proposalTexts[1]!);
 
   await stack.restartCore();
   await page.reload();
   await expect(page.getByText('Awaiting decision.')).toBeVisible();
   await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toContainText(
-    proposals[1]!.content.body
+    proposalTexts[1]!
   );
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
   );
-  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   const recoveredRevisions = await materialRevisions(primary.materialId);
   expect(recoveredRevisions.map((revision) => revision.revisionId).sort()).toEqual(
     revisionIdsAfterUserSave
@@ -514,13 +635,13 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).toEqual({
     [revisionOne.revisionId]: revisionOneContent,
     [revisionTwo!.revisionId]: revisionTwoContent,
-    [appliedRevision.revisionId]: proposals[0]!.content.body,
+    [appliedRevision.revisionId]: proposalTexts[0]!,
     [userRevision.revisionId]: revisionThreeContent,
   });
   const recoveredProjection = (
     await getJson<{ material: ThreadMaterialSummary | null }>(
       '/api/app/operations/material.thread-read',
-      { workspaceId: 'ws_demo', threadId: threadId }
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: threadId }
     )
   ).material;
   expect(recoveredProjection).not.toBeNull();

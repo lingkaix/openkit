@@ -1,6 +1,10 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createConversationFileClient } from './conversation-files.js';
 import type { ClientTransport } from './transport.js';
+
+const workspaceId = allocateEntityId('ws');
+const threadId = allocateEntityId('th');
 
 describe('conversation original transport', () => {
   it('frames ordered arbitrary bytes and empty parts without reading the original Blobs', async () => {
@@ -10,8 +14,8 @@ describe('conversation original transport', () => {
     for (const file of files)
       vi.spyOn(file, 'arrayBuffer').mockRejectedValue(new Error('Original read is forbidden.'));
     const input = {
-      workspaceId: 'ws_test',
-      threadId: 'th_test',
+      workspaceId: workspaceId,
+      threadId: threadId,
       input: '',
       requestId: 'same-request',
       targetRef: 'internal-role:assistant',
@@ -41,8 +45,8 @@ describe('conversation original transport', () => {
     const postStream = vi.fn();
     const client = createConversationFileClient({ postStream } as unknown as ClientTransport);
     const input = {
-      workspaceId: 'ws_test',
-      threadId: 'th_test',
+      workspaceId: workspaceId,
+      threadId: threadId,
       input: '',
       requestId: 'same-request',
       targetRef: 'internal-role:assistant',

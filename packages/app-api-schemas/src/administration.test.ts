@@ -15,11 +15,11 @@ describe('administration App API schemas', () => {
       input: 'Show the current preparation status.',
       logicalModelId: 'logical-model-admin',
       requestId: '22222222-2222-4222-8222-222222222222',
-      threadId: 'thread_admin',
+      threadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
     });
 
     expect(first.threadId).toBeUndefined();
-    expect(continuation.threadId).toBe('thread_admin');
+    expect(continuation.threadId).toBe('th_00000000-0000-79b7-9009-e76cfeceddee');
   });
 
   it('rejects empty input and undeclared fields', () => {
@@ -43,7 +43,11 @@ it('binds configuration confirmation to the exact immutable digest and rejects m
   const contentDigest = `sha256:${'a'.repeat(64)}`;
   const request = {
     requestId: '11111111-1111-4111-8111-111111111111',
-    candidate: { artifactId: 'candidate', artifactVersion: 1, contentDigest },
+    candidate: {
+      artifactId: 'ar_00000000-0000-7124-bbaa-516a6d18c0e9',
+      artifactVersion: 1,
+      contentDigest,
+    },
     confirmation: { action: 'administration.configuration.apply', contentDigest },
   };
   expect(ApplyAdministrationConfigurationRequestSchema.safeParse(request).success).toBe(true);

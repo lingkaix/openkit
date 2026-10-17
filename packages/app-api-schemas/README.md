@@ -40,6 +40,8 @@ Workspace grant creation and narrowing share exact supported Agent, AgentSession
 
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
+Workspace export manifests include optional `knowledgeNotebookRevision` provenance for the exact published source Notebook commit. An imported Workspace creates its own Notebook authority; this source value grants no access and does not become the target revision.
+
 Authentication schemas include optional exact-owner access-token issuance plus canonical-user and current-administrator redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes.
 
 This package no longer projects an AgentSession backend-summary schema. Gateway endpoints, Gateway names, native Sandbox names, retired control transports, and hidden AgentSession continuity are not ordinary public read-model states; protected evidence and operator projections may retain only their separately authorized redacted lineage.
@@ -52,7 +54,7 @@ Capability usage read models extend the canonical protocol `CapabilityCall` whil
 
 Runtime configuration file metadata includes the deployment-admin-only Workspace MCP catalog kind; the App API carries its source text and JSON Schema but does not project server topology into worker or ordinary product read models.
 
-Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views expose immutable revision identity without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
+Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views admit canonical `mrev` revisions and `arev` Review identities, including nested revision links and operation inputs, without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
 
 Knowledge Proposal page ids and page-source references reserve the final `index` and `log` segments at every hierarchy level, matching OKF reserved filenames.
 
@@ -87,7 +89,7 @@ The generic runtime config file contract includes `model-catalog` for the deploy
 
 Workspace Vault CRUD schemas admit bounded request-only material and return the existing redacted reference/grant shapes. Public grant creation accepts a reference and optional expiry for an ordinary gateway-only grant with no capability target, accepted by the selected MCP consumer under the existing authority check, or a separate user-space runtime-env `github-token` grant; callers cannot select arbitrary injection targets.
 
-Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines neither a durable Thread kind nor unread state.
+Conversation navigation projects visible active Threads with current/latest Chat, Task, Goal, or unknown activity; working, viewer-actionable, or idle state; and actual conversation recency. It defines no durable Thread kind; its unread count projects the current User-owned receipt and eligible message Items.
 
 `WorkspaceWorkersResponseSchema` is the selected-Workspace, viewer-filtered current Worker read model, separate from the Agent Catalog. It validates exact known work, recorded state, bounded package details and last-used model attribution, with distinct unavailable and restricted states; it exposes no AgentSession or native runtime identifier.
 
@@ -163,6 +165,15 @@ The App-update family has four operations, including the content-free deployment
 
 Knowledge derived-index inspection exposes only link, validation and source-reference projections. The Retrieval Kernel owns lexical state; no JSON term/posting read model remains. Governed Knowledge retrieval accepts qualified `pinnedReferences`, narrowing-only `sourceScope` and explicit app-only state inspection. Scored selection responses and immutable `KnowledgeRetrievalTraceSchema` evidence are separate: scores remain local result facts and never enter trace files. Threadless direct User calls return no trace reference. Query-owned evidence uses `retrievalTraceRef`; citations retain the qualified page reference. Current byte revisions do not claim retained notebook commits; `notebookRevision` remains null until the notebook owner is implemented.
 
+
+`automation.ts` keeps existing fixed `intervalSeconds` shapes and adds mutually exclusive bounded `monthlyUtc` rules. Create and retained definitions/ranges require exactly one timing shape; paused updates replace one complete shape atomically. `MonthlyUtcScheduleSchema` is the shared day-1-through-28, literal-UTC rule validator, and monthly occurrence snapshots retain that immutable rule. Definition-derived model and public projections retain the same cross-field checks.
+
+Named entity fields reuse Protocol kind schemas, including User and automation ActorRef identity, Material and Vault lineage, Light App collection/field identity and prefixed presentation ids. Bare Light App app/record UUIDs and authored/native selectors remain with their existing owners. Workspace grant projections require explicit immutable issuance; they never default imported history to target authority.
+
 `administration.ts` admits a closed Agent Git-read proposal branch beside the existing catalog branch. It carries exact registered identity/base, a failed-Turn reference and only existing-grant rules. Immutable Agent candidates additionally retain server-derived AEP and explanation digests. The private delegated apply input contains only request identity and exact candidate reference; human apply retains its digest-bound confirmation. NanoCore owns audience, provenance, current finite Policy and file effects; schema acceptance supplies none of them.
 
+`artifact.folder-extract` and `artifact.folder-read` define explicit ZIP processing and paged inventory for one immutable Artifact version. The source digest and representation digest bind ready responses; unavailable responses disclose whether the verified original remains retained. These operations create no canonical folder entity.
+
 `conversation.submit` accepts ordered exact `fileInputs` metadata with at most 10,000 entries and 1,000,000,000 combined original bytes. Its existing JSON binding reconciles accepted commands without retry bytes; a fresh nonempty inventory requires its framed streaming body. `CONVERSATION_FILE_MEDIA_TYPE` and `MAX_CONVERSATION_FILE_METADATA_BYTES` define that same-operation body: a four-byte big-endian bounded strict UTF-8 JSON length, canonical command metadata, then exact ordered originals. Native admission, command identity and receipts are unchanged. Unsent browser selections create no server draft or Workspace Artifact.
+
+The Thread operation family defines `thread.read-state` and `thread.mark-read`. Receipt output lists current eligible read and unread Item identities. A supplied `itemIds` list marks only those displayed messages; omission is explicit Mark read for all current eligible messages, and an empty list is a no-op. Current authentication selects the User. Navigation includes a required nonnegative `unreadCount`. Neither schema owns storage, access checks or an inference from timestamp ordering.

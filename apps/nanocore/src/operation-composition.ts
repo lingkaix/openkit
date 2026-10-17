@@ -66,7 +66,7 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
-  /** App-owned capacity admission, shared by Artifact and Workspace file transfers. */
+  /** App-owned capacity admission, shared by Artifact, ZIP and Workspace file transfers. */
   readonly fileAdmission?: FileStorageAdmission;
   readonly coreDb: CoreDb | undefined;
   /** Current process and configuration owners for admitted product diagnostics. */
@@ -91,7 +91,7 @@ export interface OperationInvocationDependencies {
   /** Restricted App-update host adapter and audit database. */
   readonly appUpdateServices?: Parameters<typeof createAppUpdateOperationImplementations>[0];
 
-  /** Existing process-local automation owner, shared across public projections. */
+  /** Durable recurrence owner sharing Core storage and the application's mutation fence. */
   readonly automationStore?: AutomationStore;
   /** Closes existing Worker MCP sessions when deletion fences a Workspace. */
   readonly closeWorkspaceMcpSessions?: (workspaceId: string) => Promise<void>;

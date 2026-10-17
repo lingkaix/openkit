@@ -49,15 +49,15 @@
     },
     "workspaceId": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
     "threadId": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
     "turnId": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
     "data": {
       "oneOf": [
@@ -73,7 +73,7 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "name": {
                   "type": "string",
@@ -88,7 +88,7 @@
                     "research",
                     "operations",
                     "general",
-                    "quick-chat"
+                    "personal"
                   ]
                 },
                 "status": {
@@ -129,11 +129,11 @@
                   "properties": {
                     "sourceDeploymentId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "sourceWorkspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "exportCreatedAt": {
                       "type": "string",
@@ -191,11 +191,15 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                "parentThreadId": {
+                  "type": "string",
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "name": {
                   "anyOf": [
@@ -226,6 +230,13 @@
                     "administration"
                   ]
                 },
+                "threadSource": {
+                  "type": "string",
+                  "enum": [
+                    "conversation",
+                    "worker"
+                  ]
+                },
                 "visibility": {
                   "type": "string",
                   "enum": [
@@ -235,7 +246,7 @@
                 },
                 "privateOwnerUserId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "createdAt": {
                   "type": "string",
@@ -278,11 +289,15 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                "parentThreadId": {
+                  "type": "string",
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "name": {
                   "anyOf": [
@@ -313,6 +328,13 @@
                     "administration"
                   ]
                 },
+                "threadSource": {
+                  "type": "string",
+                  "enum": [
+                    "conversation",
+                    "worker"
+                  ]
+                },
                 "visibility": {
                   "type": "string",
                   "enum": [
@@ -322,7 +344,7 @@
                 },
                 "privateOwnerUserId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "createdAt": {
                   "type": "string",
@@ -362,7 +384,7 @@
             },
             "turnId": {
               "type": "string",
-              "minLength": 1
+              "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
             },
             "status": {
               "type": "string",
@@ -395,15 +417,15 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "threadId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "triggerActor": {
                   "anyOf": [
@@ -416,7 +438,7 @@
                         },
                         "id": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         }
                       },
                       "required": [
@@ -432,7 +454,6 @@
                           "type": "string",
                           "enum": [
                             "agent",
-                            "automation",
                             "integration",
                             "system"
                           ]
@@ -445,7 +466,37 @@
                           "anyOf": [
                             {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "automation"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                             },
                             {
                               "type": "null"
@@ -471,19 +522,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -498,7 +549,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -546,7 +597,7 @@
                                   },
                                   "id": {
                                     "type": "string",
-                                    "minLength": 1
+                                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                   }
                                 },
                                 "required": [
@@ -562,7 +613,6 @@
                                     "type": "string",
                                     "enum": [
                                       "agent",
-                                      "automation",
                                       "integration",
                                       "system"
                                     ]
@@ -575,7 +625,37 @@
                                     "anyOf": [
                                       {
                                         "type": "string",
-                                        "minLength": 1
+                                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "id",
+                                  "responsibleUserId"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "automation"
+                                  },
+                                  "id": {
+                                    "type": "string",
+                                    "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "responsibleUserId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                       },
                                       {
                                         "type": "null"
@@ -616,19 +696,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -643,7 +723,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -702,19 +782,153 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          "parentItemId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "causationId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
                             "minLength": 1
+                          },
+                          "completedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "type": {
+                            "type": "string",
+                            "const": "context-summary"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "environmentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "sourceRange": {
+                            "type": "object",
+                            "properties": {
+                              "firstItemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "lastItemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "itemCount": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "sourceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              },
+                              "evidenceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "firstItemId",
+                              "lastItemId",
+                              "itemCount",
+                              "sourceDigest",
+                              "evidenceDigest"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "previousSummary": {
+                            "type": "object",
+                            "properties": {
+                              "itemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "digest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "itemId",
+                              "digest"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "threadId",
+                          "turnId",
+                          "status",
+                          "createdAt",
+                          "completedAt",
+                          "type",
+                          "text",
+                          "environmentDigest",
+                          "sourceRange"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "workspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "threadId": {
+                            "type": "string",
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "turnId": {
+                            "type": "string",
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -729,7 +943,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -798,19 +1012,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -825,7 +1039,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -864,7 +1078,7 @@
                           },
                           "artifactId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "artifactVersion": {
                             "type": "integer",
@@ -908,19 +1122,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -935,7 +1149,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1030,19 +1244,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1057,7 +1271,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1135,19 +1349,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1162,7 +1376,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1203,7 +1417,7 @@
                                   },
                                   "id": {
                                     "type": "string",
-                                    "minLength": 1
+                                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                   }
                                 },
                                 "required": [
@@ -1274,19 +1488,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1301,7 +1515,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1340,7 +1554,7 @@
                           },
                           "responsibleUserId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "userInputRequestId": {
                             "type": "string",
@@ -1413,6 +1627,66 @@
                               ],
                               "additionalProperties": false
                             }
+                          },
+                          "assistantHandoff": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "task"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "input": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  },
+                                  "agentId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "modelId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "input"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "goal"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "intent": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "intent"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -1436,19 +1710,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1463,7 +1737,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1502,7 +1776,7 @@
                               },
                               "id": {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               }
                             },
                             "required": [
@@ -1561,19 +1835,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1588,7 +1862,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1657,19 +1931,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1684,7 +1958,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1798,19 +2072,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1825,7 +2099,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -1897,19 +2171,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -1924,7 +2198,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -2005,19 +2279,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -2032,7 +2306,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -2136,19 +2410,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -2163,7 +2437,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -2243,19 +2517,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -2270,7 +2544,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -2309,8 +2583,7 @@
                           },
                           "presentationId": {
                             "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            "pattern": "^pres_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "title": {
                             "type": "string",
@@ -2476,7 +2749,7 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -2651,19 +2924,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -2678,7 +2951,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -2726,7 +2999,7 @@
                             },
                             "id": {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                             }
                           },
                           "required": [
@@ -2742,7 +3015,6 @@
                               "type": "string",
                               "enum": [
                                 "agent",
-                                "automation",
                                 "integration",
                                 "system"
                               ]
@@ -2755,7 +3027,37 @@
                               "anyOf": [
                                 {
                                   "type": "string",
-                                  "minLength": 1
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "automation"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                 },
                                 {
                                   "type": "null"
@@ -2796,19 +3098,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -2823,7 +3125,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -2882,19 +3184,153 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
                       "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -2909,7 +3345,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -2978,19 +3414,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3005,7 +3441,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3044,7 +3480,7 @@
                     },
                     "artifactId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "artifactVersion": {
                       "type": "integer",
@@ -3088,19 +3524,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3115,7 +3551,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3210,19 +3646,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3237,7 +3673,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3315,19 +3751,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3342,7 +3778,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3383,7 +3819,7 @@
                             },
                             "id": {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                             }
                           },
                           "required": [
@@ -3454,19 +3890,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3481,7 +3917,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3520,7 +3956,7 @@
                     },
                     "responsibleUserId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "userInputRequestId": {
                       "type": "string",
@@ -3593,6 +4029,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -3616,19 +4112,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3643,7 +4139,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3682,7 +4178,7 @@
                         },
                         "id": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         }
                       },
                       "required": [
@@ -3741,19 +4237,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3768,7 +4264,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3837,19 +4333,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -3864,7 +4360,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -3978,19 +4474,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -4005,7 +4501,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -4077,19 +4573,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -4104,7 +4600,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -4185,19 +4681,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -4212,7 +4708,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -4316,19 +4812,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -4343,7 +4839,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -4423,19 +4919,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -4450,7 +4946,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -4489,8 +4985,7 @@
                     },
                     "presentationId": {
                       "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      "pattern": "^pres_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "title": {
                       "type": "string",
@@ -4536,7 +5031,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4573,7 +5068,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4614,7 +5109,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4661,7 +5156,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4696,7 +5191,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4749,7 +5244,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4824,7 +5319,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4872,7 +5367,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4929,7 +5424,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4964,7 +5459,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -4978,7 +5473,7 @@
                 },
                 "artifactId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "summary": {
                   "anyOf": [
@@ -5010,7 +5505,7 @@
                 },
                 "itemId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "itemType": {
                   "type": "string",
@@ -5061,7 +5556,7 @@
             },
             "itemId": {
               "type": "string",
-              "minLength": 1
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
             },
             "item": {
               "oneOf": [
@@ -5070,19 +5565,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5097,7 +5592,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5145,7 +5640,7 @@
                             },
                             "id": {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                             }
                           },
                           "required": [
@@ -5161,7 +5656,6 @@
                               "type": "string",
                               "enum": [
                                 "agent",
-                                "automation",
                                 "integration",
                                 "system"
                               ]
@@ -5174,7 +5668,37 @@
                               "anyOf": [
                                 {
                                   "type": "string",
-                                  "minLength": 1
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "automation"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                 },
                                 {
                                   "type": "null"
@@ -5215,19 +5739,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5242,7 +5766,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5301,19 +5825,153 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    "parentItemId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "causationId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
                       "minLength": 1
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "context-summary"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "environmentDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sourceRange": {
+                      "type": "object",
+                      "properties": {
+                        "firstItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "lastItemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "itemCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "evidenceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "firstItemId",
+                        "lastItemId",
+                        "itemCount",
+                        "sourceDigest",
+                        "evidenceDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previousSummary": {
+                      "type": "object",
+                      "properties": {
+                        "itemId": {
+                          "type": "string",
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "threadId",
+                    "turnId",
+                    "status",
+                    "createdAt",
+                    "completedAt",
+                    "type",
+                    "text",
+                    "environmentDigest",
+                    "sourceRange"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "threadId": {
+                      "type": "string",
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5328,7 +5986,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5397,19 +6055,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5424,7 +6082,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5463,7 +6121,7 @@
                     },
                     "artifactId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "artifactVersion": {
                       "type": "integer",
@@ -5507,19 +6165,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5534,7 +6192,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5629,19 +6287,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5656,7 +6314,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5734,19 +6392,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5761,7 +6419,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5802,7 +6460,7 @@
                             },
                             "id": {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                             }
                           },
                           "required": [
@@ -5873,19 +6531,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -5900,7 +6558,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -5939,7 +6597,7 @@
                     },
                     "responsibleUserId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "userInputRequestId": {
                       "type": "string",
@@ -6012,6 +6670,66 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "assistantHandoff": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "task"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "input": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            },
+                            "agentId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "goal"
+                            },
+                            "targetWorkspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "intent": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 65536
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "targetWorkspaceId",
+                            "intent"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -6035,19 +6753,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6062,7 +6780,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6101,7 +6819,7 @@
                         },
                         "id": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         }
                       },
                       "required": [
@@ -6160,19 +6878,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6187,7 +6905,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6256,19 +6974,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6283,7 +7001,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6397,19 +7115,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6424,7 +7142,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6496,19 +7214,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6523,7 +7241,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6604,19 +7322,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6631,7 +7349,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6735,19 +7453,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6762,7 +7480,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6842,19 +7560,19 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "workspaceId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "threadId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "turnId": {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "status": {
                       "type": "string",
@@ -6869,7 +7587,7 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         {
                           "type": "null"
@@ -6908,8 +7626,7 @@
                     },
                     "presentationId": {
                       "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      "pattern": "^pres_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     "title": {
                       "type": "string",
@@ -6961,15 +7678,15 @@
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "threadId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "turnId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "kind": {
                   "type": "string",
@@ -7050,15 +7767,15 @@
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "threadId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "turnId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "kind": {
                   "type": "string",
@@ -7135,7 +7852,7 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "agentId": {
                   "type": "string",
@@ -7143,13 +7860,13 @@
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "threadId": {
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -7268,17 +7985,17 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "threadId": {
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -7289,7 +8006,7 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -7369,11 +8086,11 @@
                         },
                         "threadId": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         "turnId": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         "requestId": {
                           "type": "string",
@@ -7418,7 +8135,7 @@
                                 },
                                 "id": {
                                   "type": "string",
-                                  "minLength": 1
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                 }
                               },
                               "required": [
@@ -7434,7 +8151,6 @@
                                   "type": "string",
                                   "enum": [
                                     "agent",
-                                    "automation",
                                     "integration",
                                     "system"
                                   ]
@@ -7447,7 +8163,37 @@
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "minLength": 1
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "automation"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                     },
                                     {
                                       "type": "null"
@@ -7533,17 +8279,17 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "threadId": {
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -7554,7 +8300,7 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"
@@ -7634,11 +8380,11 @@
                         },
                         "threadId": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         "turnId": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         },
                         "requestId": {
                           "type": "string",
@@ -7683,7 +8429,7 @@
                                 },
                                 "id": {
                                   "type": "string",
-                                  "minLength": 1
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                 }
                               },
                               "required": [
@@ -7699,7 +8445,6 @@
                                   "type": "string",
                                   "enum": [
                                     "agent",
-                                    "automation",
                                     "integration",
                                     "system"
                                   ]
@@ -7712,7 +8457,37 @@
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "minLength": 1
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "automation"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                     },
                                     {
                                       "type": "null"
@@ -7808,15 +8583,15 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "workspaceId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "threadId": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
                 "triggerActor": {
                   "anyOf": [
@@ -7829,7 +8604,7 @@
                         },
                         "id": {
                           "type": "string",
-                          "minLength": 1
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                         }
                       },
                       "required": [
@@ -7845,7 +8620,6 @@
                           "type": "string",
                           "enum": [
                             "agent",
-                            "automation",
                             "integration",
                             "system"
                           ]
@@ -7858,7 +8632,37 @@
                           "anyOf": [
                             {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "responsibleUserId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "automation"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "responsibleUserId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                             },
                             {
                               "type": "null"
@@ -7884,19 +8688,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -7911,7 +8715,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -7959,7 +8763,7 @@
                                   },
                                   "id": {
                                     "type": "string",
-                                    "minLength": 1
+                                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                   }
                                 },
                                 "required": [
@@ -7975,7 +8779,6 @@
                                     "type": "string",
                                     "enum": [
                                       "agent",
-                                      "automation",
                                       "integration",
                                       "system"
                                     ]
@@ -7988,7 +8791,37 @@
                                     "anyOf": [
                                       {
                                         "type": "string",
-                                        "minLength": 1
+                                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "id",
+                                  "responsibleUserId"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "automation"
+                                  },
+                                  "id": {
+                                    "type": "string",
+                                    "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "responsibleUserId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                       },
                                       {
                                         "type": "null"
@@ -8029,19 +8862,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8056,7 +8889,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8115,19 +8948,153 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          "parentItemId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "causationId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
                             "minLength": 1
+                          },
+                          "completedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "type": {
+                            "type": "string",
+                            "const": "context-summary"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          },
+                          "environmentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "sourceRange": {
+                            "type": "object",
+                            "properties": {
+                              "firstItemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "lastItemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "itemCount": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "sourceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              },
+                              "evidenceDigest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "firstItemId",
+                              "lastItemId",
+                              "itemCount",
+                              "sourceDigest",
+                              "evidenceDigest"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "previousSummary": {
+                            "type": "object",
+                            "properties": {
+                              "itemId": {
+                                "type": "string",
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "digest": {
+                                "type": "string",
+                                "pattern": "^sha256:[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "itemId",
+                              "digest"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "threadId",
+                          "turnId",
+                          "status",
+                          "createdAt",
+                          "completedAt",
+                          "type",
+                          "text",
+                          "environmentDigest",
+                          "sourceRange"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "workspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "threadId": {
+                            "type": "string",
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "turnId": {
+                            "type": "string",
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8142,7 +9109,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8211,19 +9178,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8238,7 +9205,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8277,7 +9244,7 @@
                           },
                           "artifactId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "artifactVersion": {
                             "type": "integer",
@@ -8321,19 +9288,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8348,7 +9315,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8443,19 +9410,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8470,7 +9437,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8548,19 +9515,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8575,7 +9542,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8616,7 +9583,7 @@
                                   },
                                   "id": {
                                     "type": "string",
-                                    "minLength": 1
+                                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                                   }
                                 },
                                 "required": [
@@ -8687,19 +9654,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8714,7 +9681,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8753,7 +9720,7 @@
                           },
                           "responsibleUserId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "userInputRequestId": {
                             "type": "string",
@@ -8826,6 +9793,66 @@
                               ],
                               "additionalProperties": false
                             }
+                          },
+                          "assistantHandoff": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "task"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "input": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  },
+                                  "agentId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "modelId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "input"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "goal"
+                                  },
+                                  "targetWorkspaceId": {
+                                    "type": "string",
+                                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "intent": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 65536
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "targetWorkspaceId",
+                                  "intent"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -8849,19 +9876,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -8876,7 +9903,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -8915,7 +9942,7 @@
                               },
                               "id": {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               }
                             },
                             "required": [
@@ -8974,19 +10001,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -9001,7 +10028,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -9070,19 +10097,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -9097,7 +10124,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -9211,19 +10238,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -9238,7 +10265,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -9310,19 +10337,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -9337,7 +10364,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -9418,19 +10445,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -9445,7 +10472,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -9549,19 +10576,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -9576,7 +10603,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -9656,19 +10683,19 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "workspaceId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "threadId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "turnId": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "status": {
                             "type": "string",
@@ -9683,7 +10710,7 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                               },
                               {
                                 "type": "null"
@@ -9722,8 +10749,7 @@
                           },
                           "presentationId": {
                             "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            "pattern": "^pres_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                           },
                           "title": {
                             "type": "string",
@@ -9889,7 +10915,7 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "minLength": 1
+                      "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                     },
                     {
                       "type": "null"

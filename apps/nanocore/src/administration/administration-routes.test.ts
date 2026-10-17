@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -8,7 +9,6 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { ResolvedInternalRoleProfile } from '../internal-agents/profile-resolver.js';
@@ -20,6 +20,8 @@ import { createProviderCredentialConfigured } from '../providers/vault-credentia
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -72,14 +74,14 @@ describe('administration conversation route', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001'),
     });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
-      tokenId: 'tok_administration_private_context',
+      tokenId: 'tok_00000000-0000-7c1e-8e50-7f31e2ddcaec',
       workspaceIds: [],
     });
     const actor: Actor = {
@@ -87,15 +89,16 @@ describe('administration conversation route', () => {
       tokenId: token.tokenId,
       tokenScope: 'server-admin',
       tokenWorkspaceIds: [],
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
     const store = createDemoStore({ dataRoot });
     const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
     const thread = store.createThread(
       workspaceId,
       'Administration',
-      'thread_administration_private_context',
-      'administration'
+      testEntityId('th', 'thread_administration_private_context'),
+      'administration',
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const providerProfile = {
       baseUrl: 'https://provider.invalid/v1',
@@ -181,7 +184,7 @@ describe('administration conversation route', () => {
       .fn()
       .mockImplementationOnce(async (_provider, request) => {
         expect(request.instructions).toContain(
-          `{"workspaceId":"${workspaceId}","threadId":"${thread.id}","workspaceKind":"quick-chat"}`
+          `{"workspaceId":"${workspaceId}","threadId":"${thread.id}","workspaceKind":"personal"}`
         );
         expect(request.instructions).toContain(
           'NanoHost is the execution host, not an LLM Provider.'
@@ -313,14 +316,14 @@ describe('administration conversation route', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001'),
     });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
-      tokenId: 'tok_administration_empty_answer',
+      tokenId: 'tok_00000000-0000-78d4-a035-b6abd03c6222',
       workspaceIds: [],
     });
     const actor: Actor = {
@@ -328,7 +331,7 @@ describe('administration conversation route', () => {
       tokenId: token.tokenId,
       tokenScope: 'server-admin',
       tokenWorkspaceIds: [],
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
     const store = createDemoStore({ dataRoot });
     const providerProfile = {
@@ -491,14 +494,14 @@ describe('administration conversation route', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001'),
     });
     const firstToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
-      tokenId: 'tok_administration_first',
+      tokenId: 'tok_00000000-0000-7587-8038-e08a282bcd3e',
       workspaceIds: [],
     });
     const actorState: { current: Actor } = {
@@ -507,7 +510,7 @@ describe('administration conversation route', () => {
         tokenId: firstToken.tokenId,
         tokenScope: 'server-admin',
         tokenWorkspaceIds: [],
-        userId: 'user_local',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
       },
     };
     const store = createDemoStore({ dataRoot });
@@ -630,9 +633,9 @@ describe('administration conversation route', () => {
 
     const secondToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
-      tokenId: 'tok_administration_second',
+      tokenId: 'tok_00000000-0000-7a9c-9227-68617526a1de',
       workspaceIds: [],
     });
     actorState.current = {
@@ -640,7 +643,7 @@ describe('administration conversation route', () => {
       tokenId: secondToken.tokenId,
       tokenScope: 'server-admin',
       tokenWorkspaceIds: [],
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
     const replay = await app.request(
       ...operationRequest(
@@ -665,7 +668,9 @@ describe('administration conversation route', () => {
       const turn = readTurn(turnId);
       return {
         ...turn,
-        items: turn.items.filter((item) => item.id !== `it_administration_user_${turn.id}`),
+        items: turn.items.filter(
+          (item) => item.id !== deriveEntityId('it', ['administration_user', turn.id])
+        ),
       };
     });
     const missingUserReplay = await app.request(
@@ -730,14 +735,14 @@ describe('administration conversation route', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001'),
     });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
-      tokenId: 'tok_administration_foreign_thread',
+      tokenId: 'tok_00000000-0000-76de-b081-e2fc9abfdaef',
       workspaceIds: [],
     });
     const actor: Actor = {
@@ -745,17 +750,17 @@ describe('administration conversation route', () => {
       tokenId: token.tokenId,
       tokenScope: 'server-admin',
       tokenWorkspaceIds: [],
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
     const store = createDemoStore({ dataRoot });
     const actorWorkspaceId = quickChatWorkspaceIdForUser(actor.userId);
-    store.ensureQuickChatWorkspace('user_other');
+    store.ensureQuickChatWorkspace('usr_00000000-0000-73d4-904a-d4c4b905df7c');
     const foreignPrivateThread = store.createThread(
-      quickChatWorkspaceIdForUser('user_other'),
+      quickChatWorkspaceIdForUser('usr_00000000-0000-73d4-904a-d4c4b905df7c'),
       'Foreign private administration',
       undefined,
       'administration',
-      { privateOwnerUserId: 'user_other', visibility: 'private' }
+      { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
     const actorThreadIds = store.listThreads(actorWorkspaceId).map((thread) => thread.id);
     const createTurn = vi.spyOn(store, 'createTurn');
@@ -948,12 +953,12 @@ async function postAdministrationAdmissionTurn(options: {
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: quickChatWorkspaceIdForUser('user_local'),
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001'),
   });
   const token = createOpenKitAccessTokenRecord(coreDb, {
     expiresAt: '2999-01-01T00:00:00.000Z',
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     tokenId: `tok_administration_${options.label}`,
     workspaceIds: [],
@@ -963,15 +968,16 @@ async function postAdministrationAdmissionTurn(options: {
     tokenId: token.tokenId,
     tokenScope: 'server-admin',
     tokenWorkspaceIds: [],
-    userId: 'user_local',
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
   };
   const store = createDemoStore({ dataRoot });
   const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
   const thread = store.createThread(
     workspaceId,
     'Administration',
-    `thread_administration_${options.label}`,
-    'administration'
+    testEntityId('th', `thread_administration_${options.label}`),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
   );
   const providerProfile = {
     baseUrl: 'https://provider.invalid/v1',

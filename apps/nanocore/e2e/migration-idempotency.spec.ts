@@ -43,13 +43,17 @@ describe('nanocore e2e migration idempotency', () => {
       readFileSync(new URL('../drizzle/core/meta/_journal.json', import.meta.url), 'utf8')
     ) as { entries: Array<{ tag: string; when: number }> };
     const localUsers = sqlite
-      .prepare("select count(*) as count from users where id = 'user_local'")
+      .prepare(
+        "select count(*) as count from users where id = 'usr_00000000-0000-7000-8000-000000000001'"
+      )
       .get() as { count: number };
     sqlite.close();
 
     expect(journal.entries.map((entry) => `core_${entry.tag}`)).toEqual([
       'core_0000_setup',
       'core_0001_concurrent_turn_capacity',
+      'core_0002_durable_recurring_schedules',
+      'core_0003_notebook_admission',
     ]);
     expect(ledgerRows).toEqual(
       journal.entries.map((entry) => ({ createdAt: entry.when, count: 1 }))

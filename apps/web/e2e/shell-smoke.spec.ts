@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
@@ -6,6 +7,7 @@ let stack: IsolatedWebStack | null = null;
 /** Oversized conversation hints must fit the viewport without intercepting adjacent rows. */
 test('contains long conversation previews and keeps the next row clickable', async ({ page }) => {
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
+  const threadIds = [allocateEntityId('th'), allocateEntityId('th')];
   const title = `Improve the observed retained_baseline_conflict ${'VeryLongUnbrokenTaskIdentifier'.repeat(80)}`;
   await page.route('**/api/app/operations/conversation.navigation', async (route) => {
     const workspaceId = route.request().postDataJSON().workspaceId;
@@ -13,7 +15,7 @@ test('contains long conversation previews and keeps the next row clickable', asy
       json: {
         items: [title, 'Next conversation'].map((name, index) => ({
           thread: {
-            id: `th_preview_${index}`,
+            id: threadIds[index],
             workspaceId,
             name,
             preview: 'Conversation preview',
@@ -23,8 +25,9 @@ test('contains long conversation previews and keeps the next row clickable', asy
             createdAt: '2026-09-18T00:00:00.000Z',
             updatedAt: '2026-09-18T00:00:00.000Z',
           },
-          activity: 'chat',
+          activity: index === 0 ? 'goal' : 'chat',
           state: 'idle',
+          unreadCount: 0,
           lastActivityAt: '2026-09-18T00:00:00.000Z',
         })),
       },
@@ -34,10 +37,26 @@ test('contains long conversation previews and keeps the next row clickable', asy
   await page.goto(stack.webUrl);
   const row = page.getByRole('button', { name: title, exact: true });
   const next = page.getByRole('button', { name: 'Next conversation', exact: true });
+  const navigation = page.getByRole('navigation', { name: 'Primary workspace navigation' });
+  const expander = page.getByRole('button', { name: `Show tasks for ${title}`, exact: true });
   for (const width of [824, 600]) {
     await page.setViewportSize({ width, height: 803 });
     if (width < 800) await page.getByRole('button', { name: 'Navigation', exact: true }).click();
     await expect(row).toBeVisible();
+    await expect(expander).toBeVisible();
+    const navigationBounds = await navigation.boundingBox();
+    const expanderBounds = await expander.boundingBox();
+    expect(navigationBounds).not.toBeNull();
+    expect(expanderBounds).not.toBeNull();
+    expect(expanderBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x);
+    expect(expanderBounds!.x + expanderBounds!.width).toBeLessThanOrEqual(
+      navigationBounds!.x + navigationBounds!.width
+    );
+    const navigationOverflow = await navigation.evaluate((element) => ({
+      client: element.clientWidth,
+      scroll: element.scrollWidth,
+    }));
+    expect(navigationOverflow.scroll).toBeLessThanOrEqual(navigationOverflow.client);
     await page.mouse.move(width - 20, 100);
     await row.hover();
     const tooltip = page.getByRole('tooltip');
@@ -57,7 +76,7 @@ test('contains long conversation previews and keeps the next row clickable', asy
     });
     expect(hit).toBe(true);
     await next.click({ timeout: 2000 });
-    await expect(page).toHaveURL(/\/chat\/[^/]+\/th_preview_1$/);
+    await expect(page).toHaveURL(new RegExp(`/chat/[^/]+/${threadIds[1]}$`));
   }
 });
 

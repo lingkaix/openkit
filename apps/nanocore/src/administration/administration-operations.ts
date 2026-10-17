@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import {
   type ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS,
   type SubmitAdministrationConversationResponse,
@@ -7,6 +5,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { deriveEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -22,8 +21,13 @@ import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import { type AgentMessage, runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
+import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
+import {
+  internalContextFailure,
+  prepareInternalAgentContext,
+} from '../internal-agents/rolling-context.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   type FsStore,
@@ -157,7 +161,7 @@ export function createAdministrationOperationImplementations(input: Administrati
       try {
         requireCurrentDeploymentAdmin(input.coreDb, actor);
         const workspace = store.getWorkspace(workspaceId);
-        if (workspace.kind !== 'quick-chat')
+        if (workspace.kind !== 'personal')
           throw new OperationError('administration_failed', 'Administration failed.', 500);
         const currentThread = store
           .listThreads(workspaceId)
@@ -199,10 +203,11 @@ export function createAdministrationOperationImplementations(input: Administrati
             try {
               turn = store.createTurn(workspaceId, thread.id, request.input, triggerActor, null, {
                 turnId,
+                agentId: ADMINISTRATION_AGENT_ID,
               });
               const createdAt = turn.startedAt ?? new Date().toISOString();
               store.createItem({
-                id: `it_administration_user_${turn.id}`,
+                id: deriveEntityId('it', ['administration_user', turn.id]),
                 workspaceId,
                 threadId: thread.id,
                 turnId: turn.id,
@@ -298,66 +303,100 @@ export function createAdministrationOperationImplementations(input: Administrati
                   ...(input.nanoHostConfig ? { nanoHostConfig: input.nanoHostConfig } : {}),
                 }),
               });
-              const priorMessages = administrationMessages(store, workspaceId, thread.id, turn.id);
               const systemPrompt = assembleBuiltInSystemPrompt('administration', {
                 workspaceId,
                 threadId: thread.id,
-                workspaceKind: 'quick-chat',
+                workspaceKind: 'personal',
               });
               const loopResult = await withTurnModelCapture(
                 { store, turn, environment: { systemPrompt, tools } },
-                (capture) =>
-                  runInternalAgentLoop(
+                async (capture) => {
+                  const provider = createInternalAgentGatewayProvider({
+                    capture,
+                    logicalModel: selection.logicalModel,
+                    resolveLogicalModel: (logicalModelId) => {
+                      const snapshot = input.runtimeConfig();
+                      return resolveLogicalModel(
+                        snapshot.gatewayConfig,
+                        snapshot.providerRegistry,
+                        logicalModelId,
+                        input.providerSubscriptionAccountManager,
+                        input.providerCredentialConfigured
+                      );
+                    },
+                    dispatcher: input.llmGatewayDispatcher,
+                    resolveGatewayProvider: input.resolveGatewayProvider,
+                    ...(input.providerSubscriptionAccountManager
+                      ? {
+                          providerSubscriptionAccountManager:
+                            input.providerSubscriptionAccountManager,
+                        }
+                      : {}),
+                    promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
+                    usageEndpoint: 'responses',
+                    callContext: {
+                      authorityActor: triggerActor,
+                      agentId: ADMINISTRATION_AGENT_ID,
+                      workspaceId,
+                      family: 'llm',
+                      operation: 'administration',
+                      capabilityId: 'inference.local.administration',
+                      providerRef: null,
+                      requestId: null,
+                      serviceRef: 'llm-gateway',
+                      redactionClass: 'metadata-only',
+                      summary: 'Private administration Assistant LLM call.',
+                    },
+                  });
+                  const model = {
+                    logicalModelId: selection.logicalModel.id,
+                    capabilities: selection.logicalModel.capabilities,
+                    modelFamilyId: selection.logicalModel.modelFamilyId,
+                  };
+                  const window = await prepareInternalAgentContext({
+                    store,
+                    turn,
+                    systemPrompt,
+                    tools,
+                    model,
+                    bounds: {
+                      context: selection.logicalModel.contract?.context,
+                      output: selection.logicalModel.contract?.output,
+                    },
+                    requiredMessages: [
+                      { role: 'user', content: [{ type: 'text', text: request.input }] },
+                    ],
+                    limits: selection.profile?.limits ?? DEFAULT_LIMITS,
+                    signal: context.signal ?? new AbortController().signal,
+                    assertCurrent: () => requireCurrentDeploymentAdmin(input.coreDb!, actor),
+                    readEvidence: (items) =>
+                      readInternalContextEvidence({
+                        store,
+                        coreDb: input.coreDb!,
+                        actor,
+                        workspaceId,
+                        threadId: thread.id,
+                        items,
+                      }),
+                    callProvider: provider,
+                  });
+                  const exit = await runInternalAgentLoop(
                     {
                       systemPrompt,
-                      messages: priorMessages,
                       tools,
-                      model: {
-                        logicalModelId: selection.logicalModel.id,
-                        capabilities: selection.logicalModel.capabilities,
-                        modelFamilyId: selection.logicalModel.modelFamilyId,
-                      },
-                      limits: selection.profile?.limits ?? DEFAULT_LIMITS,
-                      signal: context.signal ?? new AbortController().signal,
+                      model,
+                      messages: window.messages,
+                      limits: window.limits,
+                      signal: window.signal,
                     },
-                    createInternalAgentGatewayProvider({
-                      capture,
-                      logicalModel: selection.logicalModel,
-                      resolveLogicalModel: (logicalModelId) => {
-                        const snapshot = input.runtimeConfig();
-                        return resolveLogicalModel(
-                          snapshot.gatewayConfig,
-                          snapshot.providerRegistry,
-                          logicalModelId,
-                          input.providerSubscriptionAccountManager,
-                          input.providerCredentialConfigured
-                        );
-                      },
-                      dispatcher: input.llmGatewayDispatcher,
-                      resolveGatewayProvider: input.resolveGatewayProvider,
-                      ...(input.providerSubscriptionAccountManager
-                        ? {
-                            providerSubscriptionAccountManager:
-                              input.providerSubscriptionAccountManager,
-                          }
-                        : {}),
-                      promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
-                      usageEndpoint: 'responses',
-                      callContext: {
-                        authorityActor: triggerActor,
-                        agentId: ADMINISTRATION_AGENT_ID,
-                        workspaceId,
-                        family: 'llm',
-                        operation: 'administration',
-                        capabilityId: 'inference.local.administration',
-                        providerRef: null,
-                        requestId: null,
-                        serviceRef: 'llm-gateway',
-                        redactionClass: 'metadata-only',
-                        summary: 'Private administration Assistant LLM call.',
-                      },
-                    })
-                  )
+                    (request) => {
+                      window.assertCurrent();
+                      return provider(request);
+                    }
+                  );
+                  window.assertCurrent();
+                  return exit;
+                }
               );
               if (loopResult.kind !== 'quiescent') {
                 const code =
@@ -386,7 +425,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               try {
                 const completedAt = new Date().toISOString();
                 const item = store.createItem({
-                  id: `it_administration_answer_${turn.id}`,
+                  id: deriveEntityId('it', ['administration_answer', turn.id]),
                   workspaceId,
                   threadId: thread.id,
                   turnId: turn.id,
@@ -417,10 +456,11 @@ export function createAdministrationOperationImplementations(input: Administrati
                 turn.id,
                 error instanceof DeploymentAdminRequiredError
                   ? 'deployment_admin_required'
-                  : 'administration_execution_failed',
+                  : (internalContextFailure(error)?.code ?? 'administration_execution_failed'),
                 error instanceof DeploymentAdminRequiredError
                   ? 'Current deployment administrator authority was lost before publication.'
-                  : 'Administration could not settle the current bounded run.'
+                  : (internalContextFailure(error)?.message ??
+                      'Administration could not settle the current bounded run.')
               );
             }
           },
@@ -495,28 +535,6 @@ type AdministrationCommandResult = {
   readonly status: 200;
 };
 
-function administrationMessages(
-  store: FsStore,
-  workspaceId: string,
-  threadId: string,
-  currentTurnId: string
-): AgentMessage[] {
-  return store
-    .listThreadItems(workspaceId, threadId)
-    .filter((item) => item.turnId !== currentTurnId || item.type === 'user-message')
-    .flatMap((item): AgentMessage[] => {
-      if (item.type === 'user-message') {
-        return [{ role: 'user', content: [{ type: 'text', text: item.text }] }];
-      }
-      if (item.type === 'assistant-message') {
-        return [
-          { role: 'assistant', content: [{ type: 'text', text: item.text }], truncated: false },
-        ];
-      }
-      return [];
-    });
-}
-
 /** Reads publishable text only from the final response of a quiescent loop. */
 function finalAssistantText(messages: readonly AgentMessage[]): string {
   const message = messages.at(-1);
@@ -541,7 +559,7 @@ function failedAdministrationTurn(
   try {
     const item = store.createItem(
       {
-        id: `it_administration_refused_${turn.id}`,
+        id: deriveEntityId('it', ['administration_refused', turn.id]),
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,
@@ -620,11 +638,11 @@ function replayAdministrationTurn(
     }
     const itemId =
       resultKind === 'provider-answer'
-        ? `it_administration_answer_${turn.id}`
-        : `it_administration_refused_${turn.id}`;
+        ? deriveEntityId('it', ['administration_answer', turn.id])
+        : deriveEntityId('it', ['administration_refused', turn.id]);
     const item = turn.items.find((candidate) => candidate.id === itemId);
     const userItem = turn.items.find(
-      (candidate) => candidate.id === `it_administration_user_${turn.id}`
+      (candidate) => candidate.id === deriveEntityId('it', ['administration_user', turn.id])
     );
     const consistentUser =
       userItem?.type === 'user-message' &&
@@ -680,17 +698,11 @@ function hasAdministrationTurn(
 }
 
 function administrationThreadId(userId: string, requestId: string): string {
-  return `th_administration_${createHash('sha256')
-    .update(JSON.stringify([userId, requestId]))
-    .digest('hex')
-    .slice(0, 24)}`;
+  return deriveEntityId('th', ['administration', userId, requestId]);
 }
 
 function administrationTurnId(userId: string, threadId: string, requestId: string): string {
-  return `tu_administration_${createHash('sha256')
-    .update(JSON.stringify([userId, threadId, requestId]))
-    .digest('hex')
-    .slice(0, 24)}`;
+  return deriveEntityId('tu', ['administration', userId, threadId, requestId]);
 }
 
 function administrationThreadTitle(text: string): string {

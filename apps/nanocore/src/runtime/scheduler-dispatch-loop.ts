@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { ActivateWorkerEnvironmentResponseSchema } from '@openkit/app-api-schemas';
 import type {
   GatewayConfig,
@@ -7,7 +6,7 @@ import type {
   WorkspaceDataSourceCatalog,
   WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { responsibleUserIdForActor, type TurnSchema } from '@openkit/protocol';
+import { allocateEntityId, responsibleUserIdForActor, type TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
@@ -17,7 +16,7 @@ import {
 } from '../agents/setup-resolver.js';
 import { deriveArtifactReviewWorkerRequestId } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
+import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -33,6 +32,8 @@ import {
   openWorkspaceDb,
 } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
   bindSchedulerExecutionAttemptSession,
@@ -50,11 +51,7 @@ import {
   TurnStartValidationError,
   workspaceSourceRefsFromAgentManifest,
 } from './orchestrator.js';
-import {
-  assistantPendingOutcomeSourceHash,
-  listThreadPendingRequests,
-} from './pending-requests.js';
-import { generateUuidV7 } from './session-id.js';
+import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import type { PrepareAgentSessionForTurnInput, TurnExecutor } from './types.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
@@ -114,6 +111,7 @@ export interface SchedulerDispatchLoopResult {
           | 'thread-busy'
           | 'backend-busy'
           | 'entry-publication-pending'
+          | 'recovery-required'
           | 'max-dispatches';
       }
     | { status: 'denied'; entry: SchedulerAdmissionEntryRecord };
@@ -153,6 +151,7 @@ export async function runSchedulerDispatchLoop(
     return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
   const unpublishedQueueEntryIds = new Set<string>();
+  let recurringRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     const entry = findNextDispatchableSchedulerAdmissionEntry(
       input.coreDb,
@@ -163,11 +162,13 @@ export async function runSchedulerDispatchLoop(
         startedTurns,
         terminalResult: {
           status: 'queued',
-          reason: unpublishedQueueEntryIds.size
-            ? 'entry-publication-pending'
-            : listQueuedSchedulerAdmissionEntries(input.coreDb).length
-              ? 'thread-busy'
-              : 'no-queued-entry',
+          reason: recurringRecoveryRequired
+            ? 'recovery-required'
+            : unpublishedQueueEntryIds.size
+              ? 'entry-publication-pending'
+              : listQueuedSchedulerAdmissionEntries(input.coreDb).length
+                ? 'thread-busy'
+                : 'no-queued-entry',
         },
       };
     if (claims.has(entry.queueEntryId))
@@ -188,6 +189,8 @@ export async function runSchedulerDispatchLoop(
     // An incomplete cross-store publication fences only its own request/Thread. Continue
     // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
     if (!schedulerEntryPublicationComplete(input, entry)) {
+      if (findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId))
+        recurringRecoveryRequired = true;
       unpublishedQueueEntryIds.add(entry.queueEntryId);
       count--;
       continue;
@@ -200,7 +203,9 @@ export async function runSchedulerDispatchLoop(
         resolve(result);
       };
     });
-    const promise = dispatchSchedulerAdmission(input, entry, acknowledgeSubmission);
+    const promise = withTurnDispatchTelemetry(entry.turnId, () =>
+      dispatchSchedulerAdmission(input, entry, acknowledgeSubmission)
+    );
     claims.set(entry.queueEntryId, promise);
     const forget = () => {
       if (claims.get(entry.queueEntryId) === promise) claims.delete(entry.queueEntryId);
@@ -229,6 +234,8 @@ function schedulerEntryPublicationComplete(
   input: RunSchedulerDispatchLoopInput,
   entry: SchedulerAdmissionEntryRecord
 ): boolean {
+  const occurrence = findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId);
+  if (occurrence) return recurringTurnPublicationIssue(input.store, entry) === null;
   try {
     const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
     if (turn.status !== 'pending' || turn.agentId !== entry.requestedAgentId) return false;
@@ -270,7 +277,7 @@ function schedulerEntryPublicationComplete(
       )
     )
       return true;
-    if (assistantOutcomePublicationComplete(input.store, workspaceDb, entry)) return true;
+    if (readAssistantTaskHandoffSource(input.store, workspaceDb, entry)) return true;
     if (activationPublicationComplete(input, entry)) return true;
     const checkpoint = workspaceDb.sqlite
       .prepare(
@@ -290,50 +297,6 @@ function schedulerEntryPublicationComplete(
   } finally {
     workspaceDb.sqlite.close();
   }
-}
-
-/** Joins an Assistant handoff to its original decided outcome tuple, which has no command receipt. */
-function assistantOutcomePublicationComplete(
-  store: FsStore,
-  workspaceDb: import('../storage/db.js').WorkspaceDb,
-  entry: SchedulerAdmissionEntryRecord
-): boolean {
-  const userId = responsibleUserIdForActor(entry.triggerActor);
-  if (!userId || !entry.requestId?.startsWith('pending_')) return false;
-  let value: unknown;
-  try {
-    value = JSON.parse(entry.turnInput);
-  } catch {
-    return false;
-  }
-  const parsed = StructuredWorkerDelegationRequestSchema.safeParse(value);
-  if (!parsed.success) return false;
-  const itemIds = parsed.data.contextRefs.filter((ref) => ref.kind === 'item').map((ref) => ref.id);
-  if (!itemIds.length) return false;
-  const sources = workspaceDb.sqlite
-    .prepare(`SELECT DISTINCT thread_id AS threadId, delivery_turn_id AS turnId
-    FROM pending_requests WHERE workspace_id = ? AND requester_kind = 'assistant'
-      AND delivery_cause = 'outcome' AND delivery = 'delivered'
-      AND request_item_id IN (${itemIds.map(() => '?').join(',')})`)
-    .all(entry.workspaceId, ...itemIds) as Array<{ threadId: string; turnId: string }>;
-  return sources.some((source) => {
-    const records = listThreadPendingRequests(
-      workspaceDb.sqlite,
-      entry.workspaceId,
-      source.threadId
-    ).filter(
-      (record) => record.deliveryTurnId === source.turnId && record.requesterKind === 'assistant'
-    );
-    if (!records.length || records.some((record) => !itemIds.includes(record.requestItemId)))
-      return false;
-    const turn = store.getTurn(entry.workspaceId, source.threadId, source.turnId);
-    const hash = assistantPendingOutcomeSourceHash(turn, records, userId);
-    return (
-      entry.requestId === `pending_${hash}` &&
-      entry.threadId === `th_task_${hash.slice(0, 24)}` &&
-      entry.turnId === `tu_task_${hash.slice(0, 24)}`
-    );
-  });
 }
 
 /** Resolves the existing administrator-home activation receipt and immutable result for its queued successor. */
@@ -404,7 +367,7 @@ async function dispatchSchedulerAdmission(
   )?.catalog;
   const attempt = createSchedulerExecutionAttempt(input.coreDb, {
     entry,
-    attemptId: (input.createAttemptId ?? (() => `attempt_${randomUUID()}`))(),
+    attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
     preparationInput: {
       admission: entry,
       configVersion: input.configVersion ?? null,
@@ -433,7 +396,7 @@ async function dispatchSchedulerAdmission(
     const preparation: PrepareAgentSessionForTurnInput = {
       attemptId: attempt.attemptId,
       agentSetup: setup,
-      freshAgentSessionId: (input.createAgentSessionId ?? generateUuidV7)(),
+      freshAgentSessionId: (input.createAgentSessionId ?? (() => allocateEntityId('as')))(),
       requestId: entry.requestId,
       turn: input.store.getTurnById(entry.turnId),
       turnInput: entry.turnInput,

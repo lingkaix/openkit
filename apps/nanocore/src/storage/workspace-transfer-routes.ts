@@ -6,6 +6,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -21,7 +22,13 @@ import {
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import {
+  type ActorRef,
+  allocateEntityId,
+  deriveEntityId,
+  type Item,
+  isEntityId,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import {
   importResolvedAgentSetups,
@@ -31,7 +38,7 @@ import { asApiError } from '../api-errors.js';
 import { listExportableArtifactReviews } from '../artifact-reviews.js';
 import {
   importWorkspaceAuditEvents,
-  listWorkspaceAuditEvents,
+  listPortableWorkspaceAuditEvents,
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
@@ -63,6 +70,12 @@ import {
   listStoredWorkspaceEvidenceBundles,
 } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
+import { assertConversationRetrievalTraceReadable } from '../internal-agents/assistant-history.js';
+import {
+  assertPortableWorkspaceNotebookDisclosure,
+  bindImportedWorkspaceNotebookTraces,
+  importedWorkspaceNotebookFiles,
+} from '../knowledge/notebook-workspace-portability.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -77,6 +90,7 @@ import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
 } from '../runtime/mcp-tool-schema-snapshots.js';
+import { recurringCanonicalTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
 import {
   importWorkspaceRuntimeEvidence,
   listWorkspaceRuntimeEvidence,
@@ -105,6 +119,7 @@ import {
   importWorkspaceSyncRecords,
   listExportableWorkspaceSyncRecords,
 } from '../runtime/workspace-sync-records.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   importWorkspaceVaultGrants,
   listExportableWorkspaceVaultGrants,
@@ -150,6 +165,8 @@ import {
 } from './generative-portability.js';
 import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
+import { exportRecurringPortableHistory } from './recurring-portable-history.js';
+import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
 import {
   artifactReviews,
   threadMaterialBindings,
@@ -177,6 +194,8 @@ import {
   type CaptureCoverageBinding,
   readCanonicalFile,
   readCanonicalTextFile,
+  readPublishedTurnFileRecords,
+  readWorkspaceTurnEvents,
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
@@ -193,18 +212,21 @@ import {
 } from './workspace-portable-file-state.js';
 
 /**
- * Returns the first available imported workspace id using numeric suffixes.
+ * Returns the first available owner-derived imported Workspace identity.
  *
- * @param baseId Preferred imported workspace id.
+ * @param sourceWorkspaceId Complete canonical source Workspace identity.
  * @param exists Target workspace existence predicate.
  * @returns Available workspace id.
  */
-function nextImportedWorkspaceId(baseId: string, exists: (workspaceId: string) => boolean): string {
-  let workspaceId = baseId;
-  let suffix = 2;
+function nextImportedWorkspaceId(
+  sourceWorkspaceId: string,
+  exists: (workspaceId: string) => boolean
+): string {
+  let ordinal = 1;
+  let workspaceId = deriveEntityId('ws', ['imported', sourceWorkspaceId, ordinal]);
   while (exists(workspaceId)) {
-    workspaceId = `${baseId}_${suffix}`;
-    suffix += 1;
+    ordinal += 1;
+    workspaceId = deriveEntityId('ws', ['imported', sourceWorkspaceId, ordinal]);
   }
   return workspaceId;
 }
@@ -286,12 +308,13 @@ export function canReadWorkspaceExport(
         .prepare(`
         SELECT call.workspace_id AS call_workspace_id, call.family, call.operation,
                call.capability_id, call.status, usage.workspace_id, usage.usage_id,
-               usage.category, usage.unit, usage.responsible_user_id
+               usage.category, usage.unit, usage.quantity, usage.model_id, usage.provider_ref,
+               usage.source, usage.source_ids_json, usage.responsible_user_id
         FROM capability_calls call
         JOIN usage_records usage ON usage.capability_call_id = call.call_id
         WHERE call.call_id = ?
       `)
-        .all(`cap_storage_export_${verified.manifest.id}`) as Array<{
+        .all(deriveEntityId('cap', ['storage_export', verified.manifest.id])) as Array<{
         call_workspace_id: string;
         family: string;
         operation: string;
@@ -301,17 +324,32 @@ export function canReadWorkspaceExport(
         usage_id: string;
         category: string;
         unit: string;
+        quantity: number;
+        model_id: string | null;
+        provider_ref: string | null;
+        source: string | null;
+        source_ids_json: string;
         responsible_user_id: string | null;
       }>;
+      const expected = new Map([
+        ['files', verified.checkedFiles.length],
+        [
+          'bytes',
+          verified.manifest.contentInventory.reduce((total, entry) => total + entry.bytes, 0),
+        ],
+      ]);
       return (
-        rows.some(
-          (row) =>
-            row.usage_id === `use_storage_export_files_${verified.manifest.id}` &&
-            row.category === 'storage' &&
-            row.unit === 'files'
-        ) &&
+        rows.length === expected.size &&
+        new Set(rows.map((row) => row.unit)).size === expected.size &&
         rows.every(
           (row) =>
+            isEntityId('use', row.usage_id) &&
+            row.category === 'storage' &&
+            row.quantity === expected.get(row.unit) &&
+            row.model_id === null &&
+            row.provider_ref === 'nanocore-storage' &&
+            row.source === 'workspace-export-inventory' &&
+            row.source_ids_json === '[]' &&
             row.call_workspace_id === verified.manifest.workspaceId &&
             row.family === 'storage' &&
             row.operation === 'workspace.export.write' &&
@@ -581,7 +619,7 @@ function collectWorkspaceExportRows(
       const workspaceMaterialRows = listExportableWorkspaceMaterialRows(workspaceDb);
       return {
         artifactReviews: listExportableArtifactReviews(workspaceDb),
-        auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId),
+        auditEvents: listPortableWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
         agentEnvironmentPackageSnapshots: listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
           workspaceId
@@ -767,11 +805,9 @@ function importWorkspaceDatabaseRows({
       summary: `Workspace import created ${importedWorkspaceId} from ${report.exportedWorkspaceId}.`,
     });
     const now = new Date();
-    const storageImportId = randomUUID();
     const call = startCapabilityCall({
       authorityActor: { kind: 'user', id: authorityUserId },
       workspaceDb,
-      callId: `cap_storage_import_${storageImportId}`,
       workspaceId: importedWorkspaceId,
       requestId,
       family: 'storage',
@@ -788,7 +824,6 @@ function importWorkspaceDatabaseRows({
       call,
       records: [
         {
-          usageId: `use_storage_import_files_${storageImportId}`,
           category: 'storage',
           unit: 'files',
           quantity: report.verification.fileCount,
@@ -796,7 +831,6 @@ function importWorkspaceDatabaseRows({
           source: 'workspace-import-inventory',
         },
         {
-          usageId: `use_storage_import_bytes_${storageImportId}`,
           category: 'storage',
           unit: 'bytes',
           quantity: report.verification.totalBytes,
@@ -820,6 +854,7 @@ function importWorkspaceDatabaseRows({
  * @param ownerUserId Importing user or verified deleted-resource tombstone owner.
  * @param snapshot Verified and reminted import snapshot.
  * @param stageWorkspace Staged file and workspace-database writer.
+ * @param initialization Actual current importer and command attribution for the new Notebook.
  * @returns Imported workspace record.
  * @throws Error when staged publication or transactional Core replay fails.
  */
@@ -828,12 +863,22 @@ function publishImportedWorkspace(
   store: FsStore,
   ownerUserId: string,
   snapshot: WorkspaceImportSnapshot,
-  stageWorkspace: (stage: ImportWorkspaceStage) => void
+  stageWorkspace: (stage: ImportWorkspaceStage) => void,
+  initialization: NonNullable<
+    Parameters<FsStore['importWorkspaceSnapshot']>[0]['notebookInitialization']
+  >
 ): ReturnType<FsStore['importWorkspaceSnapshot']> {
   const importWorkspaceState = () =>
     store.importWorkspaceSnapshot({
       ...snapshot,
       stageWorkspace,
+      notebookInitialization: initialization,
+      initialNotebookFiles: importedWorkspaceNotebookFiles(
+        snapshot.portableFileState.nativeKnowledgePages
+      ),
+      ...(snapshot.portableFileState.workspaceSchema === null
+        ? {}
+        : { initialNotebookSchemaText: snapshot.portableFileState.workspaceSchema }),
     });
   if (!coreDb) {
     return importWorkspaceState();
@@ -895,14 +940,21 @@ export function importVerifiedWorkspace({
   const importedWorkspaceId =
     report.collision.status === 'available'
       ? report.collision.workspaceId
-      : nextImportedWorkspaceId(report.collision.suggestedWorkspaceId, workspaceExists);
+      : nextImportedWorkspaceId(report.collision.workspaceId, workspaceExists);
   const snapshot = readWorkspaceImportSnapshot({
     verified,
     targetWorkspaceId: importedWorkspaceId,
     targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
-    writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
+    writeWorkspacePortableFileState(workspaceRoot, {
+      ...snapshot.portableFileState,
+      retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
+        workspaceRoot,
+        workspaceId: importedWorkspaceId,
+        traces: snapshot.portableFileState.retrievalTraceFiles,
+      }),
+    });
     for (const [turnId, text] of snapshot.turnObservations) {
       const turn = snapshot.turns.find((candidate) => candidate.id === turnId);
       if (!turn) throw new Error('Imported work observations have no Turn owner.');
@@ -1007,7 +1059,12 @@ export function importVerifiedWorkspace({
     store,
     recoveryOwnerUserId ?? authorityUserId,
     snapshot,
-    stageWorkspace
+    stageWorkspace,
+    {
+      requestId: requestId ?? randomUUID(),
+      producer: { kind: 'user', id: authorityUserId },
+      instructionReference: `workspace.import:${verified.manifest.id}${verified.manifest.knowledgeNotebookRevision ? `:notebook:${verified.manifest.knowledgeNotebookRevision}` : ''}`,
+    }
   );
 
   return WorkspaceImportResponseSchema.parse({
@@ -1022,7 +1079,7 @@ export function importVerifiedWorkspace({
 /** Returns the only recovery export id owned by one Workspace deletion request. */
 export function workspaceDeletionRecoveryExportId(requestId: string): string {
   assertSafeWorkspacePathSegment(requestId, 'Deletion request id');
-  return `wsexp_delete_${requestId}`;
+  return deriveEntityId('wsexp', ['delete', requestId]);
 }
 
 /** Proves the narrow durable authority for one deletion recovery export. */
@@ -1063,7 +1120,7 @@ export function createVerifiedWorkspaceExport({
   coreDb,
   dataRoot,
   deletionRecoveryRequestId,
-  exportId = `wsexp_${randomUUID()}`,
+  exportId = allocateEntityId('wsexp'),
   repositoryWorkspaceDb,
   requestActor,
   store,
@@ -1083,6 +1140,8 @@ export function createVerifiedWorkspaceExport({
   readonly store: FsStore;
   readonly workspaceId: string;
 }) {
+  if (!isEntityId('wsexp', exportId))
+    throw new Error('Workspace export requires a canonical wsexp identity.');
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
   if (!administratorEligible && threads.some((thread) => thread.visibility === 'private')) {
@@ -1098,9 +1157,44 @@ export function createVerifiedWorkspaceExport({
         workspaceId,
       })
     : false;
-  const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  assertCanonicalDirectory(dataRoot);
+  assertCanonicalDirectory(join(dataRoot, 'workspaces'));
   assertCanonicalDirectory(workspaceRoot);
+  const canonicalItemRevisions: Item[] = [];
+  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
+  const turns = threads.flatMap((thread) => {
+    assertSafeWorkspacePathSegment(thread.id, 'Thread id');
+    const threadsRoot = join(workspaceRoot, 'threads');
+    const threadRoot = join(threadsRoot, thread.id);
+    const turnsRoot = join(threadRoot, 'turns');
+    assertCanonicalDirectory(threadsRoot);
+    assertCanonicalDirectory(threadRoot);
+    if (!lstatSync(turnsRoot, { throwIfNoEntry: false })) return [];
+    assertCanonicalDirectory(turnsRoot);
+    // A failed publication can leave the derivative cache ahead of, or without, a canonical Turn.
+    return readdirSync(turnsRoot, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .flatMap((directory) => {
+        if (directory.isSymbolicLink())
+          throw new Error('Canonical Turn directory must not contain a symbolic link.');
+        if (!directory.isDirectory()) return [];
+        const published = readPublishedTurnFileRecords(
+          dataRoot,
+          workspaceId,
+          thread.id,
+          directory.name
+        );
+        if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
+        canonicalItemRevisions.push(...published.itemRevisions);
+        if (published.captureCoverage)
+          turnCaptureCoverage.set(published.turn.id, published.captureCoverage);
+        return [published.turn];
+      })
+      .sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
+  });
+  const canonicalTurns = new Map(turns.map((turn) => [turn.id, turn]));
   const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
   const dataSourceCatalog = existsSync(dataSourceCatalogPath)
     ? parseWorkspaceDataSourceCatalog(
@@ -1121,7 +1215,6 @@ export function createVerifiedWorkspaceExport({
         workspaceVaultGrants.map((grant) => grant.grantId)
       )
     : [];
-  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   assertSafeWorkspacePathSegment(exportId, 'Export id');
   const exportsRoot = join(dataRoot, 'server', 'exports');
   const workspacesRoot = join(exportsRoot, 'workspaces');
@@ -1135,10 +1228,7 @@ export function createVerifiedWorkspaceExport({
   }
   const exportRoot = join(workspaceExportsRoot, exportId);
   const turnObservations = new Map<string, string>();
-  const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   for (const turn of turns) {
-    const coverage = store.getTurnCaptureCoverage(turn.id);
-    if (coverage) turnCaptureCoverage.set(turn.id, coverage);
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
     const rawTurn = JSON.parse(readCanonicalTextFile(join(root, 'turn.json')));
     const declared =
@@ -1206,11 +1296,53 @@ export function createVerifiedWorkspaceExport({
     }
     runtimeProvenanceIndexes.set(bundle.id, text);
   }
-  const portableFileState = readWorkspacePortableFileState(workspaceRoot, {
+  const retainedPortableState = readWorkspacePortableFileState(workspaceRoot, {
     workspaceId,
     threads: threads.map(({ id }) => ({ threadId: id })),
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
+  const portableFileState = retainedPortableState;
+  if (!deletionRecoveryAuthorized) {
+    if (!requestActor || !portableFileState.notebookRevision)
+      throw new Error('Notebook export requires current source disclosure authority.');
+    assertPortableWorkspaceNotebookDisclosure({
+      dataRoot,
+      workspaceId,
+      notebookRevision: portableFileState.notebookRevision,
+      pages: portableFileState.nativeKnowledgePages,
+      access: {
+        store,
+        coreDb,
+        actor: authorityActor ?? { kind: 'user', id: authorityUserId },
+        requestActor,
+      },
+    });
+  }
+  // A missing current file cannot establish that a reserved Turn was never published.
+  if (coreDb) {
+    const accepted = coreDb.sqlite
+      .prepare(
+        "SELECT queue_entry_id FROM recurring_occurrences WHERE workspace_id = ? AND state = 'admission-accepted'"
+      )
+      .all(workspaceId) as { queue_entry_id: string | null }[];
+    for (const row of accepted) {
+      const entry = row.queue_entry_id
+        ? requireSchedulerAdmissionEntry(coreDb, row.queue_entry_id)
+        : null;
+      if (
+        !entry ||
+        !findAcceptedRecurringOccurrenceForQueue(coreDb, entry.queueEntryId) ||
+        recurringCanonicalTurnPublicationIssue(entry, canonicalTurns.get(entry.turnId) ?? null)
+      )
+        throw new Error('Recurring publication requires inspection before portable export.');
+    }
+  }
+  const recurringHistory = exportRecurringPortableHistory(
+    coreDb,
+    workspaceId,
+    retainedPortableState.recurringHistory ?? null,
+    turns
+  );
   if (
     portableFileState.retrievalTraceFiles.size > 0 &&
     !deletionRecoveryAuthorized &&
@@ -1225,6 +1357,18 @@ export function createVerifiedWorkspaceExport({
       workspaceId
     );
     if (!deletionRecoveryAuthorized) {
+      if ('sourceKind' in trace) {
+        if (!coreDb || !requestActor)
+          throw new Error('Conversation trace export requires current authority.');
+        assertConversationRetrievalTraceReadable({
+          store,
+          coreDb,
+          actor: requestActor,
+          workspaceId,
+          retrievalTraceRef: reference,
+        });
+        continue;
+      }
       assertKnowledgeRetrievalTraceReadable({
         dataRoot,
         workspaceId,
@@ -1265,7 +1409,20 @@ export function createVerifiedWorkspaceExport({
       });
       for (const [, trace] of workerContextTraces) {
         verifyPortableWorkerContextPackageTrace({
-          authorities,
+          authorities: {
+            ...authorities,
+            // Historical validation must consume the same canonical records that export serializes.
+            readTurn: (requestedWorkspaceId, threadId, turnId) => {
+              const turn = canonicalTurns.get(turnId);
+              return requestedWorkspaceId === workspaceId && turn?.threadId === threadId
+                ? { ...turn, agentSessionId: turn.agentSessionId ?? null }
+                : null;
+            },
+            readThreadItems: (requestedWorkspaceId, threadId) =>
+              requestedWorkspaceId === workspaceId
+                ? turns.filter((turn) => turn.threadId === threadId).flatMap((turn) => turn.items)
+                : [],
+          },
           trace,
           workspaceRoot,
         });
@@ -1288,15 +1445,16 @@ export function createVerifiedWorkspaceExport({
     knowledge: store.listKnowledge(workspaceId),
     knowledgeSources: store.listKnowledgeSources(workspaceId),
     knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
-    itemRevisions: store.listWorkspaceItemRevisions(workspaceId),
+    itemRevisions: canonicalItemRevisions,
     artifacts: store.listArtifacts(workspaceId),
     artifactReviews: workspaceRowFamilies.artifactReviews,
     threadMaterialBindings: workspaceRowFamilies.workspaceMaterialRows.bindings,
     workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
     workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
     agentSessions: store.listWorkspaceAgentSessions(workspaceId),
-    turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
+    turnEvents: turns.map((turn) => [turn.id, readWorkspaceTurnEvents(workspaceRoot, turn)]),
     portableFileState,
+    recurringHistory,
     ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
     agentResourceCatalog: projectWorkspaceCatalogExport(dataRoot, workspaceId),
     auditEvents: [...workspaceRowFamilies.auditEvents, ...lightApps.auditEvents],
@@ -1369,7 +1527,7 @@ export function createVerifiedWorkspaceExport({
       const call = startCapabilityCall({
         authorityActor: { kind: 'user', id: authorityUserId },
         workspaceDb,
-        callId: `cap_storage_export_${exportId}`,
+        callId: deriveEntityId('cap', ['storage_export', exportId]),
         workspaceId,
         family: 'storage',
         operation: 'workspace.export.write',
@@ -1385,7 +1543,6 @@ export function createVerifiedWorkspaceExport({
         call,
         records: [
           {
-            usageId: `use_storage_export_files_${exportId}`,
             category: 'storage',
             unit: 'files',
             quantity: fileCount,
@@ -1393,7 +1550,6 @@ export function createVerifiedWorkspaceExport({
             source: 'workspace-export-inventory',
           },
           {
-            usageId: `use_storage_export_bytes_${exportId}`,
             category: 'storage',
             unit: 'bytes',
             quantity: totalBytes,

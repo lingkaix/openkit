@@ -5,6 +5,8 @@ status: Accepted
 
 In Web, open **Settings → Administration → Server operations** to inspect current server health, boot subsystem and Policy reasons, process memory, Telemetry configuration, update readiness and bounded cleanup observations. Each read checks current administrator authority. Refresh only reads state. Cleanup coverage can be incomplete or unavailable; an unknown evidence row does not prove cleanup. Execution-host readiness is a stored observation, and a fresh-empty host does not prove deployment idleness. Use the maintenance links to reach the existing Configuration, Gateway, Vault, Audit, App update, Workspace access recovery, backup and Portability controls. Deployment data-root backup and Workspace portability do not provide whole-server recovery.
 
+Web recovery controls check current access before offering effects. If a current read fails, retry that read first. A denied read hides prior protected observations during retry. Recovery can retain recorded evidence after an ordinary read failure, but it does not authorize a new command. Keep the exact request ID for an unknown result. Retrying a read does not replay the command. App update diagnostics can fail independently of current administrator access; preparation and the host receipt still decide update readiness.
+
 Operate only the selected deployment and requested effect. For ordinary replacement, keep its persistent Data Root, external Vault key, protected authentication configuration and NanoHost transport credentials intact. An explicit pre-stable deployment reset follows the separate procedure below; an update refusal never grants reset authority. NanoCore/Web replacement does not authorize NanoHost, unrelated containers or host reverse-proxy maintenance.
 
 NanoHost startup and Worker-image availability are separate checks. The accepted stock OpenShell Supervisor bootstrap may contact GHCR before readiness; a locally retained Worker image does not remove that dependency. Follow [NanoHost Runtime](nanocore-deployment-modes.en.md#nanohost-runtime) when diagnosing registry-related startup failure. NanoCore/Web updates do not authorize a NanoHost restart to test this behavior.
@@ -91,6 +93,8 @@ Present the prepared `approvalSummary` as one review: target release, expected a
 Inspect the returned verification predicates and retained-data observation. A submitted update or successful handoff is not a completed replacement. Missing helper configuration reports the capability unavailable; unusable SSH identity files also fail the operation while Core remains available. Until the installed version and host configuration support the complete path, an authorized external operator performs the procedure above. An internal Agent cannot substitute its own decision for the required administrator approval.
 
 The helper refuses a configured NanoHost with `ready: false` before acquiring the candidate and before stopping the App. Inspect the existing execution-host service and its bounded failure evidence under separate host authorization; recover that service before a new update attempt. Do not restart NanoHost inside the update to manufacture a successful readiness predicate. A genuinely unconfigured NanoHost remains optional, while a configured target must reconnect on a greater generation after replacement.
+
+In Web Administration, cached candidate facts do not grant current access to their private source Thread. If an authority or source read is pending, paused or failed, inspect or retry that read before a new preparation, recovery, Apply or activation. A typed denial hides private facts and any open review. Read Retry does not repeat the command. Keep an already dispatched command's exact candidate and result; after access returns, inspect that result instead of applying or activating again. An App update receipt and a Worker activation result remain separate component evidence.
 
 ### Automate One Bounded Staging Update
 
@@ -253,6 +257,14 @@ If the Vault is locked, inspect its non-secret status and exact external-key ava
 
 Retain the exact failure and partial outcome. A fresh task may continue after recovery; no script or Agent may relabel the interrupted attempt as successful.
 
+### Diagnose Shared Network Sockets
+
+The selected OpenShell 0.0.99 release checks every process that holds an outbound socket. It refuses the connection when those processes have different policy identities. An identity includes the executable, verified ancestor chain and script information; matching executable names alone do not prove equality. This follows the [Worker Sandbox network boundary](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260709-worker_sandbox_freedom_policy.md).
+
+Keep each connection with its intended client. Preserve close-on-exec on network descriptors. Before a child changes its executable identity, close inherited network descriptors that the child does not own. Let that client open its own connection under the existing endpoint and binary grants. Do not disable identity checks or broaden grants to bypass mixed ownership.
+
+A nearby identity refusal does not prove the cause of a failed package download. At this pin, an admitted TCP dial failure before CONNECT 200 can produce a generic event without a request join. Its proxy endpoint identifies shared Sandbox context; it does not identify the failed request. A separate destination DEBUG message does not establish that join. Report the cause as unproved unless the available evidence links the request and outcome. Do not retain full URLs, headers, bodies or raw exceptions as a workaround; the [telemetry owner](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260731-operational_telemetry_standardization.md) sets the diagnostic boundary.
+
 ### Recover A NanoHost At The Rebuild Bound
 
 `epoch rebuild hard bound exceeded` preserves the first unresolved recovery deadline. Restarting that state does not renew the deadline. The service remains non-ready until the cause and failed epoch state receive explicit operator recovery.
@@ -404,3 +416,9 @@ The optional xAI `billing` object reports `currency: USD`, `prepaidBalanceCents`
 Read auto-top-up only when the user requests or expands costs: `provider-subscription.account-auto-topup` with the same xAI pair. This separate read returns its own `availability` and `observedAt`, optional `enabled`, and USD-cent `thresholdCents`, `amountCents`, and `monthlyCapCents`. Missing enabled state is unknown; explicit false is disabled. Never infer enabled state from a saved payment method, balance, or extra spending. A rule query failure does not discard the separate quota observation. The operation neither changes rules nor triggers payments.
 
 Web **Settings → Gateway** uses the same fields, an account-scoped Refresh action, and collapsed Balance and costs and Account settings. Refresh only the selected account; no background polling or automatic account switching is needed. Account management is separate from observation: never log out, rebind credentials, or alter billing merely to refresh. No provider-private identity, raw billing payload, or credential is returned.
+
+## Conversation Read State
+
+The Web conversation list shows the current User's unread replies. Opening or prefetching data does not mark a reply read. A completed message body becomes read when it appears in the foreground viewport. Select **Mark read** to mark all current eligible replies in that Thread, including replies outside the viewport. Your own messages and unfinished messages do not add unread replies. If read state is unavailable or could not be saved, use its retry action. A Workspace export does not include personal read state; deployment data-root backup retains the User database.
+
+Expand a Goal in the conversation list to inspect its cards, linked Tasks and every recorded attempt. An archived linked Task remains available as history. A missing Task is shown as unavailable; expansion does not create a replacement or start work. Select a Task to open its existing conversation. If the Goal or Thread read fails, its child details are hidden until a retry succeeds. Expanding a group does not mark replies read.

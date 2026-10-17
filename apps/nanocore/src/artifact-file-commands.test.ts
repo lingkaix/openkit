@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
 import { importArtifactFile } from './artifact-file-commands.js';
 import { FsStore } from './lib/store.js';
@@ -64,8 +65,8 @@ function fixture() {
 
 it('namespaces the same request by actor, including concurrent callers with equal input', async () => {
   const f = fixture(),
-    alice = randomUUID(),
-    bob = randomUUID();
+    alice = allocateEntityId('usr'),
+    bob = allocateEntityId('usr');
   const [a, b] = await Promise.all([f.submit(alice), f.submit(bob)]);
   expect(a.artifactId).not.toBe(b.artifactId);
   expect(f.read(a.artifactId)).toEqual(f.bytes);
@@ -80,7 +81,7 @@ it('namespaces the same request by actor, including concurrent callers with equa
 });
 it('does not read changed retry bytes after an exact actor-owned receipt', async () => {
   const f = fixture(),
-    actor = randomUUID(),
+    actor = allocateEntityId('usr'),
     accepted = await f.submit(actor);
   const read = vi.fn();
   const source = new Readable({
@@ -96,7 +97,7 @@ it('does not read changed retry bytes after an exact actor-owned receipt', async
 });
 it('rechecks revocation after streamed staging and permits an explicit corrected request', async () => {
   const f = fixture(),
-    actor = randomUUID();
+    actor = allocateEntityId('usr');
   let authorized = true;
   const source = Readable.from(
     (async function* () {
@@ -120,7 +121,7 @@ it('rechecks revocation after streamed staging and permits an explicit corrected
 });
 it('retains an unacknowledged canonical tuple after receipt failure and refuses recapture as recovery_required', async () => {
   const f = fixture(),
-    actor = randomUUID();
+    actor = allocateEntityId('usr');
   const failure = vi.spyOn(f.store, 'recordCommandRequest').mockImplementation(() => {
     throw new Error('Synthetic receipt failure.');
   });

@@ -8,7 +8,7 @@ This directory owns deterministic projection of durable OpenKit items into provi
 
 - `projection-policy.ts` classifies item types and records versioned inclusion or exclusion decisions.
 - `llm-projection.ts` creates provider messages, deterministic context-package digests, and attachment records.
-- `worker-context-package.ts` builds, publishes, and verifies the immutable S39 worker-Turn package and delivery trace without owning a lifecycle.
+- `worker-context-package.ts` builds, publishes, and verifies the immutable S39 worker-Turn package and delivery trace without owning a lifecycle. Knowledge selections carry the supplying Notebook commit separately from their exact page digest, matching the digest-addressed source snapshot projection.
 - `worker-context-authorities.ts` maps the existing Core, Workspace, and product-store owners into the shared S39 verifier without retaining state.
 - `worker-context-projection.ts` fully verifies present traces before deriving S16 Material, Goal steering, and exact Worker request objective read fields without storing them.
 - Projection must not dispatch providers, mutate thread history, or become a second persistence owner.
@@ -38,9 +38,14 @@ Each new serialized manifest has a caller-supplied `maxMetadataBytes` ceiling, c
 
 A bound Material original can share the existing `workspace/materials/<id>/<revision>.md` or `.txt` delivered path. Source inventory and Material selection must agree on identity, revision, media type, original digest, and projection, and the existing body bytes must match exactly. The inventory retains one original entry and one delivered body entry. Artifact and Turn input delivery paths remain under `sources/`.
 
-
 `artifact-source-files.ts` captures explicitly selected exact Artifact versions before caller mutation and prepares bounded 2,048-byte/50-line UTF-8 previews or truthful unavailable descriptors. It uses the existing canonical payload path and pins unique no-follow originals while streaming at most 64 KiB per chunk into S39. Retained inline text uses the existing 16 MiB processor; larger inline originals retain exact streamed bytes with a resource-limited view. The caller rechecks exact current metadata, source visibility, and receiving audience through a private synchronous authority callback. Preview and iteration descriptors close after use; no source callbacks, host paths, or access grants enter retained JSON. The snapshot writer owns full original SHA verification and publication.
 
 `material-source-files.ts` captures an exact original immutable Material revision through its existing owner. It emits a bounded 2,048-byte/50-line preview with separate original, complete representation, and delivered-byte proofs, shares the existing Material delivered path, and streams the original in chunks no larger than 64 KiB into S39. Its private current-authority callback remains a caller responsibility. Complete provider-request accounting is separate from this bounded projection.
 
 `projectWorkerContextRequest` preserves explicit Artifact selectors separately from prior Item ids. Structured delegation Artifact refs may carry a positive `artifactVersion`; other reference kinds cannot. A Review follow-up supplies its exact Artifact id and version, while pending outcomes supply no Artifact selectors. Resource display strings are not parsed as source authority. Current source/actor access, receiving audience, comparison of a supplied version, and exact snapshot publication remain caller responsibilities; this request projection grants no access and delivers no bytes.
+
+A conversation-to-Task receiving Thread retains the entry owner's existing frozen Knowledge selection choice. Direct Task entry still requires its single selection; a Chat handoff with no selection still needs its exact persisted handoff lineage to admit null. The identifier cutover changes neither query triggers nor accepted selection bytes.
+
+Context Package manifests and traces reuse the Protocol kind validators for Workspace, Thread, Turn, Item, logical AgentSession, Material and Material revision references. Package digests, authored Goal/Task selectors, native snapshots and request correlation keep their existing codecs.
+
+The frozen Pending Request input schema reads its existing S59 delivery bound at parse time. Notebook portability links Store and context imports, so module initialization must not capture that bound before S59 initializes it. No second delivery limit or envelope is introduced.

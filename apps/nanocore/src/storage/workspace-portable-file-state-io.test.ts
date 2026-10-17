@@ -1,9 +1,12 @@
 // openkit-test-platform: posix
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 
 import {
   readWorkspacePortableFileState,
@@ -12,9 +15,12 @@ import {
 
 const JUNE = '2026-06-30T23:59:59.000Z';
 const JULY = '2026-07-01T00:00:00.000Z';
-const PORTABLE_TURN = { threadId: 'th_portable', turnId: 'tu_portable' } as const;
+const PORTABLE_TURN = {
+  threadId: 'th_00000000-0000-7d57-bb9a-837e048d6465',
+  turnId: 'tu_00000000-0000-7533-bc6b-7efa7795a620',
+} as const;
 const PORTABLE_OWNERS = {
-  workspaceId: 'ws_portable_source',
+  workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
   threads: [{ threadId: PORTABLE_TURN.threadId }],
   turns: [PORTABLE_TURN],
 } as const;
@@ -22,6 +28,23 @@ const PORTABLE_OWNERS = {
 /** Creates one empty real workspace root. */
 function workspaceRoot(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
+}
+
+/** Publishes exact codec-test page bytes in a fresh Git content owner; this supplies no native admission. */
+function seedNotebook(root: string, files: Readonly<Record<string, string>>): void {
+  new KnowledgeNotebook({ repositoryPath: join(root, 'knowledge', 'notebook.git') }).initialize({
+    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...files },
+    metadata: {
+      summary: 'Portable file codec fixture',
+      changeRequest: {
+        requestId: randomUUID(),
+        inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(files)).digest('hex')}`,
+      },
+      producer: { kind: 'user', id: testEntityId('usr', 'portable-files') },
+      authority: { kind: 'direct', instructionReference: 'test-fixture:portable-files' },
+      sourceReferences: [],
+    },
+  });
 }
 
 /** Writes one exact JSONL fixture and creates its real parent directories. */
@@ -35,10 +58,10 @@ function writeJsonl(path: string, rows: readonly unknown[]): void {
 
 /** Writes one complete portable source fixture. */
 function writePortableFixture(root: string): void {
-  const workspaceId = 'ws_portable_source';
+  const workspaceId = 'ws_00000000-0000-7e30-a961-1cf5d6540406';
   const observations = [
     {
-      id: 'ko_june',
+      id: 'ko_00000000-0000-7ee4-b78c-17c74a854150',
       workspaceId,
       kind: 'maintenance',
       summary: 'June observation.',
@@ -52,7 +75,7 @@ function writePortableFixture(root: string): void {
       createdAt: JUNE,
     },
     {
-      id: 'ko_july',
+      id: 'ko_00000000-0000-74fd-834d-bd7444262a89',
       workspaceId,
       kind: 'maintenance',
       summary: 'July observation.',
@@ -68,7 +91,7 @@ function writePortableFixture(root: string): void {
   ];
   const claims = [
     {
-      id: 'kc_first',
+      id: 'kc_00000000-0000-7dea-b04c-c8d9dfd362fc',
       workspaceId,
       statement: 'First claim.',
       sourceReferences: [],
@@ -82,7 +105,7 @@ function writePortableFixture(root: string): void {
       updatedAt: JULY,
     },
     {
-      id: 'kc_second',
+      id: 'kc_00000000-0000-7b97-a8ba-ef418610f14a',
       workspaceId,
       statement: 'Second claim.',
       sourceReferences: [],
@@ -98,9 +121,9 @@ function writePortableFixture(root: string): void {
   ];
   const conflicts = [
     {
-      id: 'kf_history',
+      id: 'kf_00000000-0000-7aff-b31a-d6d16ddb088d',
       workspaceId,
-      subjectReferences: ['claim:kc_first'],
+      subjectReferences: ['claim:kc_00000000-0000-7dea-b04c-c8d9dfd362fc'],
       sourceReferences: [],
       status: 'needs_review',
       summary: 'Conflict history.',
@@ -110,9 +133,9 @@ function writePortableFixture(root: string): void {
       updatedAt: JUNE,
     },
     {
-      id: 'kf_history',
+      id: 'kf_00000000-0000-7aff-b31a-d6d16ddb088d',
       workspaceId,
-      subjectReferences: ['claim:kc_first'],
+      subjectReferences: ['claim:kc_00000000-0000-7dea-b04c-c8d9dfd362fc'],
       sourceReferences: [],
       status: 'resolved',
       summary: 'Conflict history.',
@@ -126,11 +149,11 @@ function writePortableFixture(root: string): void {
     },
   ];
   const retrieval = {
-    traceId: 'krt_00000000-0000-4000-8000-000000000001',
+    traceId: 'krt_00000000-0000-780e-b78f-51422afca1e9',
     queryContext: {
       serverId: 'server_portable_source',
       workspaceId,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
     },
@@ -167,7 +190,7 @@ function writePortableFixture(root: string): void {
   writeFileSync(retrievalPath, `${JSON.stringify(retrieval)}\n`);
   const threadRetrieval = {
     ...retrieval,
-    traceId: 'krt_00000000-0000-4000-8000-000000000002',
+    traceId: 'krt_00000000-0000-7afe-9d7a-6a1fdf1c3d36',
     queryContext: {
       ...retrieval.queryContext,
       turnId: undefined,
@@ -189,29 +212,16 @@ function writePortableFixture(root: string): void {
     '{\n  // exact comment\n  "schemaVersion": 1\n}\n'
   );
   mkdirSync(join(root, 'knowledge', 'schema'), { recursive: true });
-  writeFileSync(join(root, 'knowledge', 'schema', 'workspace-schema.yaml'), 'custom: true\n');
-  mkdirSync(join(root, 'knowledge', 'pages'), { recursive: true });
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'native.md'),
-    '---\ntype: "RepoConvention"\ntitle: "Native"\n---\nNative page.\n'
-  );
-  mkdirSync(join(root, 'knowledge', 'pages', 'nested'), { recursive: true });
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'nested', 'native.md'),
-    '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n'
-  );
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'nested', 'index.md'),
-    '# Nested authored index\n\nKeep this navigation byte-for-byte.\n'
-  );
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'nested', 'log.md'),
-    '# Nested authored log\n\nKeep this history byte-for-byte.\n'
-  );
-  writeFileSync(
-    join(root, 'knowledge', 'pages', 'kn_owned.md'),
-    '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n'
-  );
+  writeFileSync(join(root, 'knowledge', 'schema', 'scope-schema.yaml'), 'custom: true\n');
+  seedNotebook(root, {
+    'native.md': '---\ntype: "RepoConvention"\ntitle: "Native"\n---\nNative page.\n',
+    'nested/native.md':
+      '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n',
+    'nested/index.md': '# Nested authored index\n\nKeep this navigation byte-for-byte.\n',
+    'nested/log.md': '# Nested authored log\n\nKeep this history byte-for-byte.\n',
+    'kn_owned.md':
+      '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n',
+  });
   const packageRoot = join(root, 'threads', PORTABLE_TURN.threadId, 'turns', PORTABLE_TURN.turnId);
   mkdirSync(join(packageRoot, 'context-package'), { recursive: true });
   writeFileSync(
@@ -220,7 +230,7 @@ function writePortableFixture(root: string): void {
       schemaVersion: 1,
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
-      workspaceId: 'ws_portable_source',
+      workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
     })}\n`
   );
   writeFileSync(join(packageRoot, 'context-package', 'instructions.md'), 'Portable request.\n');
@@ -248,7 +258,7 @@ describe('workspace portable file-state IO', () => {
       'turns',
       PORTABLE_TURN.turnId,
       'retrieval-traces',
-      'krt_00000000-0000-4000-8000-000000000001.json'
+      'krt_00000000-0000-780e-b78f-51422afca1e9.json'
     );
     const retrieval = JSON.parse(readFileSync(retrievalPath, 'utf8'));
     retrieval.futureNote = 'retained';
@@ -257,6 +267,16 @@ describe('workspace portable file-state IO', () => {
     const state = readWorkspacePortableFileState(source, PORTABLE_OWNERS);
     expect(JSON.stringify([...state.retrievalTraceFiles.values()])).not.toContain('futureNote');
     expect(readFileSync(retrievalPath, 'utf8')).toContain('futureNote');
+    // The import coordinator owns content publication; the file-state writer owns only its other families.
+    seedNotebook(
+      target,
+      Object.fromEntries(
+        [...state.nativeKnowledgePages].map(([path, content]) => [
+          path.slice('knowledge/pages/'.length),
+          content,
+        ])
+      )
+    );
     writeWorkspacePortableFileState(target, state);
     const reopened = readWorkspacePortableFileState(target, PORTABLE_OWNERS);
     expect(reopened.retrievalTraceFiles).toEqual(state.retrievalTraceFiles);
@@ -273,7 +293,7 @@ describe('workspace portable file-state IO', () => {
           'turns',
           PORTABLE_TURN.turnId,
           'retrieval-traces',
-          'krt_00000000-0000-4000-8000-000000000001.json'
+          'krt_00000000-0000-780e-b78f-51422afca1e9.json'
         ),
         'utf8'
       )
@@ -286,10 +306,7 @@ describe('workspace portable file-state IO', () => {
     writePortableFixture(sourceRoot);
     mkdirSync(join(targetRoot, 'knowledge', 'schema'), { recursive: true });
     mkdirSync(join(targetRoot, 'knowledge', 'pages'), { recursive: true });
-    writeFileSync(
-      join(targetRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
-      'default: true\n'
-    );
+    writeFileSync(join(targetRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'default: true\n');
     writeFileSync(
       join(targetRoot, 'knowledge', 'pages', 'kn_target.md'),
       '---\nopenkit_entry_id: "kn_target"\n---\nTarget owned page.\n'
@@ -298,12 +315,16 @@ describe('workspace portable file-state IO', () => {
     const state = readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS);
 
     expect([...state.observations.keys()]).toEqual(['202606', '202607']);
-    expect(state.claims.get('202607')?.map((row) => row.id)).toEqual(['kc_first', 'kc_second']);
+    expect(state.claims.get('202607')?.map((row) => row.id)).toEqual([
+      'kc_00000000-0000-7dea-b04c-c8d9dfd362fc',
+      'kc_00000000-0000-7b97-a8ba-ef418610f14a',
+    ]);
     expect([...state.conflicts.values()].flat().map((row) => row.status)).toEqual([
       'needs_review',
       'resolved',
     ]);
     expect([...state.nativeKnowledgePages.keys()]).toEqual([
+      'knowledge/pages/index.md',
       'knowledge/pages/kn_owned.md',
       'knowledge/pages/native.md',
       'knowledge/pages/nested/index.md',
@@ -315,19 +336,28 @@ describe('workspace portable file-state IO', () => {
     );
     expect([...state.workerContextPackageFiles]).toEqual([
       [
-        'threads/th_portable/turns/tu_portable/context-package.json',
-        '{"schemaVersion":1,"threadId":"th_portable","turnId":"tu_portable","workspaceId":"ws_portable_source"}\n',
+        'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package.json',
+        '{"schemaVersion":1,"threadId":"th_00000000-0000-7d57-bb9a-837e048d6465","turnId":"tu_00000000-0000-7533-bc6b-7efa7795a620","workspaceId":"ws_00000000-0000-7e30-a961-1cf5d6540406"}\n',
       ],
       [
-        'threads/th_portable/turns/tu_portable/context-package/instructions.md',
+        'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package/instructions.md',
         'Portable request.\n',
       ],
       [
-        'threads/th_portable/turns/tu_portable/context-package/package.json',
+        'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package/package.json',
         '{"schemaVersion":1}\n',
       ],
     ]);
 
+    seedNotebook(
+      targetRoot,
+      Object.fromEntries(
+        [...state.nativeKnowledgePages].map(([path, content]) => [
+          path.slice('knowledge/pages/'.length),
+          content,
+        ])
+      )
+    );
     writeWorkspacePortableFileState(targetRoot, state);
 
     const roundTripped = readWorkspacePortableFileState(targetRoot, PORTABLE_OWNERS);
@@ -337,9 +367,9 @@ describe('workspace portable file-state IO', () => {
     expect(readFileSync(join(targetRoot, 'config', 'workspace.jsonc'), 'utf8')).toBe(
       state.workspaceConfig
     );
-    expect(
-      readFileSync(join(targetRoot, 'knowledge', 'schema', 'workspace-schema.yaml'), 'utf8')
-    ).toBe('custom: true\n');
+    expect(readFileSync(join(targetRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')).toBe(
+      'custom: true\n'
+    );
     expect(readFileSync(join(targetRoot, 'knowledge', 'claims', '202607.jsonl'), 'utf8')).toBe(
       `${(state.claims.get('202607') ?? []).map((row) => JSON.stringify(row)).join('\n')}\n`
     );
@@ -356,8 +386,8 @@ describe('workspace portable file-state IO', () => {
     writePortableFixture(malformedRoot);
     writeJsonl(join(malformedRoot, 'knowledge', 'claims', '202607.jsonl'), [
       {
-        id: 'kc_unknown',
-        workspaceId: 'ws_portable_source',
+        id: 'kc_00000000-0000-70e0-81b3-473a81814be9',
+        workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
         statement: 'Unknown core values must fail closed.',
         sourceReferences: [],
         scope: 'workspace',
@@ -377,7 +407,7 @@ describe('workspace portable file-state IO', () => {
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched\n');
     symlinkSync(
       join(outsideRoot, 'sentinel.txt'),
-      join(linkedRoot, 'knowledge', 'pages', 'linked.md')
+      join(linkedRoot, 'knowledge', 'claims', '202608.jsonl')
     );
     expect(() => readWorkspacePortableFileState(linkedRoot, PORTABLE_OWNERS)).toThrow(
       /symbolic link/i
@@ -433,9 +463,9 @@ describe('workspace portable file-state IO', () => {
       ),
       `${JSON.stringify({
         schemaVersion: 1,
-        threadId: 'th_other',
-        turnId: 'tu_other',
-        workspaceId: 'ws_portable_source',
+        threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2',
+        turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481',
+        workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
       })}\n`
     );
 
@@ -461,10 +491,10 @@ describe('workspace portable file-state IO', () => {
       'turns',
       PORTABLE_TURN.turnId,
       'retrieval-traces',
-      'krt_00000000-0000-4000-8000-000000000001.json'
+      'krt_00000000-0000-780e-b78f-51422afca1e9.json'
     );
     const trace = JSON.parse(readFileSync(path, 'utf8'));
-    trace.queryContext.turnId = 'tu_other';
+    trace.queryContext.turnId = 'tu_00000000-0000-7bf1-990f-799cdaa2a481';
     writeFileSync(path, `${JSON.stringify(trace)}\n`);
     expect(() => readWorkspacePortableFileState(contradictoryRoot, PORTABLE_OWNERS)).toThrow(
       'Knowledge retrieval trace lineage is contradictory.'
@@ -480,7 +510,7 @@ describe('workspace portable file-state IO', () => {
         'threads',
         PORTABLE_TURN.threadId,
         'retrieval-traces',
-        '.krt_00000000-0000-4000-8000-000000000099.00000000-0000-4000-8000-000000000098.tmp'
+        '.krt_00000000-0000-77a1-9ebf-a9d24ca0b994.00000000-0000-4000-8000-000000000098.tmp'
       ),
       'incomplete'
     );
@@ -496,7 +526,7 @@ describe('workspace portable file-state IO', () => {
         'missing-trace-target',
         join(
           traceDirectory,
-          '.krt_00000000-0000-4000-8000-000000000099.00000000-0000-4000-8000-000000000098.tmp'
+          '.krt_00000000-0000-77a1-9ebf-a9d24ca0b994.00000000-0000-4000-8000-000000000098.tmp'
         )
       );
 

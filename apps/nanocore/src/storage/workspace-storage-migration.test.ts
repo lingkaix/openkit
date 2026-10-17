@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -17,10 +17,12 @@ import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { verifyDataRootBackupManifest } from './data-root-backup.js';
+import { inventoryRegularFiles, verifyDataRootBackupManifest } from './data-root-backup.js';
 import { type CoreDb, openWorkspaceDbAtRoot } from './db.js';
 import { resolveDataRootPath } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -31,7 +33,7 @@ import {
 } from './workspace-storage-migration.js';
 
 const timestamp = '2026-07-19T00:00:00.000Z';
-const predecessorDeploymentId = 'dep_workspace_storage_v1';
+const predecessorDeploymentId = 'dep_00000000-0000-73b2-b75c-097b4af22221';
 
 /** Isolated predecessor-layout fixture used by storage migration tests. */
 interface MigrationFixture {
@@ -103,6 +105,19 @@ function createOwnerNestedWorkspaceRoot(
     )}\n`
   );
 
+  // This fixture varies the outer storage layout, not the current Notebook content format.
+  new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  }).initialize({
+    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+    metadata: {
+      summary: 'Storage-layout fixture',
+      producer: { kind: 'user', id: ownerUserId },
+      authority: { kind: 'direct', instructionReference: 'test-fixture:storage-layout' },
+      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'0'.repeat(64)}` },
+      sourceReferences: [],
+    },
+  });
   return workspaceRoot;
 }
 
@@ -138,8 +153,8 @@ function addRegisteredWorkspace(
  */
 function createMigrationFixture(): MigrationFixture {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-migration-'));
-  const ownerUserId = 'user_owner';
-  const workspaceId = 'ws_migration';
+  const ownerUserId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f';
+  const workspaceId = 'ws_00000000-0000-7f1c-9858-74a73d4be08c';
   const now = Date.now();
 
   mkdirSync(join(dataRoot, 'server', 'db'), { recursive: true });
@@ -179,7 +194,7 @@ function createMigrationFixture(): MigrationFixture {
         kind
       ) VALUES
         (?, 'Owner', 'owner@example.com', false, ?, ?, 'human'),
-        ('user_other', 'Other', 'other@example.com', false, ?, ?, 'human')`
+        ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other', 'other@example.com', false, ?, ?, 'human')`
     )
     .run(ownerUserId, now, now, now, now);
   const fixture = { coreDb, dataRoot, ownerUserId, workspaceId };
@@ -350,7 +365,11 @@ const INVALID_PREFLIGHT_CASES = [
   {
     code: 'duplicate_workspace_root',
     mutate(fixture: ReturnType<typeof createMigrationFixture>) {
-      createOwnerNestedWorkspaceRoot(fixture.dataRoot, 'user_other', fixture.workspaceId);
+      createOwnerNestedWorkspaceRoot(
+        fixture.dataRoot,
+        'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+        fixture.workspaceId
+      );
     },
     name: 'duplicate workspace id',
   },
@@ -362,7 +381,7 @@ const INVALID_PREFLIGHT_CASES = [
           `INSERT INTO workspace_members (
              workspace_id, user_id, status, access_level, invitation_id, joined_at,
              removed_at, revision, created_at, updated_at
-           ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+           ) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(
           fixture.workspaceId,
@@ -372,7 +391,7 @@ const INVALID_PREFLIGHT_CASES = [
         );
       fixture.coreDb.sqlite
         .prepare('UPDATE workspace_registry SET owner_user_id = ? WHERE workspace_id = ?')
-        .run('user_other', fixture.workspaceId);
+        .run('usr_00000000-0000-73d4-904a-d4c4b905df7c', fixture.workspaceId);
     },
     name: 'registry and physical owner mismatch',
   },
@@ -506,6 +525,28 @@ describe('workspace storage migration preflight', () => {
 });
 
 describe('workspace storage migration', () => {
+  it('refuses entropy failure before backup or staging publication and preserves the predecessor', () => {
+    const fixture = createMigrationFixture();
+    fixture.coreDb.sqlite.close();
+    const backupParent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-entropy-'));
+    const backupRoot = join(backupParent, 'backup');
+    const predecessor = inventoryRegularFiles(fixture.dataRoot);
+    const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
+      throw new Error('Backup identity entropy unavailable.');
+    });
+    try {
+      expect(() =>
+        migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow('Backup identity entropy unavailable.');
+      expect(existsSync(backupRoot)).toBe(false);
+      expect(inventoryRegularFiles(fixture.dataRoot)).toEqual(predecessor);
+    } finally {
+      entropy.mockRestore();
+      rmSync(fixture.dataRoot, { recursive: true, force: true });
+      rmSync(backupParent, { recursive: true, force: true });
+    }
+  });
+
   it('refuses to overwrite an existing external backup destination', () => {
     const fixture = createMigrationFixture();
     const backupRoot = join(
@@ -576,7 +617,7 @@ describe('workspace storage migration', () => {
     const automationSnapshot = writeLegacyAepSnapshot(
       fixture,
       'migration_automation',
-      'automation_migration',
+      testEntityId('auto', 'automation_migration'),
       fixture.ownerUserId
     );
     const backupRoot = join(
@@ -659,9 +700,13 @@ describe('workspace storage migration', () => {
 
   it('publishes two Workspaces as one root and retains one verified external predecessor backup', () => {
     const fixture = createMigrationFixture();
-    const secondWorkspaceId = 'ws_second';
+    const secondWorkspaceId = 'ws_00000000-0000-768f-80f6-8bbf108cc9a9';
     const firstSourceRoot = sourceWorkspaceRoot(fixture);
-    const secondSourceRoot = addRegisteredWorkspace(fixture, 'user_other', secondWorkspaceId);
+    const secondSourceRoot = addRegisteredWorkspace(
+      fixture,
+      'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      secondWorkspaceId
+    );
     const backupRoot = join(
       mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-retention-')),
       'backup'
@@ -671,19 +716,26 @@ describe('workspace storage migration', () => {
     writeFileSync(join(secondSourceRoot, 'files', 'second.txt'), 'second\n');
     fixture.coreDb.sqlite.close();
 
-    migrateWorkspaceStorage({
+    const result = migrateWorkspaceStorage({
       backupRoot,
       dataRoot: fixture.dataRoot,
       now: () => timestamp,
     });
 
     const verifiedBackup = verifyDataRootBackupManifest({ backupRoot });
+    expect(result.backupId).toMatch(
+      /^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(verifiedBackup.manifest.id).toBe(result.backupId);
+    expect(verifiedBackup.manifest.sourceDeploymentId).toBe(predecessorDeploymentId);
+    expect(verifiedBackup.manifest.backupStartedAt).toBe(timestamp);
+    expect(verifiedBackup.manifest.backupCompletedAt).toBe(timestamp);
     expect(verifiedBackup.checkedFiles).toEqual(
       expect.arrayContaining([
-        'users/user_owner/workspaces/ws_migration/db/workspace.sqlite',
-        'users/user_owner/workspaces/ws_migration/files/first.txt',
-        'users/user_other/workspaces/ws_second/db/workspace.sqlite',
-        'users/user_other/workspaces/ws_second/files/second.txt',
+        'users/usr_00000000-0000-7011-88df-c2b1e8466b6f/workspaces/ws_00000000-0000-7f1c-9858-74a73d4be08c/db/workspace.sqlite',
+        'users/usr_00000000-0000-7011-88df-c2b1e8466b6f/workspaces/ws_00000000-0000-7f1c-9858-74a73d4be08c/files/first.txt',
+        'users/usr_00000000-0000-73d4-904a-d4c4b905df7c/workspaces/ws_00000000-0000-768f-80f6-8bbf108cc9a9/db/workspace.sqlite',
+        'users/usr_00000000-0000-73d4-904a-d4c4b905df7c/workspaces/ws_00000000-0000-768f-80f6-8bbf108cc9a9/files/second.txt',
       ])
     );
     expect(existsSync(firstSourceRoot)).toBe(false);
@@ -721,12 +773,17 @@ describe('workspace storage migration', () => {
       outcome: 'succeeded',
       sourceLayoutVersion: 1,
       targetLayoutVersion: 2,
+      backup: { id: result.backupId },
     });
     expect(reportText).toContain(verifiedBackup.manifest.id);
-    expect(reportText).toContain('users/user_owner/workspaces/ws_migration');
-    expect(reportText).toContain('workspaces/ws_migration');
-    expect(reportText).toContain('users/user_other/workspaces/ws_second');
-    expect(reportText).toContain('workspaces/ws_second');
+    expect(reportText).toContain(
+      'users/usr_00000000-0000-7011-88df-c2b1e8466b6f/workspaces/ws_00000000-0000-7f1c-9858-74a73d4be08c'
+    );
+    expect(reportText).toContain('workspaces/ws_00000000-0000-7f1c-9858-74a73d4be08c');
+    expect(reportText).toContain(
+      'users/usr_00000000-0000-73d4-904a-d4c4b905df7c/workspaces/ws_00000000-0000-768f-80f6-8bbf108cc9a9'
+    );
+    expect(reportText).toContain('workspaces/ws_00000000-0000-768f-80f6-8bbf108cc9a9');
     expect(reportText).toMatch(/sha256:[a-f0-9]{64}/);
   });
 

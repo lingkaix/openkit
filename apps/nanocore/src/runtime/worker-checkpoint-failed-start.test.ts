@@ -2,8 +2,8 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
@@ -13,6 +13,8 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -51,7 +53,11 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   let coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   let store: FsStore = createDemoStore({ dataRoot });
   const target = recordTestNativeRuntimeTarget(coreDb);
   const execution = new SimulatedTurnExecutor({ coreDb });
@@ -100,7 +106,6 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     },
     update: async () => [],
     collectEvidence: async () => [],
-    collectProviderRefreshStatuses: async () => [],
     collectTranscript: async () => ({ itemsJsonl: '' }),
     collectWorkspaceChanges: async () => [],
   };
@@ -125,7 +130,10 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     app.request(
       ...operationRequest(
         entry === 'direct' ? 'task.start' : 'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           body: JSON.stringify({
             requestId,
@@ -196,8 +204,13 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   coreDb.sqlite.close();
   coreDb = openCoreDb(dataRoot);
   store = new FsStore({ dataRoot });
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-  const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', anchor.threadId, turnId)!;
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  const checkpoint = getWorkerCheckpoint(
+    workspaceDb,
+    'ws_00000000-0000-7000-8000-000000000001',
+    anchor.threadId,
+    turnId
+  )!;
   expect(checkpoint).toMatchObject({ stage: 'running_worker', stopReason: null, iteration: 0 });
   const classify = () =>
     classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -205,14 +218,19 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
       store,
       workspaceDb,
       checkpoint:
-        getWorkerCheckpoint(workspaceDb, 'ws_demo', anchor.threadId, turnId) ?? checkpoint,
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          anchor.threadId,
+          turnId
+        ) ?? checkpoint,
     });
-  const pkg = requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_demo', attempt.inputRef!);
-  const restartedExecutor = new WorkerGovernanceTurnExecutor({
-    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-    backend,
-    coreDb,
-  });
+  const pkg = requireAgentEnvironmentPackageSnapshot(
+    workspaceDb,
+    'ws_00000000-0000-7000-8000-000000000001',
+    attempt.inputRef!
+  );
+  const restartedExecutor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
   const restartedApp = createApp({
     coreDb,
     dataRoot,
@@ -225,7 +243,10 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     restartedApp.request(
       ...operationRequest(
         entry === 'direct' ? 'task.start' : 'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           body: JSON.stringify({
             requestId,
@@ -239,7 +260,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     const response = await restartedApp.request(
       ...operationRequest(
         'task.start',
-        { workspaceId: 'ws_demo', threadId: anchor.threadId },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: anchor.threadId },
         {
           body: JSON.stringify({
             requestId: '0190f4c8-0000-7000-8000-000000000999',
@@ -284,7 +305,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         .prepare('SELECT rowid, * FROM scheduler_execution_attempts WHERE attempt_id = ?')
         .get(f.attempt.attemptId) as Record<string, unknown>;
       row.rowid = Number(row.rowid) - 1;
-      row.attempt_id = 'earlier-busy-attempt';
+      row.attempt_id = testEntityId('attempt', 'earlier-busy-attempt');
       row.terminal_cause = 'backend-busy';
       row.agent_session_id = null;
       row.input_ref = null;
@@ -303,7 +324,12 @@ describe('checkpoint-owned never-submitted failed start', () => {
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');
       expect(f.store.getAgentSession(f.attempt.agentSessionId!).status).toBe('failed');
       expect(
-        getWorkerCheckpoint(f.workspaceDb, 'ws_demo', f.checkpoint.threadId, f.turnId)
+        getWorkerCheckpoint(
+          f.workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.checkpoint.threadId,
+          f.turnId
+        )
       ).toBeNull();
       expect(f.coreDb.sqlite.serialize().equals(core)).toBe(true);
       expect(f.backend.submit).not.toHaveBeenCalled();
@@ -361,7 +387,12 @@ describe('checkpoint-owned never-submitted failed start', () => {
       expect(f.store.getTurnById(f.turnId).status, String(failure)).toBe('failed');
       expect(f.store.getAgentSession(f.attempt.agentSessionId!).status).toBe('failed');
       expect(
-        getWorkerCheckpoint(f.workspaceDb, 'ws_demo', f.checkpoint.threadId, f.turnId)
+        getWorkerCheckpoint(
+          f.workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.checkpoint.threadId,
+          f.turnId
+        )
       ).toBeNull();
       const events = f.store.getTurnEvents(f.turnId);
       expect(events.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
@@ -413,7 +444,10 @@ describe('checkpoint-owned never-submitted failed start', () => {
       expect(f.store.getTurnById(f.turnId).error?.code).toBe('worker_governance_turn_failed');
       const settled = JSON.stringify(f.store.getTurnEvents(f.turnId));
       for (let pass = 0; pass < 3; pass++) {
-        for (const checkpoint of listExportableWorkerCheckpoints(f.workspaceDb, 'ws_demo'))
+        for (const checkpoint of listExportableWorkerCheckpoints(
+          f.workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        ))
           await classifyDirectTaskCheckpointAfterSchedulerRecovery({ ...f, checkpoint });
         const replay = await f.replay();
         expect(replay.status, await replay.clone().text()).toBe(202);
@@ -502,20 +536,31 @@ describe('checkpoint-owned never-submitted failed start', () => {
         await expect(f.classify()).rejects.toThrow('Partial receipt write.');
         receiptFailure.mockRestore();
         expect(
-          getWorkerCheckpoint(f.workspaceDb, 'ws_demo', f.checkpoint.threadId, f.turnId)
+          getWorkerCheckpoint(
+            f.workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            f.checkpoint.threadId,
+            f.turnId
+          )
         ).toMatchObject({ stage: 'failed', stopReason: 'error' });
       } else if (partial === 'item-write') {
         const update = f.store.updateItem.bind(f.store);
         const failure = vi
           .spyOn(f.store, 'updateItem')
           .mockImplementation((id, patch, authority) => {
-            if (id === `it_worker_result_${f.turnId}`) throw new Error('Partial Item write.');
+            if (id === deriveEntityId('it', ['worker-result', f.turnId]))
+              throw new Error('Partial Item write.');
             return update(id, patch, authority);
           });
         await expect(f.classify()).rejects.toThrow('Partial Item write.');
         failure.mockRestore();
         expect(
-          getWorkerCheckpoint(f.workspaceDb, 'ws_demo', f.checkpoint.threadId, f.turnId)
+          getWorkerCheckpoint(
+            f.workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            f.checkpoint.threadId,
+            f.turnId
+          )
         ).not.toBeNull();
       } else {
         expect(terminalize).toThrow();
@@ -538,7 +583,12 @@ describe('checkpoint-owned never-submitted failed start', () => {
         );
       expect(events.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
       expect(
-        getWorkerCheckpoint(f.workspaceDb, 'ws_demo', f.checkpoint.threadId, f.turnId)
+        getWorkerCheckpoint(
+          f.workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.checkpoint.threadId,
+          f.turnId
+        )
       ).toBeNull();
       expect(f.backend.submit).not.toHaveBeenCalled();
     } finally {
@@ -618,7 +668,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         const row = sql
           .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
           .get(attemptId) as Record<string, unknown>;
-        row.attempt_id = 'later-attempt';
+        row.attempt_id = testEntityId('attempt', 'later-attempt');
         if (gap === 'later-busy-equal-time') {
           row.terminal_cause = 'backend-busy';
           row.agent_session_id = null;
@@ -655,7 +705,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         sql
           .prepare(`INSERT INTO agent_session_runtime_bindings
         (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id, agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
-        VALUES ('pending-binding', 'harness', ?, 'ws_demo', ?, 'key', 1, 'pending', 'open', 1, 'clean', ?, ?, ?)`)
+        VALUES ('pending-binding', 'harness', ?, 'ws_00000000-0000-7000-8000-000000000001', ?, 'key', 1, 'pending', 'open', 1, 'clean', ?, ?, ?)`)
           .run(
             f.attempt.agentSessionId,
             f.checkpoint.threadId,
@@ -671,7 +721,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
       if (gap === 'gate' || gap === 'delivery')
         f.workspaceDb.sqlite
           .prepare(`INSERT INTO pending_requests (request_id, workspace_id, thread_id, raising_turn_id, request_item_id, kind, requester_kind, responsible_user_id, state, claim, delivery, delivery_turn_id, created_at, updated_at)
-        VALUES ('pending-owner', 'ws_demo', ?, ?, 'request-item', 'user-input', 'worker', 'user_local', 'pending', 'unclaimed', 'undelivered', ?, ?, ?)`)
+        VALUES ('pending-owner', 'ws_00000000-0000-7000-8000-000000000001', ?, ?, 'request-item', 'user-input', 'worker', 'usr_00000000-0000-7000-8000-000000000001', 'pending', 'unclaimed', 'undelivered', ?, ?, ?)`)
           .run(
             f.checkpoint.threadId,
             gap === 'gate' ? f.turnId : 'earlier-turn',
@@ -731,7 +781,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
             stopReason: 'completed',
             turn: f.store.getTurnById(f.turnId),
           },
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: f.checkpoint.threadId,
           turnId: f.turnId,
           requestId: f.checkpoint.requestId,
@@ -772,7 +822,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
       if (gap === 'accepted-final')
         sql
           .prepare(
-            `INSERT INTO worker_control_records (workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, record_json, accepted_at) VALUES ('ws_demo', ?, ?, ?, ?, ?, 'final_status', 'original-final', '{}', ?)`
+            `INSERT INTO worker_control_records (workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, record_json, accepted_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, ?, ?, ?, ?, 'final_status', 'original-final', '{}', ?)`
           )
           .run(
             f.checkpoint.threadId,
@@ -788,7 +838,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
           requestId: 'gate-response',
           inputHash: 'a'.repeat(64),
           scope: {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: f.checkpoint.threadId,
             turnId: f.turnId,
             approvalRequestId: 'missing-gate',
@@ -810,10 +860,16 @@ describe('checkpoint-owned never-submitted failed start', () => {
           .run(attemptId);
       if (gap === 'missing-result-item')
         vi.spyOn(f.store, 'getTurnById').mockImplementation((id) => {
-          const turn = f.store.getTurn('ws_demo', f.checkpoint.threadId, id);
+          const turn = f.store.getTurn(
+            'ws_00000000-0000-7000-8000-000000000001',
+            f.checkpoint.threadId,
+            id
+          );
           return {
             ...turn,
-            items: turn.items.filter((item) => item.id !== `it_worker_result_${id}`),
+            items: turn.items.filter(
+              (item) => item.id !== deriveEntityId('it', ['worker-result', id])
+            ),
           };
         });
       const files = retainedFileBytes(f.dataRoot);
@@ -828,7 +884,12 @@ describe('checkpoint-owned never-submitted failed start', () => {
       for (let pass = 0; pass < 2; pass++) {
         await f.classify().catch(() => {});
         expect(
-          getWorkerCheckpoint(f.workspaceDb, 'ws_demo', f.checkpoint.threadId, f.turnId)
+          getWorkerCheckpoint(
+            f.workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            f.checkpoint.threadId,
+            f.turnId
+          )
         ).not.toBeNull();
         expect(sql.serialize().equals(core)).toBe(true);
         expect(f.workspaceDb.sqlite.serialize().equals(workspace)).toBe(true);

@@ -3,7 +3,7 @@ import {
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -14,7 +14,7 @@ import { AdministrationScreen } from './AdministrationScreen';
 
 const TIMESTAMP = '2026-09-10T00:00:00.000Z';
 const PROJECT = {
-  id: 'ws_project',
+  id: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053',
   name: 'Project Atlas',
   kind: 'general',
   status: 'active',
@@ -24,12 +24,16 @@ const PROJECT = {
 };
 const QUICK_CHAT = {
   ...PROJECT,
-  id: 'ws_quick_chat',
+  id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
   name: 'Quick Chat',
-  kind: 'quick-chat',
+  kind: 'personal',
 };
-const SECOND_PROJECT = { ...PROJECT, id: 'ws_second', name: 'Project Borealis' };
-const STORAGE_REF = `wst_${'a'.repeat(32)}`;
+const SECOND_PROJECT = {
+  ...PROJECT,
+  id: 'ws_00000000-0000-768f-80f6-8bbf108cc9a9',
+  name: 'Project Borealis',
+};
+const STORAGE_REF = 'wst_00000000-0000-7000-8000-000000000001';
 const CONFIG_REVISION = `sha256:${'c'.repeat(64)}`;
 const ENVIRONMENT = {
   attachmentGeneration: 1,
@@ -52,7 +56,7 @@ const ENVIRONMENT = {
   workspaceId: PROJECT.id,
 };
 const ADMIN_THREAD = {
-  id: 'thread_admin',
+  id: 'th_00000000-0000-79b7-9009-e76cfeceddee',
   workspaceId: QUICK_CHAT.id,
   name: 'Administration',
   preview: 'Administration',
@@ -62,12 +66,12 @@ const ADMIN_THREAD = {
   updatedAt: TIMESTAMP,
 };
 const RESOLVED_CANDIDATE = {
-  artifactId: 'artifact_resolved',
+  artifactId: 'ar_00000000-0000-7fd1-9bc1-cf5509dbe80c',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'d'.repeat(64)}`,
 };
 const AUTHORED_CANDIDATE = {
-  artifactId: 'artifact_authored',
+  artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'e'.repeat(64)}`,
 };
@@ -98,17 +102,17 @@ const CANDIDATE_PAYLOAD = {
   kind: 'worker-environment-resolved-candidate',
   replaceNow: {
     prompt: 'Continue the implementation with the prepared environment.',
-    threadId: 'thread_project',
+    threadId: 'th_00000000-0000-7661-815f-0101e9c6c0d8',
     workspaceId: PROJECT.id,
   },
   schemaVersion: 1,
   target: { agentId: 'codex', kind: 'agent' },
 } as const;
 const CANDIDATE_ITEM = {
-  id: 'item_candidate',
+  id: 'it_00000000-0000-7689-b82f-01221681dc60',
   workspaceId: QUICK_CHAT.id,
   threadId: ADMIN_THREAD.id,
-  turnId: 'turn_prepare',
+  turnId: 'tu_00000000-0000-72c5-a55e-00fc996645c0',
   status: 'completed',
   type: 'artifact-reference',
   artifactId: RESOLVED_CANDIDATE.artifactId,
@@ -123,7 +127,7 @@ const CANDIDATE_ARTIFACT = {
   id: RESOLVED_CANDIDATE.artifactId,
   workspaceId: QUICK_CHAT.id,
   threadId: ADMIN_THREAD.id,
-  turnId: 'turn_prepare',
+  turnId: 'tu_00000000-0000-72c5-a55e-00fc996645c0',
   kind: 'report',
   title: CANDIDATE_ITEM.title,
   status: 'ready',
@@ -135,7 +139,7 @@ const CANDIDATE_ARTIFACT = {
   origin: {
     kind: 'turn-output',
     threadId: ADMIN_THREAD.id,
-    turnId: 'turn_prepare',
+    turnId: 'tu_00000000-0000-72c5-a55e-00fc996645c0',
     requestId: CANDIDATE_ITEM.lastMutationRequestId,
   },
   createdAt: TIMESTAMP,
@@ -156,7 +160,7 @@ const AUTHORED_PAYLOAD = {
 } as const;
 const AUTHORED_ITEM = {
   ...CANDIDATE_ITEM,
-  id: 'item_authored',
+  id: 'it_00000000-0000-78aa-951f-75d06afdf490',
   artifactId: AUTHORED_CANDIDATE.artifactId,
   artifactVersion: AUTHORED_CANDIDATE.artifactVersion,
   title: 'Authored Worker environment candidate',
@@ -170,7 +174,7 @@ const AUTHORED_ARTIFACT = {
   contentDigest: AUTHORED_CANDIDATE.contentDigest,
 } as const;
 const CONFIG_CANDIDATE = {
-  artifactId: 'artifact_configuration',
+  artifactId: 'ar_00000000-0000-7d2f-9722-dc8c6c8b7d8d',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'9'.repeat(64)}`,
 };
@@ -188,7 +192,7 @@ const CONFIG_PAYLOAD = {
 } as const;
 const CONFIG_ITEM = {
   ...CANDIDATE_ITEM,
-  id: 'item_configuration',
+  id: 'it_00000000-0000-7307-b89c-75e106cc2198',
   artifactId: CONFIG_CANDIDATE.artifactId,
   artifactVersion: CONFIG_CANDIDATE.artifactVersion,
   title: 'Administration configuration candidate',
@@ -202,13 +206,13 @@ const CONFIG_ARTIFACT = {
   contentDigest: CONFIG_CANDIDATE.contentDigest,
 } as const;
 const CONFIG_CANDIDATE_B = {
-  artifactId: 'artifact_configuration_b',
+  artifactId: 'ar_00000000-0000-7a84-81f2-ce90862c4c99',
   artifactVersion: 1 as const,
   contentDigest: `sha256:${'6'.repeat(64)}`,
 };
 const CONFIG_ITEM_B = {
   ...CONFIG_ITEM,
-  id: 'item_configuration_b',
+  id: 'it_00000000-0000-77d6-9a59-1bea0423d91c',
   artifactId: CONFIG_CANDIDATE_B.artifactId,
   artifactVersion: CONFIG_CANDIDATE_B.artifactVersion,
 } as const;
@@ -234,8 +238,8 @@ const CONFIG_OUTCOME = {
 };
 const CONFIG_OUTCOME_ITEM = {
   ...CONFIG_ITEM,
-  id: 'item_configuration_outcome',
-  artifactId: 'artifact_configuration_outcome',
+  id: 'it_00000000-0000-7d8d-a2f5-aebe8ce41dea',
+  artifactId: 'ar_00000000-0000-7ccf-84a5-55f6c4fa16ff',
   title: 'Administration configuration result',
 } as const;
 const CONFIG_OUTCOME_ARTIFACT = {
@@ -253,7 +257,13 @@ function makeClient(
 ): CoreClient {
   return {
     app: { ...app },
-    auth: { email: { getSession: vi.fn().mockResolvedValue({ user: { id: 'user_local' } }) } },
+    auth: {
+      email: {
+        getSession: vi
+          .fn()
+          .mockResolvedValue({ user: { id: 'usr_00000000-0000-7000-8000-000000000001' } }),
+      },
+    },
     core: {
       meta: vi.fn().mockResolvedValue({}),
       ...core,
@@ -298,7 +308,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -312,7 +322,7 @@ function makeClient(
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -330,8 +340,10 @@ function LocationProbe() {
   return <output aria-label="Current path">{useLocation().pathname}</output>;
 }
 
-function renderScreen(client: CoreClient) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderScreen(
+  client: CoreClient,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
@@ -352,7 +364,11 @@ beforeEach(() => {
 describe('Administration', () => {
   it('lists other owners separately and opens their Workspace into the selected state', async () => {
     const user = userEvent.setup();
-    const foreignQuickChat = { ...QUICK_CHAT, id: 'ws_foreign', name: 'Other Quick Chat' };
+    const foreignQuickChat = {
+      ...QUICK_CHAT,
+      id: 'ws_00000000-0000-7f9c-aa14-53566c621405',
+      name: 'Other Quick Chat',
+    };
     const client = makeClient();
     vi.mocked(client.operations['workspace.list'])
       .mockReset()
@@ -361,7 +377,10 @@ describe('Administration', () => {
           membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
           accessCause: 'administrator',
           workspace,
-          ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
+          ownerUserId:
+            workspace.id === foreignQuickChat.id
+              ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+              : 'usr_00000000-0000-7000-8000-000000000001',
           effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
           registryRevision: 1,
           membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
@@ -386,13 +405,20 @@ describe('Administration', () => {
 
   it('waits for ownership discovery before reading the private Quick Chat', async () => {
     const client = makeClient();
-    const foreignQuickChat = { ...QUICK_CHAT, id: 'ws_foreign', name: 'Other Quick Chat' };
+    const foreignQuickChat = {
+      ...QUICK_CHAT,
+      id: 'ws_00000000-0000-7f9c-aa14-53566c621405',
+      name: 'Other Quick Chat',
+    };
     const result = {
       items: [foreignQuickChat, QUICK_CHAT].map((workspace) => ({
         membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
         accessCause: 'administrator',
         workspace,
-        ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
+        ownerUserId:
+          workspace.id === foreignQuickChat.id
+            ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+            : 'usr_00000000-0000-7000-8000-000000000001',
         effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
         registryRevision: 1,
         membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
@@ -424,14 +450,14 @@ describe('Administration', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {
       const activity = {
-        turnId: 'turn_admin',
+        turnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         contentCapture: 'on',
         coverage: 'collecting',
         omittedEntryCount: 0,
         entries: [],
       };
       const dashboard = {
-        turns: [{ id: 'turn_admin', status: 'completed', items: [] }],
+        turns: [{ id: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c', status: 'completed', items: [] }],
         runtimeActivity: [activity],
       };
       const getThreadDashboard = vi.fn().mockResolvedValue(dashboard);
@@ -494,26 +520,26 @@ describe('Administration', () => {
       .mockResolvedValueOnce({
         outcome: 'answered',
         explanation: 'Prepared.',
-        turn: { id: 'turn_1' },
-        item: { id: 'item_1' },
+        turn: { id: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' },
+        item: { id: 'it_00000000-0000-729d-88c1-c54b390585b6' },
         handoff: null,
         originatingWorkspaceId: QUICK_CHAT.id,
-        originatingThreadId: 'thread_admin',
+        originatingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         receivingWorkspaceId: QUICK_CHAT.id,
-        receivingThreadId: 'thread_admin',
+        receivingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         targetRef: 'assistant',
         logicalModelId: null,
       })
       .mockResolvedValueOnce({
         outcome: 'answered',
         explanation: 'Inspected.',
-        turn: { id: 'turn_2' },
-        item: { id: 'item_2' },
+        turn: { id: 'tu_00000000-0000-70b8-9470-71bee14fa908' },
+        item: { id: 'it_00000000-0000-7a7b-bd48-f59a99f30f6f' },
         handoff: null,
         originatingWorkspaceId: QUICK_CHAT.id,
-        originatingThreadId: 'thread_admin',
+        originatingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         receivingWorkspaceId: QUICK_CHAT.id,
-        receivingThreadId: 'thread_admin',
+        receivingThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         targetRef: 'assistant',
         logicalModelId: null,
       });
@@ -533,7 +559,7 @@ describe('Administration', () => {
     await waitFor(() => expect(submitAdministrationConversation).toHaveBeenCalledTimes(2));
     expect(submitAdministrationConversation.mock.calls[1]?.[0]).toMatchObject({
       input: 'Check its status.',
-      threadId: 'thread_admin',
+      threadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
     });
   });
 
@@ -929,7 +955,7 @@ describe('Administration', () => {
                     {
                       ...ADMIN_THREAD,
                       entryPath: 'conversation',
-                      id: 'thread_project',
+                      id: 'th_00000000-0000-7661-815f-0101e9c6c0d8',
                       name: 'Project implementation',
                       workspaceId: PROJECT.id,
                     },
@@ -1000,7 +1026,7 @@ describe('Administration', () => {
       },
       replaceNow: {
         prompt: 'Continue from the retained files with the prepared environment.',
-        threadId: 'thread_project',
+        threadId: 'th_00000000-0000-7661-815f-0101e9c6c0d8',
         workspaceId: PROJECT.id,
       },
       requestId: expect.any(String),
@@ -1233,7 +1259,7 @@ describe('Administration', () => {
   it.each([
     'connection',
     'candidate',
-  ])('disables and ignores Apply after %s read failure while the confirmation is open', async (failedRead) => {
+  ])('blocks and ignores Apply after %s read failure while the confirmation is open', async (failedRead) => {
     const user = userEvent.setup();
     const applyAdministrationConfiguration = vi.fn();
     let connected = true;
@@ -1262,15 +1288,417 @@ describe('Administration', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
     expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
+    const confirmation = screen.getByRole('button', { name: 'Apply configuration' });
     connected = false;
     await act(async () => {
       await queryClient.invalidateQueries();
     });
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
-    );
-    await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+    if (failedRead === 'candidate') {
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+      await user.click(confirmation);
+    } else {
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
+      );
+      await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
+    }
     expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'environment',
+    'configuration',
+  ] as const)('hides the private %s candidate and its open confirmation after parent denial', async (kind) => {
+    const activate = vi.fn();
+    const apply = vi.fn();
+    const client = makeClient(
+      { 'worker-environment.activate': activate, 'administration.configuration-apply': apply },
+      {
+        'artifact.read': vi
+          .fn()
+          .mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
+        'thread.items': vi
+          .fn()
+          .mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    const { queryClient } = renderScreen(client);
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: kind === 'environment' ? 'Review activation' : 'Review configuration',
+      })
+    );
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const candidateFacts =
+      kind === 'environment'
+        ? new RegExp(`Resolved Artifact ${RESOLVED_CANDIDATE.artifactId}`)
+        : /"displayName": "OpenAI production"/;
+    if (kind === 'environment') expect(screen.getAllByText(candidateFacts)).not.toHaveLength(0);
+    const queryKey = ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id];
+    vi.mocked(client.operations['thread.read']).mockRejectedValue(
+      new ApiCallError(403, 'private-parent-denied')
+    );
+    await act(() => queryClient.invalidateQueries({ queryKey, exact: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.queryAllByText(candidateFacts)).toHaveLength(0);
+    vi.mocked(client.operations['thread.read']).mockReturnValue(new Promise<never>(() => {}));
+    await act(async () => {
+      void queryClient.refetchQueries({ queryKey, exact: true });
+    });
+    await waitFor(() => expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe('fetching'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryAllByText(candidateFacts)).toHaveLength(0);
+    expect(activate).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
+    await act(() => queryClient.cancelQueries({ queryKey, exact: true }));
+  });
+
+  it.each([
+    { kind: 'configuration', source: 'access', state: 'pending' },
+    { kind: 'environment', source: 'thread', state: 'paused' },
+    { kind: 'configuration', source: 'items', state: 'paused' },
+    { kind: 'environment', source: 'candidate', state: 'pending' },
+  ] as const)('blocks private $kind confirmation while the $source read is $state', async ({
+    kind,
+    source,
+    state,
+  }) => {
+    const activate = vi.fn();
+    const apply = vi.fn();
+    const candidate = kind === 'environment' ? RESOLVED_CANDIDATE : CONFIG_CANDIDATE;
+    const client = makeClient(
+      { 'worker-environment.activate': activate, 'administration.configuration-apply': apply },
+      {
+        'artifact.read': vi
+          .fn()
+          .mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
+        'thread.items': vi
+          .fn()
+          .mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    const { queryClient } = renderScreen(client);
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: kind === 'environment' ? 'Review activation' : 'Review configuration',
+      })
+    );
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
+      })
+    ).toBeEnabled();
+    const keys = {
+      access: ['settings', 'administration', 'access'],
+      thread: ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id],
+      items: ['items', QUICK_CHAT.id, ADMIN_THREAD.id],
+      candidate: [
+        'settings',
+        'administration',
+        'prepared-candidate',
+        QUICK_CHAT.id,
+        ADMIN_THREAD.id,
+        `${candidate.artifactId}:1`,
+      ],
+    };
+    const methods = {
+      access: 'token.list',
+      thread: 'thread.read',
+      items: 'thread.items',
+      candidate: 'artifact.read',
+    } as const;
+    const queryKey = keys[source];
+    if (state === 'pending') {
+      vi.mocked(client.operations[methods[source]]).mockReturnValue(new Promise<never>(() => {}));
+    }
+    try {
+      if (state === 'paused') onlineManager.setOnline(false);
+      await act(async () => {
+        void queryClient.invalidateQueries({ queryKey, exact: true });
+      });
+      await waitFor(() =>
+        expect(queryClient.getQueryState(queryKey)).toMatchObject({
+          fetchStatus: state === 'paused' ? 'paused' : 'fetching',
+        })
+      );
+      await waitFor(() => {
+        const currentConfirmation = screen.queryByRole('button', {
+          name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
+        });
+        if (currentConfirmation) expect(currentConfirmation).toBeDisabled();
+        else expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+      const confirmation = screen.queryByRole('button', {
+        name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
+      });
+      if (confirmation) {
+        expect(confirmation).toBeDisabled();
+        await userEvent.click(confirmation);
+      }
+      expect(activate).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+      expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        await queryClient.cancelQueries();
+        onlineManager.setOnline(true);
+      });
+    }
+  });
+
+  it('removes an open deletion confirmation when current administrator access is denied', async () => {
+    const purge = vi.fn();
+    const client = makeClient({
+      'worker-environment.list': vi
+        .fn()
+        .mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
+      'worker-environment.purge': purge,
+    });
+    const { queryClient } = renderScreen(client);
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(
+      screen.getByRole('dialog', { name: 'Delete retained environment?' })
+    ).toBeInTheDocument();
+    vi.mocked(client.operations['token.list']).mockRejectedValue(
+      new ApiCallError(403, 'administrator-denied')
+    );
+    await act(() =>
+      queryClient.invalidateQueries({
+        queryKey: ['settings', 'administration', 'access'],
+        exact: true,
+      })
+    );
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it('hides private candidate facts after typed denial and a later failed Items retry until success', async () => {
+    const client = makeClient(
+      {},
+      {
+        'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: 1, retryDelay: 0 } },
+    });
+    renderScreen(client, queryClient);
+    const queryKey = ['items', QUICK_CHAT.id, ADMIN_THREAD.id];
+    try {
+      await userEvent.click(await screen.findByRole('button', { name: 'Review configuration' }));
+      let failRetry!: () => void;
+      vi.mocked(client.operations['thread.items'])
+        .mockRejectedValueOnce(new ApiCallError(403, 'private-items-denied'))
+        .mockImplementation(
+          () =>
+            new Promise((_resolve, reject) => {
+              failRetry = () => reject(new ApiCallError(500, 'private-items-unavailable'));
+            })
+        );
+      await act(async () => {
+        void queryClient.invalidateQueries({ queryKey, exact: true });
+      });
+      await waitFor(() => expect(failRetry).toBeDefined());
+      expect(queryClient.getQueryState(queryKey)?.error).toBeNull();
+      expect(queryClient.getQueryState(queryKey)?.fetchFailureReason).toMatchObject({
+        status: 403,
+      });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+      await act(async () => failRetry());
+      await waitFor(() =>
+        expect(queryClient.getQueryState(queryKey)?.error).toMatchObject({ status: 500 })
+      );
+      expect(await screen.findByText("Couldn't load this thread.")).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+      let restoreItems!: () => void;
+      vi.mocked(client.operations['thread.items']).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            restoreItems = () => resolve({ items: [CONFIG_ITEM], nextCursor: null });
+          })
+      );
+      await act(async () => {
+        void queryClient.refetchQueries({ queryKey, exact: true });
+      });
+      await waitFor(() => expect(restoreItems).toBeDefined());
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+      await act(async () => restoreItems());
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled()
+      );
+      expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
+    } finally {
+      await act(() => queryClient.cancelQueries({ queryKey, exact: true }));
+    }
+  });
+
+  it('rechecks current administrator and exact parent authority before admitting a fresh cached candidate on remount', async () => {
+    const fixture = () =>
+      makeClient(
+        {},
+        {
+          'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+          'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+          'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+        }
+      );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    const first = renderScreen(fixture(), queryClient);
+    expect(await screen.findByRole('button', { name: 'Review configuration' })).toBeEnabled();
+    first.unmount();
+    const client = fixture();
+    let allowAccess!: () => void;
+    let allowParent!: () => void;
+    vi.mocked(client.operations['token.list']).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          allowAccess = () => resolve({ items: [] });
+        })
+    );
+    const readParent = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
+    vi.mocked(client.operations['thread.read']).mockImplementation(
+      (input) =>
+        new Promise((resolve) => {
+          allowParent = () => {
+            void Promise.resolve(readParent(input)).then(resolve);
+          };
+        })
+    );
+    renderScreen(client, queryClient);
+    await waitFor(() => expect(client.operations['token.list']).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+    expect(client.operations['thread.read']).not.toHaveBeenCalled();
+    await act(async () => allowAccess());
+    await waitFor(() => expect(client.operations['thread.read']).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
+    expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
+    await act(async () => allowParent());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled()
+    );
+    expect(client.operations['thread.read']).toHaveBeenCalledWith({
+      workspaceId: QUICK_CHAT.id,
+      threadId: ADMIN_THREAD.id,
+    });
+    expect(client.operations['artifact.read']).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { kind: 'environment', authority: 'parent' },
+    { kind: 'configuration', authority: 'access' },
+  ] as const)('keeps the dispatched $kind outcome through $authority denial and read recovery', async ({
+    kind,
+    authority,
+  }) => {
+    let finish!: () => void;
+    const activate = vi.fn().mockImplementation(
+      (input: { requestId: string }) =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({
+              affected: [{ ...CANDIDATE_PAYLOAD.affectedStorage[0], disposition: 'unknown' }],
+              configuration: null,
+              replaceNow: CANDIDATE_PAYLOAD.replaceNow,
+              requestId: input.requestId,
+              resolvedCandidate: RESOLVED_CANDIDATE,
+              target: CANDIDATE_PAYLOAD.target,
+            });
+        })
+    );
+    const apply = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve(CONFIG_OUTCOME);
+        })
+    );
+    const client = makeClient(
+      { 'worker-environment.activate': activate, 'administration.configuration-apply': apply },
+      {
+        'artifact.read': vi
+          .fn()
+          .mockResolvedValue(kind === 'environment' ? CANDIDATE_ARTIFACT : CONFIG_ARTIFACT),
+        'thread.items': vi
+          .fn()
+          .mockResolvedValue({ items: [kind === 'environment' ? CANDIDATE_ITEM : CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    const readAccess = vi.mocked(client.operations['token.list']).getMockImplementation()!;
+    const readParent = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
+    const { queryClient } = renderScreen(client);
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: kind === 'environment' ? 'Review activation' : 'Review configuration',
+      })
+    );
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
+      })
+    );
+    const effect = kind === 'environment' ? activate : apply;
+    await waitFor(() => expect(effect).toHaveBeenCalledTimes(1));
+    const command = queryClient
+      .getMutationCache()
+      .getAll()
+      .find((mutation) => mutation.state.status === 'pending');
+    expect(command).toBeDefined();
+    const queryKey =
+      authority === 'access'
+        ? ['settings', 'administration', 'access']
+        : ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id];
+    if (authority === 'access')
+      vi.mocked(client.operations['token.list']).mockRejectedValue(
+        new ApiCallError(403, 'administrator-denied')
+      );
+    else
+      vi.mocked(client.operations['thread.read']).mockRejectedValue(
+        new ApiCallError(403, 'private-parent-denied')
+      );
+    await act(() => queryClient.invalidateQueries({ queryKey, exact: true }));
+    if (authority === 'access')
+      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    else
+      expect(
+        await screen.findByText('This private administration Thread is unavailable.')
+      ).toBeInTheDocument();
+    await act(async () => finish());
+    await waitFor(() => expect(command?.state.status).toBe('success'));
+    expect(
+      screen.queryByText(
+        kind === 'environment' ? 'Activation command result' : 'Configuration command result'
+      )
+    ).not.toBeInTheDocument();
+    if (authority === 'access')
+      vi.mocked(client.operations['token.list']).mockImplementation(readAccess);
+    else vi.mocked(client.operations['thread.read']).mockImplementation(readParent);
+    await userEvent.click(
+      screen.getByRole('button', { name: authority === 'access' ? 'Retry' : 'Try again' })
+    );
+    expect(
+      await screen.findByText(
+        kind === 'environment' ? 'Activation command result' : 'Configuration command result'
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: kind === 'environment' ? 'Review activation' : 'Review configuration',
+      })
+    ).toBeDisabled();
+    expect(queryClient.getMutationCache().getAll()).toContain(command);
+    expect(effect).toHaveBeenCalledTimes(1);
   });
 
   it('unmounts an open confirmation when the discovered candidate identity changes', async () => {
@@ -1368,8 +1796,8 @@ describe('Administration', () => {
     const applyAdministrationConfiguration = vi.fn();
     const getArtifact = vi.fn().mockResolvedValue({
       ...CONFIG_ARTIFACT,
-      threadId: 'thread_other',
-      origin: { ...CONFIG_ARTIFACT.origin, threadId: 'thread_other' },
+      threadId: 'th_00000000-0000-7429-b248-27885d480335',
+      origin: { ...CONFIG_ARTIFACT.origin, threadId: 'th_00000000-0000-7429-b248-27885d480335' },
     });
     const client = makeClient(
       { 'administration.configuration-apply': applyAdministrationConfiguration },

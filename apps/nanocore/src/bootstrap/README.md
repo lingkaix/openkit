@@ -5,6 +5,7 @@ This directory owns NanoCore process startup and shutdown checks around the data
 ## Boundaries
 
 - Keep boot phases, phase ordering, the data-root lock, boot policy checks, Vault readiness, shutdown deadlines, and boot audit records here.
+- The data-root instance lock uses `flock` on an open descriptor for the existing `server/runtime` directory. Node keeps that descriptor until release; the kernel releases it on process death. Keep the directory inode in place while a holder is active. The JSON holder file and heartbeat remain diagnostic and the file is removed on orderly release. Source deployments need the util-linux-compatible `flock` utility that the App image already provides.
 - `../index.ts` composes the process lifecycle and starts the server after required phases succeed.
 - Preserve each phase's critical or non-critical failure semantics and fail closed before unsafe mutation or network exposure.
 - Treat authoritative SQLite integrity failure as critical: do not move or replace the original database, initialize local identity, issue bootstrap credentials, or bind the listener.

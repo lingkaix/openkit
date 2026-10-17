@@ -4,19 +4,22 @@ import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { stageArtifactPayload } from './storage/artifacts/file-payload.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -227,7 +230,10 @@ describe('exact Artifact file import and download', () => {
       sandboxSummary: null,
       health: { status: 'ready', message: null, checkedAt: new Date().toISOString() },
     });
-    const thread = store.createThread(workspace.id, 'File Review');
+    const thread = store.createThread(workspace.id, 'File Review', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    });
     const turn = store.createTurn(workspace.id, thread.id, 'Produce original', {
       kind: 'user',
       id: LOCAL_USER_ID,
@@ -256,7 +262,7 @@ describe('exact Artifact file import and download', () => {
           expectedDigest: digest,
           reservation,
         });
-    const artifactId = 'review-file-output';
+    const artifactId = allocateEntityId('ar');
     const recordedAt = new Date().toISOString();
     try {
       store.createArtifact(

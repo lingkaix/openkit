@@ -41,8 +41,8 @@ describe('native A2UI admission', () => {
     };
     expect(() =>
       admitProducerMessages({
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         title: 'View',
         fallbackText: 'Fallback',
         messages: messages([
@@ -55,8 +55,8 @@ describe('native A2UI admission', () => {
     ).toThrow(KernelCommandError);
     expect(() =>
       admitProducerMessages({
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         title: 'View',
         fallbackText: 'Fallback',
         messages: messages([
@@ -69,8 +69,8 @@ describe('native A2UI admission', () => {
     ).toThrow(KernelCommandError);
     expect(() =>
       admitProducerMessages({
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         title: 'View',
         fallbackText: 'Fallback',
         messages: messages([
@@ -85,8 +85,8 @@ describe('native A2UI admission', () => {
 
   it('admits official path bindings and List.align', () => {
     const admitted = admitProducerMessages({
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       title: 'View',
       fallbackText: 'Fallback',
       messages: messages([
@@ -160,8 +160,8 @@ describe('native A2UI admission', () => {
       expect(
         () =>
           admitProducerMessages({
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
             title: 'View',
             fallbackText: 'Fallback',
             messages: messages(testCase.components),
@@ -175,8 +175,8 @@ describe('native A2UI admission', () => {
 
   it('counts List template copies against the expanded-instance ceiling', () => {
     const admitted = admitProducerMessages({
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       title: 'View',
       fallbackText: 'Fallback',
       messages: messages([
@@ -190,8 +190,8 @@ describe('native A2UI admission', () => {
     const records = Array.from({ length: 50 }, (_, index) => ({ id: String(index) }));
     expect(countExpandedInstances(admitted.components, { records })).toBe(101);
     const relative = admitProducerMessages({
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       title: 'View',
       fallbackText: 'Fallback',
       messages: messages([
@@ -209,8 +209,8 @@ describe('native A2UI admission', () => {
       })
     ).toThrow(KernelCommandError);
     const nested = admitProducerMessages({
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       title: 'View',
       fallbackText: 'Fallback',
       messages: messages([

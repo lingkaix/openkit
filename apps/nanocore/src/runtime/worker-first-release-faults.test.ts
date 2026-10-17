@@ -10,7 +10,6 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient } from '../../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -27,6 +26,8 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -170,7 +171,11 @@ async function faultFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
   admitTestNativeEnvironment(coreDb, setup.manifest);
   const gateway = createDefaultWorkerControlGateway(coreDb);
@@ -269,30 +274,39 @@ async function faultFixture() {
   ).toEqual({ status: 204, body: '' });
   // The real dispatcher requires the exact pending Turn and initiating command receipt (D83).
   store.createTurn(
-    'ws_demo',
-    'th_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
     'Exercise a bounded worker fault',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
-    { turnId: 'fault-turn', agentId: setup.manifest.id, status: 'pending', executorKind: 'worker' }
+    {
+      turnId: testEntityId('tu', 'fault-turn'),
+      agentId: setup.manifest.id,
+      status: 'pending',
+      executorKind: 'worker',
+    }
   );
   store.recordCommandRequest({
     command: 'turn.start',
     requestId: 'fault-request',
-    scope: { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' },
+    scope: {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    },
     inputHash: 'fault-fixture',
-    response: { kind: 'turn', id: 'fault-turn' },
+    response: { kind: 'turn', id: testEntityId('tu', 'fault-turn') },
   });
   createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'fault-queue',
     requestId: 'fault-request',
     requestedAgentId: setup.manifest.id,
-    threadId: 'th_demo',
-    turnId: 'fault-turn',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: testEntityId('tu', 'fault-turn'),
     turnInput: 'Exercise a bounded worker fault',
-    triggerActor: { kind: 'user', id: 'user_local' },
-    workspaceId: 'ws_demo',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   /** Retains enqueue readiness even when preparation finishes before the consumer awaits it. */
   const enqueueSignal = () => {
@@ -322,8 +336,8 @@ async function faultFixture() {
   const running = runSchedulerDispatchLoop({
     agentManifests: [setup.manifest],
     coreDb,
-    createAgentSessionId: () => 'fault-session',
-    createAttemptId: () => 'fault-lease',
+    createAgentSessionId: () => testEntityId('as', 'fault-session'),
+    createAttemptId: () => testEntityId('attempt', 'fault-lease'),
     executionBackend: runtime.turnExecutor.executionBackend!,
     gatewayConfig: createTestGatewayConfig(),
     maxDispatches: 1,
@@ -381,10 +395,10 @@ async function faultFixture() {
       baseUrl: 'http://core.test/api/worker-control',
       token: String(command.body.workerControlToken),
       lineage: {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'fault-turn',
-        agentSessionId: 'fault-session',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: testEntityId('tu', 'fault-turn'),
+        agentSessionId: testEntityId('as', 'fault-session'),
         packageSnapshotId: String(command.body.packageSnapshotId),
         requestId: 'fault-request',
       },
@@ -431,10 +445,10 @@ async function faultFixture() {
       transcript.events = `${JSON.stringify(
         buildWorkerCanonicalTerminalEventRecord({
           lineage: {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'fault-turn',
-            agentSessionId: 'fault-session',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: testEntityId('tu', 'fault-turn'),
+            agentSessionId: testEntityId('as', 'fault-session'),
             packageSnapshotId: String(command.body.packageSnapshotId),
             requestId: 'fault-request',
           },
@@ -453,7 +467,10 @@ describe('first-release worker faults (real Core crossings)', () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(new Date(NOW));
     const f = await faultFixture();
-    const workspaceDb = openWorkspaceDb(f.coreDb.dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(
+      f.coreDb.dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     applyScopedMigrations(workspaceDb);
     try {
       const opened = await f.dispatch('session.open');
@@ -469,19 +486,19 @@ describe('first-release worker faults (real Core crossings)', () => {
       await control.recordHeartbeat({ status: 'running' });
       const firstDeadline = requireNanoHostExecutionAttempt(
         f.coreDb,
-        'fault-lease'
+        testEntityId('attempt', 'fault-lease')
       ).heartbeatDeadline;
       const request = {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        raisingTurnId: 'fault-turn',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        raisingTurnId: testEntityId('tu', 'fault-turn'),
         requestId: 'fault-question',
-        requestItemId: 'fault-question-item',
+        requestItemId: testEntityId('it', 'fault-question-item'),
         kind: 'user-input' as const,
         requesterKind: 'worker' as const,
-        agentId: f.store.getTurnById('fault-turn').agentId!,
-        agentSessionId: 'fault-session',
-        responsibleUserId: 'user_local',
+        agentId: f.store.getTurnById(testEntityId('tu', 'fault-turn')).agentId!,
+        agentSessionId: testEntityId('as', 'fault-session'),
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         questions: [
           {
             id: 'continue',
@@ -496,13 +513,13 @@ describe('first-release worker faults (real Core crossings)', () => {
       };
       f.store.createItem({
         id: request.requestItemId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'fault-turn',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: testEntityId('tu', 'fault-turn'),
         type: 'user-input-request',
         status: 'completed',
         userInputRequestId: request.requestId,
-        responsibleUserId: 'user_local',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         prompt: 'Continue work?',
         questions: request.questions,
         createdAt: NOW,
@@ -514,9 +531,11 @@ describe('first-release worker faults (real Core crossings)', () => {
         await vi.advanceTimersByTimeAsync(10_000);
         await control.recordHeartbeat({ status: 'running' });
         await f.maintenance();
-        expect(requireNanoHostExecutionAttempt(f.coreDb, 'fault-lease').phase).toBe('open');
+        expect(
+          requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease')).phase
+        ).toBe('open');
         expect(readPendingRequest(workspaceDb.sqlite, request.requestId)).toEqual(pendingRecord);
-        expect(f.store.getTurnById('fault-turn').status).toBe('running');
+        expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('running');
       }
       expect(new Date().toISOString()).toBe('2026-10-05T00:01:20.000Z');
       expect(new Date().toISOString() > firstDeadline).toBe(true);
@@ -531,7 +550,7 @@ describe('first-release worker faults (real Core crossings)', () => {
         answerPendingRequest(
           workspaceDb.sqlite,
           request.requestId,
-          { kind: 'user', id: 'user_local' },
+          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           { continue: ['yes'] },
           new Date().toISOString()
         )
@@ -552,10 +571,11 @@ describe('first-release worker faults (real Core crossings)', () => {
         cleanupState: 'clean',
       });
       await f.running;
-      expect(f.store.getTurnById('fault-turn').status).toBe('completed');
-      expect(new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById('fault-turn').status).toBe(
-        'completed'
-      );
+      expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('completed');
+      expect(
+        new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(testEntityId('tu', 'fault-turn'))
+          .status
+      ).toBe('completed');
       expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
         integrity_check: 'ok',
       });
@@ -611,11 +631,11 @@ describe('first-release worker faults (real Core crossings)', () => {
       } else {
         await vi.advanceTimersByTimeAsync(299_999);
         expect(f.isSettled()).toBe(false);
-        expect(f.store.getTurnById('fault-turn').status).toBe('running');
+        expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('running');
         await vi.advanceTimersByTimeAsync(1);
       }
       await expect(f.running).rejects.toThrow(expectedFailure);
-      const turn = f.store.getTurnById('fault-turn');
+      const turn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
       expect(turn.status).toBe('failed');
       expect(turn.error?.message).toContain(expectedFailure);
       expect(
@@ -642,7 +662,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // D97/D111: terminal failure and physical cleanup cannot prove unread output or evidence.
-      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
+      expect(
+        requireSchedulerExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+      ).toMatchObject({
         phase: 'closing',
         disposition: 'unknown',
         operationId: expect.any(String),
@@ -684,15 +706,17 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(await f.poll()).toEqual({ status: 204, body: '' });
       await vi.advanceTimersByTimeAsync(299_999);
       expect(f.isSettled()).toBe(false);
-      expect(f.store.getTurnById('fault-turn').status).toBe('running');
+      expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('running');
       expect(
-        f.store.getTurnEvents('fault-turn').filter((event) => event.event === 'turn.completed')
+        f.store
+          .getTurnEvents(testEntityId('tu', 'fault-turn'))
+          .filter((event) => event.event === 'turn.completed')
       ).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
       await expect(f.running).rejects.toThrow(
         'NanoHost Harness session.inspect result outage budget expired: dispatched-awaiting-result.'
       );
-      const turn = f.store.getTurnById('fault-turn');
+      const turn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
       expect(turn.status).toBe('failed');
       expect(turn.error?.message).toContain(
         'NanoHost Harness session.inspect result outage budget expired: dispatched-awaiting-result.'
@@ -722,7 +746,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // Submission was accepted, but held inspection leaves collection/evidence unproved.
-      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
+      expect(
+        requireSchedulerExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+      ).toMatchObject({
         phase: 'closing',
         disposition: 'accepted',
         operationId: expect.any(String),

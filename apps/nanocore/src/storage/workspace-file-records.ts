@@ -18,7 +18,7 @@ import {
   writeSync,
 } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   KnowledgeManagerDraftedProposalSchema,
@@ -37,15 +37,22 @@ import {
   ArtifactInlineContentSchema,
   ArtifactOriginSchema,
   ArtifactSchema,
+  deriveEntityId,
+  entityIdPattern,
   GitFailureExplanationReaderSchema,
   ItemSchema,
+  isEntityId,
   KnowledgeEntrySchema,
+  type KnowledgeOwnerScope,
+  KnowledgeOwnerScopeSchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
   UserActorRefSchema,
   UserInputResponseItemSchema,
   UserMessageItemSchema,
+  WorkerStorageTargetIdSchema,
+  WorkspaceIdSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import {
@@ -56,10 +63,11 @@ import Database from 'better-sqlite3';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT,
-  DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   parseOkfDocument,
+  REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   stringFrontmatterField,
   stringListFrontmatterField,
   updateOkfFrontmatter,
@@ -72,12 +80,7 @@ import type {
 } from '../lib/store.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
-import {
-  coreDbPath,
-  ensureLayoutDirectories,
-  ensureWorkspaceLayoutRoot,
-  LOCAL_USER_ID,
-} from './fs-layout.js';
+import { coreDbPath, ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
@@ -132,6 +135,17 @@ export const TurnReaderSchema = TurnSchema.safeExtend({
     .extend({ explanation: GitFailureExplanationReaderSchema.optional() })
     .nullable(),
 });
+/** One metadata validator preserves the writer's admitted feature set on direct canonical reads. */
+const TurnFileMetadataSchema = TurnReaderSchema.safeExtend({
+  captureCoverage: CaptureCoverageBindingSchema.optional(),
+  requiredFeatures: z
+    .array(
+      z.literal('openkit.work-observations.v1', {
+        error: ({ input }) => `Unsupported required Turn feature: ${JSON.stringify(input)}.`,
+      })
+    )
+    .optional(),
+});
 /** Imported-origin attribution is a historical fact, never current import authority. */
 const ArtifactReaderSchema = ArtifactSchema.safeExtend({
   origin: z.discriminatedUnion('kind', [
@@ -177,13 +191,15 @@ export const KnowledgeProposalRecordSchema = KnowledgeManagerDraftedProposalSche
   })
   .strip();
 export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.extend({
-  reviewId: z.string().regex(/^kr_[a-f0-9]{64}$/),
+  reviewId: z.string().regex(entityIdPattern('kr')),
   actor: ActorRefReaderSchema,
 })
   .strip()
   .superRefine((review, context) => {
     const accepted = review.decision === 'accepted';
-    if (accepted !== (review.targetAbsentAtDecision === true)) {
+    if (
+      accepted ? review.targetAbsentAtDecision === null : review.targetAbsentAtDecision !== null
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'Only an accepted review may record target absence.',
@@ -195,7 +211,7 @@ export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema
 export const KnowledgeProposalReviewFileSchema = z
   .object({
     proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     decisions: z.array(KnowledgeProposalReviewRecordSchema).min(1),
   })
   .strip()
@@ -205,16 +221,11 @@ export const KnowledgeProposalReviewFileSchema = z
     let terminal = false;
 
     for (const [index, review] of file.decisions.entries()) {
-      const expectedReviewId = `kr_${createHash('sha256')
-        .update(
-          JSON.stringify({
-            workspaceId: file.workspaceId,
-            proposalId: file.proposalId,
-            requestId: review.requestId,
-          }),
-          'utf8'
-        )
-        .digest('hex')}`;
+      const expectedReviewId = deriveEntityId('kr', {
+        ownerScope: { kind: 'workspace', workspaceId: file.workspaceId },
+        proposalId: file.proposalId,
+        requestId: review.requestId,
+      });
       if (
         review.proposalId !== file.proposalId ||
         review.workspaceId !== file.workspaceId ||
@@ -242,7 +253,7 @@ export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
 /** Private historical attachment provenance; current admission remains with WorkerStorageBinding. */
 export const AgentSessionRetainedStorageSchema = z
   .object({
-    storageRef: z.string().regex(/^wst_[0-9a-f]{32}$/),
+    storageRef: WorkerStorageTargetIdSchema,
     workSlotRef: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
   })
   .strip();
@@ -301,11 +312,7 @@ export const TURN_STREAM_EVENT_WINDOW_SIZE = 100;
  * @returns Stable non-secret Item id.
  */
 export function artifactReferenceItemId(artifactId: string, turnId: string): string {
-  const digest = createHash('sha256')
-    .update(JSON.stringify([artifactId, turnId]), 'utf8')
-    .digest('hex')
-    .slice(0, 24);
-  return `it_artifact_${digest}`;
+  return deriveEntityId('it', [artifactId, turnId]);
 }
 
 /**
@@ -730,90 +737,26 @@ export function assertSafeWorkspacePathSegment(value: string, label: string): vo
 }
 
 /**
- * Resolves one schema-valid Knowledge Page id below the canonical pages root.
+ * Reads exact canonical Knowledge Page bytes from one published immutable notebook revision.
  *
  * @param workspaceRoot Published workspace root.
  * @param knowledgePageId Slash-separated Knowledge Page id.
- * @param createParents Whether missing safe parent directories may be created.
- * @returns Canonical page path, or null when a read-only parent is absent.
- */
-function resolveWorkspaceKnowledgePagePath(
-  workspaceRoot: string,
-  knowledgePageId: string,
-  createParents: boolean
-): string | null {
-  const parsedId = KnowledgeProposalPageIdSchema.parse(knowledgePageId);
-  const segments = parsedId.split('/');
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-
-  for (const path of [workspaceRoot, join(workspaceRoot, 'knowledge'), pagesRoot]) {
-    assertCanonicalDirectory(path);
-  }
-  for (const segment of segments) {
-    assertSafeWorkspacePathSegment(segment, 'Knowledge Page id segment');
-  }
-
-  const target = resolve(pagesRoot, ...segments.slice(0, -1), `${segments.at(-1)!}.md`);
-  const targetRelative = relative(resolve(pagesRoot), target);
-  if (
-    targetRelative === '..' ||
-    targetRelative.startsWith(`..${sep}`) ||
-    isAbsolute(targetRelative)
-  ) {
-    throw new Error('Knowledge Page path escapes the canonical pages root.');
-  }
-
-  let parent = pagesRoot;
-  for (const segment of segments.slice(0, -1)) {
-    parent = join(parent, segment);
-    const metadata = lstatSync(parent, { throwIfNoEntry: false });
-    if (!metadata) {
-      if (!createParents) {
-        return null;
-      }
-      ensureCanonicalDirectory(parent);
-      continue;
-    }
-    assertCanonicalDirectory(parent);
-  }
-
-  return target;
-}
-
-/**
- * Reads one canonical Knowledge Page without following symbolic links.
- *
- * @param workspaceRoot Published workspace root.
- * @param knowledgePageId Slash-separated Knowledge Page id.
+ * @param notebookRevision Exact published revision, or the revision pinned at this read.
  * @returns Exact UTF-8 page bytes, or null when the page is absent.
  */
 export function readWorkspaceKnowledgePage(
   workspaceRoot: string,
-  knowledgePageId: string
+  knowledgePageId: string,
+  notebookRevision?: string
 ): string | null {
-  const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, knowledgePageId, false);
-  if (!path || !lstatSync(path, { throwIfNoEntry: false })) {
-    return null;
-  }
-  return readCanonicalTextFile(path);
-}
-
-/**
- * Deletes one canonical knowledge page before its in-memory owner is removed.
- *
- * @param workspaceRoot Published workspace root.
- * @param knowledgeEntryId Knowledge entry id to delete.
- */
-export function deleteWorkspaceKnowledgeRecord(
-  workspaceRoot: string,
-  knowledgeEntryId: string
-): void {
-  const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, knowledgeEntryId, false);
-  if (!path || !lstatSync(path, { throwIfNoEntry: false })) {
-    return;
-  }
-  assertCanonicalRegularFile(path);
-  rmSync(path);
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  const pinned = notebookRevision ?? notebook.publishedRevision();
+  if (notebookRevision !== undefined) notebook.history({ revision: pinned, limit: 1 });
+  const path = `${knowledgePageId}.md`;
+  if (!Object.hasOwn(notebook.inspectRevision(pinned).entries, path)) return null;
+  return notebook.readRevision(pinned, [path]).files[path] ?? null;
 }
 
 /**
@@ -938,7 +881,8 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
         }
         const turnsRoot = join(threadsRoot, threadId, 'turns');
         for (const turnId of listDirectoryNames(turnsRoot)) {
-          readPublishedTurnRecord(turnsRoot, workspaceId, threadId, turnId);
+          if (!readPublishedTurnFileRecords(dataRoot, workspaceId, threadId, turnId))
+            return { status: 'unreadable' };
           turns.push({ threadId, turnId, workspaceId });
         }
       }
@@ -950,37 +894,45 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
 }
 
 /**
- * Validates one published Turn and its Item log without rewriting canonical files.
+ * Validates one published Turn and its complete Item history without rewriting canonical files.
  *
- * @param turnsRoot Thread turns directory.
+ * @param dataRoot Data root containing the exact owning Workspace.
  * @param workspaceId Owning Workspace id.
  * @param threadId Owning Thread id.
  * @param turnId Turn directory id.
+ * @returns Canonical Turn, complete Item revisions and immutable capture pair, or null when either required file is missing.
  * @throws Error when the Turn schema, lineage, or Item history cannot be read.
  */
-function readPublishedTurnRecord(
-  turnsRoot: string,
+export function readPublishedTurnFileRecords(
+  dataRoot: string,
   workspaceId: string,
   threadId: string,
   turnId: string
-): void {
-  const turnPath = join(turnsRoot, turnId, 'turn.json');
+): {
+  readonly turn: Turn;
+  readonly itemRevisions: readonly Item[];
+  readonly captureCoverage: CaptureCoverageBinding | null;
+} | null {
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+  assertSafeWorkspacePathSegment(threadId, 'Thread id');
+  assertSafeWorkspacePathSegment(turnId, 'Turn id');
+  let turnRoot = dataRoot;
+  assertCanonicalDirectory(turnRoot);
+  // Direct scoped reads must keep the parent checks that directory enumeration supplied.
+  for (const segment of ['workspaces', workspaceId, 'threads', threadId, 'turns', turnId]) {
+    turnRoot = join(turnRoot, segment);
+    if (!lstatSync(turnRoot, { throwIfNoEntry: false })) return null;
+    assertCanonicalDirectory(turnRoot);
+  }
+  const turnPath = join(turnRoot, 'turn.json');
   if (!existsSync(turnPath)) {
-    throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
+    return null;
   }
   const rawTurn = readJson(turnPath) as Record<string, unknown>;
   if (rawTurn.items !== undefined && (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)) {
     throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
   }
-  if (rawTurn.captureCoverage !== undefined) {
-    const parsedCoverage = CaptureCoverageBindingSchema.safeParse(rawTurn.captureCoverage);
-    if (!parsedCoverage.success) {
-      throw new Error(
-        `Canonical turn metadata has an invalid capture coverage binding: ${turnId}.`
-      );
-    }
-  }
-  const turnWithoutItems = TurnReaderSchema.parse({ ...rawTurn, items: [] });
+  const turnWithoutItems = TurnFileMetadataSchema.parse({ ...rawTurn, items: [] });
   if (
     turnWithoutItems.id !== turnId ||
     turnWithoutItems.workspaceId !== workspaceId ||
@@ -988,12 +940,16 @@ function readPublishedTurnRecord(
   ) {
     throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
   }
-  const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
+  const itemsPath = join(turnRoot, 'items.jsonl');
   if (!existsSync(itemsPath)) {
-    throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
+    return null;
   }
-  const items = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
-  TurnReaderSchema.parse({ ...turnWithoutItems, items });
+  const history = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
+  return {
+    turn: TurnReaderSchema.parse({ ...turnWithoutItems, items: history.items }),
+    itemRevisions: history.revisions,
+    captureCoverage: turnWithoutItems.captureCoverage ?? null,
+  };
 }
 
 /**
@@ -1005,16 +961,17 @@ function readPublishedTurnRecord(
  * @param workspaceId Owning Workspace id.
  * @param threadId Owning Thread id.
  * @param turnId Owning Turn id.
- * @returns Current Item projection in first-seen order.
+ * @returns Current Items in first-seen order and every validated append-order revision.
  */
 function readPublishedItemRevisions(
   path: string,
   workspaceId: string,
   threadId: string,
   turnId: string
-): Item[] {
+): { readonly items: Item[]; readonly revisions: Item[] } {
   const order: string[] = [];
   const items = new Map<string, Item>();
+  const revisions: Item[] = [];
   for (const value of readDurableCanonicalJsonLines(path)) {
     const item = ItemReaderSchema.parse(value);
     const previous = items.get(item.id);
@@ -1031,8 +988,9 @@ function readPublishedItemRevisions(
       order.push(item.id);
     }
     items.set(item.id, item);
+    revisions.push(item);
   }
-  return order.map((itemId) => items.get(itemId) as Item);
+  return { items: order.map((itemId) => items.get(itemId) as Item), revisions };
 }
 
 /**
@@ -1137,24 +1095,19 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
- * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
-  updateWorkspaceConfigName = false,
-  exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+  updateWorkspaceConfigName = false
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  ensureCanonicalDirectory(pagesRoot);
-  ensureRootKnowledgeIndex(pagesRoot);
   writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
   writeThreads(workspaceRoot, records);
-  writeKnowledge(workspaceRoot, records, exactKnowledgePageBytes);
+  writeKnowledge(workspaceRoot, records);
   writeSources(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records);
   writeAgentSessions(workspaceRoot, records);
@@ -1363,7 +1316,7 @@ function loadWorkspace(
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
   const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
-  const knowledge = loadKnowledge(workspaceRoot);
+  const knowledge = readWorkspaceKnowledgeEntries(workspaceRoot);
   const knowledgeProposals = loadKnowledgeProposals(workspaceRoot, workspaceId);
   const knowledgeProposalReviews = loadKnowledgeProposalReviews(
     workspaceRoot,
@@ -1683,7 +1636,11 @@ export function parseOwnedKnowledgeEntry(
   const parsed = parseOkfDocument({ path, content });
   const id = parsed.document ? stringFrontmatterField(parsed.document, 'openkit_entry_id') : null;
 
-  if (!parsed.ok || id !== knowledgePageId || parsed.document.conceptId !== knowledgePageId) {
+  if (
+    !parsed.ok ||
+    (id !== null && id !== knowledgePageId) ||
+    parsed.document.conceptId !== knowledgePageId
+  ) {
     throw new Error(`Knowledge page ${knowledgePageId} is not a valid owned record.`);
   }
 
@@ -1692,8 +1649,9 @@ export function parseOwnedKnowledgeEntry(
     throw new Error(`Knowledge page ${knowledgePageId} has invalid source_refs.`);
   }
   return KnowledgeEntrySchema.parse({
-    id,
-    kind: requiredFrontmatterString(parsed.document, 'openkit_entry_kind', path),
+    id: knowledgePageId,
+    // General OKF pages project into the existing Workspace entry view without adding managed metadata to their bytes.
+    kind: stringFrontmatterField(parsed.document, 'openkit_entry_kind') ?? 'project-context',
     title: requiredFrontmatterString(parsed.document, 'title', path),
     content: trimCanonicalMarkdownBody(parsed.document.body),
     ...(sourceReferences && sourceReferences.length > 0 ? { sourceReferences } : {}),
@@ -1749,28 +1707,19 @@ export function listKnowledgePageIds(pagesRoot: string, prefix = ''): string[] {
 }
 
 /**
- * Loads owned protocol knowledge pages.
+ * Projects the current immutable notebook into the existing protocol entry view.
  *
  * @param workspaceRoot Published workspace root.
  * @returns Knowledge entries in file-name order.
  */
-function loadKnowledge(workspaceRoot: string): KnowledgeEntry[] {
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const entries: KnowledgeEntry[] = [];
-
-  for (const knowledgePageId of listKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const content = readCanonicalTextFile(path);
-    const parsed = parseOkfDocument({ path, content });
-    const id = parsed.document ? stringFrontmatterField(parsed.document, 'openkit_entry_id') : null;
-
-    if (!id) {
-      continue;
-    }
-    entries.push(parseOwnedKnowledgeEntry(path, knowledgePageId, content));
-  }
-
-  return entries;
+export function readWorkspaceKnowledgeEntries(workspaceRoot: string): KnowledgeEntry[] {
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  const revision = notebook.publishedRevision();
+  return Object.entries(notebook.readRevision(revision).files)
+    .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
+    .map(([path, content]) => parseOwnedKnowledgeEntry(path, path.slice(0, -3), content));
 }
 
 /**
@@ -1790,7 +1739,10 @@ export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalReco
   return [
     '---',
     'type: "proposal"',
-    'operation: "create"',
+    'operation: "notebook-change"',
+    `owner_scope: ${JSON.stringify(proposal.ownerScope)}`,
+    `base_revision: ${JSON.stringify(proposal.baseRevision)}`,
+    `candidate_revision: ${JSON.stringify(proposal.candidateRevision)}`,
     `knowledge_page_id: ${JSON.stringify(proposal.knowledgePageId)}`,
     `content_digest: ${JSON.stringify(proposal.contentDigest)}`,
     `source_references: ${JSON.stringify(proposal.sourceReferences)}`,
@@ -1800,7 +1752,7 @@ export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalReco
     `producer: ${JSON.stringify(proposal.producer)}`,
     `created_at: ${JSON.stringify(proposal.createdAt)}`,
     '---',
-    proposal.canonicalPageBytes,
+    proposal.rationale,
   ].join('\n');
 }
 
@@ -1834,7 +1786,7 @@ function loadKnowledgeProposals(
       const confidenceValue = parsed.document.frontmatter.confidence;
       if (
         parsed.document.frontmatter.type !== 'proposal' ||
-        parsed.document.frontmatter.operation !== 'create' ||
+        parsed.document.frontmatter.operation !== 'notebook-change' ||
         parsed.document.frontmatter.review_required !== true ||
         sourceReferences === null ||
         typeof producerValue !== 'object' ||
@@ -1844,12 +1796,35 @@ function loadKnowledgeProposals(
         throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
       }
 
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+      });
+      const candidateRevision = requiredFrontmatterString(
+        parsed.document,
+        'candidate_revision',
+        path
+      );
+      const baseRevision = requiredFrontmatterString(parsed.document, 'base_revision', path);
+      const knowledgePageId = requiredFrontmatterString(parsed.document, 'knowledge_page_id', path);
+      const candidate = notebook.retainedCandidate(id);
+      if (
+        candidate.revision !== candidateRevision ||
+        candidate.parentRevision !== baseRevision ||
+        candidate.metadata.authority.kind !== 'proposal' ||
+        candidate.metadata.authority.proposalId !== id
+      )
+        throw new Error('Knowledge Proposal retained candidate is unavailable.');
+      const canonicalPageBytes =
+        notebook.readRevision(candidateRevision).files[`${knowledgePageId}.md`];
       const proposal = KnowledgeProposalRecordSchema.parse({
         id,
         workspaceId,
-        operation: 'create',
-        knowledgePageId: requiredFrontmatterString(parsed.document, 'knowledge_page_id', path),
-        canonicalPageBytes: parsed.document.body,
+        operation: 'notebook-change',
+        ownerScope: parsed.document.frontmatter.owner_scope,
+        baseRevision,
+        candidateRevision,
+        knowledgePageId,
+        canonicalPageBytes,
         contentDigest: requiredFrontmatterString(parsed.document, 'content_digest', path),
         sourceReferences,
         rationale: requiredFrontmatterString(parsed.document, 'rationale', path),
@@ -1860,7 +1835,11 @@ function loadKnowledgeProposals(
       const candidateDigest = `sha256:${createHash('sha256')
         .update(proposal.canonicalPageBytes, 'utf8')
         .digest('hex')}`;
-      if (proposal.contentDigest !== candidateDigest) {
+      if (
+        proposal.contentDigest !== candidateDigest ||
+        !isDeepStrictEqual(proposal.ownerScope, { kind: 'workspace', workspaceId }) ||
+        !isDeepStrictEqual(candidate.metadata.producer, proposal.producer)
+      ) {
         throw new Error(`Knowledge proposal ${id} does not preserve its canonical bytes.`);
       }
       Object.defineProperty(proposal, retainedProposal, {
@@ -2152,9 +2131,9 @@ function classifyThreadVisibilityCutover(
   kind: WorkspaceRecord['kind'],
   threadId: string
 ): Pick<Thread, 'visibility' | 'privateOwnerUserId'> {
-  if (kind === 'quick-chat') {
+  if (kind === 'personal') {
     const workspaceId = basename(workspaceRoot);
-    const candidates = new Set([LOCAL_USER_ID, ...listDirectoryNames(join(dataRoot, 'users'))]);
+    const candidates = new Set(listDirectoryNames(join(dataRoot, 'users')));
     if (existsSync(coreDbPath(dataRoot))) {
       const database = new Database(coreDbPath(dataRoot), { readonly: true, fileMustExist: true });
       try {
@@ -2165,11 +2144,7 @@ function classifyThreadVisibilityCutover(
       }
     }
     for (const userId of candidates) {
-      const namespace =
-        userId === LOCAL_USER_ID
-          ? ''
-          : `u_${createHash('sha256').update(userId).digest('hex').slice(0, 12)}_`;
-      if (workspaceId === `ws_${namespace}quick_chat`)
+      if (isEntityId('usr', userId) && workspaceId === deriveEntityId('ws', ['quick_chat', userId]))
         return { visibility: 'private', privateOwnerUserId: userId };
     }
     throw new Error('Thread visibility cutover requires the canonical Quick Chat owner.');
@@ -2229,13 +2204,14 @@ function parseCanonicalThreadRecord(
   }
   if ('visibility' in raw || 'privateOwnerUserId' in raw)
     throw new Error('Thread visibility requires its required feature.');
-  const predecessor = ThreadSchema.parse({
-    ...raw,
-    entryPath: enveloped ? raw.entryPath : 'conversation',
-    visibility: 'private',
-    privateOwnerUserId: 'cutover-validation-only',
-  });
-  const { visibility: _visibility, privateOwnerUserId: _owner, ...oldPayload } = predecessor;
+  // Validate predecessor fields and digest without audience authority; apply all Thread refinements after classification.
+  const oldPayload = z
+    .object(ThreadSchema.shape)
+    .omit({ visibility: true, privateOwnerUserId: true })
+    .parse({
+      ...raw,
+      entryPath: enveloped ? raw.entryPath : 'conversation',
+    });
   if (
     envelope &&
     envelope.contentDigest !==
@@ -2383,10 +2359,7 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
       ...(captureCoverage ? { captureCoverage } : {}),
       ...(previousRaw?.requiredFeatures ? { requiredFeatures: previousRaw.requiredFeatures } : {}),
     },
-    TurnReaderSchema.safeExtend({
-      captureCoverage: CaptureCoverageBindingSchema.optional(),
-      requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
-    })
+    TurnFileMetadataSchema
   );
   const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
   const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
@@ -2567,7 +2540,6 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     const threadRoot = join(root, thread.id);
     const turnsRoot = join(threadRoot, 'turns');
     const threadTurns = records.turns.filter((turn) => turn.threadId === thread.id);
-    const expectedTurnIds = new Set(threadTurns.map((turn) => turn.id));
 
     if (!lstatSync(threadRoot, { throwIfNoEntry: false })) {
       publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
@@ -2582,7 +2554,7 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     const previousBytes = existsSync(threadPath) ? readCanonicalFile(threadPath) : undefined;
     const previous =
       previousBytes === undefined ? undefined : JSON.parse(previousBytes.toString('utf8'));
-    removeStaleDirectories(turnsRoot, expectedTurnIds);
+    // An absent cache candidate does not delete retained history. Thread or Workspace deletion owns it.
 
     for (const turn of threadTurns) {
       const turnRoot = join(turnsRoot, turn.id);
@@ -2605,17 +2577,23 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
  * Serializes one direct user-authored Knowledge Page into its canonical bytes.
  *
  * @param entry Knowledge entry projection to serialize.
+ * @param ownerScope Exact trusted owner of the new page, independent of its bytes.
  * @returns Exact canonical Markdown bytes written to the Knowledge Store.
  */
-export function serializeUserAuthoredKnowledgePage(entry: KnowledgeEntry): string {
+export function serializeUserAuthoredKnowledgePage(
+  entry: KnowledgeEntry,
+  ownerScope: KnowledgeOwnerScope
+): string {
+  const scope = KnowledgeOwnerScopeSchema.parse(ownerScope);
   return [
     '---',
     'type: "KnowledgePage"',
     `title: ${JSON.stringify(entry.title)}`,
-    `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+    `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
     'openkit_status: "active"',
     'status: "stable"',
-    'scope: "workspace"',
+    `scope: ${JSON.stringify(scope)}`,
+    `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
     `source_refs: ${JSON.stringify(entry.sourceReferences ?? [])}`,
     'review_state: "user-authored"',
     'sensitivity: "normal"',
@@ -2656,56 +2634,26 @@ export function updateUserAuthoredKnowledgePage(
 }
 
 /**
- * Writes owned knowledge pages, proposals, and reviews.
+ * Writes separate Knowledge Proposal and Review owners without changing notebook content.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
- * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
  */
-function writeKnowledge(
-  workspaceRoot: string,
-  records: WorkspaceFileRecords,
-  exactKnowledgePageBytes: ReadonlyMap<string, string>
-): void {
-  const schemaRoot = join(workspaceRoot, 'knowledge', 'schema');
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
+function writeKnowledge(workspaceRoot: string, records: WorkspaceFileRecords): void {
   const proposalsRoot = join(workspaceRoot, 'knowledge', 'proposals');
   const reviewsRoot = join(workspaceRoot, 'knowledge', 'reviews');
-  const expectedPages = new Set(records.knowledge.map((entry) => entry.id));
   const expectedProposals = new Set(records.knowledgeProposals.map((record) => `${record.id}.md`));
   const expectedReviews = new Set(
     records.knowledgeProposalReviews.map((record) => `${record.proposalId}.json`)
   );
-  const proposalsById = new Map(records.knowledgeProposals.map((record) => [record.id, record]));
-  const acceptedProposalByPage = new Map<string, KnowledgeProposalRecord>();
   const reviewsByProposal = new Map<string, KnowledgeProposalReviewRecord[]>();
-
-  for (const review of records.knowledgeProposalReviews) {
+  for (const review of records.knowledgeProposalReviews)
     reviewsByProposal.set(review.proposalId, [
       ...(reviewsByProposal.get(review.proposalId) ?? []),
       review,
     ]);
-    if (review.decision === 'accepted') {
-      const proposal = proposalsById.get(review.proposalId);
-      if (proposal) {
-        acceptedProposalByPage.set(proposal.knowledgePageId, proposal);
-      }
-    }
-  }
-
-  ensureCanonicalDirectory(schemaRoot);
-  ensureCanonicalDirectory(pagesRoot);
   ensureCanonicalDirectory(proposalsRoot);
   ensureCanonicalDirectory(reviewsRoot);
-  const schemaPath = join(schemaRoot, 'workspace-schema.yaml');
-  const schemaMetadata = lstatSync(schemaPath, { throwIfNoEntry: false });
-
-  if (schemaMetadata) {
-    assertCanonicalRegularFile(schemaPath);
-  } else {
-    writeFileAtomic(schemaPath, DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT);
-  }
-
   removeStaleFiles(proposalsRoot, expectedProposals, '.md');
   const existingProposals = new Map(
     loadKnowledgeProposals(workspaceRoot, records.workspace.id).map((proposal) => [
@@ -2730,67 +2678,13 @@ function writeKnowledge(
       serializeKnowledgeProposalRecord(proposal)
     );
   }
-
   removeStaleFiles(reviewsRoot, expectedReviews, '.json');
-  for (const [proposalId, decisions] of reviewsByProposal) {
+  for (const [proposalId, decisions] of reviewsByProposal)
     writeOwnedDescriptiveJson(
       join(reviewsRoot, `${proposalId}.json`),
       { proposalId, workspaceId: decisions[0]!.workspaceId, decisions },
       KnowledgeProposalReviewFileSchema
     );
-  }
-
-  for (const knowledgePageId of listKnowledgePageIds(pagesRoot)) {
-    if (expectedPages.has(knowledgePageId)) {
-      continue;
-    }
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
-    if (parsed.document && stringFrontmatterField(parsed.document, 'openkit_entry_id')) {
-      deleteWorkspaceKnowledgeRecord(workspaceRoot, knowledgePageId);
-    }
-  }
-
-  for (const entry of records.knowledge) {
-    const exactContent = exactKnowledgePageBytes.get(entry.id);
-    const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, entry.id, true);
-    if (!path) {
-      throw new Error(`Knowledge Page parent could not be created: ${entry.id}.`);
-    }
-    if (exactContent !== undefined) {
-      writeFileAtomic(path, exactContent);
-      continue;
-    }
-
-    const proposal = acceptedProposalByPage.get(entry.id);
-    const currentPageBytes = readWorkspaceKnowledgePage(workspaceRoot, entry.id);
-    let currentEntry: KnowledgeEntry | null = null;
-    if (currentPageBytes !== null) {
-      try {
-        currentEntry = parseOwnedKnowledgeEntry(
-          `knowledge/pages/${entry.id}.md`,
-          entry.id,
-          currentPageBytes
-        );
-      } catch {
-        currentEntry = null;
-      }
-    }
-    const proposalEntry = proposal
-      ? parseOwnedKnowledgeEntry(
-          `knowledge/pages/${proposal.knowledgePageId}.md`,
-          proposal.knowledgePageId,
-          proposal.canonicalPageBytes
-        )
-      : null;
-    const content =
-      currentEntry && knowledgeEntriesEqual(currentEntry, entry)
-        ? currentPageBytes!
-        : proposalEntry && knowledgeEntriesEqual(proposalEntry, entry) && currentPageBytes === null
-          ? proposal!.canonicalPageBytes
-          : serializeUserAuthoredKnowledgePage(entry);
-    writeFileAtomic(path, content);
-  }
 }
 
 /** Normalizes a Proposal without losing its already verified immutable source bytes. */
@@ -2801,42 +2695,6 @@ function parseRetainedKnowledgeProposal(value: unknown): KnowledgeProposalRecord
     if (retained) Object.defineProperty(proposal, retainedProposal, { value: retained });
   }
   return proposal;
-}
-
-/** Ensures the bundle-root v0.2 index without maintaining human-authored navigation. */
-function ensureRootKnowledgeIndex(pagesRoot: string): void {
-  const path = join(pagesRoot, 'index.md');
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-  if (!metadata) {
-    const links = [
-      ...listFileNames(pagesRoot)
-        .filter((name) => name.endsWith('.md') && name !== 'index.md' && name !== 'log.md')
-        .map((name) => [name.slice(0, -3), name] as const),
-      ...listDirectoryNames(pagesRoot).map((name) => [name, `${name}/`] as const),
-    ].map(
-      ([title, target]) =>
-        `* [${title.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]')}](<${encodeURI(target)}>)`
-    );
-    writeFileAtomic(
-      path,
-      `---\nokf_version: "0.2"\n---\n# Knowledge${links.length > 0 ? `\n\n${links.join('\n')}` : ''}\n`
-    );
-    return;
-  }
-  assertCanonicalRegularFile(path);
-  const content = readCanonicalTextFile(path);
-  if (!content.startsWith('---')) {
-    const candidate = `---\nokf_version: "0.2"\n---\n${content}`;
-    if (!parseOkfDocument({ path: 'knowledge/pages/index.md', content: candidate }).ok) {
-      throw new Error('Knowledge bundle root index body is invalid.');
-    }
-    writeFileAtomic(path, candidate);
-    return;
-  }
-  const parsed = parseOkfDocument({ path: 'knowledge/pages/index.md', content });
-  if (!parsed.ok || parsed.document.frontmatter.okf_version !== '0.2') {
-    throw new Error('Knowledge bundle root index must declare okf_version "0.2".');
-  }
 }
 
 /**

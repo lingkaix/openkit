@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   finishCapabilityCall,
@@ -46,7 +47,11 @@ afterEach(async () => {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'worker-raw-output-'));
   roots.push(root);
-  const scope = { workspaceId: randomUUID(), threadId: randomUUID(), turnId: randomUUID() };
+  const scope = {
+    workspaceId: allocateEntityId('ws'),
+    threadId: allocateEntityId('th'),
+    turnId: allocateEntityId('tu'),
+  };
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
   applyScopedMigrations(db);
@@ -217,7 +222,7 @@ describe('durable atomic Worker raw output accounting', () => {
   it('refuses legacy, corrupt and gapped proof without resetting observed bytes', () => {
     const { db, identity, scope, newCall } = fixture();
     expect(() =>
-      observeWorkerRawOutput(db, { ...identity, turnId: randomUUID(), bytePosition: 2 })
+      observeWorkerRawOutput(db, { ...identity, turnId: allocateEntityId('tu'), bytePosition: 2 })
     ).toThrow('requires recovery');
     expect(() =>
       observeWorkerRawOutput(db, { ...identity, fromBytePosition: 1, bytePosition: 2 })

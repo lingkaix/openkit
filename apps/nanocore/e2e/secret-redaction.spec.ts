@@ -41,8 +41,17 @@ describe('nanocore e2e secret redaction', () => {
     await harness.stop();
     harness = await startNanoCoreHarness({ dataRoot: harness.dataRoot });
 
+    const notebookResponse = await postJson(
+      `${harness.baseUrl}/api/app/operations/knowledge.list`,
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+    );
+    expect(notebookResponse.status).toBe(200);
+    const notebook = (await notebookResponse.json()) as { notebookRevision: string };
+
     const created = await postJson(`${harness.baseUrl}/api/app/operations/knowledge.create`, {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      baseRevision: notebook.notebookRevision,
+      knowledgePageId: 'safe-knowledge',
       kind: 'project-context',
       title: 'Safe knowledge',
       content: 'No provider secrets should appear here.',
@@ -53,13 +62,13 @@ describe('nanocore e2e secret redaction', () => {
     const diagnostics = await fetchJson(`${harness.baseUrl}/api/diagnostics`);
     const workspaceResponse = await postJson(
       `${harness.baseUrl}/api/app/operations/workspace.dashboard`,
-      { workspaceId: 'ws_demo' }
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
     );
     expect(workspaceResponse.status).toBe(200);
     const workspace = await workspaceResponse.json();
     const knowledgeResponse = await postJson(
       `${harness.baseUrl}/api/app/operations/knowledge.list`,
-      { workspaceId: 'ws_demo' }
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
     );
     expect(knowledgeResponse.status).toBe(200);
     const knowledge = await knowledgeResponse.json();

@@ -31,6 +31,7 @@ import type {
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
+import { requireCoordinatorGoal } from './runtime/goal-owner.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
@@ -118,7 +119,15 @@ function bindOperationInput(
   }
   const args = { ...input };
   if (context.kind === 'worker' && !Object.hasOwn(bindings, 'requestId')) delete args.requestId;
-  return { ...args, ...bindings };
+  const logicalBindings =
+    context.kind === 'coordinator'
+      ? Object.fromEntries(
+          Object.entries(bindings).filter(([field]) =>
+            Object.hasOwn(definition.inputSchema.shape, field)
+          )
+        )
+      : bindings;
+  return { ...args, ...logicalBindings };
 }
 
 /** Validates complete logical input before request-store selection or native admission; only declared field names may be published. */
@@ -221,11 +230,31 @@ export function admitOperation(
       scope = { kind: 'server' };
       break;
     case 'authorized-workspace-set':
-      if (entry.kind !== 'public' || !coreDb || !admission) throw denied();
-      scope = {
-        kind: 'authorized-workspace-set',
-        workspaceIds: authorizedWorkspaceSet(coreDb, entry.actor, definition, admission),
-      };
+      if (!coreDb || !admission) throw denied();
+      if (entry.kind === 'coordinator') {
+        if (
+          !store ||
+          !dependencies.repositoryWorkspaceDb ||
+          admission.isClosed(entry.workspaceId) ||
+          !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition)
+        )
+          throw denied();
+        const db = dependencies.repositoryWorkspaceDb(entry.workspaceId);
+        try {
+          requireCoordinatorGoal(store, db, entry);
+          requireThreadAudience(store, coreDb, entry, entry.workspaceId, entry.threadId);
+        } finally {
+          db.sqlite.close();
+        }
+        // Restrict candidates before the Agent owner reads content, even for an administrator.
+        scope = { kind: 'authorized-workspace-set', workspaceIds: [entry.workspaceId] };
+      } else {
+        if (entry.kind !== 'public') throw denied();
+        scope = {
+          kind: 'authorized-workspace-set',
+          workspaceIds: authorizedWorkspaceSet(coreDb, entry.actor, definition, admission),
+        };
+      }
       break;
     case 'body-workspace':
     case 'opaque-child-workspace':
@@ -258,9 +287,7 @@ export function admitOperation(
               resolvedLineage =
                 readAutomationOperationLineage(
                   dependencies.automationStore,
-                  selector(input, definition.scope.childField),
-                  actorRef.id,
-                  entry.kind === 'public' && isCurrentDeploymentAdministrator(coreDb, entry.actor)
+                  selector(input, definition.scope.childField)
                 ) ?? undefined;
               if (!resolvedLineage) throw denied();
               workspaceId = resolvedLineage.workspaceId;

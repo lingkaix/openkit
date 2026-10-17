@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { prepareMaterialSourceInput } from './material-source-files.js';
 import type { WorkerContextPackageMaterialSelectionInput } from './worker-context-package.js';
 
 /** Captures an existing immutable revision without inventing a lifecycle for the projection. */
 function fixture(content: string) {
   const selection: WorkerContextPackageMaterialSelectionInput = {
-    materialId: 'material-with-opaque-id',
-    revisionId: 'revision-with-opaque-id',
+    materialId: testEntityId('mat', 'original-material'),
+    revisionId: testEntityId('mrev', 'original-material-revision'),
     parentRevisionId: null,
     mediaType: 'text/markdown',
     contentDigest: sha256(Buffer.from(content)),
@@ -18,7 +19,7 @@ function fixture(content: string) {
   };
   let allowed = true;
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     selection,
     assertCurrent: () => {
       if (!allowed) throw new Error('Source access revoked.');
@@ -40,7 +41,7 @@ it('delivers one bounded excerpt while retaining and streaming every original by
   expect(prepared.source.source).toEqual({
     kind: 'material',
     reference: {
-      scopeId: 'material/workspace/ws_demo',
+      scopeId: 'material/workspace/ws_00000000-0000-7000-8000-000000000001',
       objectId: state.selection.materialId,
     },
     revisionId: state.selection.revisionId,
@@ -56,7 +57,7 @@ it('delivers one bounded excerpt while retaining and streaming every original by
   expect(prepared.source.projection).toMatchObject({
     kind: 'excerpt',
     originalSnapshotPath:
-      'originals/materials/material-with-opaque-id/revision-with-opaque-id/payload',
+      `originals/materials/${state.selection.materialId}/${state.selection.revisionId}/payload`,
     deliveredDigest: sha256(Buffer.from(delivered)),
     representationDigest: sha256(Buffer.from(content)),
     truncated: true,

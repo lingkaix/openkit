@@ -1,8 +1,15 @@
 import {
+  ArtifactIdSchema,
   ArtifactMediaTypeSchema,
+  ArtifactReviewIdSchema,
+  ItemIdSchema,
   MAX_ARTIFACT_FILE_BYTES,
   MaterialIdSchema,
+  MaterialRevisionIdSchema,
+  ThreadIdSchema,
   TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { ArtifactReviewDecisionSchema } from './action-center.js';
@@ -30,11 +37,11 @@ const materialMediaTypeSchema = z.enum(['text/markdown', 'text/plain']);
 /** Closed public projection of one Workspace Material. */
 export const WorkspaceMaterialViewSchema = z
   .object({
-    workspaceId: opaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
     materialId: MaterialIdSchema,
     title: z.string().min(1),
     kind: materialKindSchema,
-    currentRevisionId: opaqueIdSchema.nullable(),
+    currentRevisionId: MaterialRevisionIdSchema.nullable(),
     sensitivity: materialSensitivitySchema,
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
@@ -44,10 +51,10 @@ export const WorkspaceMaterialViewSchema = z
 /** Closed public summary of one immutable Workspace Material revision. */
 export const WorkspaceMaterialRevisionSummarySchema = z
   .object({
-    workspaceId: opaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
     materialId: MaterialIdSchema,
-    revisionId: opaqueIdSchema,
-    parentRevisionId: opaqueIdSchema.nullable(),
+    revisionId: MaterialRevisionIdSchema,
+    parentRevisionId: MaterialRevisionIdSchema.nullable(),
     mediaType: materialMediaTypeSchema,
     contentDigest: contentDigestSchema,
     authorId: opaqueIdSchema,
@@ -64,7 +71,7 @@ export const WorkspaceMaterialRevisionViewSchema = WorkspaceMaterialRevisionSumm
 export const ArtifactMaterialProposalSchema = z
   .object({
     materialId: MaterialIdSchema,
-    baseRevisionId: opaqueIdSchema,
+    baseRevisionId: MaterialRevisionIdSchema,
     baseContentDigest: contentDigestSchema,
   })
   .strict();
@@ -72,21 +79,21 @@ export const ArtifactMaterialProposalSchema = z
 /** Closed public projection of one version-keyed Artifact Review. */
 export const ArtifactReviewViewSchema = z
   .object({
-    workspaceId: opaqueIdSchema,
-    reviewId: opaqueIdSchema,
-    artifactId: opaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    reviewId: ArtifactReviewIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
     contentDigest: contentDigestSchema,
-    sourceThreadId: opaqueIdSchema.nullable(),
-    sourceTurnId: opaqueIdSchema.nullable(),
+    sourceThreadId: ThreadIdSchema.nullable(),
+    sourceTurnId: TurnIdSchema.nullable(),
     sourceAgentId: opaqueIdSchema.nullable(),
     materialProposal: ArtifactMaterialProposalSchema.nullable(),
     decision: ArtifactReviewDecisionSchema.nullable(),
     decisionActorId: opaqueIdSchema.nullable(),
     feedback: z.string().min(1).nullable(),
     decidedAt: TimestampSchema.nullable(),
-    followUpTurnId: opaqueIdSchema.nullable(),
-    appliedMaterialRevisionId: opaqueIdSchema.nullable(),
+    followUpTurnId: TurnIdSchema.nullable(),
+    appliedMaterialRevisionId: MaterialRevisionIdSchema.nullable(),
     createdAt: TimestampSchema,
   })
   .strict()
@@ -153,13 +160,13 @@ export const ArtifactReviewViewSchema = z
 export const ThreadMaterialActiveDeliverySchema = z
   .object({
     state: z.enum(['queued', 'applied']),
-    pendingTurnId: opaqueIdSchema,
+    pendingTurnId: TurnIdSchema,
     requestId: requestIdSchema,
-    contentItemId: opaqueIdSchema,
+    contentItemId: ItemIdSchema,
     goalId: opaqueIdSchema,
-    activeTurnId: opaqueIdSchema,
+    activeTurnId: TurnIdSchema,
     materialId: MaterialIdSchema,
-    revisionId: opaqueIdSchema,
+    revisionId: MaterialRevisionIdSchema,
     contentDigest: contentDigestSchema,
   })
   .strict();
@@ -167,14 +174,14 @@ export const ThreadMaterialActiveDeliverySchema = z
 /** Singular Material projection for one Thread. */
 export const ThreadMaterialViewSchema = z
   .object({
-    workspaceId: opaqueIdSchema,
-    threadId: opaqueIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
     resource: WorkspaceMaterialViewSchema,
     currentRevision: WorkspaceMaterialRevisionSummarySchema.nullable(),
     inclusionState: z.enum(['included', 'excluded']),
-    latestQueuedRevisionId: opaqueIdSchema.nullable(),
-    lastWorkerSeenRevisionId: opaqueIdSchema.nullable(),
-    currentTurnRevisionId: opaqueIdSchema.nullable(),
+    latestQueuedRevisionId: MaterialRevisionIdSchema.nullable(),
+    lastWorkerSeenRevisionId: MaterialRevisionIdSchema.nullable(),
+    currentTurnRevisionId: MaterialRevisionIdSchema.nullable(),
     activeDelivery: ThreadMaterialActiveDeliverySchema.nullable(),
   })
   .strict();
@@ -223,7 +230,7 @@ export const ImportWorkspaceArtifactRequestSchema = z
 /** Response payload after importing one immutable Workspace Artifact version. */
 export const ImportWorkspaceArtifactResponseSchema = z
   .object({
-    artifactId: opaqueIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.literal(1),
   })
   .strict();
@@ -239,10 +246,10 @@ export const IntroduceWorkspaceArtifactRequestSchema = z
 /** Response payload after introducing one exact Artifact version into a Thread. */
 export const IntroduceWorkspaceArtifactResponseSchema = z
   .object({
-    artifactId: opaqueIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
-    turnId: opaqueIdSchema,
-    itemId: opaqueIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema,
   })
   .strict();
 
@@ -270,11 +277,11 @@ export const SubmitArtifactReviewDecisionRequestSchema = z
 /** Response payload after deciding one version-keyed Artifact Review. */
 export const SubmitArtifactReviewDecisionResponseSchema = z
   .object({
-    reviewId: opaqueIdSchema,
-    artifactId: opaqueIdSchema,
+    reviewId: ArtifactReviewIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
     decision: ArtifactReviewDecisionSchema,
-    followUpTurnId: opaqueIdSchema.nullable(),
+    followUpTurnId: TurnIdSchema.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -307,7 +314,7 @@ export const CreateWorkspaceMaterialResponseSchema = z
 export const SaveWorkspaceMaterialRevisionRequestSchema = z
   .object({
     requestId: requestIdSchema,
-    expectedRevisionId: opaqueIdSchema.nullable(),
+    expectedRevisionId: MaterialRevisionIdSchema.nullable(),
     contentDigest: contentDigestSchema,
     content: z.string(),
   })
@@ -317,7 +324,7 @@ export const SaveWorkspaceMaterialRevisionRequestSchema = z
 export const SaveWorkspaceMaterialRevisionResponseSchema = z
   .object({
     materialId: MaterialIdSchema,
-    revisionId: opaqueIdSchema,
+    revisionId: MaterialRevisionIdSchema,
   })
   .strict();
 
@@ -333,7 +340,7 @@ export const BindThreadMaterialRequestSchema = z
 export const BindThreadMaterialResponseSchema = z
   .object({
     materialId: MaterialIdSchema,
-    threadId: opaqueIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('bound'),
   })
   .strict();
@@ -350,7 +357,7 @@ export const UnbindThreadMaterialRequestSchema = z
 export const UnbindThreadMaterialResponseSchema = z
   .object({
     materialId: MaterialIdSchema,
-    threadId: opaqueIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('unbound'),
   })
   .strict();
@@ -361,7 +368,7 @@ export const ExcludeThreadMaterialRequestSchema = z
     requestId: requestIdSchema,
     expectedBindingState: z.literal('bound'),
     expectedInclusionState: z.literal('included'),
-    expectedQueuedRevisionId: opaqueIdSchema,
+    expectedQueuedRevisionId: MaterialRevisionIdSchema,
   })
   .strict();
 
@@ -369,7 +376,7 @@ export const ExcludeThreadMaterialRequestSchema = z
 export const ExcludeThreadMaterialResponseSchema = z
   .object({
     materialId: MaterialIdSchema,
-    threadId: opaqueIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('excluded'),
   })
   .strict();
@@ -387,7 +394,7 @@ export const RestoreThreadMaterialRequestSchema = z
 export const RestoreThreadMaterialResponseSchema = z
   .object({
     materialId: MaterialIdSchema,
-    threadId: opaqueIdSchema,
+    threadId: ThreadIdSchema,
     outcome: z.literal('included'),
   })
   .strict();
@@ -472,3 +479,45 @@ export type ExcludeThreadMaterialResponse = z.infer<typeof ExcludeThreadMaterial
 export type RestoreThreadMaterialRequest = z.infer<typeof RestoreThreadMaterialRequestSchema>;
 /** Response payload after restoring one bound Material to worker context. */
 export type RestoreThreadMaterialResponse = z.infer<typeof RestoreThreadMaterialResponseSchema>;
+
+/** One paged, validated file member of a disposable exact-source ZIP snapshot. */
+export const ArtifactFolderEntrySchema = z
+  .object({
+    relativePath: z.string().min(1).max(4096),
+    byteLength: z.number().int().nonnegative().max(4_000_000_000),
+    contentDigest: contentDigestSchema,
+  })
+  .strict();
+
+/** Truthful cache availability; the original Artifact remains its sole durable source. */
+export const ArtifactFolderSnapshotResponseSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ready'),
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      processor: z.literal('openkit.zip.v1'),
+      representationDigest: contentDigestSchema,
+      expandedBytes: z.number().int().nonnegative().max(4_000_000_000),
+      fileCount: z.number().int().nonnegative().max(100_000),
+      directoryCount: z.number().int().nonnegative().max(131_072),
+      entries: z.array(ArtifactFolderEntrySchema).max(100),
+      nextOffset: z.number().int().nonnegative().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('unavailable'),
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      reason: z.enum(['not_extracted', 'extraction_failed']),
+    })
+    .strict(),
+]);
+
+/** Bounded source-bound folder projection used by API and Web consumers. */
+export type ArtifactFolderSnapshotResponse = z.infer<typeof ArtifactFolderSnapshotResponseSchema>;

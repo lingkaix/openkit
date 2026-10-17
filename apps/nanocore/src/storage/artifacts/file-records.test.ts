@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import type { ArtifactSchema } from '@openkit/protocol';
+import { type ArtifactSchema, allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { publishArtifactFileRecord } from '../workspace-file-records.js';
@@ -28,7 +28,8 @@ afterEach(async () => {
 async function fixture(bytes = Buffer.from('00ffc328800a', 'hex')) {
   const root = await mkdtemp(join(tmpdir(), 'artifact-file-record-'));
   roots.push(root);
-  const workspaceRoot = join(root, 'workspaces', 'workspace');
+  const workspaceId = allocateEntityId('ws');
+  const workspaceRoot = join(root, 'workspaces', workspaceId);
   await mkdir(workspaceRoot, { recursive: true });
   const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const admission = new FileStorageAdmission(root, () => 0n);
@@ -45,10 +46,10 @@ async function fixture(bytes = Buffer.from('00ffc328800a', 'hex')) {
     expectedByteLength: bytes.length,
     expectedDigest: contentDigest,
   });
-  const identity = { workspaceRoot, artifactId: 'fixture-artifact', version: 1 };
+  const identity = { workspaceRoot, artifactId: allocateEntityId('ar'), version: 1 };
   const artifact: z.infer<typeof ArtifactSchema> = {
     id: identity.artifactId,
-    workspaceId: 'workspace',
+    workspaceId,
     threadId: null,
     turnId: null,
     kind: 'file',
@@ -64,7 +65,7 @@ async function fixture(bytes = Buffer.from('00ffc328800a', 'hex')) {
       sourceKind: 'direct-import',
       sourceId: 'import',
       sourceDigest: contentDigest,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: 'import',
       recordedAt: '2026-10-16T00:00:00.000Z',
     },

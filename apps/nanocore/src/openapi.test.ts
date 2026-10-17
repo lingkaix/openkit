@@ -15,6 +15,7 @@ import {
 import {
   AgentIdSchema,
   ArtifactIdSchema,
+  allocateEntityId,
   PROTOCOL_VERSION,
   ThreadIdSchema,
   TurnIdSchema,
@@ -34,6 +35,7 @@ import {
 } from './openapi.js';
 import { validateAppOpenApiDocument } from './openapi-validation.js';
 import { createApp } from './test-support/app.js';
+import { testEntityId } from './test-support/entity-ids.js';
 
 const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
   APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())
@@ -226,7 +228,7 @@ describe('app api openapi projection', () => {
   it('does not publish caller provider or model authority for Internal Core Role requests', () => {
     const schemas = createAppOpenApiDocument().components.schemas;
 
-    for (const name of ['chat.quick.input', 'conversation.submit.input'] as const) {
+    for (const name of ['conversation.submit.input'] as const) {
       expect(schemas[name]).toMatchObject({ additionalProperties: false });
       expect(schemas[name]).not.toHaveProperty('properties.providerId');
       expect(schemas[name]).not.toHaveProperty('properties.model');
@@ -427,30 +429,7 @@ describe('app api openapi projection', () => {
       expect(document.components.schemas).not.toHaveProperty(schemaName);
     }
     expect(document.paths['/api/app/quick-chat']).toBeUndefined();
-    expect(document.paths['/api/app/operations/chat.quick']?.post).toMatchObject({
-      operationId: 'chat.quick',
-      tags: ['chat'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/chat.quick.input',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/chat.quick.output',
-              },
-            },
-          },
-        },
-      },
-    });
+    expect(document.paths['/api/app/operations/chat.quick']).toBeUndefined();
     expect(document.paths['/api/app/operations/worker.list']?.post).toMatchObject({
       operationId: 'worker.list',
       responses: {
@@ -656,7 +635,7 @@ describe('app api openapi projection', () => {
           completedAt: '2026-07-05T00:00:02.000Z',
           errorCode: null,
           family: 'llm',
-          id: 'cap_openapi',
+          id: 'cap_00000000-0000-7afc-8ec6-deb0b2cc5976',
           operation: 'responses.create',
           redactionClass: 'metadata-only',
           startedAt: '2026-07-05T00:00:01.000Z',
@@ -664,11 +643,11 @@ describe('app api openapi projection', () => {
           summary: null,
           threadId: null,
           turnId: null,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
       usageRecords: [],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const ajv = new Ajv2020({ allErrors: true, strict: false });
     ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu);
@@ -1150,11 +1129,10 @@ describe('app api openapi projection', () => {
     const result = upload!.responses['201']!.content!['application/json']!.schema;
     const ajv = new Ajv2020({ strict: false });
     const validateResult = ajv.compile(result);
-    expect(validateResult({ artifactId: 'ar_exact', artifactVersion: 1 })).toBe(true);
-    expect(validateResult({ artifactId: 'ar_exact', artifactVersion: 2 })).toBe(false);
-    expect(validateResult({ artifactId: 'ar_exact', artifactVersion: 1, content: 'inline' })).toBe(
-      false
-    );
+    const artifactId = allocateEntityId('ar');
+    expect(validateResult({ artifactId, artifactVersion: 1 })).toBe(true);
+    expect(validateResult({ artifactId, artifactVersion: 2 })).toBe(false);
+    expect(validateResult({ artifactId, artifactVersion: 1, content: 'inline' })).toBe(false);
     const download = document.paths['/api/app/operations/artifact.download']?.get;
     expect(download).toMatchObject({
       operationId: 'artifact.download',
@@ -1554,7 +1532,9 @@ describe('app api openapi projection', () => {
   it('preserves preparation and recovery constraints in runtime JSON Schema and generated OpenAPI', () => {
     const document = createAppOpenApiDocument();
     const digest = `sha256:${'a'.repeat(64)}`;
-    const common = { administrationThreadId: 'thread_admin' };
+    const common = {
+      administrationThreadId: testEntityId('th', 'th_00000000-0000-79b7-9009-e76cfeceddee'),
+    };
     const preparation = {
       ...common,
       configuration: { fileId: 'agents/codex.agent.jsonc', expectedRevision: digest },
@@ -1563,7 +1543,11 @@ describe('app api openapi projection', () => {
     };
     const recovery = {
       ...common,
-      recoverFrom: { artifactId: 'artifact_authored', artifactVersion: 1, contentDigest: digest },
+      recoverFrom: {
+        artifactId: testEntityId('ar', 'ar_00000000-0000-765f-9e4b-f410cda62de6'),
+        artifactVersion: 1,
+        contentDigest: digest,
+      },
     };
     const ajv = new Ajv2020({ strict: false, validateFormats: false });
     for (const [operation, body] of [
@@ -1798,7 +1782,7 @@ describe('app api openapi projection', () => {
   });
 
   it('pins one representative for every Workspace resolver and each non-Workspace exception', () => {
-    expect(PUBLIC_OPERATION_ACCESS['chat.quick']).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['administration.conversation-submit']).toMatchObject({
       mutating: true,
       policyOperation: 'turn.run',
       resolver: 'actor-quick-chat-workspace',

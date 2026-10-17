@@ -218,7 +218,8 @@ describe('Codex App Server adapter', () => {
       const headers = new Headers();
       for (const [key, value] of Object.entries(nativeRequest.headers))
         if (typeof value === 'string') headers.set(key, value);
-      codexInferenceRuntimeHintMapping.map(headers, parsed);
+      const hint = codexInferenceRuntimeHintMapping.map(headers, parsed);
+      expect(hint?.requestKind).toBe(metadata.request_kind);
       const admitted = { ...parsed };
       for (const field of codexInferenceRuntimeHintMapping.bodyFields) delete admitted[field];
       requests.push({ kind: metadata.request_kind, body: admitted });
@@ -803,11 +804,11 @@ describe('Codex App Server adapter', () => {
     const startupFailures: unknown[] = [];
     let started = false;
     const lineage = {
-      agentSessionId: 'as_codex',
+      agentSessionId: 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
       packageSnapshotId: 'pkg_codex',
-      threadId: 'th_codex',
-      turnId: 'turn_codex',
-      workspaceId: 'ws_codex',
+      threadId: 'th_00000000-0000-73d3-bcd1-416c0245cba5',
+      turnId: 'tu_00000000-0000-7e9f-8e6f-02b73d71a9bb',
+      workspaceId: 'ws_00000000-0000-7276-a6bd-b7156d05fdfd',
     };
     await writeFile(
       packagePath,
@@ -1068,7 +1069,7 @@ describe('Codex App Server adapter', () => {
         response,
         { namespace: 'functions', name: 'exec_command' },
         JSON.stringify({
-          cmd: `printf shell-capability-proof; printf workspace-capability-proof > ${JSON.stringify(target)}`,
+          cmd: `printf shell-capability-proof; printf ws_00000000-0000-73b5-b4a1-bf0852ad394a > ${JSON.stringify(target)}`,
           yield_time_ms: 1000,
         })
       );
@@ -1082,7 +1083,7 @@ describe('Codex App Server adapter', () => {
       (await (await session.startTurn(turnInput(roots, [], 'Run the workspace command.'))).settled)
         .status
     ).toBe('completed');
-    expect(await readFile(target, 'utf8')).toBe('workspace-capability-proof');
+    expect(await readFile(target, 'utf8')).toBe('ws_00000000-0000-73b5-b4a1-bf0852ad394a');
     expect(inference.bodies.at(-1)).toContain('shell-capability-proof');
     expect(inference.bodies.at(-1)).toContain('function_call_output');
   }, 30_000);
@@ -1150,7 +1151,7 @@ describe('Codex App Server adapter', () => {
     expect(await session.nativeHandle()).toEqual({ state: 'pending' });
     expect(session.childState()).toBe('running');
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
-    const renamed = `[mcp_servers.user_alpha]\nenabled = false\n${entry}`;
+    const renamed = `[mcp_servers.usr_00000000-0000-78d3-bbee-9aa249ff6790]\nenabled = false\n${entry}`;
     await writeFile(join(roots.state, 'config.toml'), renamed);
     expect(
       (await (await session.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))).settled)
@@ -1220,6 +1221,147 @@ describe('Codex App Server adapter', () => {
       .settled;
     expect(later.status).toBe('completed');
     expect(later.diagnostics?.nativeConfiguration).toBe(result.diagnostics?.nativeConfiguration);
+  }, 30_000);
+
+  it.each([
+    'accepted',
+    'drain-failed',
+    'final-refused',
+  ] as const)('retains a real native protected-binding warning through shared Turn closeout: %s', async (delivery) => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const gateway = await mcpServer();
+    const authored = '[mcp_servers.alpha]\nenabled = false\nurl = "http://127.0.0.1:9/authored"\n';
+    await writeFile(join(roots.state, 'config.toml'), authored);
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+      })
+    );
+    sessions.push(session);
+    const lineage = {
+      agentSessionId: 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
+      packageSnapshotId: 'pkg_codex',
+      threadId: 'th_00000000-0000-73d3-bcd1-416c0245cba5',
+      turnId: 'tu_00000000-0000-7e9f-8e6f-02b73d71a9bb',
+      workspaceId: 'ws_00000000-0000-7276-a6bd-b7156d05fdfd',
+    };
+    const packagePath = join(roots.control, 'warning-package.json');
+    await writeFile(
+      packagePath,
+      JSON.stringify({
+        capabilities: {
+          mode: 'enabled',
+          protocol: 'openkit-worker-capability-v1',
+          routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+        },
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
+          mode: 'sandbox-integration',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+        },
+        llm: { mode: 'gateway', preferredLogicalModelId: route().model, routes: [route()] },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
+        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: roots.work } },
+        extensions: { openkit: { turnInput: 'invoke alpha tool' } },
+        supply: { skills: [], mcpServers: [{ id: 'alpha' }] },
+      })
+    );
+    const finalStatuses: Array<{
+      sequence: number;
+      body: {
+        status: string;
+        stopReason: string;
+        diagnostics?: Record<string, string>;
+      };
+    }> = [];
+    const drainFailure = new Error('Synthetic Integration drain failed.');
+    const execution = runResidentTurn({
+      adapterId: 'codex',
+      credentialValues: [INFERENCE_SECRET, CAPABILITY_SECRET],
+      environment: {},
+      integration: {
+        ready: Promise.resolve(),
+        bindTurnRouteTokens() {},
+        clearTurnRouteTokens() {},
+        async drainTurn() {
+          if (delivery === 'drain-failed') throw drainFailure;
+          return 0;
+        },
+      } as unknown as SandboxIntegrationClient,
+      fetch: async (url, init) => {
+        if (url.endsWith('/final-status')) {
+          finalStatuses.push(JSON.parse(init?.body ?? '{}'));
+          if (delivery === 'final-refused')
+            return {
+              ok: false,
+              status: 403,
+              text: async () => JSON.stringify({ code: 'worker_control_revoked' }),
+            };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+        };
+      },
+      lineage,
+      onStarted() {},
+      packagePath,
+      resident: session,
+      runtimeEnvironmentNames: new Set(),
+      nativeEnvironment: null,
+      sessionDir: join(roots.control, 'warning-output'),
+      signal: new AbortController().signal,
+      tokens: {
+        controlToken: 'synthetic-control',
+        inferenceToken: 'synthetic-inference',
+        capabilityToken: 'synthetic-capability',
+      },
+      turnDirectory: join(roots.control, 'warning-turn'),
+    });
+    if (delivery === 'accepted')
+      await expect(execution).resolves.toMatchObject({ status: 'completed' });
+    else if (delivery === 'drain-failed') await expect(execution).rejects.toBe(drainFailure);
+    else
+      await expect(execution).rejects.toMatchObject({
+        code: 'worker_control_revoked',
+        status: 403,
+      });
+    expect(finalStatuses).toHaveLength(1);
+    const terminal = finalStatuses[0]!.body;
+    expect(terminal).toMatchObject({
+      status: delivery === 'drain-failed' ? 'failed' : 'completed',
+      stopReason: delivery === 'drain-failed' ? 'error' : 'completed',
+      diagnostics: {
+        nativeConfiguration: 'Warning: managed MCP entry "alpha" overrides authored HTTP entry.',
+      },
+    });
+    const records = (await readFile(join(roots.control, 'warning-output', 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(records.at(-1)?.sequence).toBe(finalStatuses[0]!.sequence);
+    expect(records.at(-1)?.event.data).toEqual(terminal);
+    expect(inference.bodies.at(-1)).toContain('tool-done');
+    expect(gateway.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
+    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+    for (const secret of [INFERENCE_SECRET, CAPABILITY_SECRET]) {
+      expect(JSON.stringify(finalStatuses)).not.toContain(secret);
+      expect(JSON.stringify(records)).not.toContain(secret);
+    }
   }, 30_000);
 
   it('bounds assistant text and redacts a diagnostic prefix', () => {
@@ -1487,7 +1629,7 @@ describe('Codex App Server adapter', () => {
       openInput(roots, {
         ...bindings,
         resumeReference: reference,
-        agentSessionId: 'as_effective_successor',
+        agentSessionId: 'as_00000000-0000-7676-bc56-917f2bb67701',
       }),
       {
         binaryPath: vendorBinary,
@@ -1768,7 +1910,7 @@ Authorization = "Bearer retained-capability-auth"
     const successor = await testAdapter.openSession(
       openInput(roots, {
         resumeReference: reference,
-        agentSessionId: 'as_config_successor',
+        agentSessionId: 'as_00000000-0000-73b4-9218-bee8c780d47a',
         inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
         capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
       })
@@ -1980,19 +2122,23 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     }
   }, 30_000);
 
-  it('preserves retained config and unknown files through open and close', async () => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const config = '# retained config marker\n';
-    await writeFile(join(roots.state, 'config.toml'), config);
-    await writeFile(join(roots.state, 'unknown.data'), 'retained');
-    const session = await testAdapter.openSession(openInput(roots));
-    sessions.push(session);
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
-    await session.close();
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
-    expect(await readFile(join(roots.state, 'unknown.data'), 'utf8')).toBe('retained');
-  });
+  it(
+    'preserves retained config and unknown files through open and close',
+    async () => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const config = '# retained config marker\n';
+      await writeFile(join(roots.state, 'config.toml'), config);
+      await writeFile(join(roots.state, 'unknown.data'), 'retained');
+      const session = await testAdapter.openSession(openInput(roots));
+      sessions.push(session);
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
+      await session.close();
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
+      expect(await readFile(join(roots.state, 'unknown.data'), 'utf8')).toBe('retained');
+    },
+    LIFECYCLE_DEFAULTS.nativeOpenMs + LIFECYCLE_DEFAULTS.nativeStopMs
+  );
 
   it('refuses unimplemented App Server provenance before native Turn work', async () => {
     const roots = await tempRoots();
@@ -2205,7 +2351,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
   it('stops a Turn on unqualified native errors and preserves pre-native refusal', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const refused = spawnScriptedCodex('turn-refused');
+    const refused = spawnScriptedCodex('tu_00000000-0000-7eb4-95e8-3f9483ed62e1');
     trackChild(refused);
     const refusedPid = refused.pid ?? 0;
     const refusedSession = await openCodexResidentSession(openInput(roots), {
@@ -2224,7 +2370,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     expect(refusedSession.childState()).toBe('absent');
     expect(processIsGone(refusedPid)).toBe(true);
 
-    const missing = spawnScriptedCodex('turn-missing');
+    const missing = spawnScriptedCodex('tu_00000000-0000-7372-9cc2-2110ff1e46dc');
     trackChild(missing);
     const missingPid = missing.pid ?? 0;
     const missingRoots = await tempRoots();
@@ -2376,7 +2522,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
       openInput(otherRoots, {
         inferenceBaseUrl: input.loopback.inferenceBaseUrl,
         capabilityBaseUrl: input.loopback.capabilityBaseUrl,
-        agentSessionId: 'as_other',
+        agentSessionId: 'as_00000000-0000-7436-9246-ac6dd3ca3fe4',
       })
     );
     sessions.push(other);
@@ -2443,7 +2589,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     const idleRequests = mcp.requestCount;
     const successor = await testAdapter.openSession({
       ...input,
-      agentSessionId: 'as_successor',
+      agentSessionId: 'as_00000000-0000-7d64-be09-6490df81a852',
       controlRoot: successorControl,
       loopback: {
         ...input.loopback,
@@ -2494,7 +2640,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     await expect(
       testAdapter.openSession({
         ...input,
-        agentSessionId: 'as_bad',
+        agentSessionId: 'as_00000000-0000-7b98-96b8-96ffa0be3631',
         controlRoot: roots.control,
         resumeReference: new TextEncoder().encode('00000000-0000-0000-0000-000000000000'),
       })
@@ -3598,7 +3744,7 @@ function openInput(
   environment: Record<string, string> = {}
 ): WorkerResidentOpenInput {
   return {
-    agentSessionId: overrides.agentSessionId ?? 'as_codex',
+    agentSessionId: overrides.agentSessionId ?? 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
     controlRoot: roots.control,
     environment: {
       PATH: process.env.PATH ?? '',
@@ -3681,8 +3827,8 @@ function childThatNeverExits(initializeError = true): ChildProcessWithoutNullStr
 function spawnScriptedCodex(
   mode:
     | 'resume-error'
-    | 'turn-missing'
-    | 'turn-refused'
+    | 'tu_00000000-0000-7372-9cc2-2110ff1e46dc'
+    | 'tu_00000000-0000-7eb4-95e8-3f9483ed62e1'
     | 'terminal-failed'
     | 'terminal-same-chunk'
     | 'terminal-before'
@@ -3738,24 +3884,24 @@ process.stdin.on('data', (chunk) => {
       send({ id: msg.id, error: { code: -32000, message: 'no rollout found' } });
       continue;
     }
-    if (msg.method === 'turn/start' && mode === 'turn-missing') {
+    if (msg.method === 'turn/start' && mode === 'tu_00000000-0000-7372-9cc2-2110ff1e46dc') {
       send({ id: msg.id, result: { turn: { status: 'inProgress', items: [] } } });
       continue;
     }
-    if (msg.method === 'turn/start' && mode === 'turn-refused') {
+    if (msg.method === 'turn/start' && mode === 'tu_00000000-0000-7eb4-95e8-3f9483ed62e1') {
       send({ id: msg.id, error: { code: -32602, message: 'turn refused' } });
     }
     if (msg.method === 'turn/start' && mode === 'broken-after-accept') {
-      send({ id: msg.id, result: { turn: { id: 'turn-scripted', status: 'inProgress', items: [] } } });
+      send({ id: msg.id, result: { turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: 'inProgress', items: [] } } });
       setTimeout(() => process.stdout.write('null\\n'), 20);
     }
     if (msg.method === 'turn/start' && mode === 'exit-during-accept') process.exit(1);
     if (msg.method === 'turn/start' && (mode.startsWith('terminal-') || mode === 'additive-before-terminal')) {
-      const accepted = { id: msg.id, result: { turn: { id: 'turn-scripted', status: 'inProgress', items: [] } } };
+      const accepted = { id: msg.id, result: { turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: 'inProgress', items: [] } } };
       const item = mode === 'terminal-unknown-item' ? { type: 'futureCoreItem', text: 'bad' } : { type: 'agentMessage', text: mode === 'terminal-malformed-assistant' ? 7 : 'ok' };
       const terminal = { method: 'turn/completed', params: {
         ...(mode === 'terminal-missing-thread' ? {} : { threadId: mode === 'terminal-wrong-thread' ? 7 : 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }),
-        turn: { id: 'turn-scripted', status: mode === 'terminal-failed' ? 'failed' : mode === 'terminal-unknown-status' ? 'futureStatus' : mode === 'terminal-in-progress' ? 'inProgress' : 'completed', items: [item] }
+        turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: mode === 'terminal-failed' ? 'failed' : mode === 'terminal-unknown-status' ? 'futureStatus' : mode === 'terminal-in-progress' ? 'inProgress' : 'completed', items: [item] }
       }};
       const a = JSON.stringify(accepted) + '\\n';
       const t = JSON.stringify(terminal) + '\\n';

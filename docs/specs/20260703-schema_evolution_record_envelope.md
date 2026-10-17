@@ -228,11 +228,14 @@ The implementation includes package tests for unknown optional field tolerance, 
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
 | `openkit.work-observations.v1` | active | Turn-scoped work observations, restricted content publication and exact portable reference closure. |
 | `openkit.thread-entry.v1` | active | Thread records preserve the immutable server-authored conversation or administration entry path. |
+| `openkit.knowledge-git-notebook.v1` | active | Notebook Git revisions own page content, exact-base publication and retained history. |
+| `openkit.knowledge-owner-scope.v1` | active | Knowledge records retain exact User, Workspace or Server ownership and source restrictions. |
 | `openkit.thread-visibility.v1` | active | Thread records require explicit private or Workspace audience and exact private ownership. |
 | `session.concurrent-turns` | active | A Harness may process active Turns concurrently only across distinct single-flight AgentSessions and Threads. |
 | `vault.injection.query-param` | active | Vault injection may place secret references into query parameters. |
 | `workspace.generative-kernel.v1` | active | Workspace export includes Light App identity, admitted definitions, native records, and app-local audit. |
 | `workspace.generative-ui.native-v1` | active | Workspace export includes immutable native Generative UI presentations and their Item references. |
+| `workspace.recurring-triggers.v1` | active | Workspace export includes inert recurring definitions and exact occurrence and expired-range history. |
 | `workspace.mount.fuse` | active | Workspace input requires a FUSE-style mount implementation. |
 | `workspace.writeback.external` | active | Workspace writes are committed through an external writeback mechanism. |
 
@@ -240,9 +243,9 @@ The `session.concurrent-turns` identifier describes a Harness capability and nev
 
 The initial Generative contracts register `workspace.generative-kernel.v1` and `workspace.generative-ui.native-v1` in the shared required-feature registry. Writers emit them only when the corresponding portable families are present. The native UI marker does not admit HTML delegates, saved-view lifecycles, or executable Plugin resources.
 
-The accepted recurring design selects `workspace.recurring-triggers.v1` for definitions, exact occurrence/expired-range history and its inert portable projection. Like the Generative identifiers above, it must enter the shared runtime registry and executable/spec projection when implemented; current writers cannot emit it. Unknown required recurring semantics fail closed rather than importing active execution or silently omitting history.
+The accepted recurring design selects `workspace.recurring-triggers.v1` for definitions, exact occurrence/expired-range history and its inert portable projection. The shared runtime registry and executable/spec projection register it for the implemented portable families. Unknown required recurring semantics fail closed rather than importing active execution or silently omitting history.
 
-The Personal Assistant design selects `openkit.thread-visibility.v1`, `openkit.knowledge-owner-scope.v1` and `openkit.knowledge-git-notebook.v1` for private Thread audiences, scoped Knowledge ownership and Git-backed exact notebook/mutation revisions. These are design-selected, Not Started identifiers. Register them and update the existing executable/spec projection before their families become writable/importable; current writers cannot emit them. Dependent export manifests carry the required features so unsupported readers reject before disclosing private content or weakening mutation guards.
+The Personal Assistant and Notebook implementations register `openkit.thread-visibility.v1`, `openkit.knowledge-owner-scope.v1` and `openkit.knowledge-git-notebook.v1` for private Thread audiences, scoped Knowledge ownership and Git-backed exact notebook/mutation revisions. The shared runtime registry and this table register the implemented record families. Writers emit the applicable markers, and dependent export manifests carry them so unsupported readers reject before disclosing private content or weakening mutation guards. Registration does not establish complete User/Server Memory lifecycle implementation.
 
 ## Extension Namespaces
 

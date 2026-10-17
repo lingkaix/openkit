@@ -233,10 +233,8 @@ export function Composer({
     !pending &&
     environmentReady &&
     Boolean(value.trim() || selectedArtifacts.length || files.length) &&
-    (!targetCatalog ||
-      (selectedTarget?.availability === 'available' &&
-        (!logicalModelId ||
-          selectedTarget.logicalModels.some((model) => model.id === logicalModelId))));
+    selectedTarget?.availability === 'available' &&
+    (!logicalModelId || selectedTarget.logicalModels.some((model) => model.id === logicalModelId));
 
   /** Starts a fresh request after acceptance without resetting agent/model preferences. */
   const clearSentDraft = useCallback(() => {
@@ -435,6 +433,7 @@ export function Composer({
         <fieldset className="mt-2 flex flex-wrap gap-1.5 border-0 p-0" aria-label="Selected files">
           {files.map((file, ordinal) => (
             <AriaButton
+              // biome-ignore lint/suspicious/noArrayIndexKey: duplicate files retain distinct positions in the ordered draft.
               key={ordinal}
               type="button"
               isDisabled={disabled}
@@ -587,6 +586,7 @@ export function Composer({
             </section>
             <ul aria-label="Files to share">
               {fileHandoff?.draft.files?.map((file, ordinal) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: this read-only list displays the immutable draft order.
                 <li key={ordinal}>{file.name}</li>
               ))}
               {fileHandoff?.artifacts.map((artifact) => (

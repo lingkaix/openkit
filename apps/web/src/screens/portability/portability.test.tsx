@@ -38,18 +38,26 @@ const VAULT_MATERIAL_BASE64 = btoa(
 );
 const ASCII_VAULT_MATERIAL = 'vault-material';
 const ASCII_VAULT_MATERIAL_BASE64 = btoa(ASCII_VAULT_MATERIAL);
-const WORKSPACE = { id: 'ws1', name: 'Market research', kind: 'general' } as const;
-const WORKSPACE_B = { id: 'ws2', name: 'Second workspace', kind: 'general' } as const;
-const EXPORTED_ABSENT_ID = 'ws_exported_absent';
-const QUICK_CHAT_WORKSPACE = {
-  id: 'ws_quick_chat',
-  name: 'Quick Chat',
-  kind: 'quick-chat',
+const WORKSPACE = {
+  id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  name: 'Market research',
+  kind: 'general',
 } as const;
-const EXPORT_ID = 'wsexp_1';
-const EXPORT_ID_B = 'wsexp_2';
-const LOCAL_SOURCE_DEPLOYMENT_ID = 'dep_local';
-const EXTERNAL_SOURCE_DEPLOYMENT_ID = 'dep_source';
+const WORKSPACE_B = {
+  id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+  name: 'Second workspace',
+  kind: 'general',
+} as const;
+const EXPORTED_ABSENT_ID = 'ws_00000000-0000-73f4-8366-3b35ef8cc8de';
+const PERSONAL_WORKSPACE = {
+  id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+  name: 'Personal',
+  kind: 'personal',
+} as const;
+const EXPORT_ID = 'wsexp_00000000-0000-7569-b23e-40ca1402f214';
+const EXPORT_ID_B = 'wsexp_00000000-0000-7a9c-98db-a5d2c980ee99';
+const LOCAL_SOURCE_DEPLOYMENT_ID = 'dep_00000000-0000-7562-9a88-afe7e367ea27';
+const EXTERNAL_SOURCE_DEPLOYMENT_ID = 'dep_00000000-0000-7737-8fe7-61ca07c79d45';
 const WORKSPACE_EXPORT_FILE_BYTES = serializeExportJson({
   id: WORKSPACE.id,
   name: WORKSPACE.name,
@@ -65,7 +73,11 @@ const ARCHIVE_BYTES = new Uint8Array([40, 181, 47, 253]);
 const ARCHIVE_FILE_NAME = `${WORKSPACE.id}-${EXPORT_ID}.openkit-workspace.tar.zst`;
 const SECOND_ARCHIVE_FILE_NAME = `${WORKSPACE_B.id}-${EXPORT_ID_B}.openkit-workspace.tar.zst`;
 const CONTENT_INVENTORY = [
-  { path: 'records/workspace-record.json', digest: FILE_DIGEST, bytes: FILE_BYTES },
+  {
+    path: 'records/ws_00000000-0000-70f9-a923-618c488a4651.json',
+    digest: FILE_DIGEST,
+    bytes: FILE_BYTES,
+  },
 ];
 const CONTENT_DIGEST = 'sha256:0cd2fa898af279bb1179b690909444b73031fa36d246fa4037346c598ca2c9f5';
 const DRY_RUN_REQUEST = WorkspaceImportDryRunRequestSchema.parse({
@@ -107,7 +119,7 @@ const MANIFEST = {
   sourceDeploymentId: LOCAL_SOURCE_DEPLOYMENT_ID,
   workspaceId: WORKSPACE.id,
   exportCreatedAt: TIMESTAMP,
-  exportFormatVersion: 2 as const,
+  exportFormatVersion: 3 as const,
   contentInventory: CONTENT_INVENTORY,
 };
 
@@ -133,13 +145,13 @@ const CHANGED_EXPORT_MANIFEST = {
 const VERIFICATION = {
   fileCount: 1,
   totalBytes: FILE_BYTES,
-  checkedFiles: ['records/workspace-record.json'],
+  checkedFiles: ['records/ws_00000000-0000-70f9-a923-618c488a4651.json'],
 };
 
 const COLLISION = {
   status: 'collides' as const,
   workspaceId: WORKSPACE.id,
-  suggestedWorkspaceId: 'ws_imported_ws1',
+  suggestedWorkspaceId: 'ws_00000000-0000-7ca9-b277-954ac43692f1',
 };
 
 const AVAILABLE_COLLISION = {
@@ -168,7 +180,7 @@ const EXPORT_RESULT = WorkspaceExportResponseSchema.parse({
   manifest: MANIFEST,
   fileCount: 1,
   totalBytes: FILE_BYTES,
-  checkedFiles: ['records/workspace-record.json'],
+  checkedFiles: ['records/ws_00000000-0000-70f9-a923-618c488a4651.json'],
 });
 
 const DRY_RUN = WorkspaceImportDryRunResponseSchema.parse({
@@ -316,7 +328,7 @@ const UNBOUND_REFERENCE = {
   backendKind: 'encrypted-file' as const,
   currentVersion: 0,
   ownerScope: 'workspace' as const,
-  referenceId: 'vault_ref_imported',
+  referenceId: 'vault_00000000-0000-767a-8491-216d8363929d',
   secretKind: 'repository-credential',
   status: 'unbound' as const,
   workspaceId: WORKSPACE.id,
@@ -324,7 +336,7 @@ const UNBOUND_REFERENCE = {
 
 const UNBOUND_SAME_KIND = {
   ...UNBOUND_REFERENCE,
-  referenceId: 'vault_ref_imported_peer',
+  referenceId: 'vault_00000000-0000-7527-84d6-f93e78bfd616',
 };
 
 const REBOUND_REFERENCE = {
@@ -475,7 +487,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -490,7 +502,7 @@ function makeClient(
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -499,8 +511,12 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
-function renderApp(path: string, client: CoreClient) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** Renders production routes with a caller-selected query freshness policy. */
+function renderApp(
+  path: string,
+  client: CoreClient,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
@@ -786,7 +802,8 @@ function expectVaultUiAbsent(client: CoreClient) {
 async function proveUserScopedImport(
   user: ReturnType<typeof userEvent.setup>,
   client: CoreClient,
-  queryClient: QueryClient
+  queryClient: QueryClient,
+  expectWorkspaceSurface: () => void = () => expectVaultUiAbsent(client)
 ) {
   expect(DRY_RUN_AVAILABLE.manifest.sourceDeploymentId).toBe(EXTERNAL_SOURCE_DEPLOYMENT_ID);
   expect(DRY_RUN_AVAILABLE.sourceWorkspaceId).not.toBe(WORKSPACE.id);
@@ -794,7 +811,7 @@ async function proveUserScopedImport(
   expectReviewIdentities(DRY_RUN_AVAILABLE, AVAILABLE_DRY_RUN_REQUEST);
   expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-  expectVaultUiAbsent(client);
+  expectWorkspaceSurface();
   await reviewImport(user, EXPORTED_ABSENT_ID, EXPORT_ID);
   await waitFor(() =>
     expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
@@ -815,7 +832,7 @@ async function proveUserScopedImport(
   await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
   expect(client.app.dryRunWorkspaceArchiveImport).not.toHaveBeenCalled();
   expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-  expectVaultUiAbsent(client);
+  expectWorkspaceSurface();
   assertNoLeakedInternals(queryClient);
 }
 
@@ -846,10 +863,10 @@ describe('Portability', () => {
     });
     expect(isSurfaceLive(surface!)).toBe(true);
 
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_stale' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-72a2-a815-916a363a02e2' });
     const listWorkspaces = vi
       .fn()
-      .mockRejectedValueOnce(new Error('workspace-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-7b14-af76-27f19ffc88fa failure'))
       .mockResolvedValue({
         items: [WORKSPACE].map((workspace) => ({
           membershipStatus: 'active' as const,
@@ -857,7 +874,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -869,7 +886,7 @@ describe('Portability', () => {
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeEnabled();
     const loadAlert = await screen.findByRole('alert');
     expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
-    expect(loadAlert).not.toHaveTextContent('workspace-private failure');
+    expect(loadAlert).not.toHaveTextContent('ws_00000000-0000-7b14-af76-27f19ffc88fa failure');
     expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Export workspace' })).not.toBeInTheDocument();
     expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
@@ -937,11 +954,11 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
-      .mockRejectedValueOnce(new Error('workspace-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-7b14-af76-27f19ffc88fa failure'))
       .mockResolvedValue({
         items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
           membershipStatus: 'active' as const,
@@ -949,7 +966,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -962,7 +979,7 @@ describe('Portability', () => {
     await queryClient.refetchQueries({ exact: true, queryKey: chatKeys.workspaces });
     const loadAlert = await screen.findByRole('alert');
     expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
-    expect(loadAlert).not.toHaveTextContent('workspace-private failure');
+    expect(loadAlert).not.toHaveTextContent('ws_00000000-0000-7b14-af76-27f19ffc88fa failure');
     expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
     expect(
@@ -990,7 +1007,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
@@ -1058,7 +1075,7 @@ describe('Portability', () => {
         membershipStatus: 'active' as const,
         accessCause: 'membership' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1115,7 +1132,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1221,7 +1238,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1565,7 +1582,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1707,7 +1724,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1750,16 +1767,16 @@ describe('Portability', () => {
     assertNoLeakedInternals(queryClient);
   });
 
-  it('keeps user-scoped import without export or Vault for Quick Chat', async () => {
+  it('exports the selected personal Workspace and keeps user import available', async () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
-      items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+      items: [PERSONAL_WORKSPACE].map((workspace) => ({
         membershipStatus: 'active' as const,
         accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1769,20 +1786,49 @@ describe('Portability', () => {
 
       operations: {
         'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
+        'vault.reference-list': vi
+          .fn()
+          .mockResolvedValue({ ...EMPTY_VAULT_B, workspaceId: PERSONAL_WORKSPACE.id }),
+        'workspace.export': vi.fn().mockResolvedValue({
+          ...EXPORT_RESULT,
+          workspaceId: PERSONAL_WORKSPACE.id,
+          manifest: {
+            ...MANIFEST,
+            workspaceId: PERSONAL_WORKSPACE.id,
+            lineage: { workspaceId: PERSONAL_WORKSPACE.id },
+          },
+        }),
         'workspace.list': listWorkspaces,
       },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
-    expect(await screen.findByText(QUICK_CHAT_WORKSPACE.name, { exact: true })).toBeInTheDocument();
+    expect(await screen.findByText(PERSONAL_WORKSPACE.name, { exact: true })).toBeInTheDocument();
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
     ).toBeInTheDocument();
     const main = screen.getByRole('main');
-    expect(main).toHaveTextContent(/select or create a project workspace/i);
+    expect(main).not.toHaveTextContent(/select or create a project workspace/i);
+    expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    await waitFor(() =>
+      expect(vi.mocked(client.operations['vault.reference-list']).mock.calls).toEqual([
+        [{ workspaceId: PERSONAL_WORKSPACE.id }],
+      ])
+    );
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeInTheDocument();
-    await proveUserScopedImport(user, client, queryClient);
+    await user.click(screen.getByRole('button', { name: 'Export workspace' }));
+    await waitFor(() =>
+      expect(vi.mocked(client.operations['workspace.export']).mock.calls).toEqual([
+        [{ workspaceId: PERSONAL_WORKSPACE.id }],
+      ])
+    );
+    expectDownloadArchiveLink(PERSONAL_WORKSPACE.id, EXPORT_ID);
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    assertNoLeakedInternals(queryClient);
   });
 
   it('keeps user-scoped import available when no Workspace is selected and does not describe it as selected-Workspace permission', async () => {
@@ -1794,7 +1840,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1822,6 +1868,164 @@ describe('Portability', () => {
     await proveUserScopedImport(user, client, queryClient);
   });
 
+  it.each([
+    401, 403,
+  ])('hides cached Vault references and rebind after a %s current read', async (status) => {
+    const referencesRead = vi
+      .fn()
+      .mockResolvedValueOnce(VAULT_LIST)
+      .mockRejectedValue(
+        new ApiCallError(status, 'portability-private failure', {
+          code: 'workspace_access_denied',
+          details: { secret: VAULT_MATERIAL },
+        })
+      );
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const { queryClient } = renderApp('/settings/portability', client);
+    expect(
+      await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId)
+    ).toBeEnabled();
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: settingsKeys.vault(WORKSPACE.id), exact: true });
+    });
+    const vault = screen.getByRole('region', { name: 'Vault references' });
+    expect(await within(vault).findByRole('alert')).toHaveTextContent(
+      /couldn't load vault references/i
+    );
+    expect.soft(queryClient.getQueryState(settingsKeys.vault(WORKSPACE.id))?.error).toMatchObject({
+      status,
+      code: 'workspace_access_denied',
+      message: "Couldn't load vault references.",
+      details: undefined,
+    });
+    expect
+      .soft(within(vault).queryByText(UNBOUND_REFERENCE.referenceId, { exact: true }))
+      .toBeNull();
+    expect.soft(within(vault).queryByRole('button', { name: /rebind/i })).toBeNull();
+    expect(within(vault).queryByLabelText('Vault material')).toBeNull();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
+  });
+
+  it('blocks an open rebind confirmation while the current Vault read is pending or denied', async () => {
+    const user = userEvent.setup();
+    const reread = createDeferred<typeof VAULT_LIST>();
+    const referencesRead = vi
+      .fn()
+      .mockResolvedValueOnce(VAULT_LIST)
+      .mockReturnValueOnce(reread.promise)
+      .mockResolvedValue(VAULT_LIST);
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const { queryClient } = renderApp('/settings/portability', client);
+    await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true });
+    await user.type(vaultMaterialInput(), VAULT_MATERIAL);
+    await user.click(rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId));
+    const dialog = await screen.findByRole('dialog', { name: /confirm rebind/i });
+    const confirm = within(dialog).getByRole('button', { name: 'Confirm' });
+    expect(confirm).toBeEnabled();
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = queryClient.refetchQueries({
+        queryKey: settingsKeys.vault(WORKSPACE.id),
+        exact: true,
+      });
+    });
+    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(2));
+    expect.soft(confirm).toBeDisabled();
+    await user.click(confirm);
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    await act(async () => {
+      reread.reject(privateFailure(403, 'workspace_access_denied'));
+      await refresh;
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn't load vault references/i);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText(UNBOUND_REFERENCE.referenceId, { exact: true })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true });
+    expect(vaultMaterialInput()).toHaveValue('');
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    assertNoLeakedInternals(queryClient);
+  });
+
+  it('hides cached Vault references after denial followed by a failed remount read', async () => {
+    const user = userEvent.setup();
+    const referencesRead = vi
+      .fn()
+      .mockResolvedValueOnce(VAULT_LIST)
+      .mockRejectedValueOnce(privateFailure(403, 'workspace_access_denied'))
+      .mockRejectedValue(privateFailure(500, 'unavailable'));
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/settings/portability', client, queryClient);
+    await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true });
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: settingsKeys.vault(WORKSPACE.id), exact: true });
+    });
+    await user.click(screen.getByRole('button', { name: 'Appearance' }));
+    await screen.findByRole('heading', { level: 1, name: 'Appearance' });
+    await user.click(screen.getByRole('button', { name: 'Portability' }));
+    await screen.findByRole('heading', { level: 1, name: 'Portability' });
+    // Refresh explicitly to isolate denial disposal from mount admission.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: settingsKeys.vault(WORKSPACE.id), exact: true });
+    });
+    expect(referencesRead.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const vault = screen.getByRole('region', { name: 'Vault references' });
+    expect(await within(vault).findByRole('alert')).toHaveTextContent(
+      /couldn't load vault references/i
+    );
+    expect
+      .soft(within(vault).queryByText(UNBOUND_REFERENCE.referenceId, { exact: true }))
+      .toBeNull();
+    expect(within(vault).queryByRole('button', { name: /rebind/i })).toBeNull();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+  });
+
+  it('does not expose a departed pending Vault read in a later Portability mount', async () => {
+    const user = userEvent.setup();
+    const departedRead = createDeferred<typeof VAULT_LIST>();
+    const currentRead = createDeferred<typeof VAULT_LIST>();
+    const referencesRead = vi
+      .fn()
+      .mockReturnValueOnce(departedRead.promise)
+      .mockReturnValue(currentRead.promise);
+    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    renderApp('/settings/portability', client, queryClient);
+    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Appearance' }));
+    await screen.findByRole('heading', { level: 1, name: 'Appearance' });
+    await user.click(screen.getByRole('button', { name: 'Portability' }));
+    await screen.findByRole('heading', { level: 1, name: 'Portability' });
+    await act(async () => {
+      departedRead.resolve(VAULT_LIST);
+      await departedRead.promise;
+    });
+    await waitFor(() => expect(referencesRead).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(UNBOUND_REFERENCE.referenceId, { exact: true })).toBeNull();
+    expect(screen.queryByRole('button', { name: /rebind/i })).toBeNull();
+    await act(async () => {
+      currentRead.resolve(VAULT_LIST);
+      await currentRead.promise;
+    });
+    expect(
+      await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId)
+    ).toBeEnabled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+  });
+
   it('keeps existing Portability UI plus stale or error indication when a background Workspace refetch fails', async () => {
     const listWorkspaces = vi
       .fn()
@@ -1832,11 +2036,11 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
-      .mockRejectedValueOnce(new Error('workspace-private failure'));
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-7b14-af76-27f19ffc88fa failure'));
     const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1860,7 +2064,9 @@ describe('Portability', () => {
       expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
       expect(screen.queryByLabelText('Loading')).not.toBeInTheDocument();
     });
-    expect(screen.queryByText('workspace-private failure')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('ws_00000000-0000-7b14-af76-27f19ffc88fa failure')
+    ).not.toBeInTheDocument();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -2034,7 +2240,7 @@ describe('Portability', () => {
 
   it.each([
     ['zero workspaces', [] as const],
-    ['only Quick Chat', [QUICK_CHAT_WORKSPACE]],
+    ['only a personal Workspace', [PERSONAL_WORKSPACE]],
   ] as const)('reaches user-scoped Portability from Settings with %s', async (_label, items) => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
@@ -2044,7 +2250,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -2072,8 +2278,19 @@ describe('Portability', () => {
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review import' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeInTheDocument();
-    expectVaultUiAbsent(client);
-    await proveUserScopedImport(user, client, queryClient);
+    const expectWorkspaceSurface = () => {
+      if (items.length === 0) expectVaultUiAbsent(client);
+      else {
+        expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+        expect(vi.mocked(client.operations['vault.reference-list']).mock.calls).toEqual([
+          [{ workspaceId: PERSONAL_WORKSPACE.id }],
+        ]);
+        expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+        expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+      }
+    };
+    await waitFor(expectWorkspaceSurface);
+    await proveUserScopedImport(user, client, queryClient, expectWorkspaceSurface);
   });
 
   it('keeps user import visible, usable, and unremounted while the project Vault query is pending', async () => {
@@ -2354,7 +2571,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
@@ -2471,7 +2688,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
@@ -2482,7 +2699,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -2611,7 +2828,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });

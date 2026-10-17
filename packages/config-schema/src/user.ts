@@ -1,4 +1,6 @@
+import { WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Personal preference for one internal Core role in one Workspace. */
@@ -13,7 +15,7 @@ export const UserInternalRolePreferenceSchema = z
 /** Personal preferences applied only while the User is in one Workspace. */
 export const UserWorkspacePreferenceSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     agentId: z.string().min(1).optional(),
     profileId: z.string().min(1).optional(),
     logicalModelId: z.string().min(1).optional(),
@@ -25,6 +27,7 @@ export const UserWorkspacePreferenceSchema = z
 export const UserConfigSchema = z
   .object({
     schemaVersion: z.literal(1),
+    knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     workspaces: z.array(UserWorkspacePreferenceSchema).default([]),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),

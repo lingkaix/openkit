@@ -12,10 +12,10 @@ describe('structured worker delegation requests', () => {
       objective: 'Fix the failing projection test.',
       acceptanceCriteria: ['The focused test passes.', 'No unrelated files are changed.'],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
-        { kind: 'artifact', id: 'ar_selected', artifactVersion: 7 },
-        { kind: 'artifact', id: 'ar_current' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000007', artifactVersion: 7 },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000008' },
       ],
       resources: [
         {
@@ -56,10 +56,10 @@ describe('structured worker delegation requests', () => {
       objective: 'Fix the failing projection test.',
       acceptanceCriteria: ['The focused test passes.', 'No unrelated files are changed.'],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
-        { kind: 'artifact', id: 'ar_selected', artifactVersion: 7 },
-        { kind: 'artifact', id: 'ar_current' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000007', artifactVersion: 7 },
+        { kind: 'artifact', id: 'ar_00000000-0000-7000-8000-000000000008' },
       ],
       resources: [
         {
@@ -100,9 +100,9 @@ describe('structured worker delegation requests', () => {
   it('allows positive Artifact versions only on Artifact context references', () => {
     const refs = StructuredWorkerDelegationRequestSchema.shape.contextRefs;
     expect(
-      refs.safeParse([{ kind: 'artifact', id: 'ar_selected', artifactVersion: 0 }]).success
+      refs.safeParse([{ kind: 'artifact', id: 'ar_00000000-0000-7000-8000-0000000003ea', artifactVersion: 0 }]).success
     ).toBe(false);
-    expect(refs.safeParse([{ kind: 'item', id: 'it_selected', artifactVersion: 7 }]).success).toBe(
+    expect(refs.safeParse([{ kind: 'item', id: 'it_00000000-0000-7000-8000-0000000003ea', artifactVersion: 7 }]).success).toBe(
       false
     );
   });
@@ -112,7 +112,7 @@ describe('structured worker delegation requests', () => {
       createStructuredWorkerDelegationRequest({
         objective: 'x',
         acceptanceCriteria: [],
-        contextRefs: [{ kind: 'workspace', id: 'ws_demo' }],
+        contextRefs: [{ kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' }],
         resources: [],
         expectedArtifacts: [],
         constraints: {

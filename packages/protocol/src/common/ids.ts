@@ -1,113 +1,172 @@
 import { z } from 'zod';
+import { entityIdPattern, isEntityId } from './entity-id.js';
+
+/** Canonical ws entity identity at a boundary that names its kind. */
+export const WorkspaceIdSchema = z.string().regex(entityIdPattern('ws'));
+
+/** Canonical th entity identity at a boundary that names its kind. */
+export const ThreadIdSchema = z.string().regex(entityIdPattern('th'));
+
+/** Canonical tu entity identity at a boundary that names its kind. */
+export const TurnIdSchema = z.string().regex(entityIdPattern('tu'));
+
+/** Canonical it entity identity at a boundary that names its kind. */
+export const ItemIdSchema = z.string().regex(entityIdPattern('it'));
+
+/** Canonical ar entity identity at a boundary that names its kind. */
+export const ArtifactIdSchema = z.string().regex(entityIdPattern('ar'));
 
 /**
- * Opaque protocol IDs are strings on the wire.
- */
-export const WorkspaceIdSchema = z.string().min(1);
-
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const ThreadIdSchema = z.string().min(1);
-
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const TurnIdSchema = z.string().min(1);
-
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const ItemIdSchema = z.string().min(1);
-
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const ArtifactIdSchema = z.string().min(1);
-
-/** Opaque identity owned by the existing Workspace Material records. */
-export const MaterialIdSchema = z.string().min(1);
-
-/**
- * Opaque protocol IDs are strings on the wire.
+ * Owner-defined selector or request identity; excluded from entity allocation.
  */
 export const ApprovalRequestIdSchema = z.string().min(1);
 
 /**
- * Opaque protocol IDs are strings on the wire.
+ * Owner-defined selector or request identity; excluded from entity allocation.
  */
 export const UserInputRequestIdSchema = z.string().min(1);
 
 /**
- * Opaque protocol IDs are strings on the wire.
+ * Owner-defined selector or request identity; excluded from entity allocation.
  */
 export const KnowledgeEntryIdSchema = z.string().min(1);
 
 /**
- * Opaque protocol IDs are strings on the wire.
+ * Owner-defined selector or request identity; excluded from entity allocation.
  */
 export const AgentIdSchema = z.string().min(1);
 
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const AgentSessionIdSchema = z.string().min(1);
+/** Canonical as entity identity at a boundary that names its kind. */
+export const AgentSessionIdSchema = z.string().regex(entityIdPattern('as'));
 
 /**
- * Opaque protocol IDs are strings on the wire.
+ * Owner-defined selector or request identity; excluded from entity allocation.
  */
 export const AgentProfileIdSchema = z.string().min(1);
 
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const CapabilityCallIdSchema = z.string().min(1);
+/** Canonical cap entity identity at a boundary that names its kind. */
+export const CapabilityCallIdSchema = z.string().regex(entityIdPattern('cap'));
 
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const PermissionDecisionIdSchema = z.string().min(1);
+/** Canonical pd entity identity at a boundary that names its kind. */
+export const PermissionDecisionIdSchema = z.string().regex(entityIdPattern('pd'));
 
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const VaultGrantIdSchema = z.string().min(1);
+/** Canonical grant entity identity at a boundary that names its kind. */
+export const VaultGrantIdSchema = z.string().regex(entityIdPattern('grant'));
 
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const UsageRecordIdSchema = z.string().min(1);
+/** Canonical use entity identity at a boundary that names its kind. */
+export const UsageRecordIdSchema = z.string().regex(entityIdPattern('use'));
 
-/**
- * Opaque protocol IDs are strings on the wire.
- */
-export const AuditEventIdSchema = z.string().min(1);
+/** Canonical aud entity identity at a boundary that names its kind. */
+export const AuditEventIdSchema = z.string().regex(entityIdPattern('aud'));
 
 /**
  * Idempotency key used to correlate mutating commands with resulting events.
  */
 export const RequestIdSchema = z.string().uuid();
 
-/** Checks the current User id form at a boundary that names that kind. */
+/** Checks canonical User identity through the shared kind owner. */
 export function isUserId(value: string): boolean {
-  // Better Auth's current generator emits 32 alphanumeric characters; local/product ids use user_.
-  return /^[A-Za-z0-9]{32}$/.test(value) || (value.startsWith('user_') && value.length > 5);
+  return isEntityId('usr', value);
 }
 
-/** Checks the current Workspace id form; the identifier rollout tightens this owner. */
+/** Checks canonical Workspace identity through the shared kind owner. */
 export function isWorkspaceId(value: string): boolean {
-  return value.startsWith('ws_') && value.length > 3;
+  return isEntityId('ws', value);
 }
 
-/** Checks the current Thread id form at a boundary that names that kind. */
+/** Checks canonical Thread identity through the shared kind owner. */
 export function isThreadId(value: string): boolean {
-  return value.startsWith('th_') && value.length > 3;
+  return isEntityId('th', value);
 }
 
-/** Checks the current Turn id form at a boundary that names that kind. */
+/** Checks canonical Turn identity through the shared kind owner. */
 export function isTurnId(value: string): boolean {
-  // Store-created Turns use tu_; active command-derived Turn owners use turn_.
-  return (
-    (value.startsWith('tu_') && value.length > 3) || (value.startsWith('turn_') && value.length > 5)
-  );
+  return isEntityId('tu', value);
 }
+
+/** Canonical usr entity identity at a boundary that names its kind. */
+export const UserIdSchema = z.string().regex(entityIdPattern('usr'));
+
+/** Canonical mat entity identity at a boundary that names its kind. */
+export const MaterialIdSchema = z.string().regex(entityIdPattern('mat'));
+
+/** Canonical mrev entity identity at a boundary that names its kind. */
+export const MaterialRevisionIdSchema = z.string().regex(entityIdPattern('mrev'));
+
+/** Canonical arev entity identity at a boundary that names its kind. */
+export const ArtifactReviewIdSchema = z.string().regex(entityIdPattern('arev'));
+
+/** Canonical kr entity identity at a boundary that names its kind. */
+export const KnowledgeReviewIdSchema = z.string().regex(entityIdPattern('kr'));
+
+/** Canonical auto entity identity at a boundary that names its kind. */
+export const AutomationIdSchema = z.string().regex(entityIdPattern('auto'));
+
+/** Canonical auth entity identity at a boundary that names its kind. */
+export const AuthenticationSessionIdSchema = z.string().regex(entityIdPattern('auth'));
+
+/** Canonical acct entity identity at a boundary that names its kind. */
+export const AuthenticationAccountIdSchema = z.string().regex(entityIdPattern('acct'));
+
+/** Canonical verif entity identity at a boundary that names its kind. */
+export const AuthenticationVerificationIdSchema = z.string().regex(entityIdPattern('verif'));
+
+/** Canonical tok entity identity at a boundary that names its kind. */
+export const AccessTokenIdSchema = z.string().regex(entityIdPattern('tok'));
+
+/** Canonical nhtok entity identity at a boundary that names its kind. */
+export const NanoHostTransportTokenIdSchema = z.string().regex(entityIdPattern('nhtok'));
+
+/** Canonical inv entity identity at a boundary that names its kind. */
+export const InvitationIdSchema = z.string().regex(entityIdPattern('inv'));
+
+/** Canonical dep entity identity at a boundary that names its kind. */
+export const DeploymentIdSchema = z.string().regex(entityIdPattern('dep'));
+
+/** Canonical ks entity identity at a boundary that names its kind. */
+export const KnowledgeSourceIdSchema = z.string().regex(entityIdPattern('ks'));
+
+/** Canonical ko entity identity at a boundary that names its kind. */
+export const KnowledgeObservationIdSchema = z.string().regex(entityIdPattern('ko'));
+
+/** Canonical kc entity identity at a boundary that names its kind. */
+export const KnowledgeClaimIdSchema = z.string().regex(entityIdPattern('kc'));
+
+/** Canonical kf entity identity at a boundary that names its kind. */
+export const KnowledgeConflictIdSchema = z.string().regex(entityIdPattern('kf'));
+
+/** Canonical attempt entity identity at a boundary that names its kind. */
+export const ExecutionAttemptIdSchema = z.string().regex(entityIdPattern('attempt'));
+
+/** Canonical wst entity identity at a boundary that names its kind. */
+export const WorkerStorageTargetIdSchema = z.string().regex(entityIdPattern('wst'));
+
+/** Canonical vault entity identity at a boundary that names its kind. */
+export const VaultReferenceIdSchema = z.string().regex(entityIdPattern('vault'));
+
+/** Canonical vu entity identity at a boundary that names its kind. */
+export const VaultUseIdSchema = z.string().regex(entityIdPattern('vu'));
+
+/** Canonical cand entity identity at a boundary that names its kind. */
+export const ResourceCandidateIdSchema = z.string().regex(entityIdPattern('cand'));
+
+/** Canonical col entity identity at a boundary that names its kind. */
+export const CollectionIdSchema = z.string().regex(entityIdPattern('col'));
+
+/** Canonical fld entity identity at a boundary that names its kind. */
+export const FieldIdSchema = z.string().regex(entityIdPattern('fld'));
+
+/** Canonical pres entity identity at a boundary that names its kind. */
+export const PresentationIdSchema = z.string().regex(entityIdPattern('pres'));
+
+/** Canonical wsexp entity identity at a boundary that names its kind. */
+export const WorkspaceExportIdSchema = z.string().regex(entityIdPattern('wsexp'));
+
+/** Canonical drb entity identity at a boundary that names its kind. */
+export const DataRootBackupIdSchema = z.string().regex(entityIdPattern('drb'));
+
+/** Canonical recurring occurrence identity; allocation stays with the recurring owner. */
+export const RecurringOccurrenceIdSchema = z.string().regex(entityIdPattern('occ'));
+
+/** Canonical retained expired-range identity; allocation stays with the recurring owner. */
+export const RecurringExpiredRangeIdSchema = z.string().regex(entityIdPattern('range'));

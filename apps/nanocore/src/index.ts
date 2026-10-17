@@ -46,6 +46,7 @@ import {
 } from './config/runtime-config.js';
 import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
+import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
@@ -65,14 +66,14 @@ import {
 import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import {
-  type OpenShellRefreshStatusCollector,
-  type OpenShellRefreshStatusPollingService,
-  startOpenShellRefreshStatusPollingService,
-} from './runtime/openshell-refresh-status-polling-service.js';
-import {
   installPendingRequestAdmission,
   recoverPendingRequestsAtBoot,
 } from './runtime/pending-request-flow.js';
+import { prepareRecurringOccurrence } from './runtime/recurring-schedule-preparation.js';
+import {
+  type RecurringScheduleService,
+  startRecurringScheduleService,
+} from './runtime/recurring-schedule-service.js';
 import {
   type SchedulerAttemptMaintenanceInput,
   type SchedulerAttemptMaintenanceService,
@@ -99,6 +100,7 @@ import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-re
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   type CoreDb,
+  isFreshCoreInitializationScope,
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
   openCoreDbWithIntegrityCheck,
@@ -125,13 +127,12 @@ const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
 const SHUTDOWN_DEADLINE_MS = 5_000;
 const SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS = 30_000;
-const OPENSHELL_REFRESH_STATUS_POLL_INTERVAL_MS = 60_000;
 const SCHEDULER_DISPATCH_RETRY_INTERVAL_MS = 30_000;
 const SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES = 5;
 let dataRootLock: DataRootLock | null = null;
-let openshellRefreshStatusPolling: OpenShellRefreshStatusPollingService | null = null;
 let schedulerDispatchRetry: SchedulerDispatchRetryService | null = null;
 let schedulerAttemptMaintenance: SchedulerAttemptMaintenanceService | null = null;
+let recurringSchedules: RecurringScheduleService | null = null;
 let releaseIdentity: ReturnType<typeof readReleaseIdentity> | undefined;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
@@ -141,6 +142,7 @@ let appTlsListen: NativeTlsListenOptions | null | undefined;
 let nanoHostListener: NanoHostTransportListener | null | undefined;
 let nanoHostTlsListen: NativeTlsListenOptions | null | undefined;
 let coreDb: CoreDb | undefined;
+let freshCoreInitialization = false;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
 let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
@@ -222,6 +224,7 @@ const bootResult = await runBootPhases({
       subsystem: 'storage',
       critical: true,
       run: () => {
+        freshCoreInitialization = isFreshCoreInitializationScope(dataRoot);
         ensureLayout(dataRoot);
         return { status: 'ok' };
       },
@@ -241,7 +244,9 @@ const bootResult = await runBootPhases({
       subsystem: 'storage',
       critical: true,
       run: () => {
-        coreDb = openCoreDbWithIntegrityCheck(dataRoot);
+        coreDb = openCoreDbWithIntegrityCheck(dataRoot, {
+          freshInitialization: freshCoreInitialization,
+        });
         applyMigrations(coreDb);
         verifyAndMigrateExistingScopedDatabases(dataRoot);
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
@@ -539,8 +544,8 @@ const activeWorkerLifecycleRuntime = requireBootValue(
   'Worker lifecycle runtime was not initialized.'
 );
 const workerPlacement = 'local' as const;
-const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
+const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
 const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
 reconcileWorkerMcpItems(coreDb.dataRoot, store);
 
@@ -565,6 +570,7 @@ const auth =
 readFileReserveBytes = () =>
   runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
 const app = createApp({
+  automationStore,
   fileAdmission,
   ...(auth ? { auth } : {}),
   bootReadiness,
@@ -690,6 +696,20 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
     );
   },
 });
+recurringSchedules = startRecurringScheduleService({
+  schedules: automationStore,
+  store,
+  prepare: (occurrence) =>
+    prepareRecurringOccurrence({
+      occurrence,
+      snapshot: runtimeConfigManager.current(),
+      store,
+      backendId: turnExecutor.executionBackend?.id ?? null,
+      providerCredentialConfigured,
+      subscriptionAccounts: providerSubscriptionAccountManager,
+    }),
+  onError: () => console.warn('Recurring schedule maintenance requires inspection.'),
+});
 schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
   runRecoveryMaintenance: requireBootValue(
     runRecoveryMaintenance,
@@ -697,19 +717,6 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
   ),
   intervalMs: SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS,
 });
-if (refreshStatusCollector) {
-  openshellRefreshStatusPolling = startOpenShellRefreshStatusPollingService({
-    collector: refreshStatusCollector,
-    intervalMs: OPENSHELL_REFRESH_STATUS_POLL_INTERVAL_MS,
-    onError: (error) => {
-      console.warn(
-        `OpenShell refresh status polling failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    },
-  });
-}
 
 /** Schedules at most one process-local closeout for an accepted `final_status`. */
 function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcceptedInput): void {
@@ -749,13 +756,13 @@ function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcc
 function shutdown(signal: NodeJS.Signals): void {
   console.log(`Received ${signal}; shutting down NanoCore.`);
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
+  recurringSchedules?.stop();
   schedulerDispatchRetry?.stop();
   schedulerAttemptMaintenance?.stop();
-  openshellRefreshStatusPolling?.stop();
   const stepsCompleted = [
+    'scheduler.recurring-schedules.stop',
     'scheduler.dispatch-retry.stop',
     'scheduler.attempt-maintenance.stop',
-    'openshell.refresh-status-polling.stop',
   ];
   closeWithDeadline({
     close: closeNanoCoreListeners,
@@ -781,27 +788,6 @@ function closeNanoCoreListeners(onClosed: () => void): void {
       appServer.close(markClosed);
       nanoHostServer?.close(markClosed);
     });
-}
-
-/**
- * Returns an OpenShell refresh status collector when the configured turn executor exposes one.
- *
- * @param executor Configured turn executor.
- * @returns Collector or null for runtimes without provider refresh polling.
- */
-function maybeOpenShellRefreshStatusCollector(
-  executor: unknown
-): OpenShellRefreshStatusCollector | null {
-  if (
-    typeof executor === 'object' &&
-    executor !== null &&
-    'collectProviderRefreshStatuses' in executor &&
-    typeof executor.collectProviderRefreshStatuses === 'function'
-  ) {
-    return executor as OpenShellRefreshStatusCollector;
-  }
-
-  return null;
 }
 
 process.once('SIGINT', shutdown);
