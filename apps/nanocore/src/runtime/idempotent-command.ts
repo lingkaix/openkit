@@ -11,7 +11,7 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import type { AppDb } from '../storage/app-db.js';
-import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 
 /** Error raised when one idempotency key is reused for different command input. */
 export class IdempotencyKeyConflictError extends Error {
@@ -163,6 +163,8 @@ type IdempotentCommandOptions<T> = IdempotentCommandBaseOptions<T> &
     | {
         /** Executes an ordinary command that may be asynchronous. */
         readonly execute: () => Promise<T> | T;
+        /** Explicit existing User or Core receipt owner for a non-transactional effect such as Git publication. */
+        readonly receiptDb?: UserDb | CoreDb;
         /** Optional open Workspace database for receipt-first reads and writes. */
         readonly workspaceDb?: WorkspaceDb;
         /** Optional open App database for receipt-first reads and writes. */
@@ -223,7 +225,10 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   }
 
   const inputHash = commandInputHash(options.input);
-  const commandDb = options.coreDb ?? options.workspaceDb ?? options.appDb;
+  const commandDb =
+    'receiptDb' in options && options.receiptDb
+      ? options.receiptDb
+      : (options.coreDb ?? options.workspaceDb ?? options.appDb);
   const existingRecord = options.store.getCommandRequest(
     options.command,
     options.requestId,
