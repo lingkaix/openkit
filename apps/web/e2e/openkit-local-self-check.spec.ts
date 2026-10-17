@@ -54,7 +54,10 @@ test('completes the local Workspace self-check', async ({ page }) => {
       new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
   );
   // The opener precedes the retained Timeline row with the same visible title.
-  await page.getByRole('button', { name: /^Assistant$/ }).first().click();
+  await page
+    .getByRole('button', { name: /^Assistant$/ })
+    .first()
+    .click();
   expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
