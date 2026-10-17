@@ -506,9 +506,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       workspaceId?: string;
       presentationId?: string;
     };
-    return (
-      selectors.workspaceId === workspaceId && selectors.presentationId === notePresentationId
-    );
+    return selectors.workspaceId === workspaceId && selectors.presentationId === notePresentationId;
   });
   await page.reload();
   expect((await historicalPresentation).ok()).toBe(true);
