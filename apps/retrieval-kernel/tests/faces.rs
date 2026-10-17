@@ -262,9 +262,13 @@ fn filesystem_growth_failure_preserves_last_commit() {
     .unwrap();
     drop(stdin);
     let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.signal(), Some(libc::SIGXFSZ));
+    assert_eq!(output.status.signal(), None);
+    assert!(output.status.success(), "{output:?}");
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["error"]["code"], "resource-limited");
     assert!(
-        output.stdout.is_empty(),
+        reply.get("result").is_none(),
         "failed publication was acknowledged"
     );
     assert_eq!(kernel.generation("scope").unwrap(), Some(prior));

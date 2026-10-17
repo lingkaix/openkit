@@ -260,8 +260,36 @@ pub(crate) fn error(code: &str, message: &str) -> Error {
         message: message.into(),
     }
 }
-/// Convert system/library failures without copying untrusted content into diagnostics.
-pub(crate) fn io_error(_: impl std::fmt::Display) -> Error {
+/// Classify exhausted filesystem capacity without copying untrusted diagnostics.
+pub(crate) fn io_error(failure: impl std::fmt::Display + 'static) -> Error {
+    let failure = &failure as &dyn std::any::Any;
+    let io = failure.downcast_ref::<std::io::Error>().or_else(|| {
+        use tantivy::directory::error::{OpenDirectoryError, OpenWriteError};
+        match failure.downcast_ref::<tantivy::TantivyError>()? {
+            tantivy::TantivyError::IoError(io)
+            | tantivy::TantivyError::OpenWriteError(OpenWriteError::IoError {
+                io_error: io, ..
+            })
+            | tantivy::TantivyError::OpenDirectoryError(OpenDirectoryError::IoError {
+                io_error: io,
+                ..
+            })
+            | tantivy::TantivyError::OpenDirectoryError(
+                OpenDirectoryError::FailedToCreateTempDir(io),
+            ) => Some(io.as_ref()),
+            _ => None,
+        }
+    });
+    if io.is_some_and(|io| {
+        matches!(
+            io.kind(),
+            std::io::ErrorKind::FileTooLarge
+                | std::io::ErrorKind::StorageFull
+                | std::io::ErrorKind::QuotaExceeded
+        )
+    }) {
+        return error("resource-limited", "retrieval filesystem growth refused");
+    }
     error(
         "io",
         "retrieval operation failed; inspect the admitted store",

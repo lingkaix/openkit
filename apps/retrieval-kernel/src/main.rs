@@ -352,6 +352,14 @@ fn valid_id(value: &Value) -> bool {
 }
 /// Enforce the executable's memory and individual derived-file ceilings before untrusted input.
 fn process_limits() -> Result<()> {
+    // Convert the file-growth ceiling to EFBIG so publication can refuse it without a core dump.
+    // SAFETY: SIG_IGN installs no handler and changes only this executable's signal disposition.
+    if unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) } == libc::SIG_ERR {
+        return Err(error(
+            "unavailable",
+            "file-growth signal enforcement unavailable",
+        ));
+    }
     set_limit(libc::RLIMIT_AS, 2 * 1024 * 1024 * 1024)?;
     set_limit(libc::RLIMIT_FSIZE, 512 * 1024 * 1024)?;
     cpu_limit()
