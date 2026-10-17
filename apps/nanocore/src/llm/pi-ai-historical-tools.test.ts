@@ -1,5 +1,5 @@
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
-import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
@@ -27,7 +27,7 @@ function pair(kind = 'function', namespace: string | undefined = 'left', callId 
   ];
 }
 
-/** Independent synthetic backend counts every attempted invocation; it never executes local tools. */
+/** Uses OpenAI for exact native custom/namespace wire guards; xAI function lowering has its own stock tests. The synthetic backend never executes local tools. */
 function fixture(stock = false) {
   const faux = fauxProvider({
     api: 'openai-responses',
@@ -35,11 +35,11 @@ function fixture(stock = false) {
     models: [{ id: 'physical' }],
   });
   const models = createModels();
-  models.setProvider(stock ? xaiProvider() : faux.provider);
-  const model = stock ? 'grok-4.7' : 'physical';
+  models.setProvider(stock ? openaiProvider() : faux.provider);
+  const model = stock ? 'gpt-5.4' : 'physical';
   const provider = {
     id: 'fixture-profile',
-    adapterId: stock ? 'xai' : 'fixture',
+    adapterId: stock ? 'openai' : 'fixture',
     apiKey: 'synthetic',
     baseUrl: null,
     models: [model],

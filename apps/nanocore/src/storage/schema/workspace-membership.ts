@@ -20,9 +20,6 @@ export type WorkspaceRegistryStatus = 'active' | 'deleting' | 'deleted';
  */
 export type WorkspaceMemberStatus = 'active' | 'removed';
 
-/** Stored access levels for active and removed Workspace memberships. */
-export type WorkspaceAccessLevel = 'editor' | 'viewer';
-
 /** Durable invitation lifecycle states. */
 export type WorkspaceInvitationStatus = 'pending' | 'accepted' | 'declined' | 'revoked';
 
@@ -76,10 +73,6 @@ export const workspaceInvitations = sqliteTable(
     inviteeUserId: text('invitee_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
-    /** Access proposed by the inviter. */
-    proposedAccessLevel: text('proposed_access_level', { enum: ['editor', 'viewer'] })
-      .$type<WorkspaceAccessLevel>()
-      .notNull(),
     /** Existing canonical user who created the invitation. */
     inviterUserId: text('inviter_user_id')
       .notNull()
@@ -117,10 +110,6 @@ export const workspaceInvitations = sqliteTable(
     uniqueIndex('workspace_invitations_pending_idx')
       .on(table.workspaceId, table.inviteeUserId)
       .where(sql`${table.status} = 'pending'`),
-    check(
-      'workspace_invitations_access_check',
-      sql`${table.proposedAccessLevel} IN ('editor', 'viewer')`
-    ),
     check(
       'workspace_invitations_status_check',
       sql`${table.status} IN ('pending', 'accepted', 'declined', 'revoked')`
@@ -174,10 +163,6 @@ export const workspaceMembers = sqliteTable(
     status: text('status', { enum: ['active', 'removed'] })
       .$type<WorkspaceMemberStatus>()
       .notNull(),
-    /** Stored non-owner access level; owners retain editor. */
-    accessLevel: text('access_level', { enum: ['editor', 'viewer'] })
-      .$type<WorkspaceAccessLevel>()
-      .notNull(),
     /** Invitation that most recently admitted this member. */
     invitationId: text('invitation_id').references(() => workspaceInvitations.invitationId, {
       onDelete: 'no action',
@@ -197,7 +182,6 @@ export const workspaceMembers = sqliteTable(
     primaryKey({ columns: [table.workspaceId, table.userId] }),
     index('workspace_members_user_id_idx').on(table.userId, table.status, table.workspaceId),
     check('workspace_members_status_check', sql`${table.status} IN ('active', 'removed')`),
-    check('workspace_members_access_check', sql`${table.accessLevel} IN ('editor', 'viewer')`),
     check(
       'workspace_members_revision_check',
       sql`typeof(${table.revision}) = 'integer' AND ${table.revision} > 0`

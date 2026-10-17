@@ -113,8 +113,8 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
     .run(otherUserId, 'Other history owner', email, Date.now(), Date.now());
   coreDb.sqlite
     .prepare(
-      `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, joined_at, revision, created_at, updated_at)
-     VALUES (?, ?, 'active', 'editor', ?, 1, ?, ?)`
+      `INSERT INTO workspace_members (workspace_id, user_id, status, joined_at, revision, created_at, updated_at)
+     VALUES (?, ?, 'active', ?, 1, ?, ?)`
     )
     .run(workspace.id, otherUserId, stamp, stamp, stamp);
 

@@ -104,13 +104,16 @@ describe('captured PluginVersion source', () => {
       expect(existsSync(catalogDocumentPath(f.dataRoot, testEntityId('ws', 'ws_demo')))).toBe(
         false
       );
-      // The existing read path creates empty layout directories, which carry no catalog authority.
+      // An absent or empty snapshot directory contains no published package bytes.
       for (const kind of ['plugin-snapshots', 'skill-snapshots']) {
-        expect(
-          readdirSync(
-            join(f.dataRoot, 'workspaces', testEntityId('ws', 'ws_demo'), 'catalog', kind)
-          )
-        ).toEqual([]);
+        const directory = join(
+          f.dataRoot,
+          'workspaces',
+          testEntityId('ws', 'ws_demo'),
+          'catalog',
+          kind
+        );
+        expect(existsSync(directory) ? readdirSync(directory) : []).toEqual([]);
       }
     } finally {
       rmSync(f.dataRoot, { recursive: true, force: true });

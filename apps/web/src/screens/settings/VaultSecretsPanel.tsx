@@ -1,4 +1,7 @@
-import type { OperationInput } from '@openkit/app-api-schemas';
+import {
+  NarrowWorkspaceVaultGrantRequestSchema,
+  type OperationInput,
+} from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
@@ -187,6 +190,21 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
     mutation.reset();
     void inventory.refetch();
   }
+  /** Validate before mutation retention; Core Client validation occurs after that cache boundary. */
+  function submitGrant(action: 'grant' | 'narrow-grant', id: string) {
+    const parsed = NarrowWorkspaceVaultGrantRequestSchema.shape.constraints.safeParse(constraints);
+    if (!parsed.success) {
+      hold.current = null;
+      setMaterial('');
+      setTargetAgentId('');
+      setTargetAgentSessionId('');
+      setTargetCapabilityId('');
+      setGrantExpiry('');
+      setGrantStatus('Grant restriction fields are invalid. Enter exact supported bounds only.');
+      return;
+    }
+    mutation.mutate({ action, id, constraints: parsed.data });
+  }
   if (denied)
     return (
       <Card>
@@ -304,9 +322,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
               <Button
                 variant="outline"
                 isDisabled={disabled}
-                onPress={() =>
-                  mutation.mutate({ action: 'grant', id: reference.referenceId, constraints })
-                }
+                onPress={() => submitGrant('grant', reference.referenceId)}
               >
                 Create gateway grant for {reference.referenceId}
               </Button>
@@ -342,9 +358,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
             <Button
               variant="outline"
               isDisabled={disabled || Object.keys(constraints).length === 0}
-              onPress={() =>
-                mutation.mutate({ action: 'narrow-grant', id: grant.grantId, constraints })
-              }
+              onPress={() => submitGrant('narrow-grant', grant.grantId)}
             >
               Narrow grant {grant.grantId}
             </Button>

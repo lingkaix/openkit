@@ -9,6 +9,7 @@ import {
   operationMcpEligible,
   operationModelInput,
   operationToolName,
+  VAULT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { type ActorRef, RequestIdSchema } from '@openkit/protocol';
@@ -18,7 +19,9 @@ import { createOperationInvocation } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import type { VaultUnlockState } from '../vault/vault-unlock-state.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { MCP_RESULT_TOO_LARGE_MESSAGE } from './worker-mcp-gateway.js';
 
 /** Reserved built-in Worker MCP server id. */
 export const OPENKIT_GENERATIVE_MCP_ID = 'openkit-generative';
@@ -27,7 +30,11 @@ const definitions = composeOperationTables(
   KERNEL_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
   LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
-  GENERATIVE_UI_OPERATION_DEFINITIONS
+  GENERATIVE_UI_OPERATION_DEFINITIONS,
+  {
+    'vault.grant-request': VAULT_OPERATION_DEFINITIONS['vault.grant-request'],
+    'vault.grant-request-list': VAULT_OPERATION_DEFINITIONS['vault.grant-request-list'],
+  }
 );
 
 function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
@@ -92,6 +99,8 @@ export function createOpenkitGenerativeMcpSupply(): AgentEnvironmentPackage['sup
 
 /** In-process built-in MCP dispatch context. */
 export interface OpenkitGenerativeMcpContext {
+  /** Existing process-local Vault owner; request metadata never resolves material. */
+  readonly vaultUnlockState?: VaultUnlockState;
   /** Current record and mutation owners, required for migrated operations. */
   readonly coreDb?: CoreDb;
   readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
@@ -148,6 +157,7 @@ export async function dispatchOpenkitGenerativeTool(
     );
   const invoke = createOperationInvocation({
     coreDb: context.coreDb,
+    ...(context.vaultUnlockState ? { vaultUnlockState: context.vaultUnlockState } : {}),
     store: context.store,
     inflightCommands: context.inflightCommands,
     workspaceMutationAdmission: context.workspaceMutationAdmission,
@@ -190,7 +200,13 @@ export async function dispatchOpenkitGenerativeTool(
       _meta: { ui: { resourceUri: resource.uri } },
     };
   }
-  return textResult(output);
+  const result = textResult(output);
+  if (
+    (operationId === 'vault.grant-request' || operationId === 'vault.grant-request-list') &&
+    Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024
+  )
+    throw new OperationError('mcp-result-too-large', MCP_RESULT_TOO_LARGE_MESSAGE, 413);
+  return result;
 }
 
 function textResult(value: unknown): {
