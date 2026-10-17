@@ -88,6 +88,7 @@ import {
 import { resolveWorkerPromptCacheKey } from './prompt-cache-key.js';
 import {
   type LLMGatewayProviderDispatcher,
+  type ProviderHttpErrorDiagnostic,
   resolveGatewaySubscriptionModels,
 } from './provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
@@ -1951,7 +1952,8 @@ export function registerWorkerInferenceRoutes({
       let activeExecution: GatewayAttemptContext | undefined;
       let observedFailure: PiAiFailure | undefined;
       let observedHttpRejection: number | undefined;
-      /** Emits a fixed projection without exception text, private codes, or synthetic HTTP status. */
+      let observedProviderError: ProviderHttpErrorDiagnostic | undefined;
+      /** Emits selected diagnostic fields without exception text, raw bodies, or synthetic HTTP status. */
       function reportFailure(
         error: unknown,
         failurePhase: 'selection' | 'dispatch' | 'stream-prepare' | 'stream-read' = phase
@@ -1974,6 +1976,7 @@ export function registerWorkerInferenceRoutes({
               status <= 599
                 ? { httpStatus: status }
                 : {}),
+              ...(observedProviderError ? { providerError: observedProviderError } : {}),
               elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
               outputBegan: activeExecution?.outputBegan ?? false,
               requestId: durableCall.call.context.requestId,
@@ -2052,6 +2055,7 @@ export function registerWorkerInferenceRoutes({
             activeExecution = undefined;
             observedFailure = undefined;
             observedHttpRejection = undefined;
+            observedProviderError = undefined;
           },
           attempt: async ({
             provider,
@@ -2148,9 +2152,20 @@ export function registerWorkerInferenceRoutes({
                   onCodexTurnState: (value: string) => {
                     responseTurnState = value;
                   },
-                  onProviderHttpRejection: (status: number) => {
-                    // The stock observer supplies only an actual HTTP rejection, not routing authority.
+                  onProviderHttpRejection: (
+                    status: number,
+                    details?: ProviderHttpErrorDiagnostic
+                  ) => {
+                    // The producer supplies sanitized diagnostic evidence, never routing authority.
                     observedHttpRejection = status;
+                    const { type, code, param, message } = details ?? {};
+                    const selected = {
+                      ...(typeof type === 'string' ? { type: type.slice(0, 200) } : {}),
+                      ...(typeof code === 'string' ? { code: code.slice(0, 200) } : {}),
+                      ...(typeof param === 'string' ? { param: param.slice(0, 200) } : {}),
+                      ...(typeof message === 'string' ? { message: message.slice(0, 200) } : {}),
+                    };
+                    observedProviderError = Object.keys(selected).length ? selected : undefined;
                   },
                   signal: rawSignal,
                 },

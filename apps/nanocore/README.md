@@ -589,3 +589,5 @@ The Host effect producer fixture, definition-derived Worker lifecycle cases, nat
 ### Exact Artifact Review feedback and choices
 
 The existing version-owned Artifact Review accepts optional exact Material-base range feedback on `artifact.review.decide` and attributable exact candidate choices through `artifact.review.select`. Review-owned fields and the existing Workspace command transaction retain these facts. A choice starts no Turn and does not decide or apply a proposal. Existing pinned conversation inputs and Context Package provenance own later explicit use. The [Work Resource owner](../../docs/specs/20260713-work_resource_interaction_model.md#grounded-feedback-and-candidate-choice) defines range units, current access, stale/conflict and replay semantics; the ordinary Workspace migration adds no second durable owner.
+
+The Gateway adapts xAI Responses custom and namespace tools to function declarations while preserving public callable identity and history. Rejection diagnostics retain only bounded sanitized typed error fields; [the LLM guide](src/llm/README.md) describes the stock transport boundary and focused checks.
