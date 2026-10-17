@@ -81,7 +81,7 @@ export const RESOURCE_POLICY_OPERATION_DEFINITIONS = {
       .object({
         workspaceId: WorkspaceIdSchema,
         threadId: ThreadIdSchema,
-        requestId: ApprovalRequestIdSchema,
+        approvalRequestId: ApprovalRequestIdSchema,
         confirmation: z.literal('APPLY WORKSPACE RESOURCE POLICY'),
       })
       .strict(),
@@ -96,7 +96,7 @@ export const RESOURCE_POLICY_OPERATION_DEFINITIONS = {
     scope: {
       kind: 'opaque-child-workspace',
       field: 'workspaceId',
-      childField: 'requestId',
+      childField: 'approvalRequestId',
       childOwner: 'pending-request',
     },
     target: { kind: 'workspace' },

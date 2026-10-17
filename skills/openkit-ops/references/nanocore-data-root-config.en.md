@@ -262,6 +262,28 @@ The Workspace file owns shared editable composition.
 
 Authored Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access and remain loadable. Configuration operations refuse their work-slot materialization in this release; only credential-free remote Git sources can be materialized, and work without a source input still runs. `createIfMissing` is valid only for a read-write root. `workspace.assistant.repositoryInspection` remains loadable as inert authored configuration after removal of the host reader. The Assistant's repository inspection target is a selected Gateway vendor MCP read or a Task handoff.
 
+### Named Thread Access
+
+`workspace.policy.resourceAccess` stores shared-Thread privacy boundaries and their exact User or Agent assignments. Use the reviewed request and confirmation commands to change it. Generic configuration writes cannot create, replace or remove this subtree. Membership, credentials and private-Thread audiences remain separate requirements. A managed Thread with an empty `grants` array remains closed; explicit boundary removal is a separate reviewed change.
+
+Use `openkit ops describe workspace.resource-access-request`, then submit a new request on a Thread you can use. Replace `WORKSPACE`, `REQUEST-THREAD`, `RESOURCE-THREAD` and `USER` with current identifiers and `UNIQUE-UUID` with a new command request identity. The target must be a shared Thread in the same Workspace; creation captures only the selectors and grants no access.
+
+```bash
+printf '%s' '{"workspaceId":"WORKSPACE","threadId":"REQUEST-THREAD","requestId":"UNIQUE-UUID","change":{"resource":{"family":"thread","id":"RESOURCE-THREAD"},"replacement":{"resource":{"family":"thread","id":"RESOURCE-THREAD"},"grants":[{"subject":{"kind":"user","userId":"USER"},"operations":["thread.read"]}],"prohibitions":[]}}}' | openkit ops call workspace.resource-access-request --input -
+```
+
+Inspect the returned request `id` and captured `change.expectedRevision`. A current Workspace Policy administrator or deployment administrator reviews it through the existing `approval.respond` command. Read that command's current schema with `openkit ops describe approval.respond`; approve only the exact captured terms. Approval alone changes no assignment. Then use the same approval request identity with distinct confirmation:
+
+```bash
+printf '%s' '{"workspaceId":"WORKSPACE","threadId":"REQUEST-THREAD","approvalRequestId":"APPROVAL-REQUEST","confirmation":"APPLY WORKSPACE RESOURCE POLICY"}' | openkit ops call workspace.resource-access-apply --input -
+```
+
+Check `savedRevision` and `reloadStatus` separately. Only an applied reload changes future checks. A stale revision, lost requester rights or revoked deciding credential refuses the change. After an uncertain result, inspect saved and effective configuration and the existing request outcome; do not replay a consumed approval. Narrowing replaces the captured entry with fewer operations; last-grant revocation replaces it with `grants: []`; explicit removal uses `replacement: null`. Each change needs a new reviewed request.
+
+For an Agent assignment, use `subject: {"kind":"agent","userId":"RESPONSIBLE-USER","agentId":"REGISTERED-AGENT"}`. A human grant does not become an Agent grant. The actual AgentSession is a mapped process, not the stored Policy subject.
+
+Export retains current effective boundaries and refuses saved/effective disagreement. Import remints resource identifiers and keeps last-revoke boundaries. It rejects unsupported restrictions or unvalidated principal bindings before publication; it never falls back to full-member access. Current cross-deployment imports support closed boundaries without assignments; active source assignments require verified target bindings, and matching bare identifiers are insufficient. Keep the original archive when import refuses.
+
 ## `users/<userId>/config/user.jsonc`
 
 User configuration stores personal preferences and never modifies shared Workspace state.

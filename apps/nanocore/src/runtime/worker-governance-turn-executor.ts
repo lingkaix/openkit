@@ -27,7 +27,11 @@ import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js';
+import {
+  canDiscloseThreadToAudience,
+  isArtifactVisible,
+  isThreadVisible,
+} from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import { openBoundedSourceView } from '../context/bounded-source-view.js';
@@ -326,6 +330,20 @@ export async function prepareWorkerTurnContextPackage(
     : null;
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
+  if (!responsibleUserId || !turn.agentId)
+    throw new TurnStartValidationError(
+      'source_unavailable',
+      'Current Worker resource identity is unavailable.',
+      503
+    );
+  const resourcePolicyActor = {
+    kind: 'agent' as const,
+    userId: responsibleUserId,
+    agentId: turn.agentId,
+    processId: input.agentSessionId,
+  };
+
   const isTask =
     workerRequest.requestKind === 'structured-delegation' && checkpoint?.goalId === null;
   const isChatSubordinateTask =
@@ -421,6 +439,7 @@ export async function prepareWorkerTurnContextPackage(
           actor: store.getTurnById(input.turnId).triggerActor,
           outputThreadId: input.threadId,
           outputTurnId: input.turnId,
+          resourcePolicyActor,
         },
         retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
         workspaceId: input.workspaceId,
@@ -492,7 +511,9 @@ export async function prepareWorkerTurnContextPackage(
         store,
         store.getThread(input.workspaceId, input.threadId),
         responsibleUserIdForActor(admission.triggerActor) ?? undefined,
-        admission.serverAdminTokenId !== null
+        admission.serverAdminTokenId !== null,
+        'thread.read',
+        resourcePolicyActor
       )
     )
       throw new TurnStartValidationError(
@@ -517,11 +538,10 @@ export async function prepareWorkerTurnContextPackage(
         store,
         current,
         responsibleUserIdForActor(sourceAdmission.triggerActor) ?? undefined,
-        sourceAdmission.serverAdminTokenId !== null
+        sourceAdmission.serverAdminTokenId !== null,
+        resourcePolicyActor
       ) ||
-      (sourceThread?.visibility === 'private' &&
-        (destination.visibility !== 'private' ||
-          destination.privateOwnerUserId !== sourceThread.privateOwnerUserId))
+      (sourceThread !== null && !canDiscloseThreadToAudience(store, sourceThread, destination))
     )
       throw new TurnStartValidationError(
         'source_unavailable',
@@ -588,6 +608,7 @@ export async function prepareWorkerTurnContextPackage(
         actor: turn.triggerActor,
         outputThreadId: input.threadId,
         outputTurnId: input.turnId,
+        resourcePolicyActor,
       },
       retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
       workspaceId: input.workspaceId,

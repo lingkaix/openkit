@@ -11,7 +11,9 @@ import {
   planSessionWorkspaceMaterialization,
   type SessionWorkspaceMaterializationPlan,
   sessionStaticControl,
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
   WorkerSandboxAccessSchema,
+  WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import { ENTITY_KINDS, entityIdPattern, isEntityId } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
@@ -103,7 +105,7 @@ import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-mai
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   createConfiguredTurnExecutor,
-  createConfiguredWorkerLifecycleRuntime,
+  createConfiguredWorkerLifecycleRuntime as createWorkerLifecycleOwner,
 } from './turn-executor-factory.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
 import {
@@ -923,7 +925,9 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     sandboxBindingRef: `lease-binding:${label}`,
     serverAdminTokenId: tokenId,
   });
+  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot });
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    readRuntimeConfig: () => currentConfiguration,
     coreDb,
     env: {},
     nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects, hooks),
@@ -933,6 +937,7 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     .backend;
   anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
   return {
+    currentConfiguration,
     adminUserId,
     backend,
     coreDb,
@@ -960,6 +965,19 @@ function observeExecutionAttempts(
         .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
         .all() as Record<string, unknown>[])
     : [];
+}
+
+/** Supplies the explicit current Policy input required by real retained-storage admission. */
+function createConfiguredWorkerLifecycleRuntime(
+  options: Parameters<typeof createWorkerLifecycleOwner>[0] = {}
+) {
+  const current = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: options.coreDb?.dataRoot ?? null,
+  });
+  return createWorkerLifecycleOwner({
+    ...options,
+    readRuntimeConfig: options.readRuntimeConfig ?? (() => current),
+  });
 }
 
 describe('createConfiguredTurnExecutor', () => {
@@ -14822,6 +14840,61 @@ describe('createConfiguredTurnExecutor', () => {
           storageRef: storage.storageRef,
         })?.contributors.map((contributor) => contributor.responsibleUserId)
       ).toEqual([fixture.adminUserId]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses retained storage after current named Thread Policy revokes the exact Agent', async () => {
+    const fixture = prepareNonmemberAdminWorkerStorage('resource_policy_revoked');
+    const boundary = WorkspaceConfigSchema.parse({
+      requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
+      workspace: {
+        name: 'Managed retained storage',
+        policy: {
+          resourceAccess: [
+            {
+              resource: { family: 'thread', id: fixture.environmentPackage.scope.threadId },
+              grants: [
+                {
+                  subject: {
+                    kind: 'agent',
+                    userId: fixture.adminUserId,
+                    agentId: fixture.environmentPackage.agent.agentId,
+                  },
+                  operations: ['thread.read'],
+                },
+              ],
+              prohibitions: [],
+            },
+          ],
+        },
+      },
+    });
+    fixture.currentConfiguration.workspaceConfigs.push({
+      workspaceId: fixture.workspaceId,
+      path: join(
+        fixture.coreDb.dataRoot,
+        'workspaces',
+        fixture.workspaceId,
+        'config/workspace.jsonc'
+      ),
+      config: boundary,
+    });
+    fixture.hooks.onInspect = () => {
+      boundary.workspace.policy!.resourceAccess[0]!.grants = [];
+    };
+    try {
+      await expect(
+        fixture.backend.materialize(fixture.environmentPackage, {
+          sandboxBindingRef: factoryPackageBinding(fixture.coreDb, fixture.environmentPackage),
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'authorization_denied', name: 'WorkerStorageBindingError' });
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
     } finally {
       fixture.coreDb.sqlite.close();
     }

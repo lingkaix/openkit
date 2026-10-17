@@ -1,4 +1,5 @@
 import { WorkspaceResourcePolicyChangeSchema as ResourcePolicyChangeSchema } from '@openkit/app-api-schemas';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 
 export { WorkspaceResourcePolicyChangeSchema as ResourcePolicyChangeSchema } from '@openkit/app-api-schemas';
 
@@ -18,6 +19,7 @@ import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
+  isCurrentDeploymentAdministrator,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -86,8 +88,6 @@ export interface ResourcePolicyRequestDependencies {
   readonly workspaceDb: Pick<WorkspaceDb, 'sqlite'>;
   readonly manager: RuntimeConfigManager;
   readonly files: RuntimeConfigFileService;
-  /** The existing requester/Worker authority owner must confirm the captured current responsibility. */
-  readonly requesterAuthority: (record: PendingRequestRecord) => boolean | undefined;
 }
 
 /** Selects only this governed intent; other requests retain their existing command owners. */
@@ -173,7 +173,21 @@ export function isResourcePolicyRequesterCurrent(
           : {}),
         ...(origin.actor.adminTokenId ? { adminTokenId: origin.actor.adminTokenId } : {}),
       };
+      if (
+        actor.kind === 'session' &&
+        actor.adminTokenId &&
+        requireCurrentDeploymentAdmin(dependencies.coreDb, actor).tokenId !== actor.adminTokenId
+      )
+        return false;
       return (
+        isThreadIdVisible(
+          dependencies.store,
+          record.workspaceId,
+          record.threadId,
+          actor.userId,
+          isCurrentDeploymentAdministrator(dependencies.coreDb, actor),
+          'workspace.write'
+        ) &&
         actor.userId === record.responsibleUserId &&
         authorizeWorkspace(dependencies.coreDb, actor, record.workspaceId, {
           policyOperation: 'workspace.read',
@@ -190,6 +204,22 @@ export function isResourcePolicyRequesterCurrent(
       turn.agentSessionId === record.agentSessionId &&
       turn.agentSessionId === origin.lineage.agentSessionId &&
       responsibleUserIdForActor(turn.triggerActor) === record.responsibleUserId &&
+      !!turn.agentId &&
+      !!turn.agentSessionId &&
+      isThreadIdVisible(
+        dependencies.store,
+        record.workspaceId,
+        record.threadId,
+        record.responsibleUserId,
+        false,
+        'workspace.write',
+        {
+          kind: 'agent',
+          userId: record.responsibleUserId,
+          agentId: turn.agentId,
+          processId: turn.agentSessionId,
+        }
+      ) &&
       dependencies.manager.current().agentManifests.some((agent) => agent.id === turn.agentId) &&
       currentWorkerLineageWorkspaceAuthority(
         dependencies.coreDb,
@@ -227,10 +257,7 @@ export function checkResourcePolicyCommandIntent(
       policyOperation: 'workspace.configure',
       mutating: true,
     }) ||
-    !(
-      dependencies.requesterAuthority(record) ??
-      isResourcePolicyRequesterCurrent(dependencies, record)
-    )
+    !isResourcePolicyRequesterCurrent(dependencies, record)
   ) {
     throw new PendingRequestCommandError(
       'workspace_access_denied',

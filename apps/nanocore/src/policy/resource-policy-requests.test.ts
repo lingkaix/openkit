@@ -2,20 +2,24 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { RESOURCE_POLICY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
+import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { FsStore } from '../lib/store.js';
+import type { AdmittedOperationContext } from '../operation-contract.js';
 import { grantCommandIntentRequest } from '../runtime/pending-requests.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { createResourcePolicyOperationImplementations } from './resource-policy-operations.js';
 import {
   applyResourcePolicyRequest,
   checkResourcePolicyCommandIntent,
@@ -56,8 +60,7 @@ function fixture() {
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
-  const requesterAuthority = vi.fn(() => true);
-  const dependencies = { coreDb, store, workspaceDb, manager, files, requesterAuthority };
+  const dependencies = { coreDb, store, workspaceDb, manager, files };
   const replacement = {
     resource: { family: 'thread' as const, id: thread.id },
     grants: [],
@@ -211,15 +214,120 @@ describe('resource Policy Pending Request commands', () => {
     }
   });
 
-  it('refuses stale configuration and revoked requester authority before writing', () => {
+  it('joins request, existing human grant and distinct apply without deployment-only configuration access', () => {
+    const f = fixture();
+    try {
+      const handlers = createResourcePolicyOperationImplementations({
+        coreDb: f.coreDb,
+        store: f.store,
+        runtimeConfigOperations: { manager: f.manager, filesForActor: () => f.files },
+        repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(f.coreDb.dataRoot, workspaceId),
+      });
+      const context: AdmittedOperationContext = {
+        kind: 'public',
+        actor: { kind: 'session', userId: f.actor.userId },
+        actorRef: { kind: 'user', id: f.actor.userId },
+        scope: { kind: 'workspace', workspaceId: f.workspace.id },
+      };
+      expect(isCurrentDeploymentAdministrator(f.coreDb, context.actor)).toBe(false);
+      const input = {
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        requestId: randomUUID(),
+        change: { resource: f.replacement.resource, replacement: f.replacement },
+      };
+      const request = handlers['workspace.resource-access-request'](input, context);
+      expect(
+        RESOURCE_POLICY_OPERATION_DEFINITIONS[
+          'workspace.resource-access-request'
+        ].outputSchema.safeParse(request).success
+      ).toBe(true);
+      expect(request.status).toBe('pending');
+      expect(request.change.expectedRevision).toBe(
+        f.files.readFile(`workspaces/${f.workspace.id}/workspace.jsonc`).file.revision
+      );
+      expect(handlers['workspace.resource-access-request'](input, context).id).toBe(request.id);
+      expect(parse(readFileSync(f.configPath, 'utf8')).workspace.policy).toBeUndefined();
+      grantCommandIntentRequest(
+        f.workspaceDb.sqlite,
+        request.id!,
+        { kind: 'user', id: f.actor.userId },
+        new Date().toISOString(),
+        context.actor
+      );
+      const result = handlers['workspace.resource-access-apply'](
+        {
+          workspaceId: f.workspace.id,
+          threadId: f.thread.id,
+          approvalRequestId: request.id!,
+          confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+        },
+        context
+      );
+      expect(
+        RESOURCE_POLICY_OPERATION_DEFINITIONS[
+          'workspace.resource-access-apply'
+        ].outputSchema.safeParse(result).success
+      ).toBe(true);
+      expect(parse(readFileSync(f.configPath, 'utf8')).workspace.policy.resourceAccess).toEqual([
+        f.replacement,
+      ]);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('refuses requester revocation activated after capture without changing the saved file revision', () => {
+    const f = fixture();
+    try {
+      const restrictive = {
+        resource: { family: 'thread' as const, id: f.thread.id },
+        grants: [],
+        prohibitions: [],
+      };
+      writeFileSync(
+        f.configPath,
+        JSON.stringify({
+          requiredFeatures: ['openkit.workspace-resource-policy.v1'],
+          workspace: { name: f.workspace.name, policy: { resourceAccess: [restrictive] } },
+        })
+      );
+      let effective: (typeof restrictive)[] = [];
+      f.store.setWorkspaceResourcePolicyProjection(() => effective);
+      const record = f.raise();
+      grantCommandIntentRequest(
+        f.workspaceDb.sqlite,
+        record.requestId,
+        { kind: 'user', id: f.actor.userId },
+        new Date().toISOString(),
+        f.actor
+      );
+      const before = readFileSync(f.configPath, 'utf8');
+      effective = [restrictive];
+      expect(() =>
+        applyResourcePolicyRequest(f, {
+          requestId: record.requestId,
+          workspaceId: f.workspace.id,
+          threadId: f.thread.id,
+          actor: f.actor,
+          confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+        })
+      ).toThrow('authority is required');
+      expect(readFileSync(f.configPath, 'utf8')).toBe(before);
+      expect(
+        f.workspaceDb.sqlite
+          .prepare('SELECT claim FROM pending_requests WHERE request_id = ?')
+          .get(record.requestId)
+      ).toEqual({ claim: 'unclaimed' });
+    } finally {
+      f.close();
+    }
+  });
+
+  it('refuses stale configuration before writing', () => {
     const f = fixture();
     try {
       const record = f.raise();
-      f.requesterAuthority.mockReturnValue(false);
-      expect(() => checkResourcePolicyCommandIntent(f, record, f.actor)).toThrow(
-        'authority is required'
-      );
-      f.requesterAuthority.mockReturnValue(true);
       writeFileSync(f.configPath, '{"workspace":{"name":"Changed elsewhere"}}');
       expect(() => checkResourcePolicyCommandIntent(f, record, f.actor)).toThrow(
         'configuration changed'

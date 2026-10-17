@@ -28,7 +28,7 @@ import {
 export function resourcePolicyDependencies(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'coreDb' | 'store' | 'runtimeConfigOperations' | 'pendingRequestServices'
+    'coreDb' | 'store' | 'runtimeConfigOperations'
   >,
   workspaceDb: ResourcePolicyRequestDependencies['workspaceDb'],
   actor: import('../auth/identity.js').Actor
@@ -46,8 +46,6 @@ export function resourcePolicyDependencies(
     workspaceDb,
     manager: services.manager,
     files: services.filesForActor(actor),
-    requesterAuthority: (record) =>
-      dependencies.pendingRequestServices?.requesterAuthority?.(record),
   };
 }
 
@@ -64,6 +62,20 @@ export function checkResourcePolicyOperationIntent(
     record,
     actor
   );
+}
+
+/** Presents only the canonical approval and its caller-captured terms; incomplete lineage stays inspect-only. */
+function resourcePolicyRequestView(
+  record: import('../runtime/pending-requests.js').PendingRequestRecord
+) {
+  const approval = projectApprovalRequest(record);
+  if (!approval)
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'The resource Policy request is unavailable.',
+      409
+    );
+  return { ...approval, change: ResourcePolicyChangeSchema.parse(record.governedIntent?.change) };
 }
 
 /** Prepares native request and confirmed application handlers; public definitions supply their one admission. */
@@ -117,13 +129,20 @@ export function createResourcePolicyOperationImplementations(
           : { kind: 'public' as const, actor };
         const prior = readPendingRequest(db.sqlite, input.requestId);
         if (prior) {
+          if (
+            !isResourcePolicyRequest(prior) ||
+            prior.workspaceId !== input.workspaceId ||
+            prior.threadId !== input.threadId
+          )
+            throw new PendingRequestCommandError(
+              'idempotency_key_conflict',
+              'This request has different captured terms.',
+              409
+            );
           const captured = prior.governedIntent;
           const oldChange = ResourcePolicyChangeSchema.parse(captured?.change);
           const { expectedRevision: _, ...oldTerms } = oldChange;
           if (
-            !isResourcePolicyRequest(prior) ||
-            prior.workspaceId !== input.workspaceId ||
-            prior.threadId !== input.threadId ||
             !isDeepStrictEqual(oldTerms, input.change) ||
             !isDeepStrictEqual(captured?.origin, origin)
           )
@@ -132,18 +151,15 @@ export function createResourcePolicyOperationImplementations(
               'This request has different captured terms.',
               409
             );
-          return {
-            ...projectApprovalRequest(
-              requireUsableRecord(
-                services.store,
-                db.sqlite,
-                prior.requestId,
-                prior.workspaceId,
-                prior.threadId
-              )
-            ),
-            change: oldChange,
-          };
+          return resourcePolicyRequestView(
+            requireUsableRecord(
+              services.store,
+              db.sqlite,
+              prior.requestId,
+              prior.workspaceId,
+              prior.threadId
+            )
+          );
         }
         const file = services.files.readFile(`workspaces/${input.workspaceId}/workspace.jsonc`);
         const change = ResourcePolicyChangeSchema.parse({
@@ -204,7 +220,7 @@ export function createResourcePolicyOperationImplementations(
               status: 'completed',
               completedAt: now,
             });
-          return { ...projectApprovalRequest(record), change };
+          return resourcePolicyRequestView(record);
         } catch (error) {
           if (!worker)
             services.store.updateTurn(raised.raisingTurnId, { status: 'failed', completedAt: now });
@@ -212,7 +228,12 @@ export function createResourcePolicyOperationImplementations(
         }
       }),
     'workspace.resource-access-apply': (
-      input: { workspaceId: string; threadId: string; requestId: string; confirmation: string },
+      input: {
+        workspaceId: string;
+        threadId: string;
+        approvalRequestId: string;
+        confirmation: string;
+      },
       context: AdmittedOperationContext
     ) =>
       withDatabase(input.workspaceId, (db) => {
@@ -224,10 +245,16 @@ export function createResourcePolicyOperationImplementations(
           );
         const result = applyResourcePolicyRequest(
           resourcePolicyDependencies(dependencies, db, context.actor),
-          { ...input, actor: context.actor }
+          {
+            workspaceId: input.workspaceId,
+            threadId: input.threadId,
+            requestId: input.approvalRequestId,
+            confirmation: input.confirmation,
+            actor: context.actor,
+          }
         );
         return {
-          approvalRequestId: input.requestId,
+          approvalRequestId: input.approvalRequestId,
           workspaceId: input.workspaceId,
           threadId: input.threadId,
           savedRevision: result.saved.file.revision,

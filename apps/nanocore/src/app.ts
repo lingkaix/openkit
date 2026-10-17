@@ -108,6 +108,7 @@ import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import {
   checkResourcePolicyCommandIntent,
   isResourcePolicyRequest,
+  isResourcePolicyRequesterCurrent,
 } from './policy/resource-policy-requests.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
@@ -1956,9 +1957,21 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         coordinatorTurnId,
       }),
   });
-  const goalRequesterAuthority = (
+  const currentRequesterAuthority = (
     record: import('./runtime/pending-requests.js').PendingRequestRecord
   ): boolean | undefined => {
+    if (isResourcePolicyRequest(record))
+      return Boolean(
+        options.coreDb &&
+          isResourcePolicyRequesterCurrent(
+            {
+              coreDb: options.coreDb,
+              store: sharedStore,
+              manager: runtimeConfigManager,
+            },
+            record
+          )
+      );
     if (record.requesterKind !== 'coordinator') return undefined;
     const db = repositoryWorkspaceDb(record.workspaceId);
     try {
@@ -1993,7 +2006,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           workspaceDb: { sqlite },
           manager: runtimeConfigManager,
           files: runtimeConfigFileService({ get: () => actor }),
-          requesterAuthority: goalRequesterAuthority,
         },
         record,
         actor
@@ -2092,7 +2104,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       assistantDelivery: pendingAssistantDelivery,
       coordinatorDelivery: goalCoordinator,
       ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
-      requesterAuthority: goalRequesterAuthority,
+      requesterAuthority: currentRequesterAuthority,
       checkCommandIntent,
       requestCommitted: goalRequestCommitted,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -2125,7 +2137,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     assistantDelivery: pendingAssistantDelivery,
     coordinatorDelivery: goalCoordinator,
     ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
-    requesterAuthority: goalRequesterAuthority,
+    requesterAuthority: currentRequesterAuthority,
     checkCommandIntent,
     requestCommitted: goalRequestCommitted,
     agentAuthority: (record) =>

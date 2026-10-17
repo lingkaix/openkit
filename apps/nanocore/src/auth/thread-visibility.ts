@@ -13,7 +13,7 @@ type Thread = import('zod').infer<typeof ThreadSchema>;
 
 /** Unique Thread audience predicate after Workspace eligibility; administrator eligibility must come from the current credential owner. */
 export function isThreadVisible(
-  store: Pick<FsStore, 'getWorkspace'> & Partial<Pick<FsStore, 'getWorkspaceResourceAccess'>>,
+  store: Pick<FsStore, 'getWorkspace' | 'getWorkspaceResourceAccess'>,
   thread: Thread,
   userId: string | undefined,
   administratorEligible = false,
@@ -28,8 +28,12 @@ export function isThreadVisible(
     workspace.id !== quickChatWorkspaceIdForUser(userId)
   )
     return false;
-  if (thread.visibility === 'private')
-    return administratorEligible || thread.privateOwnerUserId === userId;
+  if (
+    thread.visibility === 'private' &&
+    !administratorEligible &&
+    thread.privateOwnerUserId !== userId
+  )
+    return false;
   if (operation === null) return true;
   try {
     return (
@@ -38,7 +42,10 @@ export function isThreadVisible(
         eligible: true,
         resource: { family: 'thread', id: thread.id },
         operation,
-        resourceAccess: store.getWorkspaceResourceAccess?.(thread.workspaceId) ?? [],
+        resourceAccess:
+          thread.visibility === 'workspace'
+            ? store.getWorkspaceResourceAccess(thread.workspaceId)
+            : [],
       }).effect === 'allow'
     );
   } catch {
@@ -86,7 +93,8 @@ export function isArtifactVisible(
   store: FsStore,
   artifact: Artifact,
   userId: string | undefined,
-  administratorEligible = false
+  administratorEligible = false,
+  policyActor?: ResourcePolicyActor
 ): boolean {
   if (!userId) return false;
   if (artifact.origin.kind === 'imported')
@@ -98,7 +106,9 @@ export function isArtifactVisible(
     artifact.workspaceId,
     artifact.origin.threadId,
     userId,
-    administratorEligible
+    administratorEligible,
+    'thread.read',
+    policyActor
   );
 }
 

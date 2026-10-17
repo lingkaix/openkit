@@ -11,7 +11,7 @@ import {
   authorizedWorkspaceSet,
   authorizeWorkspace,
   authorizeWorkspaceEligibility,
-  currentWorkerLineageWorkspaceAuthority,
+  currentWorkerLineageWorkspaceEligibility,
   DeploymentAdminRequiredError,
   hasWorkspaceDeletionRetryAuthority,
   isCanonicalUserOperationAuthorized,
@@ -337,12 +337,10 @@ export function admitOperation(
       if (entry.kind === 'worker' && workspaceId !== entry.lineage.workspaceId) throw denied();
       const authorized =
         entry.kind === 'worker'
-          ? currentWorkerLineageWorkspaceAuthority(
-              coreDb,
-              { ...entry.lineage, triggerActor: actorRef },
-              definition.policyOperation,
-              true
-            )
+          ? currentWorkerLineageWorkspaceEligibility(coreDb, {
+              ...entry.lineage,
+              triggerActor: actorRef,
+            })
           : authorizeWorkspaceEligibility(coreDb, entry.actor, workspaceId, definition);
       if (
         definition.scope.kind === 'actor-quick-chat-workspace' &&
