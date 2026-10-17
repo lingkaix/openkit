@@ -55,6 +55,19 @@ tag="${IMAGE_TAG:-$(read_image_field localTag)}"
 target="$(read_optional_image_field target)"
 docker_args=(-f "${dockerfile}" -t "${tag}")
 
+if [[ "${IMAGE_ID}" == "app" ]]; then
+  # Only a clean checkout identifies the complete local build context. Explicit
+  # release/candidate inputs already name the selected source revision.
+  source_commit="${OPENKIT_SOURCE_COMMIT:-}"
+  if [[ -z "${source_commit}" ]] && [[ -z "$(git status --porcelain)" ]]; then
+    source_commit="$(git rev-parse HEAD)"
+  fi
+  docker_args+=(
+    --build-arg "OPENKIT_SOURCE_COMMIT=${source_commit}"
+    --build-arg "OPENKIT_RELEASE_TAG=${OPENKIT_RELEASE_TAG:-}"
+  )
+fi
+
 if [[ "${IMAGE_ID}" == "test-env" ]]; then
   test_image_build_input_digest="$(node scripts/docker/test-image-tag.mjs --digest)"
   docker_args+=(

@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -76,9 +76,41 @@ test('writes App release identity from build arguments and does not publish it a
   assert.match(source, /ARG OPENKIT_RELEASE_TAG\nARG OPENKIT_SOURCE_COMMIT\n/u);
   assert.match(source, /\/usr\/local\/lib\/openkit\/release-identity\.json/u);
   assert.match(source, /Config\.Env/u);
-  assert.match(source, /releaseTag===""&&sourceCommit===""/u);
+  assert.match(source, /releaseTag===null&&sourceCommit===null/u);
   assert.doesNotMatch(source, /ENV OPENKIT_RELEASE_TAG/u);
   assert.doesNotMatch(source, /ENV OPENKIT_SOURCE_COMMIT/u);
+
+  const root = await mkdtemp(join(tmpdir(), 'openkit-app-build-identity-'));
+  try {
+    const script = source.match(/^RUN node -e '(.*release-identity\.json.*)'$/mu)?.[1];
+    assert.ok(script, 'the build identity must be written by the image build');
+    const isolated = script.replaceAll('/usr/local/lib/openkit', root);
+    const sourceCommit = 'c'.repeat(40);
+    for (const releaseTag of ['', 'v0.1.0-rc.10']) {
+      const result = spawnSync(process.execPath, ['-e', isolated], {
+        env: {
+          ...process.env,
+          OPENKIT_SOURCE_COMMIT: sourceCommit,
+          OPENKIT_RELEASE_TAG: releaseTag,
+        },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(await readFile(join(root, 'release-identity.json'), 'utf8')), {
+        sourceCommit,
+        releaseTag: releaseTag || null,
+      });
+    }
+    await rm(join(root, 'release-identity.json'));
+    const uninjected = spawnSync(process.execPath, ['-e', isolated], {
+      env: { ...process.env, OPENKIT_SOURCE_COMMIT: '', OPENKIT_RELEASE_TAG: '' },
+      encoding: 'utf8',
+    });
+    assert.equal(uninjected.status, 0, uninjected.stderr);
+    await assert.rejects(readFile(join(root, 'release-identity.json')), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('routes container signals through the supervising entrypoint exactly once', async () => {

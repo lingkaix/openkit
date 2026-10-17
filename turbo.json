@@ -12,6 +12,7 @@
   "globalPassThroughEnv": [
     "TMPDIR",
     "CARGO_HOME",
+    "CARGO_BUILD_JOBS",
     "RUSTUP_HOME",
     "RUST_VERSION",
     "LINDERA_BUILD_DICTIONARY_CACHE_DIR",
@@ -79,11 +80,12 @@
       "outputs": ["../../target/debug/retrieval-kernel"]
     },
     "@openkit/nanocore#test": {
-      "dependsOn": ["^build", "^test", "@openkit/retrieval-kernel#build"],
+      "dependsOn": ["^build", "^test", "@openkit/nanocore#build"],
       "outputs": ["coverage/**"]
     },
     "@openkit/nanocore#build": {
-      "dependsOn": ["^build", "@openkit/retrieval-kernel#build"]
+      "dependsOn": ["^build", "@openkit/retrieval-kernel#build"],
+      "outputs": ["dist/**"]
     }
   }
 }

@@ -1,10 +1,7 @@
-import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
-  digestOpenKitTree,
-  hashOpenKitTreeEntries,
   ResourceCatalogIdSchema,
   ResourceDigestSchema,
   type SkillVersionRecord,
@@ -18,7 +15,12 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { normalizeCapabilityRequestId } from '../capability/usage-ledger.js';
-import { loadWorkspaceResourceCatalog, skillSnapshotPath } from '../catalog/resource-catalog.js';
+import {
+  CatalogIntegrityError,
+  loadWorkspaceResourceCatalog,
+  readWorkspaceSkillSnapshot,
+  skillSnapshotPath,
+} from '../catalog/resource-catalog.js';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
@@ -202,7 +204,13 @@ export async function assembleAssistantSkillResources(
         const version = catalog.skills.versions.find(
           (item) => item.entryId === skillId && item.digest === digest
         );
-        if (!entry || entry.availability !== 'available' || !digest || !version)
+        if (
+          !entry ||
+          entry.availability !== 'available' ||
+          !digest ||
+          !version ||
+          version.contentState === 'purged'
+        )
           throw new AssistantSkillResourceError('resource_unavailable');
         const item = Object.freeze({
           skillId,
@@ -253,6 +261,7 @@ export async function assembleAssistantSkillResources(
       if (
         entry?.availability !== 'available' ||
         !version ||
+        version.contentState === 'purged' ||
         JSON.stringify(version.inventory) !== JSON.stringify(selected.version.inventory)
       )
         throw new AssistantSkillResourceError('resource_unavailable');
@@ -293,32 +302,22 @@ export async function assembleAssistantSkillResources(
           selected.metadata.contentDigest !== contentDigest
         )
           throw new AssistantSkillResourceError('invalid_skill_read');
-        // Reuse catalog path admission without opening any path supplied by the model.
-        try {
-          hashOpenKitTreeEntries([{ kind: 1, path, content: Buffer.alloc(0) }]);
-        } catch {
-          throw new AssistantSkillResourceError('invalid_skill_read');
-        }
         const retainedFile = selected.version.inventory.find(
           (file) => file.path === path && file.kind === 'file'
         );
         if (!retainedFile?.sha256) throw new AssistantSkillResourceError('invalid_skill_read');
         assertRetainedSkills([selected]);
-        const root = skillSnapshotPath(scope.dataRoot, scope.workspaceId, skillId, contentDigest);
-        assertSkillFileBounded(root, path);
-        // Verify the complete immutable version, then return bytes from that same verified collection.
-        const tree = digestOpenKitTree(root);
-        if (tree.digest !== contentDigest)
-          throw new AssistantSkillResourceError('skill_content_integrity_failed');
-        const file = tree.entries.find((item) => item.path === path && item.kind !== 0);
+        if (retainedFile.size > MAX_SKILL_PROJECTION_BYTES)
+          throw new AssistantSkillResourceError('skill_content_too_large');
+        // Catalog owns complete tree/digest/inventory verification. Return bytes from that same collection.
+        const { entries } = readWorkspaceSkillSnapshot({
+          dataRoot: scope.dataRoot,
+          workspaceId: scope.workspaceId,
+          entryId: skillId,
+          digest: contentDigest,
+        });
+        const file = entries.find((item) => item.path === path && item.kind !== 0);
         if (!file?.content) throw new AssistantSkillResourceError('resource_unavailable');
-        const fileDigest = `sha256:${createHash('sha256').update(file.content).digest('hex')}`;
-        if (
-          fileDigest !== retainedFile.sha256 ||
-          file.content.length !== retainedFile.size ||
-          (file.kind === 2) !== retainedFile.executable
-        )
-          throw new AssistantSkillResourceError('skill_content_integrity_failed');
         let text: string;
         try {
           // Preserve a UTF-8 BOM and exact text; provenance hashes the original bytes.
@@ -335,7 +334,7 @@ export async function assembleAssistantSkillResources(
           skillId,
           versionId,
           path,
-          fileDigest,
+          fileDigest: retainedFile.sha256,
           text: redactInternalAgentText(text),
         });
         const result = JSON.stringify(output);
@@ -344,6 +343,8 @@ export async function assembleAssistantSkillResources(
           throw new AssistantSkillResourceError('resource_unavailable');
         if (Buffer.byteLength(result) > MAX_SKILL_PROJECTION_BYTES)
           throw new AssistantSkillResourceError('skill_content_too_large');
+        // Verified bytes do not outlive current actor, audience, Turn or catalog eligibility.
+        assertRetainedSkills([selected]);
         context.signal.throwIfAborted();
         return output;
       } catch (error) {
@@ -472,29 +473,12 @@ function assertSnapshotContained(dataRoot: string, snapshot: string): void {
     throw new AssistantSkillResourceError('resource_unavailable');
 }
 
-/** Checks each requested parent before leaf metadata so even the size check cannot follow a link. */
-function assertSkillFileBounded(root: string, path: string): void {
-  const segments = path.split('/');
-  let current = root;
-  for (const [index, segment] of segments.entries()) {
-    current = join(current, segment);
-    const entry = lstatSync(current);
-    if (entry.isSymbolicLink())
-      throw new AssistantSkillResourceError('skill_content_integrity_failed');
-    if (index < segments.length - 1) {
-      if (!entry.isDirectory())
-        throw new AssistantSkillResourceError('skill_content_integrity_failed');
-    } else {
-      if (!entry.isFile()) throw new AssistantSkillResourceError('invalid_skill_read');
-      if (entry.size > MAX_SKILL_PROJECTION_BYTES)
-        throw new AssistantSkillResourceError('skill_content_too_large');
-    }
-  }
-}
-
 /** Unknown filesystem/catalog failures never disclose paths, source text, or exception messages. */
 function safeSkillFailure(error: unknown): AssistantSkillResourceError {
-  return error instanceof AssistantSkillResourceError
-    ? error
-    : new AssistantSkillResourceError('resource_unavailable');
+  if (error instanceof AssistantSkillResourceError) return error;
+  return new AssistantSkillResourceError(
+    error instanceof CatalogIntegrityError
+      ? 'skill_content_integrity_failed'
+      : 'resource_unavailable'
+  );
 }

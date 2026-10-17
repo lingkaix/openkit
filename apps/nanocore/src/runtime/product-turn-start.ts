@@ -20,7 +20,9 @@ import {
   SchedulerAdmissionTransitionError,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
+import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
 import {
@@ -60,6 +62,14 @@ interface StartProductTurnInput
   readonly reservedTurnId?: string;
   /** Explicit retained-storage choice captured with scheduler admission. */
   readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+  /** Verified originals accepted by conversation submission and published before dispatch eligibility. */
+  readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
+  /** Private sources consumed by the first canonical Turn publication. */
+  readonly filePayloadPaths?: readonly string[];
+  /** Shared runtime disk owner; never persisted or projected. */
+  readonly fileWriteAdmission?: FileStorageAdmission;
+  /** Synchronous live file-input admission immediately before publication. */
+  readonly assertFileInputAdmission?: () => void;
   /**
    * Optional callback once this admission's Turn and resolved setup are durable, carrying its nullable AgentSession while queued acceptance remains independent of execution.
    *
@@ -219,8 +229,10 @@ export async function startProductTurn(input: StartProductTurnInput) {
       setup.diagnostics.map((diagnostic) => diagnostic.message).join(' '),
       409
     );
+  assertRunSkillSelectionsIncluded(setup.setup.manifest.skills ?? [], input.input.skillSelections);
   const reasoningEffort =
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
+  if (input.fileInputs?.length) input.assertFileInputAdmission?.();
   try {
     createSchedulerAdmissionEntry(input.coreDb, {
       backendId: backend.id,
@@ -263,7 +275,18 @@ export async function startProductTurn(input: StartProductTurnInput) {
         status: 'pending',
         agentId: requestedAgentId,
         executorKind: 'worker',
+        ...(input.fileInputs?.length
+          ? {
+              fileInputs: input.fileInputs,
+              filePayloadPaths: input.filePayloadPaths,
+              fileWriteAdmission: input.fileWriteAdmission,
+              assertFileInputAdmission: input.assertFileInputAdmission,
+            }
+          : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(input.input.skillSelections !== undefined
+          ? { skillSelections: input.input.skillSelections }
+          : {}),
       }
     );
   // This listener observes the existing product owner; it grants neither execution nor recovery.

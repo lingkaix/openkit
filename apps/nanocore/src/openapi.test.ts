@@ -15,6 +15,7 @@ import {
 import {
   AgentIdSchema,
   ArtifactIdSchema,
+  allocateEntityId,
   PROTOCOL_VERSION,
   ThreadIdSchema,
   TurnIdSchema,
@@ -1080,17 +1081,89 @@ describe('app api openapi projection', () => {
     });
   });
 
-  it('projects the Stage 2 Artifact and Material operations from shared schemas', () => {
+  it('preserves the shared opaque import request identity in the OpenAPI header', () => {
+    const upload = createAppOpenApiDocument().paths['/api/app/operations/artifact.import']!.post;
+    const requestId = upload.parameters!.find(
+      (parameter) => 'name' in parameter && parameter.name === 'x-openkit-request-id'
+    );
+    expect(requestId).toMatchObject({ schema: { type: 'string', minLength: 1 } });
+    expect(requestId).not.toMatchObject({ schema: { format: 'uuid' } });
+    expect(
+      OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape.requestId.safeParse(
+        'raw-import-request'
+      ).success
+    ).toBe(true);
+  });
+
+  it('projects raw Artifact import metadata separately from its binary body and the exact download selector', () => {
+    const document = createAppOpenApiDocument();
+    const upload = document.paths['/api/app/operations/artifact.import']?.post;
+    expect(upload).toMatchObject({
+      operationId: 'artifact.import',
+      requestBody: {
+        required: true,
+        content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } },
+      },
+      responses: {
+        default: {
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } },
+        },
+      },
+    });
+    expect(Object.keys(upload!.requestBody!.content)).toEqual(['application/octet-stream']);
+    expect(upload!.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'x-openkit-request-id', in: 'header', required: true }),
+        ...['workspaceId', 'title', 'mediaType', 'contentDigest', 'byteLength'].map((name) =>
+          expect.objectContaining({ name, in: 'query', required: true })
+        ),
+      ])
+    );
+    expect(upload!.parameters).toHaveLength(6);
+    const length = upload!.parameters!.find(
+      (parameter) => 'name' in parameter && parameter.name === 'byteLength'
+    );
+    expect(length).toMatchObject({
+      schema: { type: 'integer', minimum: 0, maximum: 1_000_000_000 },
+    });
+    const result = upload!.responses['201']!.content!['application/json']!.schema;
+    const ajv = new Ajv2020({ strict: false });
+    const validateResult = ajv.compile(result);
+    const artifactId = allocateEntityId('ar');
+    expect(validateResult({ artifactId, artifactVersion: 1 })).toBe(true);
+    expect(validateResult({ artifactId, artifactVersion: 2 })).toBe(false);
+    expect(validateResult({ artifactId, artifactVersion: 1, content: 'inline' })).toBe(false);
+    const download = document.paths['/api/app/operations/artifact.download']?.get;
+    expect(download).toMatchObject({
+      operationId: 'artifact.download',
+      responses: {
+        '200': {
+          content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } },
+        },
+        default: {
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } },
+        },
+      },
+    });
+    expect(download).not.toHaveProperty('requestBody');
+    expect(download!.parameters).toHaveLength(3);
+    expect(download!.parameters).toEqual(
+      expect.arrayContaining(
+        ['workspaceId', 'artifactId', 'artifactVersion'].map((name) =>
+          expect.objectContaining({ name, in: 'query', required: true })
+        )
+      )
+    );
+    expect(document.paths['/api/app/operations/artifact.download']).not.toHaveProperty('post');
+    expect(upload!.security).toEqual(download!.security);
+    expect(upload!.security).toEqual(
+      expect.arrayContaining([{ bearerAuth: [] }, { sessionCookie: [] }])
+    );
+  });
+
+  it('projects the Stage 2 Artifact and Material JSON operations from shared schemas', () => {
     const document = createAppOpenApiDocument();
     const operations = [
-      [
-        'post',
-        '/api/app/operations/artifact.import',
-        'artifact.import',
-        'artifact.import.input',
-        '201',
-        'artifact.import.output',
-      ],
       [
         'post',
         '/api/app/operations/artifact.introduce',
@@ -1459,7 +1532,9 @@ describe('app api openapi projection', () => {
   it('preserves preparation and recovery constraints in runtime JSON Schema and generated OpenAPI', () => {
     const document = createAppOpenApiDocument();
     const digest = `sha256:${'a'.repeat(64)}`;
-    const common = { administrationThreadId: testEntityId('th', 'thread_admin') };
+    const common = {
+      administrationThreadId: testEntityId('th', 'th_00000000-0000-79b7-9009-e76cfeceddee'),
+    };
     const preparation = {
       ...common,
       configuration: { fileId: 'agents/codex.agent.jsonc', expectedRevision: digest },
@@ -1469,7 +1544,7 @@ describe('app api openapi projection', () => {
     const recovery = {
       ...common,
       recoverFrom: {
-        artifactId: testEntityId('ar', 'artifact_authored'),
+        artifactId: testEntityId('ar', 'ar_00000000-0000-765f-9e4b-f410cda62de6'),
         artifactVersion: 1,
         contentDigest: digest,
       },
@@ -2013,6 +2088,8 @@ describe('app api openapi projection', () => {
       'workspace.archive-download',
       'workspace.archive-import-dry-run',
       'workspace.archive-import',
+      'artifact.import',
+      'artifact.download',
       ...Object.entries(OPERATION_DEFINITIONS)
         .filter(([, definition]) => definition.binding === 'json')
         .map(([id]) => id),
@@ -2046,7 +2123,7 @@ describe('app api openapi projection', () => {
     expect(validateBuild({ releaseTag: null, sourceCommit: null })).toBe(true);
     expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit })).toBe(true);
     expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit: null })).toBe(false);
-    expect(validateBuild({ releaseTag: null, sourceCommit })).toBe(false);
+    expect(validateBuild({ releaseTag: null, sourceCommit })).toBe(true);
     expect(process).toMatchObject({
       type: 'object',
       required: ['observedAt', 'nodeVersion', 'uptimeSeconds', 'memory', 'telemetry'],

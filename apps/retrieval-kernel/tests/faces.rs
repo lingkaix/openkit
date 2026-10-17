@@ -312,3 +312,48 @@ fn local_service_adapter_text_round_trip() {
         assert_eq!(reply["result"]["hits"][0]["key"]["id"], "item-1");
     }
 }
+
+/// Generic byte-window scans return offsets only and share the existing startup root fence.
+#[test]
+fn digest_window_service_is_bounded_and_confined() {
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let bytes = [
+        b"\0begin".as_slice(),
+        &vec![b'x'; 65_530],
+        b"needle",
+        b"needle",
+    ]
+    .concat();
+    fs::write(root.path().join("source"), &bytes).unwrap();
+    let request = json!({"version":1,"id":1,"op":"digest-windows","request":{
+        "path":"source","source_bytes":bytes.len(),"start":0,"end":bytes.len(),
+        "patterns":[{"window_bytes":6,"encoding":"bytes","digests":[format!("{:x}",Sha256::digest(b"needle"))]}],
+        "bounds":{"max_bytes":bytes.len(),"max_matches":2,"timeout_ms":10000}
+    }});
+    let mut overflow = request.clone();
+    overflow["request"]["bounds"]["max_matches"] = json!(1);
+    let mut traversal = request.clone();
+    traversal["request"]["path"] = json!("../source");
+    let mut byte_limit = request.clone();
+    byte_limit["request"]["bounds"]["max_bytes"] = json!(1);
+    let replies = execute(
+        root.path(),
+        &[
+            "service",
+            "--sources",
+            root.path().to_str().unwrap(),
+            "--store",
+            store.path().to_str().unwrap(),
+        ],
+        &[request, overflow, traversal, byte_limit],
+    );
+    assert_eq!(
+        replies[0]["result"]["matches"],
+        json!([{"start":65536,"end":65542},{"start":65542,"end":65548}])
+    );
+    assert_eq!(replies[1]["error"]["code"], "resource-limited");
+    assert_eq!(replies[2]["error"]["code"], "invalid-request");
+    assert_eq!(replies[3]["error"]["code"], "resource-limited");
+    assert!(!serde_json::to_string(&replies).unwrap().contains("needle"));
+}

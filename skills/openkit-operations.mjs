@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   constants,
@@ -8,12 +9,17 @@ import {
   lstatSync,
   openSync,
 } from 'node:fs';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as appSchemas from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { AccessTokenIdSchema, UserIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { acquireLocalEcosystemSkill } from '../apps/nanocore/dist/catalog/skill-local-source.js';
+import {
+  parseSkillImportSource,
+  SkillSourceInputError,
+} from '../apps/nanocore/dist/catalog/skill-source.js';
 import { isValidCredentialDestination } from './openkit-secrets.mjs';
 
 const EMPTY_INPUT = z.object({}).strict();
@@ -227,16 +233,20 @@ function secretDeliveryProjection(id, definition) {
  * Opens one exact regular non-link archive and preserves its identity through stream acquisition.
  *
  * @param {string} sourcePath Caller-selected source path.
- * @returns {ReadableStream<Uint8Array>} Owned archive stream.
+ * @param {'archive' | 'artifact'} [kind] Operation-specific fixed diagnostic class.
+ * @returns {ReadableStream<Uint8Array>} Owned exact file stream.
  */
-function openWorkspaceArchive(sourcePath) {
+function openWorkspaceArchive(sourcePath, kind = 'archive') {
   let fileDescriptor = null;
   try {
     const before = lstatSync(sourcePath);
     if (before.isSymbolicLink() || !before.isFile()) {
       throw new Error('not a regular file');
     }
-    fileDescriptor = openSync(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fileDescriptor = openSync(
+      sourcePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
     const opened = fstatSync(fileDescriptor);
     if (before.dev !== opened.dev || before.ino !== opened.ino || !opened.isFile()) {
       throw new Error('file identity changed');
@@ -248,7 +258,13 @@ function openWorkspaceArchive(sourcePath) {
     if (fileDescriptor !== null) {
       closeSync(fileDescriptor);
     }
-    throw localError('invalid_archive_source', 'Workspace archive source is unavailable.', cause);
+    throw localError(
+      `invalid_${kind}_source`,
+      kind === 'archive'
+        ? 'Workspace archive source is unavailable.'
+        : 'Artifact source is unavailable.',
+      cause
+    );
   }
 }
 
@@ -257,9 +273,10 @@ function openWorkspaceArchive(sourcePath) {
  *
  * @param {string} destinationPath Caller-selected destination path.
  * @param {ReadableStream<Uint8Array>} stream Download response stream.
+ * @param {{byteLength: number, contentDigest: string}} [expected] Exact Artifact download proof.
  * @returns {Promise<void>}
  */
-async function writeWorkspaceArchive(destinationPath, stream) {
+async function writeWorkspaceArchive(destinationPath, stream, expected) {
   let fileDescriptor = null;
   let identity = null;
   try {
@@ -272,7 +289,28 @@ async function writeWorkspaceArchive(destinationPath, stream) {
     identity = fstatSync(fileDescriptor);
     const output = createWriteStream(destinationPath, { autoClose: true, fd: fileDescriptor });
     fileDescriptor = null;
-    await pipeline(Readable.fromWeb(stream), output);
+    if (expected) {
+      const hash = createHash('sha256');
+      let byteLength = 0;
+      const verify = new Transform({
+        transform(chunk, _encoding, done) {
+          byteLength += chunk.byteLength;
+          if (byteLength > expected.byteLength)
+            return done(new Error('Artifact download length mismatch.'));
+          hash.update(chunk);
+          done(null, chunk);
+        },
+        flush(done) {
+          done(
+            byteLength === expected.byteLength &&
+              `sha256:${hash.digest('hex')}` === expected.contentDigest
+              ? null
+              : new Error('Artifact download digest mismatch.')
+          );
+        },
+      });
+      await pipeline(Readable.fromWeb(stream), verify, output);
+    } else await pipeline(Readable.fromWeb(stream), output);
     const published = lstatSync(destinationPath, { throwIfNoEntry: false });
     if (
       !published ||
@@ -287,11 +325,18 @@ async function writeWorkspaceArchive(destinationPath, stream) {
     if (fileDescriptor !== null) {
       closeSync(fileDescriptor);
     }
+    const kind = expected ? 'artifact' : 'archive';
     const code =
       cause?.code === 'EEXIST' || cause?.code === 'ELOOP'
-        ? 'archive_destination_exists'
-        : 'archive_download_failed';
-    throw localError(code, 'Workspace archive destination could not be created.', cause);
+        ? `${kind}_destination_exists`
+        : `${kind}_download_failed`;
+    throw localError(
+      code,
+      expected
+        ? 'Artifact destination could not be created or verified.'
+        : 'Workspace archive destination could not be created.',
+      cause
+    );
   }
 }
 
@@ -312,6 +357,33 @@ function requireAgentReadableMaterial(sensitivity) {
 
 /** Retained stream bindings add only CLI-local file inputs and exclusive sink effects. */
 const archiveBindings = {
+  'artifact.import': {
+    clientMethod: 'artifactFiles.import',
+    inputSchema: strictShared(
+      appSchemas.ARTIFACT_OPERATION_DEFINITIONS['artifact.import'].inputSchema.safeExtend({
+        sourcePath: z.string().min(1),
+      })
+    ),
+    handler: ({ client }, input) =>
+      client.artifactFiles.import(
+        bodyWithout(input, 'sourcePath'),
+        openWorkspaceArchive(input.sourcePath, 'artifact')
+      ),
+  },
+  'artifact.download': {
+    clientMethod: 'artifactFiles.download',
+    inputSchema: strictShared(
+      appSchemas.ARTIFACT_OPERATION_DEFINITIONS['artifact.download'].inputSchema.safeExtend({
+        destinationPath: z.string().min(1),
+      })
+    ),
+    mutating: true, // Exclusive local destination creation is a CLI effect.
+    async handler({ client }, input) {
+      const downloaded = await client.artifactFiles.download(bodyWithout(input, 'destinationPath'));
+      await writeWorkspaceArchive(input.destinationPath, downloaded.body, downloaded);
+      return { downloaded: true };
+    },
+  },
   'workspace.archive-download': {
     clientMethod: 'app.downloadWorkspaceExportArchive',
     inputSchema: strictShared(
@@ -404,54 +476,84 @@ export const operationCatalog = [
       return { deleted: credentialStore.deleteToken({ baseUrl: endpoint }) };
     },
   },
-  ...Object.entries(appSchemas.OPERATION_DEFINITIONS).map(([id, definition]) => ({
-    ...STANDARD,
-    ...(definition.scope.kind === 'server' ? DEPLOYMENT_ADMIN_ACCESS : {}),
-    ...(Object.hasOwn(appSchemas.ADMINISTRATION_OPERATION_DEFINITIONS, id) &&
-    definition.scope.kind !== 'server'
-      ? {
-          requiredAccess:
-            definition.scope.kind === 'actor-quick-chat-workspace'
-              ? 'deployment admin; private Quick Chat; exact human confirmation when required'
-              : 'deployment admin; current Workspace and source-audience access; exact human confirmation when required',
+  ...Object.entries(appSchemas.OPERATION_DEFINITIONS)
+    .filter(
+      ([id, definition]) => definition.binding === 'json' || Object.hasOwn(archiveBindings, id)
+    )
+    .map(([id, definition]) => ({
+      ...STANDARD,
+      ...(definition.scope.kind === 'server' ? DEPLOYMENT_ADMIN_ACCESS : {}),
+      ...(Object.hasOwn(appSchemas.ADMINISTRATION_OPERATION_DEFINITIONS, id) &&
+      definition.scope.kind !== 'server'
+        ? {
+            requiredAccess:
+              definition.scope.kind === 'actor-quick-chat-workspace'
+                ? 'deployment admin; private Quick Chat; exact human confirmation when required'
+                : 'deployment admin; current Workspace and source-audience access; exact human confirmation when required',
+          }
+        : {}),
+      ...(definition.scope.kind === 'user'
+        ? { requiredAccess: 'canonical user: implicit local actor or server-admin bearer token' }
+        : {}),
+      ...('inputSensitivity' in definition
+        ? { inputSensitivity: definition.inputSensitivity }
+        : {}),
+      ...(id === 'material.revision-save' ? { inputSensitivity: 'workspace content' } : {}),
+      ...(id === 'material.revision-read' ? { outputSensitivity: 'workspace content' } : {}),
+      id,
+      source: 'app-api',
+      appOperationId: id,
+      clientMethod: `operations.${id}`,
+      group: id.split('.')[0],
+      summary: definition.description,
+      mutating: definition.mutating,
+      inputSchema: strictShared(definition.inputSchema),
+      outputSchema: definition.outputSchema,
+      handler: async ({ client }, input) => {
+        if (id === 'catalog.skill-import' && typeof input.source === 'string') {
+          try {
+            const source = parseSkillImportSource(input.source);
+            if (source.kind === 'local') {
+              const { tree } = acquireLocalEcosystemSkill({
+                path: source.path,
+                ...(input.sourceSubpath === undefined ? {} : { subpath: input.sourceSubpath }),
+                ...(input.sourceSkillName === undefined
+                  ? {}
+                  : { skillName: input.sourceSkillName }),
+              });
+              input = { ...bodyWithout(input, 'source', 'sourceSubpath', 'sourceSkillName'), tree };
+            }
+          } catch (error) {
+            if (error instanceof SkillSourceInputError)
+              throw localError('invalid_skill_source', error.message);
+            throw error;
+          }
         }
-      : {}),
-    ...(definition.scope.kind === 'user'
-      ? { requiredAccess: 'canonical user: implicit local actor or server-admin bearer token' }
-      : {}),
-    ...('inputSensitivity' in definition ? { inputSensitivity: definition.inputSensitivity } : {}),
-    ...(id === 'material.revision-save' ? { inputSensitivity: 'workspace content' } : {}),
-    ...(id === 'material.revision-read' ? { outputSensitivity: 'workspace content' } : {}),
-    id,
-    source: 'app-api',
-    appOperationId: id,
-    clientMethod: `operations.${id}`,
-    group: id.split('.')[0],
-    summary: definition.description,
-    mutating: definition.mutating,
-    inputSchema: strictShared(definition.inputSchema),
-    outputSchema: definition.outputSchema,
-    handler: async ({ client }, input) => {
-      if (id === 'material.create') requireAgentReadableMaterial(input.sensitivity);
-      if (id === 'material.revision-read' || id === 'material.revision-save') {
-        const { material } = await client.operations['material.read']({
-          workspaceId: input.workspaceId,
-          materialId: input.materialId,
-        });
-        requireAgentReadableMaterial(material.sensitivity);
-      }
-      return client.operations[id](input);
-    },
-    credentials: definition.credentials,
-    ...secretDeliveryProjection(id, definition),
-    ...(definition.binding === 'streaming'
-      ? {
-          ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
-          inputSensitivity: 'host-local path',
-          ...archiveBindings[id],
+        if (id === 'material.create') requireAgentReadableMaterial(input.sensitivity);
+        if (id === 'material.revision-read' || id === 'material.revision-save') {
+          const { material } = await client.operations['material.read']({
+            workspaceId: input.workspaceId,
+            materialId: input.materialId,
+          });
+          requireAgentReadableMaterial(material.sensitivity);
         }
-      : {}),
-  })),
+        return client.operations[id](input);
+      },
+      credentials: definition.credentials,
+      ...secretDeliveryProjection(id, definition),
+      ...(definition.binding === 'streaming'
+        ? {
+            ...(id.startsWith('workspace.')
+              ? LOCAL_WORKSPACE_ARCHIVE_ACCESS
+              : {
+                  requiredAccess:
+                    'authenticated user; current Workspace and Artifact audience; explicit local file path',
+                }),
+            inputSensitivity: 'host-local path',
+            ...archiveBindings[id],
+          }
+        : {}),
+    })),
 ];
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */

@@ -15,9 +15,9 @@ export const RELEASE_IDENTITY_PATH = '/usr/local/lib/openkit/release-identity.js
 /**
  * Reads the release identity file admitted at boot.
  *
- * A missing file is a non-release build and reports both fields null. A present
- * file with invalid JSON, an unknown core shape, a tag that is not a v-prefixed
- * SemVer tag, or a commit that is not 40 lowercase hex fails boot configuration.
+ * A missing file has no injected build identity and reports both fields null. A present
+ * file requires an exact 40-lowercase-hex commit. Its tag is null for an untagged
+ * source build or a v-prefixed SemVer tag. Invalid JSON or core values fail boot configuration.
  * Unknown additive keys are ignored and are not returned.
  *
  * @param path Identity file path. Production uses the image path.

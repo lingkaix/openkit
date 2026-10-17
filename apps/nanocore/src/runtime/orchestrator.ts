@@ -303,6 +303,17 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     ...(input.userConfig ? { userConfig: input.userConfig } : {}),
   });
 
+  if (
+    agentSetupResult.diagnostics.some(
+      (diagnostic) => diagnostic.code === 'agent_setup.conflicting_skill_versions'
+    )
+  ) {
+    throw new TurnStartValidationError(
+      'conflict',
+      'The composed Agent setup has conflicting exact Skill versions.',
+      409
+    );
+  }
   if (agentSetupResult.diagnostics.length > 0) {
     throw new Error(
       agentSetupResult.diagnostics.map((diagnostic) => diagnostic.message).join('\n')

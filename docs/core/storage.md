@@ -167,7 +167,8 @@ A Core product-record lifecycle for raw audio and private reasoning is explicitl
 - User-visible workspace collections MUST be derived from identity and permission relationships rather than filesystem discovery or user-owned links.
 - File-backed records SHOULD be inspectable and portable unless a data class has a clear reason to use SQLite as source of truth.
 - Derived SQLite indexes SHOULD be rebuildable from file-backed records when SQLite is not the source of truth.
-- An integrity failure in authority-bearing storage MUST fail closed and preserve the original store in place; automatic recovery MUST NOT replace lost authority with a fresh empty store.
+- Each canonical store MUST have one acknowledgement point, as defined in [Fault Tolerance](fault-tolerance.md). An owner MUST NOT report acceptance before content reaches it, and content MUST be durable before a durable reference to it is published.
+- An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed and preserve what remains in place; automatic recovery MUST NOT replace lost authority with a fresh empty store.
 - Storage layout MUST NOT redefine workspace, thread, turn, item, artifact, knowledge, vault, audit, usage, or AgentSession semantics.
 - Secret values MUST NOT be stored in normal workspace files, item payloads, protocol records, or derived indexes.
 - Authority-bearing storage fields MUST NOT be silently ignored by readers that do not understand them.

@@ -12,6 +12,7 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -30,6 +31,10 @@ import { PiAiGatewayClient } from './pi-ai-client.js';
 import { attachPiAiFailure } from './pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 import { digestLlmSystemPrompt } from './system-prompt-digest.js';
+
+vi.mock('../diagnostics/release-identity.js', () => ({
+  readReleaseIdentity: vi.fn(() => ({ releaseTag: null, sourceCommit: null })),
+}));
 
 const roots: string[] = [];
 const databases: WorkspaceDb[] = [];
@@ -153,6 +158,37 @@ it.each([
 });
 
 describe('Turn environment retention', () => {
+  it.each([
+    {
+      build: 'tagged',
+      identity: { releaseTag: 'v0.1.0-rc.10', sourceCommit: 'a'.repeat(40) },
+      version: `v0.1.0-rc.10@${'a'.repeat(40)}`,
+    },
+    {
+      build: 'untagged',
+      identity: { releaseTag: null, sourceCommit: 'b'.repeat(40) },
+      version: 'b'.repeat(40),
+    },
+    {
+      build: 'absent',
+      identity: { releaseTag: null, sourceCommit: null },
+      version: 'unknown',
+    },
+  ])('retains the $build build identity before model access', async ({ identity, version }) => {
+    const f = fixture('off');
+    vi.mocked(readReleaseIdentity).mockReturnValueOnce(identity);
+    const run = vi.fn(async (capture) => {
+      expect(readWorkObservations(capture.workspaceDb, capture)).toMatchObject([
+        { type: 'env.bound', payload: { version } },
+      ]);
+      return 'ran';
+    });
+    await expect(
+      withTurnModelCapture({ ...f, environment: { systemPrompt: 'Prompt', tools: [] } }, run)
+    ).resolves.toBe('ran');
+    expect(run).toHaveBeenCalledOnce();
+  });
+
   it.each(['off', 'on'] as const)('retains env.bound before run with capture %s', async (value) => {
     const f = fixture(value);
     const environment = {
@@ -177,8 +213,7 @@ describe('Turn environment retention', () => {
         turnId: f.turn.id,
         ret: 'turn-evidence',
         payload: {
-          version: JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
-            .version,
+          version: 'unknown',
           workspaceId: f.workspaceDb.workspaceId,
           systemPromptDigest: digestLlmSystemPrompt({
             endpoint: 'responses',
