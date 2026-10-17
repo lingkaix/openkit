@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+// The canonical-root regression creates a real fixture-local directory symlink.
 import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
