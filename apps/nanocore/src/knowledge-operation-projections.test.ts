@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
+import { RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -741,6 +742,12 @@ describe('Knowledge operation definition cutover', () => {
             'knowledge.context.prepare',
             'knowledge.answer',
           ]) {
+            const beforeQuestion = new Set(
+              f.store
+                .listThreads(DEMO_WORKSPACE_ID)
+                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+                .map((turn) => turn.id)
+            );
             const result = await project(id, {
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               query: 'audience budget baseline',
@@ -757,9 +764,55 @@ describe('Knowledge operation definition cutover', () => {
             });
             expect(JSON.stringify(result)).not.toContain(entry.title);
             expect(JSON.stringify(result)).not.toContain(entry.content);
-            if (id === 'knowledge.answer')
+            if (id === 'knowledge.answer') {
               expect(result).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
-            else if (id === 'knowledge.retrieval')
+              expect(
+                (result as schemas.OperationOutput<'knowledge.answer'>).uncertainty
+              ).toBeTruthy();
+              const runs = f.store
+                .listThreads(DEMO_WORKSPACE_ID)
+                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+                .filter(
+                  (turn) => !beforeQuestion.has(turn.id) && turn.agentId === 'knowledge-manager'
+                );
+              expect(runs).toHaveLength(1);
+              const call = runs[0]!.items.find(
+                (item) => item.type === 'tool-call' && item.tool === 'knowledge.retrieval'
+              );
+              if (call?.type !== 'tool-call' || !call.result)
+                throw new Error('The Knowledge retrieval result was not retained.');
+              const search = JSON.parse(JSON.parse(call.result)[0].text);
+              const selection = search.sources.find(
+                (source: { source: string }) => source.source === 'workspace'
+              );
+              expect(selection.excluded).toContainEqual(
+                expect.objectContaining({
+                  reference: { scopeId: `page/workspace/${DEMO_WORKSPACE_ID}`, objectId: entry.id },
+                  contentDigest: null,
+                  sourceReferences: [],
+                  reason: 'sensitive_content',
+                })
+              );
+              // Native continuation can verify its safe selection without granting full raw-trace inspection.
+              expect(() =>
+                retrieval.assertKnowledgeRetrievalTraceReadable({
+                  dataRoot: f.dataRoot,
+                  workspaceId: DEMO_WORKSPACE_ID,
+                  access: {
+                    store: f.store,
+                    coreDb: f.coreDb,
+                    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+                    requestActor: {
+                      kind: 'local',
+                      userId: 'usr_00000000-0000-7000-8000-000000000001',
+                    },
+                  },
+                  retrievalTraceRef: RetrievalTraceReferenceSchema.parse(
+                    selection.retrievalTraceRef
+                  ),
+                })
+              ).toThrowError('Knowledge trace or source is unavailable.');
+            } else if (id === 'knowledge.retrieval')
               expect(result).toMatchObject({
                 selected: [],
                 excluded: [
