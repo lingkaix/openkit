@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -2055,6 +2056,44 @@ test('Artifact CLI transfers import and download originals through the bundled c
     uploaded.stdout + downloaded.stdout + uploaded.stderr + downloaded.stderr,
     /okt_artifact_fixture/
   );
+});
+
+test('Artifact version CLI publication sends exact local bytes through the existing file client', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-skill-artifact-version-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const sourcePath = join(root, 'replacement.bin');
+  const bytes = Buffer.from([0, 255, 128, 13, 10]);
+  writeFileSync(sourcePath, bytes);
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'artifact.version-file-commit');
+  assert.ok(operation, 'the streaming version operation needs its CLI file binding');
+  assert.equal(operation.clientMethod, 'artifactFiles.commitVersion');
+  const input = {
+    workspaceId: protocol.allocateEntityId('ws'),
+    artifactId: protocol.allocateEntityId('ar'),
+    threadId: protocol.allocateEntityId('th'),
+    expectedArtifactVersion: 1,
+    requestId: 'artifact-cli-next-version',
+    title: 'Exact replacement',
+    summary: null,
+    mediaType: 'application/octet-stream',
+    byteLength: bytes.length,
+    contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+  };
+  const calls = [];
+  const client = {
+    artifactFiles: {
+      async commitVersion(metadata, body) {
+        calls.push({ metadata, bytes: Buffer.from(await new Response(body).arrayBuffer()) });
+        return { committed: true };
+      },
+    },
+  };
+  assert.deepEqual(
+    await operation.handler({ client }, operation.inputSchema.parse({ ...input, sourcePath })),
+    { committed: true }
+  );
+  assert.deepEqual(calls, [{ metadata: input, bytes }]);
 });
 
 test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local destinations', async (t) => {

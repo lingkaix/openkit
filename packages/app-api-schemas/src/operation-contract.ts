@@ -102,6 +102,11 @@ export type OperationMutationTarget = {
 /** Closed response framing facts with current JSON and MCP consumers. */
 export interface OperationProjectionFacts {
   readonly binding: 'json' | 'streaming';
+  /** Owner-declared binary framing accepted alongside the operation's JSON input. */
+  readonly binaryRequestBody?: {
+    readonly mediaType: string;
+    readonly description: string;
+  };
   readonly returnsOneTimeSecret: boolean;
   readonly successStatus: 200 | 201 | 202 | 204;
   readonly successStatuses?: readonly (200 | 201 | 202 | 204)[];

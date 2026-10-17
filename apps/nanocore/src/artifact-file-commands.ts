@@ -169,7 +169,7 @@ function replayImportedFile(
   metadata: ImportWorkspaceArtifactRequest & { readonly workspaceId: string },
   record: CommandRequestRecord
 ) {
-  const artifact = store.getArtifact(metadata.workspaceId, artifactId);
+  const artifact = store.getArtifactVersion(metadata.workspaceId, artifactId, 1).artifact;
   const origin = artifact.origin;
   if (
     record.response.kind !== 'artifact' ||

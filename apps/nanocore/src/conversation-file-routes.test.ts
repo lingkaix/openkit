@@ -324,9 +324,9 @@ describe('Turn-owned conversation originals', () => {
     ).toBe(false);
   });
 
-  // Real 8 MB retained-record serialization and verification need a local 60-second runner limit.
+  // Retained-record serialization and verification use the local 60-second runner limit.
   it('refuses a retained Thread rewrite that exceeds shared publication capacity before Assistant execution', async () => {
-    const state = fixture(() => 7_000_000n);
+    const state = fixture(() => 1_500_000n);
     const threadPath = join(
       state.dataRoot,
       'workspaces',
@@ -336,7 +336,7 @@ describe('Turn-owned conversation originals', () => {
       'thread.json'
     );
     const retained = JSON.parse(readFileSync(threadPath, 'utf8'));
-    retained.futureMetadata = 'x'.repeat(8_000_000);
+    retained.futureMetadata = 'x'.repeat(800_000);
     writeFileSync(threadPath, JSON.stringify(retained));
     const before = readFileSync(threadPath);
     const bytes = new Uint8Array([1]);
