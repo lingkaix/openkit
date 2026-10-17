@@ -257,6 +257,8 @@ describe('stock xAI HTTP rejection diagnostics', () => {
   it.each([
     'nested',
     'flat',
+    'invalid',
+    'oversized',
   ] as const)('retains bounded typed HTTP 422 details without granting replay: %s', async (shape) => {
     const models = createModels();
     models.setProvider(xaiProvider());
