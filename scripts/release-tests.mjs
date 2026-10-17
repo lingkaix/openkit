@@ -400,7 +400,15 @@ export function rootSuite({ root = process.cwd() } = {}) {
     if (r.error || r.signal || r.status !== 0)
       throw Error(`Test Strategy: failed command ${args.join(' ')}`);
   };
-  command(['pnpm', '--filter', '@openkit/core-client...', 'build']);
+  command([
+    'pnpm',
+    '--filter',
+    '@openkit/core-client...',
+    '--filter',
+    '@openkit/nanocore...',
+    '--workspace-concurrency=1',
+    'build',
+  ]);
   command([
     'pnpm',
     'exec',
