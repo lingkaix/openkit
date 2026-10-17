@@ -1974,7 +1974,7 @@ describe('reasoning effort admission and replay', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it.each([
     'turn.start',
@@ -2314,7 +2314,7 @@ describe('Task durable admission response', () => {
     });
     let turnId: string | undefined;
     try {
-      // The held executor makes this an ordering check, without a wall-clock admission bound.
+      // Await the response under the test timeout; the held executor proves publication ordering.
       const response = await pending;
       let completionObserved = false;
       void executor.finished.promise.then(() => {

@@ -9,6 +9,7 @@ import { FsStore } from '../lib/store.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
+import { WorkerRawOutputBudgetExceededError } from '../runtime/worker-raw-output.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -38,7 +39,11 @@ afterEach(() => {
 });
 
 /** Runs the real worker route with a controlled Provider boundary and real capability storage. */
-function fixture(configured = true, requestKind?: 'turn' | 'prewarm' | 'compaction') {
+function fixture(
+  configured = true,
+  requestKind?: 'turn' | 'prewarm' | 'compaction',
+  nativeStop = true
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-inference-diagnostics-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -99,15 +104,24 @@ function fixture(configured = true, requestKind?: 'turn' | 'prewarm' | 'compacti
       gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
     })
   );
+  // This controlled Provider double knows its complete source before public SSE delivery.
+  const observedDispatch = (...args: unknown[]) => {
+    const boundary = (args[2] as LLMGatewayDispatchContext | undefined)?.transport?.rawOutput;
+    const settle = boundary?.sourceStarted();
+    boundary?.sourceEvent();
+    settle?.();
+    return dispatch(...args);
+  };
   const app = new Hono<{ Variables: AuthVariables }>();
   registerWorkerInferenceRoutes({
     app,
     coreDb,
     workerControlGateway: gateway,
+    ...(nativeStop ? { onRawOutputStop: vi.fn(async () => {}) } : {}),
     llmGatewayDispatcher: {
-      createResponses: dispatch,
-      createResponsesStream: dispatch,
-      createChatCompletionStream: dispatch,
+      createResponses: observedDispatch,
+      createResponsesStream: observedDispatch,
+      createChatCompletionStream: observedDispatch,
     } as unknown as LLMGatewayProviderDispatcher,
     resolveGatewayProvider,
     runtimeConfig: () =>
@@ -597,6 +611,29 @@ it.each([
   await response.text();
   expect(warn).not.toHaveBeenCalled();
   expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
+});
+
+it('blocks Provider access before execution when native stop coverage is absent', async () => {
+  const f = fixture(true, undefined, false);
+  expect((await f.post(false)).status).toBe(503);
+  expect(f.dispatch).not.toHaveBeenCalled();
+});
+
+it('preserves raw-output exhaustion before native compaction commits', async () => {
+  const f = fixture(true, 'compaction');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+    context.transport!.rawOutput!.fail(new WorkerRawOutputBudgetExceededError());
+  });
+  const response = await f.post(true);
+  expect(response.status, await response.clone().text()).toBe(409);
+  expect(await response.json()).toMatchObject({
+    error: { code: 'worker_raw_output_exhausted' },
+  });
+  expect(f.calls()).toMatchObject([
+    { status: 'failed', error_code: 'worker_raw_output_exhausted' },
+  ]);
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
 });
 
 it('maps a confirmed pre-output native compaction failure to the owned envelope', async () => {

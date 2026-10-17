@@ -179,10 +179,10 @@ describe('data-root backup manifest', () => {
       }
     } finally {
       process.umask(previousUmask);
-      // The assertion fixtures retain read-only directories, which must be writable for removal.
-      for (const root of ['data', 'backup', join('restored', 'data')]) {
-        const readonlyDir = join(parent, root, 'server', 'readonly');
-        if (existsSync(readonlyDir)) chmodSync(readonlyDir, 0o755);
+      // Restore only fixture permissions after proving backup and restore preserved them.
+      for (const root of ['data', 'backup', 'restored/data']) {
+        const directory = join(parent, root, 'server', 'readonly');
+        if (existsSync(directory)) chmodSync(directory, 0o755);
       }
       rmSync(parent, { recursive: true, force: true });
     }

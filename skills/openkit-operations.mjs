@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   constants,
@@ -8,7 +9,7 @@ import {
   lstatSync,
   openSync,
 } from 'node:fs';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as appSchemas from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
@@ -232,16 +233,20 @@ function secretDeliveryProjection(id, definition) {
  * Opens one exact regular non-link archive and preserves its identity through stream acquisition.
  *
  * @param {string} sourcePath Caller-selected source path.
- * @returns {ReadableStream<Uint8Array>} Owned archive stream.
+ * @param {'archive' | 'artifact'} [kind] Operation-specific fixed diagnostic class.
+ * @returns {ReadableStream<Uint8Array>} Owned exact file stream.
  */
-function openWorkspaceArchive(sourcePath) {
+function openWorkspaceArchive(sourcePath, kind = 'archive') {
   let fileDescriptor = null;
   try {
     const before = lstatSync(sourcePath);
     if (before.isSymbolicLink() || !before.isFile()) {
       throw new Error('not a regular file');
     }
-    fileDescriptor = openSync(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fileDescriptor = openSync(
+      sourcePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
     const opened = fstatSync(fileDescriptor);
     if (before.dev !== opened.dev || before.ino !== opened.ino || !opened.isFile()) {
       throw new Error('file identity changed');
@@ -253,7 +258,13 @@ function openWorkspaceArchive(sourcePath) {
     if (fileDescriptor !== null) {
       closeSync(fileDescriptor);
     }
-    throw localError('invalid_archive_source', 'Workspace archive source is unavailable.', cause);
+    throw localError(
+      `invalid_${kind}_source`,
+      kind === 'archive'
+        ? 'Workspace archive source is unavailable.'
+        : 'Artifact source is unavailable.',
+      cause
+    );
   }
 }
 
@@ -262,9 +273,10 @@ function openWorkspaceArchive(sourcePath) {
  *
  * @param {string} destinationPath Caller-selected destination path.
  * @param {ReadableStream<Uint8Array>} stream Download response stream.
+ * @param {{byteLength: number, contentDigest: string}} [expected] Exact Artifact download proof.
  * @returns {Promise<void>}
  */
-async function writeWorkspaceArchive(destinationPath, stream) {
+async function writeWorkspaceArchive(destinationPath, stream, expected) {
   let fileDescriptor = null;
   let identity = null;
   try {
@@ -277,7 +289,28 @@ async function writeWorkspaceArchive(destinationPath, stream) {
     identity = fstatSync(fileDescriptor);
     const output = createWriteStream(destinationPath, { autoClose: true, fd: fileDescriptor });
     fileDescriptor = null;
-    await pipeline(Readable.fromWeb(stream), output);
+    if (expected) {
+      const hash = createHash('sha256');
+      let byteLength = 0;
+      const verify = new Transform({
+        transform(chunk, _encoding, done) {
+          byteLength += chunk.byteLength;
+          if (byteLength > expected.byteLength)
+            return done(new Error('Artifact download length mismatch.'));
+          hash.update(chunk);
+          done(null, chunk);
+        },
+        flush(done) {
+          done(
+            byteLength === expected.byteLength &&
+              `sha256:${hash.digest('hex')}` === expected.contentDigest
+              ? null
+              : new Error('Artifact download digest mismatch.')
+          );
+        },
+      });
+      await pipeline(Readable.fromWeb(stream), verify, output);
+    } else await pipeline(Readable.fromWeb(stream), output);
     const published = lstatSync(destinationPath, { throwIfNoEntry: false });
     if (
       !published ||
@@ -292,11 +325,18 @@ async function writeWorkspaceArchive(destinationPath, stream) {
     if (fileDescriptor !== null) {
       closeSync(fileDescriptor);
     }
+    const kind = expected ? 'artifact' : 'archive';
     const code =
       cause?.code === 'EEXIST' || cause?.code === 'ELOOP'
-        ? 'archive_destination_exists'
-        : 'archive_download_failed';
-    throw localError(code, 'Workspace archive destination could not be created.', cause);
+        ? `${kind}_destination_exists`
+        : `${kind}_download_failed`;
+    throw localError(
+      code,
+      expected
+        ? 'Artifact destination could not be created or verified.'
+        : 'Workspace archive destination could not be created.',
+      cause
+    );
   }
 }
 
@@ -317,6 +357,33 @@ function requireAgentReadableMaterial(sensitivity) {
 
 /** Retained stream bindings add only CLI-local file inputs and exclusive sink effects. */
 const archiveBindings = {
+  'artifact.import': {
+    clientMethod: 'artifactFiles.import',
+    inputSchema: strictShared(
+      appSchemas.ARTIFACT_OPERATION_DEFINITIONS['artifact.import'].inputSchema.safeExtend({
+        sourcePath: z.string().min(1),
+      })
+    ),
+    handler: ({ client }, input) =>
+      client.artifactFiles.import(
+        bodyWithout(input, 'sourcePath'),
+        openWorkspaceArchive(input.sourcePath, 'artifact')
+      ),
+  },
+  'artifact.download': {
+    clientMethod: 'artifactFiles.download',
+    inputSchema: strictShared(
+      appSchemas.ARTIFACT_OPERATION_DEFINITIONS['artifact.download'].inputSchema.safeExtend({
+        destinationPath: z.string().min(1),
+      })
+    ),
+    mutating: true, // Exclusive local destination creation is a CLI effect.
+    async handler({ client }, input) {
+      const downloaded = await client.artifactFiles.download(bodyWithout(input, 'destinationPath'));
+      await writeWorkspaceArchive(input.destinationPath, downloaded.body, downloaded);
+      return { downloaded: true };
+    },
+  },
   'workspace.archive-download': {
     clientMethod: 'app.downloadWorkspaceExportArchive',
     inputSchema: strictShared(
@@ -435,7 +502,8 @@ export const operationCatalog = [
   },
   ...Object.entries(appSchemas.OPERATION_DEFINITIONS)
     .filter(
-      ([id]) =>
+      ([id, definition]) =>
+        (definition.binding === 'json' || Object.hasOwn(archiveBindings, id)) &&
         !operationExclusions.some((entry) => entry.source === 'app-api' && entry.name === id)
     )
     .map(([id, definition]) => ({
@@ -501,7 +569,12 @@ export const operationCatalog = [
       ...secretDeliveryProjection(id, definition),
       ...(definition.binding === 'streaming'
         ? {
-            ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
+            ...(id.startsWith('workspace.')
+              ? LOCAL_WORKSPACE_ARCHIVE_ACCESS
+              : {
+                  requiredAccess:
+                    'authenticated user; current Workspace and Artifact audience; explicit local file path',
+                }),
             inputSensitivity: 'host-local path',
             ...archiveBindings[id],
           }
