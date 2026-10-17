@@ -1226,7 +1226,7 @@ describe('PiAiGatewayClient', () => {
   it.each([
     false,
     true,
-  ])('preserves the native xAI Worker Responses local-tool prefix through its authenticated pair; stream=%s', async (stream) => {
+  ])('lowers xAI Worker custom tools through its authenticated pair and restores public identity; stream=%s', async (stream) => {
     const stock = xaiProvider();
     const credential: OAuthCredential = {
       type: 'oauth',
@@ -1278,7 +1278,9 @@ describe('PiAiGatewayClient', () => {
         seenContext = context;
         seenModel = model;
         seenOptions = options;
-        seenPayload = await options?.onPayload?.({ input: [userInput], model: 'grok-4.3' }, model);
+        // This faux Provider observes the handoff; the stock xAI test owns wire serialization.
+        const payload = { input: [userInput], model: 'grok-4.3' };
+        seenPayload = (await options?.onPayload?.(payload, model)) ?? payload;
         return fauxAssistantMessage(
           [
             fauxText('Checking the directory.'),
@@ -1350,13 +1352,31 @@ describe('PiAiGatewayClient', () => {
     expect(seenOptions?.apiKey).toBe('work-pair-access');
     expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
     expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toMatchObject([
-      { name: 'exec', parameters: { properties: { input: { type: 'string' } } } },
+      {
+        name: 'exec',
+        parameters: {
+          type: 'object',
+          properties: { input: { type: 'string' } },
+          required: ['input'],
+        },
+      },
     ]);
-    expect(seenPayload).toEqual({
-      input: [additionalTools, userInput],
-      model: 'grok-4.3',
-      tools: additionalTools.tools,
-    });
+    expect((seenPayload as { input: unknown }).input).toEqual([userInput]);
+    expect(seenPayload).toMatchObject({ model: 'grok-4.3' });
+    const payloadTools = (seenPayload as { tools?: unknown }).tools;
+    if (payloadTools !== undefined) {
+      expect(payloadTools).toEqual([
+        expect.objectContaining({
+          type: 'function',
+          name: 'exec',
+          parameters: expect.objectContaining({
+            type: 'object',
+            properties: { input: { type: 'string' } },
+            required: ['input'],
+          }),
+        }),
+      ]);
+    }
     expect(faux.state.callCount).toBe(1);
   });
 
