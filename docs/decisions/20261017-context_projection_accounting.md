@@ -24,3 +24,7 @@ The optional projection accounting field has no production producer. Its synthet
 ## Revisit When
 
 An accepted owner identifies a concrete consumer that needs per-projection accounting in addition to package allowance and complete final-request admission.
+
+## Affected Owners
+
+- [Worker Context Package](../specs/20260703-worker_context_package.md).
