@@ -632,32 +632,30 @@ describe('Gateway reasoning effort admission and fitting', () => {
     }
   });
 
+  // Give each durable fixture its own unchanged runner deadline.
   it.each([
-    'responses',
-    'chat/completions',
-  ] as const)('uses native %s effort before recorded Turn, then default', async (endpoint) => {
-    for (const [turnEffort, requested, expected] of [
-      ['high', 'low', 'low'],
-      ['high', undefined, 'high'],
-      [undefined, 'low', 'low'],
-      [undefined, undefined, undefined],
-    ] as const) {
-      const f = fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
-      const before = structuredClone(
-        f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)
-      );
-      const response = await f.post(endpoint, requested, false, true);
-      expect(response.status, await response.text()).toBe(200);
-      expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
-      const entry = f.entries()[0];
-      if (requested === undefined) expect(entry).not.toHaveProperty('requestedEffort');
-      else expect(entry).toHaveProperty('requestedEffort', requested);
-      if (expected === undefined) {
-        expect(entry).not.toHaveProperty('effectiveEffort');
-        expect(entry).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
-      } else expect(entry).toHaveProperty('effectiveEffort', expected);
-      expect(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)).toEqual(before);
-    }
+    ['responses', 'high', 'low', 'low'],
+    ['responses', 'high', undefined, 'high'],
+    ['responses', undefined, 'low', 'low'],
+    ['responses', undefined, undefined, undefined],
+    ['chat/completions', 'high', 'low', 'low'],
+    ['chat/completions', 'high', undefined, 'high'],
+    ['chat/completions', undefined, 'low', 'low'],
+    ['chat/completions', undefined, undefined, undefined],
+  ] as const)('uses native %s effort before recorded Turn, then default: turn=%s request=%s effective=%s', async (endpoint, turnEffort, requested, expected) => {
+    const f = fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
+    const before = structuredClone(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id));
+    const response = await f.post(endpoint, requested, false, true);
+    expect(response.status, await response.text()).toBe(200);
+    expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
+    const entry = f.entries()[0];
+    if (requested === undefined) expect(entry).not.toHaveProperty('requestedEffort');
+    else expect(entry).toHaveProperty('requestedEffort', requested);
+    if (expected === undefined) {
+      expect(entry).not.toHaveProperty('effectiveEffort');
+      expect(entry).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
+    } else expect(entry).toHaveProperty('effectiveEffort', expected);
+    expect(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)).toEqual(before);
   });
 
   it.each([

@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 294;
+const EXPECTED_CATALOG_SIZE = 306;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 216;
+const EXPECTED_INCLUDED_SIZE = 228;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -109,6 +109,19 @@ const WEB_OPERATION_GROUPS = {
     'automation.update': { disposition: 'live', surface: 'Automations' },
   },
   Catalog: {
+    'catalog.light-app-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-import': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-history-import': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-export': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-select': { disposition: 'live', surface: 'Catalog' },
+    'catalog.light-app-pin': { disposition: 'live', surface: 'Catalog' },
+    'kernel.apps.instantiate': { disposition: 'live', surface: 'Catalog' },
+    'kernel.schema.activate': { disposition: 'live', surface: 'Catalog' },
+    'kernel.snapshots.list': { disposition: 'live', surface: 'Catalog' },
+    'kernel.snapshots.rollback': { disposition: 'live', surface: 'Catalog' },
+    'kernel.format.upgrade': { disposition: 'live', surface: 'Catalog' },
+
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-candidate-decide': { disposition: 'live', surface: 'Catalog' },
     'catalog.read': { disposition: 'live', surface: 'Catalog' },

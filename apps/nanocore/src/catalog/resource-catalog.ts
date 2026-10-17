@@ -10,12 +10,14 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import {
   type CatalogProducer,
   digestMcpConfig,
   digestOpenKitTree,
   EMPTY_RESOURCE_CATALOG,
   hashOpenKitTreeEntries,
+  type LightAppDefinitionVersionRecord,
   type McpBindingRecord,
   type McpConfigVersionRecord,
   type McpValidatedDeclaration,
@@ -32,6 +34,7 @@ import {
   SkillEntryRecordSchema,
   type SkillVersionRecord,
   SkillVersionRecordSchema,
+  stableJson,
   type WorkspaceMcpServer,
   type WorkspaceMcpServerCatalog,
   WorkspaceMcpServerSchema,
@@ -122,6 +125,78 @@ export class CatalogRetentionError extends Error {
 /** Authenticated decision lineage supplied by the existing Audit owner before publication. */
 export type SkillCandidateDecisionContext = NonNullable<SkillCandidateRecord['decision']>;
 
+/**
+ * Checks every retained template and reference before reading or publishing the shared catalog.
+ * This does not inspect or change any live app database.
+ *
+ * @param catalog Same-owner catalog, including preserved descriptive annotations.
+ * @throws CatalogIntegrityError for an invalid definition, digest, reference or parent cycle.
+ */
+export function validateLightAppDefinitionCatalog(catalog: ResourceCatalogDocument): void {
+  const { entries, versions, pins } = catalog.lightApps;
+  const identities = new Map(entries.map((entry) => [entry.id, entry]));
+  const history = new Map(
+    versions.map((version) => [`${version.entryId}/${version.digest}`, version])
+  );
+  if (
+    identities.size !== entries.length ||
+    history.size !== versions.length ||
+    new Set(pins.map((pin) => pin.entryId)).size !== pins.length
+  ) {
+    throw new CatalogIntegrityError('Light App definition catalog contains duplicate identities.');
+  }
+  for (const version of versions) {
+    try {
+      const definition: unknown = JSON.parse(version.definitionJson);
+      LightAppSchemaInputSchema.parse(definition);
+      if (
+        stableJson(definition) !== version.definitionJson ||
+        `sha256:${createHash('sha256').update(version.definitionJson, 'utf8').digest('hex')}` !==
+          version.digest
+      ) {
+        throw new Error('Definition JSON or digest is not canonical.');
+      }
+    } catch (error) {
+      throw new CatalogIntegrityError(
+        `Light App definition integrity failed: ${version.entryId}/${version.digest}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    if (!identities.has(version.entryId))
+      throw new CatalogIntegrityError(`Light App definition entry is missing: ${version.entryId}`);
+    const seen = new Set<string>();
+    let ancestor: LightAppDefinitionVersionRecord | undefined = version;
+    while (ancestor) {
+      if (seen.has(ancestor.digest))
+        throw new CatalogIntegrityError(
+          `Light App definition parent cycle: ${version.entryId}/${version.digest}`
+        );
+      seen.add(ancestor.digest);
+      if (ancestor.parentDigest === null) break;
+      const parent: LightAppDefinitionVersionRecord | undefined = history.get(
+        `${version.entryId}/${ancestor.parentDigest}`
+      );
+      if (!parent)
+        throw new CatalogIntegrityError(
+          `Light App definition parent is missing: ${version.entryId}/${ancestor.parentDigest}`
+        );
+      ancestor = parent;
+    }
+  }
+  for (const entry of entries) {
+    if (entry.currentDigest !== null && !history.has(`${entry.id}/${entry.currentDigest}`)) {
+      throw new CatalogIntegrityError(
+        `Light App definition default is missing: ${entry.id}/${entry.currentDigest}`
+      );
+    }
+  }
+  for (const pin of pins) {
+    if (!history.has(`${pin.entryId}/${pin.digest}`))
+      throw new CatalogIntegrityError(
+        `Light App definition pin is missing: ${pin.entryId}/${pin.digest}`
+      );
+  }
+}
+
 /** Trusted storage owner for the existing catalog format. */
 export type ResourceCatalogOwner =
   | { readonly kind: 'server' }
@@ -136,6 +211,7 @@ function readResourceCatalog(
   if (existsSync(path)) {
     const catalog = parseResourceCatalogDocument(JSON.parse(readFileSync(path, 'utf8')));
     assertCatalogScope(catalog, owner);
+    validateLightAppDefinitionCatalog(catalog);
     return catalog;
   }
   if (catalogHasPublishedResidue(dataRoot, owner)) {
@@ -160,8 +236,8 @@ export function loadWorkspaceResourceCatalog(
   return loadResourceCatalog(dataRoot, { kind: 'workspace', workspaceId });
 }
 
-/** Reads owned history for Workspace-only Skill and plugin mutations. */
-function readWorkspaceResourceCatalog(
+/** Reads owned history for Workspace-only Skill, plugin and Light App mutations. */
+export function readWorkspaceResourceCatalog(
   dataRoot: string,
   workspaceId: string
 ): ResourceCatalogDocument {
@@ -187,6 +263,8 @@ function publishResourceCatalog(input: {
     ...input.catalog,
     revision: current.revision + 1,
   });
+  validateLightAppDefinitionCatalog(current);
+  validateLightAppDefinitionCatalog(next);
   mkdirSync(dirname(path), { recursive: true });
   writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
   return ResourceCatalogDocumentViewSchema.parse(next);

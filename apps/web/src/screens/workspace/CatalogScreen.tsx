@@ -29,6 +29,7 @@ import {
   useWorkspaceCatalog,
   useWorkspaces,
 } from './data';
+import { LightAppDefinitions } from './LightAppDefinitions';
 import { SharedMcpPanel } from './SharedMcpPanel';
 import { SkillHistory } from './SkillHistory';
 
@@ -128,6 +129,7 @@ export function CatalogScreen() {
         />
       ) : (
         <div className="flex flex-col gap-6">
+          <LightAppDefinitions key={workspaceId} workspaceId={workspaceId} blocked={writeBlocked} />
           <Card>
             <h2 className="text-sm font-bold text-fg">Skills</h2>
             <p className="text-xs text-fg-muted">
