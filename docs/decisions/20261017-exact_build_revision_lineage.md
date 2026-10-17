@@ -1,5 +1,7 @@
 ---
 status: Accepted
+date: 2026-10-17
+decider: Engineer, through the coordinator
 ---
 # Exact Build Revision In Outcome Lineage
 
