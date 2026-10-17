@@ -2852,11 +2852,36 @@ describe('Catalog', () => {
       expect(screen.getByRole('button', { name: 'Refresh Echo rules' })).toBeEnabled()
     );
     expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeDisabled();
+    const current = await get.mock.results[0]?.value;
+    get.mockResolvedValue({
+      ...current,
+      revision: 4,
+      mcp: current.mcp.map((server: (typeof current.mcp)[number]) => ({
+        ...server,
+        bindingRevision: 3,
+        allowedTools: ['fresh-read'],
+        enabled: true,
+      })),
+    });
     await user.click(screen.getByRole('button', { name: 'Refresh Echo rules' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeEnabled()
     );
+    expect(screen.getByRole('textbox', { name: 'Echo allowed tools' })).toHaveValue('read, send');
+    expect(screen.getByText('Current allowed tools: fresh-read')).toBeInTheDocument();
     expect(updateMcpBinding).toHaveBeenCalledTimes(3);
+    updateMcpBinding.mockRejectedValueOnce(
+      new ApiCallError(403, 'Deployment administrator required')
+    );
+    await user.click(screen.getByRole('button', { name: 'Disable', exact: true }));
+    expect(await screen.findByRole('button', { name: 'Refresh MCP bindings' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Refresh MCP bindings' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save Echo tool rules' })).toBeEnabled()
+    );
+    expect(screen.getByRole('textbox', { name: 'Echo allowed tools' })).toHaveValue('read, send');
+    expect(updateMcpBinding).toHaveBeenCalledTimes(4);
   });
 });
 

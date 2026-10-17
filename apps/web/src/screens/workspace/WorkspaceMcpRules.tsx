@@ -36,18 +36,21 @@ export function WorkspaceMcpRules({
       </p>
       <TextField
         label={`${server.displayName} allowed tools`}
+        description={`Current allowed tools: ${server.allowedTools.join(', ') || 'None'}`}
         value={allowed}
         onChange={setAllowed}
         isDisabled={disabled}
       />
       <TextField
         label={`${server.displayName} approval-required tools`}
+        description={`Current approval-required tools: ${server.approvalRequiredTools.join(', ') || 'None'}`}
         value={approval}
         onChange={setApproval}
         isDisabled={disabled}
       />
       <TextField
         label={`${server.displayName} denied tools`}
+        description={`Current denied tools: ${server.deniedTools.join(', ') || 'None'}`}
         value={denied}
         onChange={setDenied}
         isDisabled={disabled}

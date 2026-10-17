@@ -590,10 +590,7 @@ export function CatalogScreen() {
             </p>
             {summary?.mcp.length ? (
               summary.mcp.map((server) => (
-                <div
-                  key={`${workspaceId}:${server.id}:${server.bindingRevision}`}
-                  className="flex flex-col gap-2"
-                >
+                <div key={`${workspaceId}:${server.id}`} className="flex flex-col gap-2">
                   <ListRow>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-fg-strong">{server.displayName}</p>
@@ -606,7 +603,7 @@ export function CatalogScreen() {
                       isDisabled={writeBlocked || updateBinding.isPending}
                       onPress={() => {
                         if (!workspaceId) return;
-                        void updateBinding.mutateAsync({
+                        updateBinding.mutate({
                           allowedTools: server.allowedTools,
                           approvalRequiredTools: server.approvalRequiredTools,
                           bindingRevision: server.bindingRevision,
@@ -765,6 +762,19 @@ export function CatalogScreen() {
                 <ErrorBanner
                   message={mutationMessage(updateBinding.error, "Couldn't update that MCP server.")}
                 />
+              ) : null}
+              {updateBinding.isError || catalog.isError ? (
+                <Button
+                  size="sm"
+                  isDisabled={
+                    checking || disconnected || catalog.isFetching || updateBinding.isPending
+                  }
+                  onPress={async () => {
+                    if ((await catalog.refetch()).isSuccess) updateBinding.reset();
+                  }}
+                >
+                  Refresh MCP bindings
+                </Button>
               ) : null}
               {selectMcp.isError ? (
                 <ErrorBanner
