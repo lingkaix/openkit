@@ -57,7 +57,14 @@ export function createKnowledgeAnswerApp(
         },
       ];
     } else {
-      output = [{ type: 'message', content: [{ type: 'output_text', text }] }];
+      output = [
+        {
+          type: 'function_call',
+          call_id: `result-${planIndex}`,
+          name: operationToolName('knowledge.result'),
+          arguments: text,
+        },
+      ];
       planIndex += 1;
       step = 0;
     }
