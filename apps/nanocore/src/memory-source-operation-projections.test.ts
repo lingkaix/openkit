@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { appendMemorySuppression } from './knowledge/memory-maintenance.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
@@ -42,7 +44,7 @@ function fixture() {
         : { text: await response.text() },
     };
   };
-  return { call, dataRoot, userId };
+  return { app, call, coreDb, dataRoot, userId };
 }
 
 describe('public explicit self Source intake', () => {
@@ -147,10 +149,102 @@ describe('public explicit self Source intake', () => {
     expect((await f.call('memory.read', { pageId: input.pageId })).body.page.content).toBe(
       updatedContent
     );
-    expect(await f.call('memory.source.read', { sourceId: captured.body.source.id })).toMatchObject({
-      status: 200,
-      body: { source: { content: 'I explicitly prefer concise reports.' } },
+    expect(await f.call('memory.source.read', { sourceId: captured.body.source.id })).toMatchObject(
+      {
+        status: 200,
+        body: { source: { content: 'I explicitly prefer concise reports.' } },
+      }
+    );
+  });
+
+  it('withholds suppressed Source versions from actual model MCP reads while retaining human inspection', async () => {
+    const f = fixture();
+    const captured = await f.call('memory.source.register', {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'A retained input',
+      content: 'A forgotten source sentence.',
     });
+    expect(captured.status).toBe(200);
+    const other = await f.call('memory.source.register', {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'An independent input',
+      content: 'This independent Source remains available.',
+    });
+    expect(other.status).toBe(200);
+    const reference = `source:${captured.body.source.id}@${captured.body.source.contentDigest}`;
+    const content = serializeUserAuthoredKnowledgePage(
+      {
+        id: 'suppressed-context',
+        kind: 'preference',
+        title: 'My cited entry',
+        content: 'My personally saved understanding.',
+        sourceReferences: [reference],
+        createdAt: '2026-10-17T00:00:00.000Z',
+        updatedAt: '2026-10-17T00:00:00.000Z',
+      },
+      { kind: 'user', userId: f.userId }
+    );
+    const saved = await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'suppressed-context',
+      content,
+      summary: 'Save my cited entry',
+    });
+    expect(saved.status).toBe(200);
+    const credential = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: f.userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const model = async (operation: string, input: Record<string, unknown> = {}) => {
+      const response = await f.app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${credential.secret}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'call', arguments: { operation, input } },
+        }),
+      });
+      expect(response.status).toBe(200);
+      const envelope = await response.json();
+      expect(envelope.error).toBeUndefined();
+      expect(envelope.result.isError).toBeUndefined();
+      return JSON.parse(envelope.result.content[0].text);
+    };
+    expect(await model('memory.source.read', { sourceId: captured.body.source.id })).toMatchObject({
+      source: { content: 'A forgotten source sentence.' },
+    });
+    // The native forget tests establish confirmation; this canonical fixture isolates disclosure before Git cleanup.
+    appendMemorySuppression(userMemoryRoot(f.dataRoot, f.userId), {
+      userId: f.userId,
+      requestId: randomUUID(),
+      pageId: 'suppressed-context',
+      lastRevision: saved.body.notebookRevision,
+      digest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      actorId: f.userId,
+      sourceFingerprints: [reference],
+    });
+    expect(await model('memory.source.read', { sourceId: captured.body.source.id })).toEqual({
+      source: null,
+    });
+    const listed = await model('memory.source.list');
+    expect(listed.items.map((row: { id: string }) => row.id)).toEqual([other.body.source.id]);
+    expect(await f.call('memory.source.read', { sourceId: captured.body.source.id })).toMatchObject(
+      {
+        status: 200,
+        body: { source: { content: 'A forgotten source sentence.' } },
+      }
+    );
   });
 
   it('refuses to replace a missing User database while established Source bytes remain', async () => {

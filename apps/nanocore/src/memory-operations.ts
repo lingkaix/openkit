@@ -238,12 +238,12 @@ export function createMemoryOperationImplementations(
     'memory.source.list': (_input, context) =>
       self(context, (writer) =>
         MEMORY_OPERATION_DEFINITIONS['memory.source.list'].outputSchema.parse({
-          items: listUserKnowledgeSources(writer),
+          items: listUserKnowledgeSources(writer, context.delivery),
         })
       ),
     'memory.source.read': (input, context) =>
       self(context, (writer) => {
-        const entry = readUserKnowledgeSource(writer, input.sourceId);
+        const entry = readUserKnowledgeSource(writer, input.sourceId, context.delivery);
         return MEMORY_OPERATION_DEFINITIONS['memory.source.read'].outputSchema.parse({
           source: entry ? { ...entry.source, content: entry.content } : null,
         });
