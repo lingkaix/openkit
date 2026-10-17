@@ -1186,6 +1186,7 @@ export class PiAiGatewayClient {
       options.samplingParams = { parallel_tool_calls: request.parallel_tool_calls };
     this.applyRequestPayloadOverlay(options, model, maxTokens, request.parallel_tool_calls);
     applyCodexTransport(options, model, transport);
+    this.bindFinalRequestAdmission(options, model, transport);
     this.bindRawOutput(options, model, transport);
     return options;
   }
@@ -1350,8 +1351,59 @@ export class PiAiGatewayClient {
         envelope.output = envelope.output.toSorted((left, right) => left.index - right.index);
       };
     applyCodexTransport(options, selectedModel, transport);
+    this.bindFinalRequestAdmission(options, selectedModel, transport);
     this.bindRawOutput(options, selectedModel, transport);
     return options;
+  }
+
+  /** Checks the final serializer result without changing its payload, continuity, or raw observer. */
+  private bindFinalRequestAdmission(
+    options: StreamOptions & Record<string, unknown>,
+    model: Model<string>,
+    transport: LLMGatewayTransportContext
+  ): void {
+    const admit = transport.finalRequestAdmission;
+    if (!admit) return;
+    const overlay = options.onPayload;
+    options.onPayload = async (payload, selected) => {
+      const overlaid = await overlay?.(payload, selected);
+      const finalPayload = overlaid === undefined ? payload : overlaid;
+      const record = readRecord(finalPayload);
+      const generation = readRecord(
+        record?.config ?? record?.generationConfig ?? record?.generation_config
+      );
+      const inference = readRecord(record?.inferenceConfig);
+      const outputCaps = [
+        record?.max_output_tokens,
+        record?.max_completion_tokens,
+        record?.max_tokens,
+        record?.maxTokens,
+        generation?.maxOutputTokens,
+        inference?.maxTokens,
+      ].filter(
+        (value): value is number =>
+          typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+      );
+      await raceProviderWithSignal(
+        () =>
+          Promise.resolve(
+            admit(
+              {
+                payload: finalPayload,
+                contextWindowTokens: model.contextWindow,
+                outputReserveTokens:
+                  outputCaps.length > 0
+                    ? Math.max(...outputCaps)
+                    : (options.maxTokens ?? model.maxTokens),
+                codexTurnState: options.headers?.['x-codex-turn-state'],
+              },
+              options.signal
+            )
+          ),
+        options.signal
+      );
+      return finalPayload;
+    };
   }
 
   /** Composes the strong raw observer before existing native validation and stock normalization. This observes the selected native transport without changing stream selection. */

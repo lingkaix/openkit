@@ -14,7 +14,7 @@ import {
   type InternalAgentProviderResponse,
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
-import { prepareInternalAgentContext } from './rolling-context.js';
+import { internalContextFailure, prepareInternalAgentContext } from './rolling-context.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 const roots: string[] = [];
@@ -192,6 +192,17 @@ function files(root: string): string[] {
 }
 
 describe('source-bound internal rolling context', () => {
+  it('projects existing context failures as actionable redacted Turn errors', () => {
+    const error = new InternalAgentProviderError(
+      'internal_agent_context_exceeded',
+      'Private request and provider details.'
+    );
+    expect(internalContextFailure(error)).toEqual({
+      code: 'internal_agent_context_exceeded',
+      message: 'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
+    });
+  });
+
   it('uses complete canonical history in first-seen order when it fits, including after restart', async () => {
     const f = fixture(1, true);
     const before = f.store.listThreadItems(f.workspace.id, f.thread.id);
