@@ -315,18 +315,18 @@ const SourceCommitSchema = z.string().regex(SOURCE_COMMIT_PATTERN);
  * Closed core of a present release-identity file.
  *
  * Unknown additive keys are ignored at admission and are not part of this core.
- * A present file must carry both values; nulls are only the missing-file projection.
+ * A present file carries the exact source commit and an optional release tag. The tag is null for an untagged source build.
  */
 export const PresentReleaseIdentitySchema = z.object({
-  releaseTag: ReleaseTagSchema,
+  releaseTag: ReleaseTagSchema.nullable(),
   sourceCommit: SourceCommitSchema,
 });
 
 /**
  * Running release identity reported by authorized App Diagnostics.
  *
- * The closed alternatives are both null or both validated strings.
- * A mixed pair matches neither alternative and is rejected.
+ * The closed alternatives are an unknown build (both null), or an exact source commit with an optional validated release tag.
+ * A tag without its source commit is rejected.
  * Unknown keys are rejected on this producer schema.
  */
 export const ReleaseBuildIdentitySchema = z.union([
@@ -338,7 +338,7 @@ export const ReleaseBuildIdentitySchema = z.union([
     .strict(),
   z
     .object({
-      releaseTag: ReleaseTagSchema,
+      releaseTag: ReleaseTagSchema.nullable(),
       sourceCommit: SourceCommitSchema,
     })
     .strict(),
@@ -347,7 +347,7 @@ export const ReleaseBuildIdentitySchema = z.union([
 /**
  * Known-field reader for a build projection.
  *
- * Unknown additive keys are dropped. A malformed tag, a malformed commit, and a mixed pair still fail.
+ * Unknown additive keys are dropped. A malformed tag, a malformed commit, or a tag without a commit still fails.
  */
 const ReleaseBuildIdentityReaderSchema = z.union([
   z.object({
