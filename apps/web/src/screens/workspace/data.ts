@@ -871,6 +871,25 @@ export function useSubmitSkillCandidate() {
   });
 }
 
+/** Withdraws the current actor's proposed candidate through its native lifecycle command. */
+export function useWithdrawSkillCandidate() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { workspaceId: string; candidateId: string; expectedRevision: number }) =>
+      client.operations['catalog.skill-candidate-withdraw']({
+        ...input,
+        requestId: createRequestId(),
+      }),
+    retry: false,
+    onSuccess: (_result, input) =>
+      queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(input.workspaceId),
+        exact: true,
+      }),
+  });
+}
+
 /** Exact Skill candidate decision bound to one Workspace revision. */
 export type DecideSkillCandidateCommand = {
   candidateId: string;

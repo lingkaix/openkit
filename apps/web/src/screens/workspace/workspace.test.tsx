@@ -2346,6 +2346,7 @@ describe('Catalog', () => {
     const pin = vi.fn().mockResolvedValue({});
     const select = vi.fn().mockResolvedValue({});
     const decide = vi.fn().mockResolvedValue({});
+    const withdraw = vi.fn().mockResolvedValue({});
     const catalog = {
       revision: 7,
       skills: [
@@ -2384,6 +2385,7 @@ describe('Catalog', () => {
           'catalog.skill-pin': pin,
           'catalog.skill-select': select,
           'catalog.skill-candidate-decide': decide,
+          'catalog.skill-candidate-withdraw': withdraw,
         },
       })
     );
@@ -2410,6 +2412,15 @@ describe('Catalog', () => {
           expectedCurrentDigest: currentDigest,
         })
       )
+    );
+    await user.click(screen.getByRole('button', { name: 'Withdraw my proposal' }));
+    await waitFor(() =>
+      expect(withdraw).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_A.id,
+        candidateId,
+        expectedRevision: 7,
+        requestId: expect.any(String),
+      })
     );
     await user.click(screen.getByRole('button', { name: 'Promote' }));
     await waitFor(() =>

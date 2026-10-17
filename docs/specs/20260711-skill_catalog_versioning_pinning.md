@@ -142,7 +142,7 @@ Reuse NanoCore storage, command, permission, audit, composed setup, AEP, and run
 
 ## Current Implementation Projection
 
-The native API and CLI expose version inspection, update checks, comparison, removal, purge and candidate withdrawal. Their new Web controls remain deferred to the separately assigned R108 Web increment. Existing Catalog import, candidate decision, default selection and pin controls retain their ordinary behavior and current pointer checks.
+The native API and CLI expose version inspection, update checks, comparison, removal, purge and candidate withdrawal. The prepared Web Catalog source projects those operations through retained Skill history, exact file downloads, inventory comparison, source checks, explicit removal and confirmed purge, and candidate withdrawal. Existing Catalog import, candidate decision, default selection and pin controls retain their ordinary behavior and current pointer checks. Publication remains pending actual P20 main integration and the final Web checks; this source preparation establishes no physical Worker delivery or real-use acceptance.
 
 The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
 
