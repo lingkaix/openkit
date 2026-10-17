@@ -170,7 +170,7 @@ CLI result redaction removes credentials and secret material, not generic absolu
 
 ### Runtime, Coverage And Version Alignment
 
-The reason and boundary for the local Skill staging helper exception are recorded in [Ecosystem Skill Import And Local Staging](../decisions/20261017-ecosystem_skill_import_and_local_staging.md).
+The reason and boundary for the local Skill staging helper exception are recorded in [Ecosystem Skill Import And Local Staging](../decisions/20261016-ecosystem_skill_import_and_local_staging.md).
 
 The complete operations Skill contains its executable under scripts and is installed or replaced as one versioned unit with its references and definition-derived catalog. The single-file JavaScript executable requires Node.js 24, stdin, stdout, stderr, process exit status and protected local credential/environment storage. It requires no runtime package installation, node_modules, source checkout, daemon, interactive shell, subscription transport, general dependency solver or compatibility range system. The three accepted archive transfers are bounded local-file streams; event subscription is not a CLI mode.
 

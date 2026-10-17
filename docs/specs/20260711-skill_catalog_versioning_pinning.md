@@ -62,7 +62,7 @@ Identical bytes in the same entry reuse content identity; a separate import obse
 
 ### Ecosystem source admission
 
-The accepted source and local CLI sharing choices, their reasons and their limits are recorded in [Ecosystem Skill Import And Local Staging](../decisions/20261017-ecosystem_skill_import_and_local_staging.md).
+The accepted source and local CLI sharing choices, their reasons and their limits are recorded in [Ecosystem Skill Import And Local Staging](../decisions/20261016-ecosystem_skill_import_and_local_staging.md).
 
 The engineer ruling of 2026-10-16 requires import conventions aligned with [vercel-labs/skills](https://github.com/vercel-labs/skills). An ordinary ecosystem Skill repository must import without an OpenKit manifest or payload rewrite. Supported locators include GitHub `owner/repo` shorthand, GitHub and GitLab repository URLs, plain Git URLs, repository tree URLs selecting one Skill, a local path, and a direct `SKILL.md` or archive URL. Acquisition resolves the selected repository ref to an exact commit before discovery and snapshot admission. A tree URL preserves its selected subpath; repository or named-Skill discovery cannot silently substitute another Skill when selection is missing or ambiguous. Source strings and descriptive metadata never grant host, network, credential or execution authority. A local path is acquired only in the explicitly authorized caller's local filesystem boundary; a remote caller cannot make Core read an arbitrary host path.
 

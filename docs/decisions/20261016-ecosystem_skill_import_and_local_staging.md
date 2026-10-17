@@ -1,6 +1,6 @@
 ---
 status: Accepted
-date: "2026-10-17"
+date: "2026-10-16"
 decider: Engineer and coordinator
 ---
 # Ecosystem Skill Import And Local Staging
