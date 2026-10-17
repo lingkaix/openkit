@@ -1,9 +1,10 @@
 ---
-status: in-progress
+type: change-plan
+status: implemented
 ---
 # Versioned Light App Definitions
 
-## Intent
+## Intent Revision 1 — Coordinator Assignment, 2026-10-17
 
 Deliver the engineer-approved rc.10 reusable Light App definition catalog through the existing Skill/MCP Resource Catalog, with immutable parent, actor and time history, explicit import/export/default/pin selection, and separate live app activation. Preserve one SQLite data file per app, two version markers, automatic consistent pre-migration snapshots and snapshot restoration without down migrations.
 
@@ -19,11 +20,11 @@ Publish a complete SQLite-consistent snapshot before definition DDL or supported
 
 ## Verification And Checkpoint
 
-Implementation is active on lane/go with three isolated Builder branches for catalog reuse, native migrations and the existing Web Catalog projection. Primary owns owner text, API/CLI/Web integration and final acceptance. Lowest-sufficient regressions cover catalog history/selection/portability, supported schema changes, refusal without writes, snapshot failure, actual restore/restart and journal upgrade. Exact-head package/owner suites, generated projections and Web e2e precede independent Sol review and express landing on green main. No current implementation or final-gate success is claimed yet.
+Implementation is integrated on lane/go from three isolated Builder branches for catalog reuse, native migrations and the existing Web Catalog projection. Primary owns owner text, API/CLI/Web integration and final acceptance. Lowest-sufficient regressions cover catalog history/selection/portability, supported schema changes, refusal without writes, snapshot failure, actual restore/restart and journal upgrade. Observed component checks pass: catalog joins44, native migration owner33 across6files, hot backup19, public lifecycle1, Worker MCP3, Web unit7 and isolated browser1. Complete App API367, Core Client99 and root CLI/disposition99 pass preflight. Exact-head package/owner suites, generated projections and full Web e2e remain the landing gate; final evidence belongs to the external lane checkpoint and independent review. No exact-gate success is claimed by these component results.
 
 ## Next Action
 
-Merge the coherent helper branches normally, finish public operations and the existing Workspace Catalog projection, reconcile actual diff and owner tests, obtain independent review and land only after the current main repair is green. B01 intake is complete outside the repository; BWM remains held and physical Worker Skill delivery waits for P17.
+The helper branches are normally merged; public operations, generated projections and the Workspace Catalog controls are integrated. Finish the exact local gate and independent review, then express-land only on green main. B01 intake is complete outside the repository; BWM remains held and physical Worker Skill delivery waits for P17.
 
 ## Reachable Review Corrections
 
