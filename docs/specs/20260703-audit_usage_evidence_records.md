@@ -18,6 +18,14 @@ Private dialogue and private Memory are not payloads for shared effect audit. Ma
 
 Notebook publication admission uses the specific optional `notebookAdmission` field on AuditEvent: exact `ownerScope`, request ID, input digest, nullable base commit, prepared candidate commit, producer, direct/delegated instruction or Proposal authority, and source references. The notebook owner defines those historical facts and their validation. Retain them in the existing database of that exact User, Workspace or Server before advancing the published Git ref; another scope or an app-local database cannot accept them. Ordinary Audit records omit this field. It contains no page body, summary text, generic metadata bag or reusable permission. Existing Audit write failure prevents publication; a later completed Audit or command receipt is a separate effect and never inferred from the admission record.
 
+## Turn Interruption Attribution
+
+The existing Workspace AuditEvent records an accepted public turn.interrupt command with action `turn.interrupt`, category `command`, outcome `succeeded`, its admitted actor, and exact Workspace, Thread, Turn and request lineage. The actor is the requesting identity from operation admission, not the Turn triggerActor. Record it only in fresh successful command execution; ordinary command replay returns its existing result without inserting another event or changing the recorded actor. A rejected or unresolved interruption supplies no success event. This event means that the Stop request was accepted; terminal state and runtime cleanup remain with their existing owners.
+
+This is an existing Audit producer, not a new Item field, record family, receipt or interruption lifecycle. Audit storage failure remains an explicit command error and does not roll back an already reached runtime effect. Crash gaps or historical missing events remain unavailable; neither retry nor Web reconstructs an actor from the Turn, permission admission, telemetry or current viewer. Existing command receipts retain their own replay and failure rules; no cross-store atomicity or automatic repair is promised.
+
+Workspace Audit reads filter Thread-scoped events by the caller's current exact Thread audience as well as current Workspace authority. Historical actor references describe responsibility and grant no current access. The Web Usage and audit surface displays the recorded actor and a link to the exact accessible Thread. Missing actor is explicitly not recorded; it is not replaced with the current User. Acceptance uses a real public interruption by a member different from the Turn initiator, verifies its public Audit actor and exact lineage, preserves the initiating triggerActor, proves replay does not add or relabel the event, and proves that another User cannot read private Thread interruption history.
+
 ## Summary
 
 This spec defines the target record model for audit, usage, and evidence.

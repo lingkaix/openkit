@@ -249,6 +249,8 @@ export async function interruptProductTurn(input: {
   readonly store: FsStore;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly interruptInternalChatTurn?: (store: FsStore, turnId: string) => Promise<boolean>;
+  /** Records fresh command acceptance without claiming terminal cleanup; replay omits it. */
+  readonly onInterruptAccepted?: () => void;
   readonly coreDb: CoreDb | undefined;
   readonly turnExecutor: TurnExecutor;
   readonly workspaceId: string;
@@ -285,6 +287,12 @@ export async function interruptProductTurn(input: {
     },
     responseKind: 'turn',
     execute: async () => {
+      /** Validates the accepted result before evidence; evidence failure leaves reached effects intact. */
+      const acceptedTurn = () => {
+        const result = TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+        input.onInterruptAccepted?.();
+        return result;
+      };
       const currentTurn = store.getTurn(workspaceId, threadId, turnId);
 
       if (isSealedTurnTerminal(currentTurn.status)) {
@@ -296,7 +304,7 @@ export async function interruptProductTurn(input: {
       }
 
       if (await interruptInternalChatTurn?.(store, turnId)) {
-        return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+        return acceptedTurn();
       }
 
       if (coreDb) {
@@ -331,7 +339,7 @@ export async function interruptProductTurn(input: {
             errorCode: 'turn_cancelled',
             message: 'Queued Turn was cancelled before preparation.',
           });
-          return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+          return acceptedTurn();
         }
         if (attempt?.phase === 'open' && attempt.operationId === null) {
           markSchedulerExecutionAttemptClosing(coreDb, {
@@ -353,7 +361,7 @@ export async function interruptProductTurn(input: {
             errorCode: 'turn_cancelled',
             message: 'Turn was cancelled before any backend effect.',
           });
-          return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+          return acceptedTurn();
         }
         if (attempt?.phase === 'closing')
           throw new TurnStartValidationError(
@@ -374,7 +382,7 @@ export async function interruptProductTurn(input: {
       await turnExecutor.interruptTurn(store, turnId, {
         requestId: requestId,
       });
-      return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+      return acceptedTurn();
     },
     replay: (record) => TurnSchema.parse(store.getTurn(workspaceId, threadId, record.response.id)),
     responseId: (result) => result.id,

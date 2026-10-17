@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath, readTurnFeedback } from './runtime/feedback.js';
@@ -186,6 +188,7 @@ function createCoreAudienceFixture() {
       rmSync(dataRoot, { force: true, recursive: true });
     },
     coreDb,
+    dataRoot,
     denied,
     deniedApprovalTurn,
     deniedGate,
@@ -350,6 +353,131 @@ async function expectNondisclosing404(
 }
 
 describe('core Thread audience', () => {
+  it('records the admitted Stop requester with exact lineage and preserves it on replay', async () => {
+    const fixture = createCoreAudienceFixture();
+    try {
+      const { app, coreDb, store, workspace, shared } = fixture;
+      const turn = store.createTurn(workspace.id, shared.id, 'Queued work', {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      });
+      createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_${turn.id}`,
+        requestId: randomUUID(),
+        workspaceId: workspace.id,
+        threadId: shared.id,
+        turnId: turn.id,
+        turnInput: 'Queued work',
+        requestedAgentId: 'agent_fixture',
+        triggerActor: turn.triggerActor,
+      });
+      const requestId = randomUUID();
+      const selectors = { workspaceId: workspace.id, threadId: shared.id, turnId: turn.id };
+      const stopper = bearer(
+        coreDb,
+        { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+        workspace.id
+      );
+      const response = await app.request(
+        ...operationRequest('turn.interrupt', selectors, {
+          headers: stopper,
+          body: JSON.stringify({ requestId }),
+        })
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toMatchObject({
+        id: turn.id,
+        status: 'cancelled',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      });
+      const read = () =>
+        app.request(
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: workspace.id },
+            { headers: stopper }
+          )
+        );
+      const first = await read();
+      expect(first.status).toBe(200);
+      const history = await first.json();
+      expect(history.auditEvents).toEqual([
+        expect.objectContaining({
+          action: 'turn.interrupt',
+          category: 'command',
+          outcome: 'succeeded',
+          actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+          ...selectors,
+          requestId,
+        }),
+      ]);
+      const replay = await app.request(
+        ...operationRequest('turn.interrupt', selectors, {
+          headers: bearer(
+            coreDb,
+            { scope: 'workspace', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            workspace.id
+          ),
+          body: JSON.stringify({ requestId }),
+        })
+      );
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      });
+      expect(await (await read()).json()).toEqual(history);
+      const rejected = await app.request(
+        ...operationRequest('turn.interrupt', selectors, {
+          headers: stopper,
+          body: JSON.stringify({ requestId: randomUUID() }),
+        })
+      );
+      expect(rejected.status).toBe(409);
+      expect(await (await read()).json()).toEqual(history);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('filters private interruption Audit history by the current exact Thread audience', async () => {
+    const fixture = createCoreAudienceFixture();
+    try {
+      const db = openWorkspaceDb(fixture.dataRoot, fixture.workspace.id);
+      const event = recordWorkspaceAuditEvent({
+        workspaceDb: db,
+        workspaceId: fixture.workspace.id,
+        threadId: fixture.own.id,
+        turnId: fixture.ownTurn.id,
+        requestId: randomUUID(),
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        action: 'turn.interrupt',
+        category: 'command',
+        outcome: 'succeeded',
+        summary: 'Stop request accepted.',
+      });
+      db.sqlite.close();
+      for (const [userId, visible] of [
+        ['usr_00000000-0000-7000-8000-000000000001', true],
+        ['usr_00000000-0000-73d4-904a-d4c4b905df7c', false],
+      ] as const) {
+        const response = await fixture.app.request(
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: fixture.workspace.id },
+            {
+              headers: bearer(fixture.coreDb, { scope: 'workspace', userId }, fixture.workspace.id),
+            }
+          )
+        );
+        expect(response.status).toBe(200);
+        expect((await response.json()).auditEvents).toEqual(visible ? [event] : []);
+      }
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('requires CoreDb server auth instead of the local implicit actor', async () => {
     const fixture = createCoreAudienceFixture();
     try {

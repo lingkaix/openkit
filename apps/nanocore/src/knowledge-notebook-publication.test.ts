@@ -209,7 +209,8 @@ async function entryCommand(
 describe('native Workspace notebook publication with real Git and SQLite', () => {
   it('publishes existing entry commands once and replays their exact old bytes after later edits and reopen', async () => {
     const f = fixture();
-    const baseRevision = (await listing(f)).notebookRevision;
+    const initial = await listing(f);
+    const baseRevision = initial.notebookRevision;
     const createRequestId = randomUUID();
     const input = {
       baseRevision,
@@ -225,6 +226,18 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       title: input.title,
       content: input.content,
     });
+    for (const operation of ['workspace.read', 'workspace.dashboard']) {
+      const response = await f.app.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        counts: { knowledgeEntryCount: number };
+      };
+      expect(body.counts.knowledgeEntryCount).toBe(initial.items.length + 1);
+    }
     const createdRevision = (await listing(f)).notebookRevision;
     expect(createdRevision).not.toBe(baseRevision);
     const updated = await entryCommand(f, 'knowledge.update', randomUUID(), {
@@ -403,7 +416,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(existsSync(f.repositoryPath)).toBe(true);
     const revision = git(f, ['rev-parse', 'refs/heads/published']).trim();
     expect(git(f, ['rev-list', '--parents', '-1', revision]).trim()).toBe(revision);
-    expect(git(f, ['show', `${revision}:pages/index.md`])).toContain('# Notebook');
+    expect(git(f, ['show', `${revision}:pages/index.md`])).toContain('# Knowledge');
     const metadata = JSON.parse(git(f, ['show', '-s', '--format=%B', revision]));
     expect(metadata).toMatchObject({
       producer: { kind: 'user', id: LOCAL_USER_ID },

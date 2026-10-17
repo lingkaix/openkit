@@ -65,22 +65,25 @@ export type WorkerContextPackageExclusionReason = (typeof EXCLUSION_REASONS)[num
 
 const IdSchema = z.string().min(1);
 // S59 owns these frozen values; S39 identifies their envelope and retains every original byte.
-const PendingOutcomeInputSchema = z.object({
-  triggerInput: z.string(),
-  pendingOutcomes: z
-    .array(
-      z.object({
-        requestId: IdSchema,
-        requestItemId: ItemIdSchema,
-        publicationTurnId: TurnIdSchema,
-        kind: z.enum(['approval', 'user-input']),
-        resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
-        ending: z.enum(['withdrawn', 'invalidated']).nullable(),
-      })
-    )
-    .min(1)
-    .max(OUTCOME_DELIVERY_BOUND),
-});
+// The Notebook import path cycles through S59; read its bound after module initialization.
+const PendingOutcomeInputSchema = z.lazy(() =>
+  z.object({
+    triggerInput: z.string(),
+    pendingOutcomes: z
+      .array(
+        z.object({
+          requestId: IdSchema,
+          requestItemId: ItemIdSchema,
+          publicationTurnId: TurnIdSchema,
+          kind: z.enum(['approval', 'user-input']),
+          resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
+          ending: z.enum(['withdrawn', 'invalidated']).nullable(),
+        })
+      )
+      .min(1)
+      .max(OUTCOME_DELIVERY_BOUND),
+  })
+);
 const Sha256Schema = IdSchema.regex(/^sha256:[a-f0-9]{64}$/);
 const ContextPackageDigestSchema = z.string().regex(/^ctxpkg_sha256_[a-f0-9]{64}$/);
 const IMPORTED_HISTORY_REQUEST_ID_PATTERN = /^import-lineage:sha256:[a-f0-9]{64}$/;

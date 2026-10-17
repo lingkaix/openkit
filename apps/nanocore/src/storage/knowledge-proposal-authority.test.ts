@@ -8,7 +8,7 @@ import { ApiErrorSchema, deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { KnowledgePageValidationError } from '../knowledge/okf.js';
+import { KnowledgePageValidationError, parseOkfDocument } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -306,7 +306,19 @@ describe('knowledge proposal authority', () => {
       f.notebook.readRevision(f.proposal.candidateRevision).files[`${f.knowledgePageId}.md`]
     ).toBe(f.canonicalPageBytes);
     expect(currentPage(f, f.knowledgePageId)).toBeUndefined();
-    expect(bytes.endsWith(f.canonicalPageBytes)).toBe(true);
+    const parsed = parseOkfDocument({ path: `${f.proposal.id}.md`, content: bytes });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('The retained Proposal document is invalid.');
+    expect(parsed.document.frontmatter).toMatchObject({
+      owner_scope: f.proposal.ownerScope,
+      base_revision: f.proposal.baseRevision,
+      candidate_revision: f.proposal.candidateRevision,
+      knowledge_page_id: f.knowledgePageId,
+      content_digest: f.contentDigest,
+      source_references: [f.sourceReference],
+      producer: PRODUCER,
+    });
+    expect(parsed.document.body).toBe(f.proposal.rationale);
     expect(bytes.slice(0, bytes.indexOf('\n---\n', 4))).not.toMatch(/^status:/m);
   });
 
@@ -452,9 +464,16 @@ describe('knowledge proposal authority', () => {
         sourceReferences: [f.sourceReference],
       }),
     ]);
-    expect(
-      [...retrieval.selected, ...retrieval.excluded].map((item) => item.reference.objectId)
-    ).not.toContain(copiedPageId);
+    expect(retrieval.selected.map((item) => item.reference.objectId)).not.toContain(copiedPageId);
+    expect(retrieval.excluded).toContainEqual({
+      reference: { scopeId: `page/workspace/${f.workspaceId}`, objectId: copiedPageId },
+      revision: f.proposal.candidateRevision,
+      contentDigest: null,
+      sourceReferences: [],
+      reason: 'source_unavailable',
+    });
+    expect(currentPage(f, copiedPageId)).toBeUndefined();
+    expect(f.notebook.publishedRevision()).toBe(f.proposal.candidateRevision);
     expect(f.notebook.readRevision(copied.candidateRevision).files[`${copiedPageId}.md`]).toBe(
       copied.canonicalPageBytes
     );
@@ -689,14 +708,15 @@ describe('knowledge proposal authority', () => {
       );
       expect(published.notebookRevision).not.toBe(f.proposal.baseRevision);
       existing = currentPage(f, f.knowledgePageId);
-    } else
-      writeFileSync(
-        f.proposalPath,
-        readFileSync(f.proposalPath, 'utf8').replace(
-          'Keep proposal application',
-          'Tampered proposal application'
-        )
+    } else {
+      const original = readFileSync(f.proposalPath, 'utf8');
+      const tampered = original.replace(
+        f.proposal.rationale,
+        'Tampered retained Proposal rationale.'
       );
+      expect(tampered).not.toBe(original);
+      writeFileSync(f.proposalPath, tampered);
+    }
     const before = f.notebook.publishedRevision();
     await expectAuthorityFailure(
       () => decide(f, 'accepted', `review-fail-${kind}`),

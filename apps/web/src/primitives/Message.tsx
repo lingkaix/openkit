@@ -1,5 +1,5 @@
 import MarkdownIt from 'markdown-it';
-import { type ReactNode, useMemo } from 'react';
+import { type ReactNode, type Ref, useMemo } from 'react';
 import { Avatar } from './Avatar';
 import { ChannelTag } from './ChannelTag';
 import type { WorkerHue } from './status';
@@ -39,11 +39,13 @@ export interface UserMessageProps {
   author: string;
   /** True only for the authenticated human account. */
   isSelf: boolean;
+  /** The actual body element for the conversation owner's viewport observation. */
+  bodyRef?: Ref<HTMLDivElement>;
   children: ReactNode;
 }
 
 /** Human message with a circular identity row and a bubble; only the viewer aligns right. */
-export function UserMessage({ author, isSelf, children }: UserMessageProps) {
+export function UserMessage({ author, isSelf, bodyRef, children }: UserMessageProps) {
   return (
     <article
       aria-label={`Message from ${author}${isSelf ? ' (You)' : ''}`}
@@ -61,7 +63,10 @@ export function UserMessage({ author, isSelf, children }: UserMessageProps) {
         <span className="min-w-0 font-bold text-fg">{author}</span>
         {isSelf ? <span>You</span> : null}
       </div>
-      <div className="max-w-[min(100%,620px)] whitespace-pre-wrap rounded-ok-xl bg-sunken px-4 py-2.5 text-fg">
+      <div
+        ref={bodyRef}
+        className="max-w-[min(100%,620px)] whitespace-pre-wrap rounded-ok-xl bg-sunken px-4 py-2.5 text-fg"
+      >
         {children}
       </div>
     </article>
@@ -79,6 +84,8 @@ export interface AssistantMessageProps {
   time?: string;
   /** Origin channel; renders a quiet "via …" tag when set. */
   via?: string;
+  /** The actual body element; Markdown rendering and author metadata remain separate. */
+  bodyRef?: Ref<HTMLDivElement>;
   children: ReactNode;
 }
 
@@ -94,6 +101,7 @@ export function AssistantMessage({
   author,
   time,
   via,
+  bodyRef,
   children,
 }: AssistantMessageProps) {
   const report = useMemo(
@@ -112,9 +120,12 @@ export function AssistantMessage({
         {via ? <ChannelTag channel={via} /> : null}
       </div>
       {report === null ? (
-        <div className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">{children}</div>
+        <div ref={bodyRef} className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">
+          {children}
+        </div>
       ) : (
         <div
+          ref={bodyRef}
           className="ok-message-report min-w-0 w-full max-w-full leading-relaxed text-fg"
           // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown-it generates all markup with raw HTML and media disabled; links are HTTP(S) only.
           dangerouslySetInnerHTML={{ __html: report }}
