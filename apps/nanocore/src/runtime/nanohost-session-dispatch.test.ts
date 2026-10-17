@@ -67,6 +67,8 @@ describe('authoritative NanoHost session dispatch', () => {
         input: {
           sandboxId: 'fixture-sandbox',
           slot: 'worktree',
+          entryKind: 'file',
+          executable: false,
           relativePath: 'fixture.txt',
           body: importBody,
           byteLength: importBody.length,
@@ -209,6 +211,94 @@ describe('authoritative NanoHost session dispatch', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await shutdownTelemetry();
       log.mockRestore();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('carries strict directory and executable Skill imports over native H2', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-skill-import-h2-'));
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = { deploymentId: 'skill-import', identityId: 'skill-import', targetId: 'skill-import' };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target, observedAt: '2026-10-17T00:00:00.000Z',
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionEffectRoutes({ app, dispatch });
+    const listener = getRequestListener(app.fetch);
+    let physical: object | undefined;
+    const server = createHttp2Server((request, response) => {
+      if (!physical) {
+        physical = readNanoHostPhysicalConnectionContext(request)!;
+        authority.admit({ identityId: target.identityId, connectionGeneration: 1, physicalConnection: physical });
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing Skill import address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const post = async (path: string, body: unknown) => {
+        const stream = client!.request({ ':method': 'POST', ':path': path, 'content-type': 'application/json' });
+        const received = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [headers] = await received;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return { headers, body: Buffer.concat(chunks) };
+      };
+      await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'a'.repeat(64) });
+      const path = '/api/nanohost/transport/effects/reference.import';
+      const common = { sandboxId: 'sandbox-skill-import', slot: 'worker-supply', relativePath: 'as_skill/supply/inputs/repo-guidelines/empty-dir' };
+      const directory = { ...common, entryKind: 'directory' };
+      const body = Buffer.from('#!/bin/sh\nprintf ready\n');
+      const file = { ...common, relativePath: 'as_skill/supply/inputs/repo-guidelines/run.sh', entryKind: 'file', executable: true, body, byteLength: body.length, sha256: `sha256:${createHash('sha256').update(body).digest('hex')}` };
+      for (const invalid of [
+        { ...directory, body: Buffer.alloc(0) },
+        { ...directory, byteLength: 0 },
+        { ...directory, sha256: file.sha256 },
+        { ...directory, executable: false },
+        { ...directory, slot: 'context' },
+        { ...directory, entryKind: 'link' },
+        { ...file, entryKind: undefined },
+        { ...file, executable: undefined },
+        { ...file, executable: 'true' },
+        { ...file, slot: 'context' },
+        { ...file, mode: 0o700 },
+      ]) {
+        await expect(dispatch.effect({ kind: 'reference.import', requestId: 'e'.repeat(64), input: invalid })).rejects.toThrow(/invalid|unowned|worker-supply/i);
+        expect(await dispatch.poll(physical!, 'reference.import')).toBeNull();
+      }
+      for (const [index, input] of [directory, file].entries()) {
+        const requestId = String(index + 1).repeat(64);
+        const pending = dispatch.effect({ kind: 'reference.import', requestId, input });
+        void pending.catch(() => undefined);
+        const carried = await post(path, {});
+        expect(carried.headers[':status']).toBe(200);
+        expect(carried.headers['x-openkit-entry-kind']).toBe(input.entryKind);
+        expect(carried.headers['x-openkit-request-id']).toBe(requestId);
+        expect(carried.headers['x-openkit-slot']).toBe(input.slot);
+        expect(carried.headers['x-openkit-relative-path']).toBe(input.relativePath);
+        expect(carried.headers['content-length']).toBe(index === 0 ? '0' : String(body.length));
+        expect(carried.body).toEqual(index === 0 ? Buffer.alloc(0) : body);
+        expect(carried.headers['x-openkit-sha256']).toBe(index === 0 ? undefined : file.sha256);
+        expect(carried.headers['x-openkit-byte-length']).toBe(index === 0 ? undefined : String(body.length));
+        expect(carried.headers['x-openkit-executable']).toBe(index === 0 ? undefined : 'true');
+        const result = { requestId, byteLength: index === 0 ? 0 : body.length, reference: `sandbox://${input.sandboxId}/${input.slot}/${input.relativePath}` };
+        expect((await post(`${path}/result`, result)).headers[':status']).toBe(204);
+        const { requestId: _requestId, ...expected } = result;
+        await expect(pending).resolves.toEqual(expected);
+      }
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
@@ -1975,6 +2065,8 @@ describe('authoritative NanoHost session dispatch', () => {
         {
           input: {
             body: new Uint8Array(),
+            entryKind: 'file',
+            executable: false,
             byteLength: 0,
             relativePath: 'package.json',
             sandboxId: 'sandbox-special',
