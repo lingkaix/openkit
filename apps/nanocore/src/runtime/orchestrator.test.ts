@@ -14,7 +14,13 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.js';
+import {
+  createDemoStore,
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+  seedDemoWorkspace,
+} from '../test-support/demo-store.js';
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { startTurn } from './orchestrator.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
 
@@ -112,6 +118,37 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('startTurn orchestrator', () => {
+  it('reports conflicting exact Skill setup before creating a Turn or starting its executor', async () => {
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const configured = manifest('agent_codex_host');
+    configured.skills = [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }];
+    configured.profiles = [
+      {
+        id: 'default',
+        skills: [{ id: 'review-skill', digest: `sha256:${'b'.repeat(64)}` }],
+        mcp: [],
+      },
+    ];
+    const before = store.listThreadTurns(DEMO_WORKSPACE_ID, DEMO_THREAD_ID);
+    await expect(
+      startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: configured.id,
+        agentManifests: [configured],
+        input: 'Run tests',
+        providerRegistry: localProviderRegistry(),
+        store,
+        threadId: DEMO_THREAD_ID,
+        workspaceId: DEMO_WORKSPACE_ID,
+        turnExecutor,
+        triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      })
+    ).rejects.toMatchObject({ code: 'conflict', status: 409 });
+    expect(store.listThreadTurns(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual(before);
+    expect(turnExecutor.calls).toEqual([]);
+  });
+
   it.each([
     'agent_pi',
     'agent_fourth_runtime',

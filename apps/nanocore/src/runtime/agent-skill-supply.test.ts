@@ -52,7 +52,9 @@ describe('release-declared catalog Skill supply', () => {
       producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
       tree: [
         {
-          contentBase64: Buffer.from('# Hello\n').toString('base64'),
+          contentBase64: Buffer.from(
+            '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n'
+          ).toString('base64'),
           kind: 'file',
           path: 'SKILL.md',
         },
