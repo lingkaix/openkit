@@ -1,13 +1,14 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppSearchResponseSchema } from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
@@ -15,11 +16,61 @@ import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 afterEach(closeRetrievalServices);
+
+/** Keeps native Knowledge retrieval and HTTP authority in the same disposable data root. */
+function createSearchFixture(dataRoot: string) {
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot });
+  for (const workspace of store.listWorkspaces()) {
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: workspace.id,
+    });
+  }
+  onTestFinished(() => {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  return { store, app: createApp({ coreDb, dataRoot, store }) };
+}
+
+/** Seeds a page through current human admission and the native fixed-base Notebook publisher. */
+async function createKnowledgeFixture(
+  app: ReturnType<typeof createApp>,
+  dataRoot: string,
+  workspaceId: string,
+  input: { knowledgePageId: string; title: string; content: string }
+): Promise<{ id: string }> {
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
+  });
+  const response = await app.request(
+    ...knowledgeOperationRequest(
+      'knowledge.create',
+      { workspaceId },
+      {
+        body: JSON.stringify({
+          ...input,
+          kind: 'project-context',
+          requestId: randomUUID(),
+          baseRevision: notebook.publishedRevision(),
+          sourceReferences: [],
+        }),
+      }
+    )
+  );
+  expect(response.status, await response.clone().text()).toBe(200);
+  return (await response.json()) as { id: string };
+}
 
 describe('search app API', () => {
   it('opens only authorized workspaces and never scans global items', async () => {
@@ -111,7 +162,7 @@ describe('search app API', () => {
   });
 
   it('searches workspaces, threads, knowledge, artifacts, and items', async () => {
-    const store = createDemoStore({ dataRoot: mkdtempSync(join(tmpdir(), 'openkit-search-')) });
+    const { store, app } = createSearchFixture(mkdtempSync(join(tmpdir(), 'openkit-search-')));
     const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Needle thread');
     const turn = store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -133,11 +184,9 @@ describe('search app API', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const app = createApp({ store });
-
     const res = await app.request(...operationRequest('app.search', { query: 'needle' }, {}));
 
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       items: expect.arrayContaining([
         expect.objectContaining({ kind: 'thread', id: thread.id, title: 'Needle thread' }),
@@ -152,13 +201,17 @@ describe('search app API', () => {
 
   it('delegates Knowledge search to the same segmented governed owner', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-search-cjk-'));
-    const store = createDemoStore({ dataRoot });
-    const page = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
-      title: 'Unrelated',
-      content: '我们完成了测试，并修复了缺陷。',
-    });
-    const app = createApp({ store });
+    const { app } = createSearchFixture(dataRoot);
+    const page = await createKnowledgeFixture(
+      app,
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001',
+      {
+        knowledgePageId: 'segmented-search',
+        title: 'Unrelated',
+        content: '我们完成了测试，并修复了缺陷。',
+      }
+    );
     const response = await app.request(
       ...operationRequest('app.search', { query: '测试 修复' }, {})
     );
@@ -188,6 +241,7 @@ describe('search app API', () => {
       });
     }
 
+    const publisherApp = createApp({ coreDb, dataRoot, store });
     for (const [workspace, prefix] of [
       [allowedWorkspace, 'allowed'],
       [deniedWorkspace, 'denied'],
@@ -200,8 +254,8 @@ describe('search app API', () => {
       const timestamp = turn.startedAt ?? new Date().toISOString();
       const artifactBody = `${prefix} visibility needle body`;
       const artifactRequestId = `search-artifact-${prefix}-1`;
-      store.createKnowledgeEntry(workspace.id, {
-        kind: 'project-context',
+      await createKnowledgeFixture(publisherApp, dataRoot, workspace.id, {
+        knowledgePageId: `${prefix}-knowledge`,
         title: `${prefix} visibility needle knowledge`,
         content: `${prefix} visibility needle content`,
       });
