@@ -56,6 +56,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from './internal-agents/delegation.js';
 import { readInternalContextEvidence } from './internal-agents/internal-context-evidence.js';
+import { interruptKnowledgeManagerTurn } from './internal-agents/knowledge-manager-agent.js';
 import { resolveInternalRoleProfile } from './internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import { internalContextFailure } from './internal-agents/rolling-context.js';
@@ -4016,6 +4017,7 @@ export function createConversationService({
     targets,
     submit,
     async interrupt(store: FsStore, turnId: string) {
+      if (await interruptKnowledgeManagerTurn(store, turnId)) return true;
       const run = activeChatRuns.get(store)?.get(turnId);
       if (!run) return false;
       run.controller.abort();

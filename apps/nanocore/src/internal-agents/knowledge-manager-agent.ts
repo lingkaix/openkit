@@ -22,6 +22,24 @@ import { internalContextFailure } from './rolling-context.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 
+// Live handles exist only during this process; retained Turns never restart a model after reboot.
+const activeKnowledgeRuns = new WeakMap<
+  FsStore,
+  Map<string, { controller: AbortController; finished: Promise<void> }>
+>();
+
+/** Stops an active KM Turn and waits for its ordinary terminal record before accepting Stop. */
+export async function interruptKnowledgeManagerTurn(
+  store: FsStore,
+  turnId: string
+): Promise<boolean> {
+  const run = activeKnowledgeRuns.get(store)?.get(turnId);
+  if (!run) return false;
+  run.controller.abort();
+  await run.finished;
+  return true;
+}
+
 /** Existing Gateway dependencies; the role adds no transport, execution store or scheduler. */
 export interface KnowledgeManagerAgentDependencies {
   readonly store: FsStore;
@@ -110,6 +128,32 @@ export function pinKnowledgeManagerExecution(
  * The caller owns query isolation, notebook admission and output validation. A settled or interrupted Turn is never replayed. Maintenance Tools publish only their admitted fixed-base candidate; model text cannot authorize publication.
  */
 export async function runKnowledgeManagerAgent(
+  dependencies: KnowledgeManagerAgentDependencies,
+  input: KnowledgeManagerAgentRun
+): Promise<{ readonly turnId: string; readonly text: string }> {
+  const { store } = dependencies;
+  const controller = new AbortController();
+  const finished = Promise.withResolvers<void>();
+  let runs = activeKnowledgeRuns.get(store);
+  if (!runs) {
+    runs = new Map();
+    activeKnowledgeRuns.set(store, runs);
+  }
+  if (runs.has(input.turn.id)) throw new Error('Knowledge Manager Turn is already running.');
+  runs.set(input.turn.id, { controller, finished: finished.promise });
+  try {
+    return await executeKnowledgeManagerAgent(dependencies, {
+      ...input,
+      signal: AbortSignal.any([input.signal, controller.signal]),
+    });
+  } finally {
+    runs.delete(input.turn.id);
+    finished.resolve();
+  }
+}
+
+/** Executes within the caller's live cancellation handle, retaining the normal Turn lifecycle. */
+async function executeKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
   input: KnowledgeManagerAgentRun
 ): Promise<{ readonly turnId: string; readonly text: string }> {
