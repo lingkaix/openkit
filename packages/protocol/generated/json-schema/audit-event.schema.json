@@ -563,6 +563,29 @@
                 "proposalId"
               ],
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "delegated"
+                },
+                "settingReference": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "settingDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "kind",
+                "settingReference",
+                "settingDigest"
+              ],
+              "additionalProperties": false
             }
           ]
         },

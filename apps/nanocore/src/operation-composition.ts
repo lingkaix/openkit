@@ -73,10 +73,16 @@ import { createWorkspaceSharingOperationImplementations } from './workspace-shar
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   /** Bounded Knowledge Manager role supplied by application assembly. */
-  readonly knowledgeAgent?: {
-    readonly ask: (input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
-    readonly maintain: (input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
-  } | undefined;
+  readonly knowledgeAgent?:
+    | {
+        readonly ask: (
+          input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        readonly maintain: (
+          input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
+      }
+    | undefined;
   readonly coreDb: CoreDb | undefined;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
