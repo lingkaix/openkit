@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from '../runtime/feedback.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import {
   readEncryptedFileVaultText,
   writeEncryptedFileVaultJsonAtomically,
@@ -141,6 +142,7 @@ function workspaceImportPayload(
   workspaceId: string
 ): Parameters<FsStore['importWorkspaceSnapshot']>[0] {
   return {
+    ...notebookImportFixture({ workspaceId, knowledge: [] }),
     workspace: {
       id: workspaceId,
       name: 'Imported symlink boundary workspace',

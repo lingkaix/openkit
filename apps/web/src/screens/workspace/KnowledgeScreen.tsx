@@ -66,6 +66,7 @@ import {
   useUpdateKnowledge,
   workspaceKeys,
 } from './data';
+import { NotebookHistoryPanel } from './NotebookHistoryPanel';
 
 const KIND_LABEL: Record<KnowledgeItem['kind'], string> = {
   preference: 'Preferences',
@@ -272,20 +273,30 @@ const EMPTY_RESOLVE_DRAFT: ResolveDraft = { conflictId: null, resolution: '', re
 
 type AddDraft = {
   adding: boolean;
+  baseRevision: string | null;
+  knowledgePageId: string | null;
   title: string;
   content: string;
   sourceReference: string | null;
 };
 
-const EMPTY_ADD_DRAFT: AddDraft = { adding: false, title: '', content: '', sourceReference: null };
+const EMPTY_ADD_DRAFT: AddDraft = {
+  adding: false,
+  baseRevision: null,
+  knowledgePageId: null,
+  title: '',
+  content: '',
+  sourceReference: null,
+};
 
 type EditDraft = {
   entry: KnowledgeItem | null;
+  baseRevision: string | null;
   title: string;
   content: string;
 };
 
-const EMPTY_EDIT_DRAFT: EditDraft = { entry: null, title: '', content: '' };
+const EMPTY_EDIT_DRAFT: EditDraft = { entry: null, baseRevision: null, title: '', content: '' };
 
 /**
  * Knowledge Store slice (WP-6, board 14).
@@ -317,7 +328,13 @@ export function KnowledgeScreen() {
   const writePending =
     create.isPending || update.isPending || remove.isPending || proposalDecision.isPending;
   const entryWriteBlocked =
-    checking || failed || writePending || knowledge.isError || knowledge.isFetching || !workspaceId;
+    checking ||
+    failed ||
+    writePending ||
+    knowledge.isError ||
+    knowledge.isFetching ||
+    !workspaceId ||
+    !knowledge.data?.notebookRevision;
   const proposalWriteBlocked = entryWriteBlocked || attention.isFetching || attention.isError;
   const connectionBlocked = checking || failed;
   const pagePending =
@@ -355,11 +372,17 @@ export function KnowledgeScreen() {
     if (!command && !selectedSourceReady) return;
     const next =
       command ??
-      (workspaceId && addDraft.title.trim() && addDraft.content.trim()
+      (workspaceId &&
+      addDraft.baseRevision &&
+      addDraft.knowledgePageId &&
+      addDraft.title.trim() &&
+      addDraft.content.trim()
         ? {
             workspaceId,
             input: {
               requestId: createRequestId(),
+              baseRevision: addDraft.baseRevision,
+              knowledgePageId: addDraft.knowledgePageId,
               kind: 'preference' as const,
               title: addDraft.title.trim(),
               content: addDraft.content.trim(),
@@ -377,7 +400,13 @@ export function KnowledgeScreen() {
 
   /** Prefill the edit form from one exact authoritative entry. */
   function startEditing(entry: KnowledgeItem) {
-    setEditDraft({ entry, title: entry.title, content: entry.content });
+    if (!knowledge.data?.notebookRevision) return;
+    setEditDraft({
+      entry,
+      baseRevision: knowledge.data.notebookRevision,
+      title: entry.title,
+      content: entry.content,
+    });
     update.reset();
   }
 
@@ -391,7 +420,7 @@ export function KnowledgeScreen() {
   function saveEdit(command?: UpdateKnowledgeCommand) {
     let next = command;
     if (!next) {
-      if (!workspaceId || !editing) return;
+      if (!workspaceId || !editing || !editDraft.baseRevision) return;
       const titleChanged = editDraft.title !== editing.title;
       const contentChanged = editDraft.content !== editing.content;
       const nextTitle = editDraft.title.trim();
@@ -407,6 +436,7 @@ export function KnowledgeScreen() {
         knowledgeEntryId: editing.id,
         input: {
           requestId: createRequestId(),
+          baseRevision: editDraft.baseRevision,
           ...(titleChanged ? { title: nextTitle } : {}),
           ...(contentChanged ? { content: nextContent } : {}),
         },
@@ -477,7 +507,7 @@ export function KnowledgeScreen() {
       (editDraft.content === editing.content || editDraft.content.trim())
   );
 
-  const entries = knowledge.data ?? [];
+  const entries = knowledge.data?.items ?? [];
   const byKind = groupByKind(entries);
   const knowledgeProposals = attention.data?.filter((row) => row.source.type === 'knowledge') ?? [];
 
@@ -506,7 +536,16 @@ export function KnowledgeScreen() {
             <Button
               size="sm"
               isDisabled={entryWriteBlocked}
-              onPress={() => setAddDraft((current) => ({ ...current, adding: true }))}
+              onPress={() => {
+                const baseRevision = knowledge.data?.notebookRevision;
+                if (!baseRevision) return;
+                setAddDraft((current) => ({
+                  ...current,
+                  adding: true,
+                  baseRevision,
+                  knowledgePageId: `notes/${createRequestId()}`,
+                }));
+              }}
             >
               Add knowledge
             </Button>
@@ -514,6 +553,7 @@ export function KnowledgeScreen() {
         />
       )}
       <div className={pagePending ? 'hidden' : undefined}>
+        <NotebookHistoryPanel workspaceId={workspaceId} />
         {addDraft.adding ? (
           <Card className="flex flex-col gap-3">
             <Eyebrow>New preference</Eyebrow>
@@ -665,11 +705,16 @@ export function KnowledgeScreen() {
                                     variant="negative"
                                     isDisabled={entryWriteBlocked}
                                     onPress={() => {
-                                      if (!workspaceId) return;
+                                      if (!workspaceId || !knowledge.data?.notebookRevision) return;
                                       removeEntry({
                                         workspaceId,
                                         knowledgeEntryId: entry.id,
-                                        input: { requestId: createRequestId() },
+                                        input: {
+                                          requestId: createRequestId(),
+                                          baseRevision: knowledge.data.notebookRevision,
+                                          expectedContentDigest: entry.contentDigest,
+                                          confirmRemoval: true,
+                                        },
                                       });
                                     }}
                                   >

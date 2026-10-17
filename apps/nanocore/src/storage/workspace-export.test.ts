@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,7 @@ import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
 import { deriveEntityId, isEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
@@ -15,6 +16,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
@@ -1076,6 +1078,7 @@ describe('workspace export verifier', () => {
     const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
     const store = new FsStore({ dataRoot });
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: fixture.workspace.id, knowledge: fixture.knowledge }),
       workspace: fixture.workspace,
       threads: [fixture.thread],
       turns: [],
@@ -1149,6 +1152,7 @@ describe('workspace export verifier', () => {
     const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
     const store = new FsStore({ dataRoot });
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: fixture.workspace.id, knowledge: [] }),
       workspace: fixture.workspace,
       threads: [fixture.thread],
       turns: [],
@@ -1540,6 +1544,19 @@ describe('workspace export verifier', () => {
     });
     const sourceTraceText = `${JSON.stringify(sourceTrace)}\n`;
     writeFileSync(join(sourcePortableRoot, sourceTracePath), sourceTraceText);
+    // The codec reads the current canonical content owner even for a trace-only Workspace.
+    new KnowledgeNotebook({
+      repositoryPath: join(sourcePortableRoot, 'knowledge', 'notebook.git'),
+    }).initialize({
+      files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+      metadata: {
+        summary: 'Trace-only portable fixture',
+        producer: localActor,
+        authority: { kind: 'direct', instructionReference: 'test-fixture:trace-portability' },
+        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'0'.repeat(64)}` },
+        sourceReferences: [],
+      },
+    });
     const portableFileState = readWorkspacePortableFileState(sourcePortableRoot, {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threads: [{ threadId: thread.id }],

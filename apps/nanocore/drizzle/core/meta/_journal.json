@@ -26,8 +26,15 @@
     {
       "idx": 3,
       "version": "6",
-      "when": 1792191443961,
-      "tag": "0003_channel_notifications",
+      "when": 1792191482821,
+      "tag": "0003_notebook_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792211392254,
+      "tag": "0004_channel_notifications",
       "breakpoints": true
     }
   ]

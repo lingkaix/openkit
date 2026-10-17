@@ -32,6 +32,18 @@ export interface RequiredFeatureDefinition {
  * Known required features used by fail-closed readers.
  */
 export const REQUIRED_FEATURE_REGISTRY = {
+  'openkit.knowledge-owner-scope.v1': {
+    id: 'openkit.knowledge-owner-scope.v1',
+    status: 'active',
+    description:
+      'Knowledge records retain exact User, Workspace or Server ownership and source restrictions.',
+  },
+  'openkit.knowledge-git-notebook.v1': {
+    id: 'openkit.knowledge-git-notebook.v1',
+    status: 'active',
+    description:
+      'Notebook Git revisions own page content, exact-base publication and retained history.',
+  },
   'agent.resource-catalog.v1': {
     id: 'agent.resource-catalog.v1',
     status: 'active',

@@ -200,7 +200,7 @@ describe('database setup', () => {
     const journal = JSON.parse(
       readFileSync(join(productionFolder, 'meta', '_journal.json'), 'utf8')
     );
-    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 2);
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 4);
     writeFileSync(join(legacyFolder, 'meta', '_journal.json'), JSON.stringify(journal));
     for (const entry of journal.entries)
       writeFileSync(
@@ -248,7 +248,8 @@ describe('database setup', () => {
         '0000_setup.sql',
         '0001_concurrent_turn_capacity.sql',
         '0002_durable_recurring_schedules.sql',
-        '0003_channel_notifications.sql',
+        '0003_notebook_admission.sql',
+        '0004_channel_notifications.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -259,7 +260,8 @@ describe('database setup', () => {
         'core_0000_setup',
         'core_0001_concurrent_turn_capacity',
         'core_0002_durable_recurring_schedules',
-        'core_0003_channel_notifications',
+        'core_0003_notebook_admission',
+        'core_0004_channel_notifications',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(
@@ -295,7 +297,12 @@ describe('database setup', () => {
         'disabled_at',
       ]);
       expect(listColumnNames(coreDb, 'audit_events')).toEqual(
-        expect.arrayContaining(['actor_json', 'subject_json', 'resource_revision'])
+        expect.arrayContaining([
+          'actor_json',
+          'subject_json',
+          'resource_revision',
+          'notebook_admission_json',
+        ])
       );
       expect(listColumnNames(coreDb, 'idempotency_requests')).toEqual([
         'request_key',
@@ -640,15 +647,18 @@ describe('database setup', () => {
       expect(listMigrationIds(userDb, 'user')).toEqual([
         'user_0000_setup',
         'user_0001_thread_read_receipts',
+        'user_0002_notebook_admission',
       ]);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
+        'audit_events',
         'idempotency_requests',
         'thread_read_receipts',
       ]);
       expect(listMigrationIds(workspaceDb, 'workspace')).toEqual([
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',
+        'workspace_0002_notebook_admission',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [

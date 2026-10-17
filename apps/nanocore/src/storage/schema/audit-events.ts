@@ -55,6 +55,8 @@ export const auditEvents = sqliteTable(
     resource: text('resource'),
     /** Positive authority revision associated with the resource mutation. */
     resourceRevision: integer('resource_revision'),
+    /** Exact typed notebook admission facts persisted before Git content publication. */
+    notebookAdmissionJson: text('notebook_admission_json'),
     /** Event outcome. */
     outcome: text('outcome').$type<AuditEventOutcome>().notNull(),
     /** Event severity. */

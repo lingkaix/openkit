@@ -29,6 +29,8 @@ export * from './generative-ui.js';
 export * from './goal.js';
 export * from './governance-operations.js';
 export * from './knowledge-manager.js';
+export * from './knowledge-notebook.js';
+export * from './knowledge-notebook-history.js';
 export * from './light-apps.js';
 export * from './material.js';
 export { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
