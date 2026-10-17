@@ -46,6 +46,18 @@ function citationId(candidate: KnowledgeRetrievalCandidate): string {
   return `${candidate.reference.scopeId}/${candidate.reference.objectId}`;
 }
 
+/** A bounded overview keeps its original digest and names the exact remaining read. */
+function overviewProjection(page: { content: string; contentDigest: string }, pageId: string, revision: string) {
+  const bytes = Buffer.from(page.content);
+  let end = Math.min(16_384, bytes.length);
+  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+  const content = bytes.subarray(0, end).toString('utf8');
+  return { content, contentDigest: page.contentDigest,
+    deliveredDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+    truncated: end < bytes.length, nextOffset: end < bytes.length ? content.length : null,
+    readTool: 'knowledge.page.read', pageId, notebookRevision: revision };
+}
+
 /**
  * Runs one isolated model query using current Kernel selection and exact authorized page reads.
  *
@@ -77,10 +89,6 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   const pinned = { ...bound, notebookRevision: baseRevision };
   const overviewPage = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'] }).pages[0];
   if (!overviewPage) throw new Error('Knowledge overview is unavailable.');
-  const overviewBytes = Buffer.from(overviewPage.content);
-  let overviewEnd = Math.min(16_384, overviewBytes.length);
-  while (overviewEnd > 0 && overviewEnd < overviewBytes.length && (overviewBytes[overviewEnd]! & 0xc0) === 0x80) overviewEnd--;
-  const overview = overviewBytes.subarray(0, overviewEnd).toString('utf8');
   const candidates = new Map<string, KnowledgeRetrievalCandidate>();
   const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage.content });
   const workspaceIndexId = `page/workspace/${input.workspaceId}/index`;
@@ -93,9 +101,18 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   const serverAdmitted = canReadServerKnowledge({ access });
   let serverRevision: string | undefined;
   let serverUnavailable = false;
+  const overviews = [{ source: 'workspace', ...overviewProjection(overviewPage, workspaceIndexId, baseRevision) }];
   if (serverAdmitted) {
     try {
-      serverRevision = readAuthorizedServerNotebookPages({ ...bound, pageIds: [] }).notebookRevision;
+      const server = readAuthorizedServerNotebookPages({ ...bound, pageIds: ['index'] });
+      const page = server.pages[0];
+      if (!page) throw new Error('Server overview is unavailable.');
+      serverRevision = server.notebookRevision;
+      overviews.push({ source: 'server', ...overviewProjection(page, 'page/server/index', serverRevision) });
+      const document = parseOkfDocument({ path: 'index.md', content: page.content }).document;
+      candidates.set('page/server/index', { reference: { scopeId: 'page/server', objectId: 'index' },
+        revision: serverRevision, contentDigest: page.contentDigest, score: 0,
+        sourceReferences: document ? stringListFrontmatterField(document, 'source_refs') ?? [] : [] });
     } catch {
       // A currently admitted source failure is visible to the model, without storage diagnostics.
       serverUnavailable = true;
@@ -145,9 +162,13 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         const sources = [{ source: 'workspace', ...workspace }];
         if (serverAdmitted && !serverUnavailable) {
           if (!canReadServerKnowledge({ access })) throw new Error('Server Knowledge is no longer available.');
-          const server = await retrieveWorkspaceKnowledge({ ...bound, caller: input.caller, sourceScope: 'server', ...args });
-          if (server.notebookRevision !== serverRevision) throw new Error('Server notebook changed; start a new query.');
-          sources.push({ source: 'server', ...server });
+          try {
+            const server = await retrieveWorkspaceKnowledge({ ...bound, caller: input.caller, sourceScope: 'server', ...args });
+            if (server.notebookRevision !== serverRevision) throw new Error('Server notebook changed; start a new query.');
+            sources.push({ source: 'server', ...server });
+          } catch {
+            serverUnavailable = true;
+          }
         }
         for (const result of sources) for (const candidate of result.selected) candidates.set(citationId(candidate), candidate);
         assertCurrent();
@@ -214,12 +235,7 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         ...(input.access.outputTurnId ? { askingTurnId: input.access.outputTurnId } : {}),
         ...(input.capabilityCallId ? { askingCapabilityCallId: input.capabilityCallId } : {}),
       },
-      messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({ question: input.question, overview,
-        overviewContentDigest: overviewPage.contentDigest,
-        overviewDeliveredDigest: `sha256:${createHash('sha256').update(overview).digest('hex')}`,
-        overviewTruncated: overviewEnd < overviewBytes.length,
-        overviewNextOffset: overview.length < overviewPage.content.length ? overview.length : null,
-        overviewReadTool: 'knowledge.page.read', overviewPageId: workspaceIndexId, notebookRevision: baseRevision,
+      messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({ question: input.question, overviews,
         unavailableSources: serverUnavailable ? ['server'] : [],
         instruction: 'Use exact scope-qualified pageId values for reads and citationIds. Report any unavailable source in uncertainty.' }) }] }],
       readEvidence: (items) => readInternalContextEvidence({
