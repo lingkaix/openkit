@@ -270,7 +270,13 @@ describe('Knowledge operation definition cutover', () => {
   it('declares the accepted governed and Notebook operation inventory without handwritten projection catalogs', () => {
     const tables = schemas as unknown as Record<string, Record<string, unknown>>;
     expect(Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
-      [...governedIds, 'knowledge.ask', 'knowledge.tell', 'knowledge.maintain'].sort()
+      [
+        ...governedIds,
+        'knowledge.ask',
+        'knowledge.tell',
+        'knowledge.maintain',
+        'knowledge.proposal.read',
+      ].sort()
     );
     expect(Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
       [...entryIds].sort()
