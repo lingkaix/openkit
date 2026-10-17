@@ -105,13 +105,6 @@ export const DataRootBackupManifestSchema = RecordEnvelopeSchema.safeExtend({
       path: ['consistency'],
     });
   }
-  if (value.backupMode === 'hot' && value.consistency !== 'crash-consistent') {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'Hot backups must be crash-consistent.',
-      path: ['consistency'],
-    });
-  }
 
   const seen = new Set<string>();
   for (const [index, entry] of value.contentInventory.entries()) {

@@ -12,6 +12,7 @@ import {
 import { allocateEntityId } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
 import {
+  DataRootBackupBusyError,
   type VerifiedDataRootBackupManifest,
   verifyDataRootBackupManifest,
   writeHotDataRootBackup,
@@ -82,7 +83,10 @@ export function createDataRootAdminOperationImplementations(dataRoot: string | n
         });
 
         return DataRootBackupCreateResponseSchema.parse(dataRootBackupResponse(verified));
-      } catch (_error) {
+      } catch (error) {
+        if (error instanceof DataRootBackupBusyError) {
+          return failure(error.message, 'data_root_backup_failed', 400);
+        }
         return failure('Data-root backup verification failed.', 'data_root_backup_failed', 400);
       }
     },

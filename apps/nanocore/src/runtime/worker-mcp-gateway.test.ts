@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,8 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
+import { inventoryRegularFiles, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
 import { mcpToolSchemaContentDigest } from './mcp-tool-schema-snapshots.js';
 import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
@@ -326,6 +328,55 @@ describe('worker MCP gateway', () => {
       await gateway.close();
       ping.mockRestore();
       vi.useRealTimers();
+    }
+  });
+
+  it('refuses data-root backup while an idle local stdio session is cached and permits it after close', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'worker-mcp-backup-'));
+    const { coreDb, gateway } = createAuditedGateway(join(root, 'source'));
+    const backupRoot = join(root, 'backup');
+    const dataDirectory = join(coreDb.dataRoot, 'local-mcp-data');
+    const server = stdioTestServer(5_000);
+    const input = {
+      dataRoot: coreDb.dataRoot,
+      backupRoot,
+      backupId: testEntityId('drb', 'cached-local-mcp-backup'),
+      sourceDeploymentId: testEntityId('dep', 'cached-local-mcp-backup'),
+      startedAt: '2026-10-18T00:00:00.000Z',
+      completedAt: '2026-10-18T00:00:01.000Z',
+    };
+
+    try {
+      mkdirSync(backupRoot);
+      writeFileSync(join(backupRoot, 'prior-backup'), 'preserve these exact backup bytes');
+      const priorBackup = inventoryRegularFiles(backupRoot);
+      mkdirSync(dataDirectory);
+      writeFileSync(join(dataDirectory, 'retained.txt'), 'retained local MCP content');
+      const session = {
+        server,
+        temporaryContext: { dataDirectory },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      };
+      await expect(
+        gateway.callTool({ ...session, arguments: { message: 'ready' }, toolName: 'echo' })
+      ).resolves.toMatchObject({ structuredContent: { message: 'ready' } });
+      expect(gateway.getServerHealth(session)).toBe('ready');
+
+      await expect(writeHotDataRootBackup(input)).rejects.toThrow(
+        /^Data-root backup requires idle local MCP servers\.$/
+      );
+      expect(inventoryRegularFiles(backupRoot)).toEqual(priorBackup);
+
+      await gateway.close();
+      const backup = await writeHotDataRootBackup(input);
+      expect(backup.checkedFiles).toContain('local-mcp-data/retained.txt');
+      expect(readFileSync(join(backupRoot, 'local-mcp-data', 'retained.txt'), 'utf8')).toBe(
+        'retained local MCP content'
+      );
+    } finally {
+      await gateway.close();
+      coreDb.sqlite.close();
+      rmSync(root, { force: true, recursive: true });
     }
   });
 

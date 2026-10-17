@@ -30,6 +30,27 @@ export const DATA_ROOT_BACKUP_MANIFEST_FILE = 'openkit-data-root-backup.json';
 /** Destination directories stay owner-only until their source mode is restored. */
 const OWNER_ONLY_DIRECTORY_MODE = 0o700;
 
+/** Independently running local processes that can mutate retained Data Root bytes. */
+const independentWriters = new Set<{ path: string }>();
+
+/** Refuses capture before changing backup bytes when Core cannot pause a local writer. */
+export class DataRootBackupBusyError extends Error {
+  /** Creates the safe operator retry instruction without including a local path. */
+  constructor() {
+    super('Data-root backup requires idle local MCP servers.');
+    this.name = 'DataRootBackupBusyError';
+  }
+}
+
+/** Keeps backup unavailable until an independently running retained-data writer is proved stopped. */
+export function registerDataRootBackupWriter(path: string): () => void {
+  const writer = { path: resolve(path) };
+  independentWriters.add(writer);
+  return () => {
+    independentWriters.delete(writer);
+  };
+}
+
 /** Input for writing one cold data-root backup manifest. */
 export interface WriteColdDataRootBackupManifestInput {
   /** Root of the copied data root to inventory. */
@@ -56,7 +77,7 @@ export interface WriteHotDataRootBackupInput {
   sourceDeploymentId: string;
   /** Timestamp captured before file copy starts. */
   startedAt: string;
-  /** Timestamp captured after SQLite snapshots finish. */
+  /** Timestamp captured after the paused snapshot finishes. */
   completedAt: string;
 }
 
@@ -223,11 +244,13 @@ export function writeColdDataRootBackupManifest(
 }
 
 /**
- * Copies a live data root, snapshots SQLite files via SQLite backup, and writes a hot backup manifest.
+ * Captures one consistent Data Root while the single Core writer cannot run.
+ *
+ * SQLite files and their WALs are copied together without yielding to another Core mutation. Independently writable MCP data requires an idle local process. Disposable staging and derived indexes have no retained authority to capture.
  *
  * @param input Live data root and backup destination.
  * @returns Parsed manifest plus checked inventory paths.
- * @throws Error when an identifier is invalid, or copy, SQLite backup, or manifest verification fails.
+ * @throws Error when a writer is busy, an identifier is invalid, or capture fails.
  */
 export async function writeHotDataRootBackup(
   input: WriteHotDataRootBackupInput
@@ -235,33 +258,36 @@ export async function writeHotDataRootBackup(
   DataRootBackupIdSchema.parse(input.backupId);
   DeploymentIdSchema.parse(input.sourceDeploymentId);
   assertBackupRootOutsideDataRoot(input.dataRoot, input.backupRoot);
-  const appsBefore = listLightAppDirectoryPaths(input.dataRoot);
-  rmSync(input.backupRoot, { recursive: true, force: true });
-  mkdirSync(dirname(input.backupRoot), { recursive: true });
-  copyDataRootTree(input.dataRoot, input.backupRoot);
+  const root = resolve(input.dataRoot);
+  if (
+    [...independentWriters].some(({ path }) => path === root || path.startsWith(`${root}${sep}`))
+  ) {
+    throw new DataRootBackupBusyError();
+  }
 
-  // Recovery copies are immutable, digest-bound files; SQLite backup would change their headers.
-  for (const path of listRegularBackupFiles(input.dataRoot).filter(
+  // Do not add an await here: it would allow a newer database state than its files.
+  copyDataRootTree(input.dataRoot, input.backupRoot, {
+    filter: (path) => {
+      const name = relative(root, path).split(sep).join('/');
+      return (
+        !/^(?:(?:server|(?:users|workspaces)\/[^/]+)\/)?indexes(?:\/|$)/.test(name) &&
+        !/^workspaces\/\.staging(?:\/|$)/.test(name)
+      );
+    },
+  });
+  // Finish recovery of the copied WALs before inventorying them. Only the captured databases change; immutable recovery snapshots keep their original exact bytes.
+  for (const path of listRegularBackupFiles(input.backupRoot).filter(
     (path) =>
       path.endsWith('.sqlite') &&
       !/^workspaces\/[^/]+\/light-apps\/[^/]+\/snapshots\/[^/]+\.sqlite$/.test(path)
   )) {
-    const sourceDb = new Database(join(input.dataRoot, path), {
-      fileMustExist: true,
-      readonly: true,
-    });
-
+    const captured = new Database(join(input.backupRoot, path), { fileMustExist: true });
     try {
-      await sourceDb.backup(join(input.backupRoot, path));
+      captured.pragma('wal_checkpoint(TRUNCATE)');
     } finally {
-      sourceDb.close();
+      captured.close();
     }
   }
-  const appsAfter = listLightAppDirectoryPaths(input.dataRoot);
-  if (appsBefore.join('\n') !== appsAfter.join('\n')) {
-    throw new Error('Light App inventory changed during hot backup capture.');
-  }
-  copyMissingLightAppDefinitions(input.dataRoot, input.backupRoot);
   assertLightAppDefinitionCoverage(input.backupRoot);
 
   return writeDataRootBackupManifest({
@@ -271,7 +297,7 @@ export async function writeHotDataRootBackup(
     startedAt: input.startedAt,
     completedAt: input.completedAt,
     backupMode: 'hot',
-    consistency: 'crash-consistent',
+    consistency: 'clean',
   });
 }
 
@@ -469,6 +495,7 @@ function copyDataRootTree(
       if (stat.isSymbolicLink()) {
         throw new Error(`Backup tree must not contain symlinks: ${relativePath}`);
       }
+      if (options.filter && !options.filter(src)) return false;
       if (stat.isDirectory()) {
         if (resolve(src) !== source) {
           mkdirSync(dest, { mode: OWNER_ONLY_DIRECTORY_MODE });
@@ -480,7 +507,7 @@ function copyDataRootTree(
       if (!stat.isFile()) {
         throw new Error(`Backup tree contains unsupported file type: ${relativePath}`);
       }
-      return options.filter?.(src) ?? true;
+      return true;
     },
     force: true,
     preserveTimestamps: options.preserveTimestamps === true,
@@ -597,29 +624,6 @@ function listLightAppDirectoryPaths(root: string): string[] {
     .filter((path) => path.includes('/light-apps/') && path.endsWith('/data.sqlite'))
     .map((path) => path.slice(0, -'/data.sqlite'.length))
     .sort();
-}
-
-/**
- * Copies digest-addressed definition bytes missing from the captured tree.
- *
- * @param dataRoot Live data root.
- * @param backupRoot Captured backup root.
- */
-function copyMissingLightAppDefinitions(dataRoot: string, backupRoot: string): void {
-  for (const appPath of listLightAppDirectoryPaths(backupRoot)) {
-    const sourceDefinitions = join(dataRoot, appPath, 'definitions');
-    const capturedDefinitions = join(backupRoot, appPath, 'definitions');
-    if (!existsSync(sourceDefinitions)) {
-      continue;
-    }
-    mkdirSync(capturedDefinitions, { recursive: true });
-    for (const name of readdirSync(sourceDefinitions)) {
-      const captured = join(capturedDefinitions, name);
-      if (!existsSync(captured)) {
-        cpSync(join(sourceDefinitions, name), captured);
-      }
-    }
-  }
 }
 
 /**

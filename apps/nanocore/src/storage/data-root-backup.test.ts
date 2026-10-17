@@ -103,6 +103,65 @@ describe('data-root backup manifest', () => {
     });
   });
 
+  it('captures one file and multi-database state before queued writes can run', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-backup-write-pause-'));
+    const dataRoot = join(parent, 'data');
+    const backupRoot = join(parent, 'backup');
+    mkdirSync(dataRoot);
+    const file = join(dataRoot, 'record.txt');
+    const databases = ['first.sqlite', 'second.sqlite'].map((name) => {
+      const sqlite = new Database(join(dataRoot, name));
+      sqlite.pragma('journal_mode = WAL');
+      sqlite.pragma('wal_autocheckpoint = 0');
+      sqlite.exec('CREATE TABLE state (version INTEGER); INSERT INTO state VALUES (1)');
+      return sqlite;
+    });
+    try {
+      writeFileSync(file, '1');
+      for (const path of [
+        'server/indexes/retrieval',
+        'users/example/indexes/retrieval',
+        'workspaces/example/indexes/retrieval',
+        'workspaces/.staging',
+      ]) {
+        mkdirSync(join(dataRoot, path), { recursive: true });
+        writeFileSync(join(dataRoot, path, 'temporary'), 'not retained authority');
+      }
+      const pending = writeHotDataRootBackup({
+        dataRoot,
+        backupRoot,
+        backupId: testEntityId('drb', 'write_pause'),
+        sourceDeploymentId: testEntityId('dep', 'write_pause'),
+        startedAt: timestamp,
+        completedAt: timestamp,
+      });
+      queueMicrotask(() => {
+        writeFileSync(file, '2');
+        for (const sqlite of databases) sqlite.exec('UPDATE state SET version = 2');
+      });
+      const verified = await pending;
+      expect(verified.manifest.consistency).toBe('clean');
+      expect(verified.checkedFiles).not.toContain('server/indexes/retrieval/temporary');
+      expect(verified.checkedFiles).not.toContain('users/example/indexes/retrieval/temporary');
+      expect(verified.checkedFiles).not.toContain('workspaces/example/indexes/retrieval/temporary');
+      expect(verified.checkedFiles).not.toContain('workspaces/.staging/temporary');
+      expect(readFileSync(file, 'utf8')).toBe('2');
+      expect(readFileSync(join(backupRoot, 'record.txt'), 'utf8')).toBe('1');
+      for (const name of ['first.sqlite', 'second.sqlite']) {
+        const captured = new Database(join(backupRoot, name), { readonly: true });
+        try {
+          expect(captured.pragma('integrity_check', { simple: true })).toBe('ok');
+          expect(captured.prepare('SELECT version FROM state').pluck().get()).toBe(1);
+        } finally {
+          captured.close();
+        }
+      }
+    } finally {
+      for (const sqlite of databases) sqlite.close();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('copies a cold backup without a maintenance-owned live lock', () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-data-root-cold-copy-'));
     const dataRoot = join(parent, 'data');
@@ -421,7 +480,7 @@ describe('data-root backup manifest', () => {
     workspaceDb.sqlite.close();
 
     expect(verified.manifest.backupMode).toBe('hot');
-    expect(verified.manifest.consistency).toBe('crash-consistent');
+    expect(verified.manifest.consistency).toBe('clean');
     expect(verified.checkedFiles).toContain('server/db/core.sqlite');
     expect(verified.checkedFiles).toContain('server/layout.json');
 
@@ -450,9 +509,7 @@ describe('data-root backup manifest', () => {
     } finally {
       backupWorkspaceDb.close();
     }
-    expect(verifyDataRootBackupManifest({ backupRoot }).manifest.consistency).toBe(
-      'crash-consistent'
-    );
+    expect(verifyDataRootBackupManifest({ backupRoot }).manifest.consistency).toBe('clean');
 
     restoreDataRootBackup({ backupRoot, dataRoot: restoredDataRoot });
     const restoredDb = new Database(join(restoredDataRoot, 'server', 'db', 'core.sqlite'), {

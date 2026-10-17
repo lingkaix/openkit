@@ -17,6 +17,7 @@ import type { ActorRef } from '@openkit/protocol';
 
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
+import { registerDataRootBackupWriter } from '../storage/data-root-backup.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -532,6 +533,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     };
     let transport: StdioServerTransport | StreamableHTTPClientTransport;
     let processGroupId: number | null = null;
+    let releaseBackupWriter: (() => void) | undefined;
     if (input.server.transport.kind === 'stdio') {
       const pluginEnvironment = pluginOwnedEnvironment(this.coreDb, input);
       if (pluginEnvironment.PLUGIN_DATA) {
@@ -569,6 +571,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         }
       );
       processGroupId = child.pid ?? null;
+      if (processGroupId && pluginEnvironment.PLUGIN_DATA) {
+        releaseBackupWriter = registerDataRootBackupWriter(pluginEnvironment.PLUGIN_DATA);
+      }
       // The SDK's stream transport is role-neutral; Node owns spawning and process groups.
       const streams = new StdioServerTransport(child.stdout!, child.stdin!, {
         maxBufferSize: MCP_PROTOCOL_RESPONSE_MAX_BYTES,
@@ -601,11 +606,14 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       });
     }
     // The SDK's optional sessionId declaration conflicts with exactOptionalPropertyTypes.
+    this.sessionTeardowns.set(key, async () => {
+      await closeMcpSession(client, transport, processGroupId);
+      releaseBackupWriter?.();
+    });
     const connection = client.connect(
       transport as Parameters<Client['connect']>[0],
       requestOptions(input.server.timeoutMs, input.signal)
     );
-    this.sessionTeardowns.set(key, () => closeMcpSession(client, transport, processGroupId));
     try {
       await connection;
       return { client };
