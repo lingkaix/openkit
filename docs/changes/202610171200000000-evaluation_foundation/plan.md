@@ -32,11 +32,15 @@ The version producer and retained-file reader share the exact version record and
 
 The primary owns owner text, integration and held paths after release. A separate builder owns version Protocol, API, Store and stream seams in `lane/web-evaluation-versions`. Another builder owns Artifact Web history/publication and browser regressions in `lane/web-evaluation-ui`. Each has a private worktree, dependencies and temporary root. Both use the builder contract and normal merge handoff. A third independent Sol reviewer inspects the combined head and named evidence before landing.
 
+## Intent Revision 3
+
+The coordinator released P18 Producer, Text and Vision together on main `9a22e82b6cb5ffc6740b8ffd6b6bd0d503cbee2a`. Join main normally and complete Landing 1 publication, all-version portability and historical Context admission first. Independent Sol review covers the join delta. The exact local gate covers complete test directories of touched modules and Web e2e; express landing requires green main. End the work session after Landing 1 lands or report a blocker. Storage Layout and naming-held paths remain reserved to L-ID until its landing.
+
 ## Current Checkpoint
 
-Root merged main `624cf26895f18a1eca8b80278b88c5536bac0c7f` normally as `0145f856d8c528688892db0679f3656188b50e7d`. The two builders began from that head. Owner text and the Harness link are being written before integration. S16 and P18-held reader, portable storage and Context paths remain untouched. The external lane checkpoint records exact helper state, source heads and observed checks.
+Landing 1 joined P18 as `a5a73d7e`, resolving generated OpenAPI and operation-inventory conflicts. Two isolated Builder branches implement initial atomic publication and complete version transfer. The primary aligns S16/S39, Context admission, guides and generated projections. The external lane checkpoint names exact integration commits and checks. No final gate or landing is claimed while naming holds Storage Layout and generated CLI.
 
-Next action: complete the small owner text and the external S16 amendment draft, then integrate the two independent version seams. Expected observation: retained historical bytes, current-head projection and Web exact-version reads agree. Missing history must produce a clear error, with no pre-stable data conversion or synthetic lineage. No final gate or acceptance is claimed yet.
+The Context reader regression failed as expected after v2 replaced the head while v1 remained selected. A later combined conversation run lacked the private retrieval-kernel executable and was stopped as setup-invalid; its raw log remains preserved. Publication checks exposed and corrected an existing symlink invariant without weakening its oracle. The final composed gate must use the complete affected directories after all held integration paths release.
 
 ## Effect Boundary
 
