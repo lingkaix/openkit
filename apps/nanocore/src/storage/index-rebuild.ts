@@ -210,7 +210,7 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   /** Explicit state inspection; automatic callers remain active-only. */
   states?: readonly ('active' | 'draft' | 'archived' | 'superseded')[] | undefined;
   /** Server-owned product surface requesting retrieval. */
-  caller: 'assistant' | 'task-mode' | 'app-api';
+  caller: 'assistant' | 'task-mode' | 'app-api' | 'internal-agent' | 'worker';
   /** User query used to rank active Knowledge Store pages. */
   query: string;
   /** Maximum number of selected candidates. */
