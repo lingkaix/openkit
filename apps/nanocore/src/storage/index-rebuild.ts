@@ -1128,10 +1128,11 @@ function currentKnowledgeReferenceContent(
       throw error;
     }
   }
-  const importedFrom = input.access.store.getWorkspace(input.workspaceId).importedFrom;
-  const crossDeploymentImport =
-    importedFrom !== undefined && importedFrom.sourceDeploymentId !== serverId;
-  if (crossDeploymentImport && reference.scopeId === 'page/server')
+  // The selected trace's originating Server controls authority, not the Workspace's import history.
+  if (
+    reference.scopeId === 'page/server' &&
+    serverId !== resolveKnowledgeQueryContext(input).serverId
+  )
     throw knowledgeTraceUnavailable();
   if (reference.scopeId === 'page/server') {
     try {

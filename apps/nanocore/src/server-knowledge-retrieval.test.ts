@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { publishNotebook } from './knowledge/notebook-publication.js';
@@ -26,17 +27,45 @@ import {
 } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real current administrator, Workspace query owner and separately published Server notebook. */
-function fixture() {
+function fixture(imported = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'server-knowledge-retrieval-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Server Knowledge consumer');
+  const importedWorkspaceId = allocateEntityId('ws');
+  const workspace = imported
+    ? store.importWorkspaceSnapshot({
+        workspace: {
+          id: importedWorkspaceId,
+          name: 'Imported Server Knowledge consumer',
+          kind: 'general',
+          status: 'active',
+          counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+          createdAt: '2026-10-17T00:00:00.000Z',
+          updatedAt: '2026-10-17T00:00:00.000Z',
+          importedFrom: {
+            sourceDeploymentId: 'dep_00000000-0000-7000-8000-000000000001',
+            sourceWorkspaceId: allocateEntityId('ws'),
+            exportCreatedAt: '2026-10-17T00:00:00.000Z',
+            manifestDigest: `sha256:${'0'.repeat(64)}`,
+          },
+        },
+        threads: [],
+        turns: [],
+        knowledge: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+        ...notebookImportFixture({ workspaceId: importedWorkspaceId, knowledge: [], userId }),
+      })
+    : store.createWorkspace('Server Knowledge consumer');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   initializeScopedNotebook({
     coreDb,
@@ -83,8 +112,8 @@ Quasar deployment operations use the shared literal document.
 }
 
 describe('Server Knowledge through the existing retrieval source', () => {
-  it('retrieves Source-bound Server pages through the actual Kernel and retains exact query-owned history', async () => {
-    const f = fixture();
+  it('retrieves current Server pages in a foreign-imported Workspace and retains exact local query-owned history', async () => {
+    const f = fixture(true);
     const source = await registerServerKnowledgeSource(
       { ...f, inflightCommands: new WeakMap() },
       {
@@ -130,6 +159,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
       sourceScope: 'server' as const,
     };
     const selection = await retrieveWorkspaceKnowledge(input);
+    expect(selection.queryContext.serverId).not.toBe(f.workspace.importedFrom?.sourceDeploymentId);
     expect(selection.selected).toEqual([
       expect.objectContaining({
         reference: { scopeId: 'page/server', objectId: 'shared-guide' },
