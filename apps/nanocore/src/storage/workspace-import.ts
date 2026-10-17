@@ -4044,8 +4044,9 @@ function readRetrievalTraceImportState(
       requestDigest: sourceTrace.requestDigest,
       queryContext: {
         ...sourceTrace.queryContext,
-        // S51 retains a User query's external authority so a foreign import cannot acquire target self access.
-        serverId: userSelection ? sourceTrace.queryContext.serverId : context.targetServerId,
+        // User and Server selections keep their originating authority; import cannot turn them into local grants.
+        serverId: userSelection || sourceTrace.sourceScope === 'page/server'
+          ? sourceTrace.queryContext.serverId : context.targetServerId,
         workspaceId: context.targetWorkspaceId,
         threadId: targetThreadId,
         ...(targetTurnId ? { turnId: targetTurnId } : { turnId: undefined }),
