@@ -158,8 +158,9 @@ export function verifyOperationsSkillArchive(input) {
   const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
   if (
     !identity ||
+    typeof identity !== 'object' ||
     Array.isArray(identity) ||
-    Object.keys(identity).sort().join(',') !== 'releaseTag,sourceCommit' ||
+    typeof identity.sourceCommit !== 'string' ||
     !/^[0-9a-f]{40}$/.test(identity.sourceCommit) ||
     typeof identity.releaseTag !== 'string'
   ) {
