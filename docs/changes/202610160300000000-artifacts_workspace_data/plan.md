@@ -18,6 +18,10 @@ The coordinator transferred P27 to L-WEB and retained the D01 file-input changes
 
 The coordinator's 20:15Z instruction combines ready candidates that touch the same modules. Gates cover complete changed owner modules and changed packages, plus Web e2e for Web changes; they do not repeat whole-application suites. P14 landed before this feature and is included by normal merge. Express landing replaces branch CI; main-push CI remains required after landing.
 
+## Intent Revision 2026-10-16 23:35Z
+
+The coordinator accepted the D01/P19 boundary: later Assistant Task proposals remain brief-only. Their confirmation states in one line that private files are excluded and the User can attach files explicitly when selecting a Worker. Originals remain on their accepted Assistant Turn. Explicit Worker selection retains the existing confirmed file-handoff contract; P19 adds no file-transfer state.
+
 ## Owners
 
 [Work Resource Interaction](../../specs/20260713-work_resource_interaction_model.md), [Storage Layout](../../specs/20260703-storage_layout_record_ownership.md), [Worker Context Package](../../specs/20260703-worker_context_package.md), [Session-Static Materialization](../../specs/20260704-session_static_workspace_materialization.md), [NanoHost Data Boundary](../../specs/20260801-nanohost_workspace_data_boundary.md), [Workspace Data Sources](../../specs/20260704-workspace_data_source_catalog.md), [Worker Reliability](../../specs/20260531-worker_turn_reliability_envelope.md), and [Web Projection](../../specs/20260628-web_product_surface_projection.md) govern implementation.
