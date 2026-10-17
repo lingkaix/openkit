@@ -40,6 +40,43 @@ export interface KnowledgeManagerAgentRun {
   readonly validateResult: (text: string) => void;
 }
 
+/** Pins finite role admission before a daily trigger returns; this performs no Provider effect. */
+export function pinKnowledgeManagerExecution(
+  dependencies: KnowledgeManagerAgentDependencies,
+  input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>
+) {
+  const turn = dependencies.store.getTurnById(input.turn.id);
+  const userId = responsibleUserIdForActor(turn.triggerActor);
+  if (!userId || !input.inputs || turn.agentId !== 'knowledge-manager' || turn.status !== 'running')
+    throw new Error('Knowledge Manager input is unavailable.');
+  const snapshot = dependencies.runtimeConfig();
+  const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
+  const workspaceConfig = findWorkspaceConfig(snapshot, turn.workspaceId)?.config;
+  const pinned = turn.internalExecution;
+  const selection = resolveInternalRoleProfile({
+    roleId: 'knowledge-manager', workspaceId: turn.workspaceId,
+    gatewayConfig: snapshot.gatewayConfig, profilesConfig: snapshot.internalRoleProfiles,
+    providerRegistry: snapshot.providerRegistry,
+    providerSubscriptionAccountManager: dependencies.providerSubscriptionAccountManager,
+    providerCredentialConfigured: dependencies.providerCredentialConfigured,
+    ...(pinned ? { requestedLogicalModelId: pinned.logicalModelId } : {}),
+    ...(userConfig ? { userConfig } : {}), ...(workspaceConfig ? { workspaceConfig } : {}),
+  });
+  if (!selection || !selection.logicalModel.capabilities.includes('responses') ||
+      !selection.logicalModel.capabilities.includes('tool-calling'))
+    throw new Error('Knowledge Manager logical model is unavailable.');
+  const threshold = pinned?.threshold ?? selection.logicalModel.contextManagement.compactThreshold;
+  if (pinned && (pinned.contextStrategy !== 'compaction' || JSON.stringify(pinned.knowledge) !== JSON.stringify(input.inputs)))
+    throw new Error('Knowledge Manager admitted inputs changed.');
+  dependencies.store.updateTurn(turn.id, { internalExecution: {
+    roleId: 'knowledge-manager', logicalModelId: selection.logicalModel.id,
+    contextStrategy: 'compaction', threshold, knowledge: input.inputs,
+  } });
+  return { selection, threshold, limits: selection.profile?.limits ?? {
+    maxModelTurns: 8, maxToolCalls: 24, deadlineMs: 120_000,
+  } };
+}
+
 /**
  * Executes one fresh, bounded Knowledge Manager Turn with its own model usage and canonical transcript.
  *
@@ -53,38 +90,11 @@ export async function runKnowledgeManagerAgent(
   const turn = store.getTurnById(input.turn.id);
   if (turn.agentId !== 'knowledge-manager' || turn.agentSessionId || turn.status !== 'running')
     throw new Error('Knowledge Manager Turn is not admitted.');
-  const userId = responsibleUserIdForActor(turn.triggerActor);
-  if (!userId || !input.inputs) throw new Error('Knowledge Manager input is unavailable.');
   try {
     input.signal.throwIfAborted();
     input.assertCurrent();
-    const snapshot = dependencies.runtimeConfig();
-    const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
-    const workspaceConfig = findWorkspaceConfig(snapshot, turn.workspaceId)?.config;
-    const selection = resolveInternalRoleProfile({
-      roleId: 'knowledge-manager',
-      workspaceId: turn.workspaceId,
-      gatewayConfig: snapshot.gatewayConfig,
-      profilesConfig: snapshot.internalRoleProfiles,
-      providerRegistry: snapshot.providerRegistry,
-      providerSubscriptionAccountManager: dependencies.providerSubscriptionAccountManager,
-      providerCredentialConfigured: dependencies.providerCredentialConfigured,
-      ...(userConfig ? { userConfig } : {}),
-      ...(workspaceConfig ? { workspaceConfig } : {}),
-    });
-    if (!selection || !selection.logicalModel.capabilities.includes('responses') ||
-        !selection.logicalModel.capabilities.includes('tool-calling'))
-      throw new Error('Knowledge Manager logical model is unavailable.');
+    const { selection, threshold, limits } = pinKnowledgeManagerExecution(dependencies, input);
     const logicalModel = selection.logicalModel;
-    const threshold = logicalModel.contextManagement.compactThreshold;
-    const limits = selection.profile?.limits ?? {
-      maxModelTurns: 8, maxToolCalls: 24, deadlineMs: 120_000,
-    };
-    // Pin before capture or inference. The retained Turn is the execution record.
-    store.updateTurn(turn.id, { internalExecution: {
-      roleId: 'knowledge-manager', logicalModelId: logicalModel.id,
-      contextStrategy: 'compaction', threshold, knowledge: input.inputs,
-    } });
     const systemPrompt = assembleBuiltInSystemPrompt('knowledge-manager');
     const commitMessages = createKnowledgeManagerTranscript(store, turn, turn.triggerActor);
     const result = await withTurnModelCapture({
