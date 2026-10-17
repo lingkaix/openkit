@@ -207,6 +207,10 @@ export function createKnowledgeManagerTranscript(
         items.push(committed.get(key)!);
       }
     }
-    return items;
+    // Native publication outcomes can be committed between a call and its loop result.
+    // Include that accepted canonical prefix so exact history ranges and summary source counts agree.
+    return store.getTurnById(turn.id).items.filter((item) =>
+      item.type !== 'context-summary' && item.type !== 'reasoning' &&
+      ['completed', 'failed'].includes(item.status));
   };
 }

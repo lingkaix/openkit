@@ -79,6 +79,10 @@ Knowledge Manager is the existing Internal Core Role listed in [Core Architectur
 
 Read operations inherit S61's trusted query context, narrowing-only source selection and qualified page references. Knowledge Manager cannot supply a different Actor, User or querying Thread, merge Memory with Knowledge, or compare rankings across separate sources. Synthesis may combine admitted evidence while retaining source distinctions. Citations retain the Core Protocol scope-qualified reference. Every result that identifies an existing selection trace uses `retrievalTraceRef` as `{scopeId,objectId}`, never a bare `retrievalTraceId`. Direct User App calls with no Thread or Turn return their existing selection/outcome projection without a trace id or reference; they publish no trace and retain S61's same source and current-access checks. A caller cannot omit existing Thread/Turn context to skip publication. This is the consumer projection of [Query Context, Sources, References And Acts](../decisions/20261015-context_sources_references_query_acts.md), not another retrieval owner.
 
+A Knowledge Manager query from Workspace work answers from Workspace Knowledge and Server Knowledge when the Server Knowledge owner admits the actor. It invokes retrieval once per source, preserves separate rankings and budgets, and qualifies every citation by scope. Worker and internal query Tool arguments cannot select a scope or owner. User Memory never enters shared work.
+
+Worker `knowledge.tell` remains Workspace-only. A user, or the Assistant on that user's behalf, can explicitly tell the Server Knowledge Manager. Server maintenance takes only that request, its admitted explicit Sources and human edits to the Server notebook; it learns from no Workspace Thread in v0.1.0. Publication uses Server maintenance delegation or an exact candidate for Server-owner review. An enabled daily Server run can consolidate those explicit Server inputs; automatic cross-Workspace consolidation remains deferred.
+
 `answer`:
 
 - retrieves and synthesizes a bounded answer for an admitted internal-agent or Worker query through the single governed retrieval owner

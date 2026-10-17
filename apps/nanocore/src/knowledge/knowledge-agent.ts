@@ -14,6 +14,7 @@ import type { WorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { AuthorizedHistory } from './notebook-history.js';
+import { parseOkfDocument, stringListFrontmatterField, resolveRegisteredKnowledgeSourceReference } from './okf.js';
 
 /** Trusted query context remains that of the asker, separate from the Knowledge Manager work Turn. */
 export interface KnowledgeAgentQuestion {
@@ -68,9 +69,17 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   const notebook = new KnowledgeNotebook({ repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git') });
   const baseRevision = notebook.publishedRevision();
   const pinned = { ...bound, notebookRevision: baseRevision };
-  const overview = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'] }).pages[0]?.content;
-  if (!overview) throw new Error('Knowledge overview is unavailable.');
+  const overviewPage = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'] }).pages[0];
+  if (!overviewPage) throw new Error('Knowledge overview is unavailable.');
+  const overviewBytes = Buffer.from(overviewPage.content);
+  let overviewEnd = Math.min(16_384, overviewBytes.length);
+  while (overviewEnd > 0 && overviewEnd < overviewBytes.length && (overviewBytes[overviewEnd]! & 0xc0) === 0x80) overviewEnd--;
+  const overview = overviewBytes.subarray(0, overviewEnd).toString('utf8');
   const candidates = new Map<string, KnowledgeRetrievalCandidate>();
+  const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage.content });
+  candidates.set('index', { reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: 'index' },
+    revision: baseRevision, contentDigest: overviewPage.contentDigest, score: 0,
+    sourceReferences: navigation.document ? stringListFrontmatterField(navigation.document, 'source_refs') ?? [] : [] });
   const read = new Map<string, { candidate: KnowledgeRetrievalCandidate; content: string }>();
   const readSources = new Map<string, string>();
   const assertCurrent = () => {
@@ -161,7 +170,12 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         ...(input.access.outputTurnId ? { askingTurnId: input.access.outputTurnId } : {}),
         ...(input.capabilityCallId ? { askingCapabilityCallId: input.capabilityCallId } : {}),
       },
-      messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({ question: input.question, overview, notebookRevision: baseRevision }) }] }],
+      messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({ question: input.question, overview,
+        overviewContentDigest: overviewPage.contentDigest,
+        overviewDeliveredDigest: `sha256:${createHash('sha256').update(overview).digest('hex')}`,
+        overviewTruncated: overviewEnd < overviewBytes.length,
+        overviewNextOffset: overview.length < overviewPage.content.length ? overview.length : null,
+        overviewReadTool: 'knowledge.page.read', overviewPageId: 'index', notebookRevision: baseRevision }) }] }],
       readEvidence: (items) => readInternalContextEvidence({
         store, coreDb: input.access.coreDb!, workspaceId: input.workspaceId, threadId: thread.id,
         nativeAuthority, items, strategy: 'compaction',
@@ -178,13 +192,18 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
     });
     const answer = answerSchema.parse(JSON.parse(result.text));
     assertCurrent();
+    const registered = new Map(store.listKnowledgeSources(input.workspaceId).map((source) => [source.id, source.contentDigest]));
     return KnowledgeAskResponseSchema.parse({
       threadId: thread.id, turnId: turn.id, answer: redactInternalAgentText(answer.answer), uncertainty: answer.uncertainty,
       citations: [...new Set(answer.citationIds)].map((id) => {
         const { candidate } = read.get(id)!;
         return { reference: `${candidate.reference.scopeId}/${id}@${candidate.revision}`,
           revision: candidate.revision, contentDigest: candidate.contentDigest,
-          sourceReferences: candidate.sourceReferences };
+          sourceReferences: candidate.sourceReferences.map((reference) => {
+            const source = resolveRegisteredKnowledgeSourceReference(reference, registered);
+            const digest = source.resolved && source.targetId ? registered.get(source.targetId) : null;
+            return digest ? `source:${source.targetId}@${digest}` : reference;
+          }) };
       }),
     });
   } finally { workspaceDb.sqlite.close(); }

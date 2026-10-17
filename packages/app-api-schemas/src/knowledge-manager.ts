@@ -533,7 +533,7 @@ export const KnowledgeManagerAnswerResponseSchema = z.object({
   outcome: z.enum(['answered', 'insufficient-evidence']),
   answer: z.string().min(1),
   citations: z.array(KnowledgeManagerAnswerCitationSchema),
-  confidence: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1).optional(),
   uncertainty: z.string().min(1).nullable(),
 });
 

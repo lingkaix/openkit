@@ -55,7 +55,6 @@ import {
   resolveRegisteredKnowledgeSourceReference,
 } from './knowledge/okf.js';
 import {
-  answerKnowledgeManager,
   checkKnowledgeHealth,
   draftKnowledgeProposal,
   prepareKnowledgeContext,
@@ -358,30 +357,61 @@ export function createKnowledgeOperationImplementations(
   const repositoryWorkspaceDb = dependencies.repositoryWorkspaceDb!;
 
   /** The asking call retains delivery bytes; the separate role Turn owns inference and usage. */
-  const ask = async (input: { workspaceId: string; question: string }, context: AdmittedOperationContext) => {
+  const ask = async (
+    input: { workspaceId: string; question: string },
+    context: AdmittedOperationContext
+  ) => {
     if (!dependencies.knowledgeAgent || !coreDb)
       throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
     const db = repositoryWorkspaceDb(input.workspaceId);
-    const call = startCapabilityCall({ workspaceDb: db, workspaceId: input.workspaceId,
-      authorityActor: context.actorRef, family: 'knowledge', operation: 'knowledge.ask',
-      capabilityId: 'knowledge.ask', requestId: null, providerRef: null,
-      serviceRef: 'knowledge-manager', redactionClass: 'metadata-only', summary: 'Knowledge question.',
-      threadId: context.queryContext?.threadId ?? null, turnId: context.queryContext?.turnId ?? null,
+    const call = startCapabilityCall({
+      workspaceDb: db,
+      workspaceId: input.workspaceId,
+      authorityActor: context.actorRef,
+      family: 'knowledge',
+      operation: 'knowledge.ask',
+      capabilityId: 'knowledge.ask',
+      requestId: null,
+      providerRef: null,
+      serviceRef: 'knowledge-manager',
+      redactionClass: 'metadata-only',
+      summary: 'Knowledge question.',
+      threadId: context.queryContext?.threadId ?? null,
+      turnId: context.queryContext?.turnId ?? null,
     });
     try {
-      const result = await dependencies.knowledgeAgent.ask({ ...input,
+      const result = await dependencies.knowledgeAgent.ask({
+        ...input,
         caller: context.delivery === 'model' ? 'internal-agent' : 'app-api',
-        capabilityCallId: call.id, signal: context.signal ?? new AbortController().signal,
-        access: { store, coreDb, actor: context.actorRef,
+        capabilityCallId: call.id,
+        signal: context.signal ?? new AbortController().signal,
+        access: {
+          store,
+          coreDb,
+          actor: context.actorRef,
           ...(context.kind === 'worker' ? {} : { requestActor: context.actor }),
-          outputThreadId: context.queryContext?.threadId, outputTurnId: context.queryContext?.turnId },
+          outputThreadId: context.queryContext?.threadId,
+          outputTurnId: context.queryContext?.turnId,
+        },
       });
-      finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'succeeded', deliveredKnowledgeAnswer: JSON.stringify(result) });
+      finishCapabilityCall({
+        workspaceDb: db,
+        callId: call.id,
+        status: 'succeeded',
+        deliveredKnowledgeAnswer: JSON.stringify(result),
+      });
       return result;
     } catch (error) {
-      finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'failed', errorCode: 'knowledge_query_failed' });
+      finishCapabilityCall({
+        workspaceDb: db,
+        callId: call.id,
+        status: 'failed',
+        errorCode: 'knowledge_query_failed',
+      });
       throw error;
-    } finally { db.sqlite.close(); }
+    } finally {
+      db.sqlite.close();
+    }
   };
 
   /** Binds existing entry commands to current native authority and the one Git/Audit/receipt publisher. */
@@ -558,18 +588,33 @@ export function createKnowledgeOperationImplementations(
   return {
     'knowledge.ask': ask,
     'knowledge.tell': async (input, context) => {
-      if (!dependencies.knowledgeAgent) throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+      if (!dependencies.knowledgeAgent)
+        throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
       return dependencies.knowledgeAgent.maintain({
-        workspaceId: input.workspaceId, requestId: input.requestId, instructions: 'Integrate the supplied information and keep the notebook overview current.',
-        sources: input.sources, tellContent: input.content, trigger: 'request',
-        actor: context.actorRef, requestActor: publicOperationActor(context),
+        workspaceId: input.workspaceId,
+        requestId: input.requestId,
+        instructions: 'Integrate the supplied information and keep the notebook overview current.',
+        sources: input.sources,
+        tellContent: input.content,
+        ...(context.queryContext?.threadId
+          ? { askingThreadId: context.queryContext.threadId }
+          : {}),
+        ...(context.queryContext?.turnId ? { askingTurnId: context.queryContext.turnId } : {}),
+        trigger: 'request',
+        actor: context.actorRef,
+        requestActor: publicOperationActor(context),
         signal: context.signal ?? new AbortController().signal,
       });
     },
     'knowledge.maintain': async (input, context) => {
-      if (!dependencies.knowledgeAgent) throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
-      return dependencies.knowledgeAgent.maintain({ ...input, sources: [], trigger: 'request',
-        actor: context.actorRef, requestActor: publicOperationActor(context),
+      if (!dependencies.knowledgeAgent)
+        throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+      return dependencies.knowledgeAgent.maintain({
+        ...input,
+        sources: [],
+        trigger: 'request',
+        actor: context.actorRef,
+        requestActor: publicOperationActor(context),
         signal: context.signal ?? new AbortController().signal,
       });
     },
@@ -639,45 +684,73 @@ export function createKnowledgeOperationImplementations(
       }
     },
     'knowledge.answer': async (input, context) => {
-      const actor = context.actorRef;
-      const { workspaceId, ...commandInput } = input;
-
       try {
+        const result = await ask(
+          { workspaceId: input.workspaceId, question: input.query },
+          context
+        );
         const dataRoot = store.getDataRoot();
-
-        if (!dataRoot) {
-          throw new Error('Knowledge Manager answer requires a file-backed data root.');
-        }
-
-        const response = await answerKnowledgeManager({
-          dataRoot,
-          operationId: `km_answer_${randomUUID()}`,
-          workspaceId,
+        if (!dataRoot)
+          throw new OperationError(
+            'knowledge_unavailable',
+            'Knowledge Manager is unavailable.',
+            503
+          );
+        const access = {
+          store,
+          coreDb,
+          actor: context.actorRef,
+          requestActor: publicOperationActor(context),
+          outputThreadId: context.queryContext?.threadId,
+          outputTurnId: context.queryContext?.turnId,
+        };
+        const citations = result.citations.map((citation) => {
+          const prefix = `page/workspace/${input.workspaceId}/`;
+          if (
+            !citation.reference.startsWith(prefix) ||
+            !citation.reference.endsWith(`@${citation.revision}`)
+          )
+            throw new OperationError(
+              'knowledge_manager_answer_failed',
+              'Knowledge Manager citation is unavailable.',
+              500
+            );
+          const id = citation.reference.slice(prefix.length, -(citation.revision.length + 1));
+          const page = readAuthorizedWorkspaceNotebookPages({
+            dataRoot,
+            workspaceId: input.workspaceId,
+            access,
+            notebookRevision: citation.revision,
+            pageIds: [id],
+          }).pages[0];
+          if (!page || page.contentDigest !== citation.contentDigest)
+            throw new OperationError(
+              'knowledge_manager_answer_failed',
+              'Knowledge Manager citation is unavailable.',
+              500
+            );
+          const entry = parseOwnedKnowledgeEntry(page.path, page.id, page.content);
+          const body = entry.content.replace(/\s+/g, ' ').trim();
+          return {
+            reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: id },
+            kind: entry.kind,
+            title: entry.title,
+            excerpt: body.length > 240 ? `${body.slice(0, 237)}...` : body || entry.title,
+          };
+        });
+        return KnowledgeManagerAnswerResponseSchema.parse({
+          operationId: result.turnId,
+          operation: 'answer',
+          workspaceId: input.workspaceId,
           caller: 'app-api',
-          query: commandInput.query,
-          limit: commandInput.limit,
-          access: {
-            store,
-            coreDb,
-            actor: context.actorRef,
-            requestActor: publicOperationActor(context),
-            outputThreadId: context.queryContext?.threadId,
-            outputTurnId: context.queryContext?.turnId,
-          },
+          query: input.query,
+          answer: result.answer,
+          citations,
+          outcome: citations.length ? 'answered' : 'insufficient-evidence',
+          uncertainty: result.uncertainty,
         });
-        recordKnowledgeGatewayUsage({
-          authorityActor: actor,
-          capabilityId: 'knowledge.answer',
-          operation: 'knowledge.answer',
-          serviceRef: 'knowledge-manager',
-          summary: `Knowledge answer completed with ${response.citations.length} citations.`,
-          usageSource: 'knowledge-answer',
-          workspaceId,
-          ...(coreDb ? { coreDb: coreDb } : {}),
-        });
-
-        return KnowledgeManagerAnswerResponseSchema.parse(response);
-      } catch {
+      } catch (error) {
+        if (error instanceof OperationError) throw error;
         throw new OperationError(
           'knowledge_manager_answer_failed',
           'Knowledge Manager answer failed.',
@@ -1264,7 +1337,9 @@ export function createKnowledgeOperationImplementations(
               workspaceId,
               requestId: commandInput.requestId,
               baseRevision: proposal.baseRevision,
-              changes: proposal.changes ?? [{ path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes! }],
+              changes: proposal.changes ?? [
+                { path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes! },
+              ],
               summary: proposal.rationale,
             },
             context,
@@ -1380,7 +1455,9 @@ export function createKnowledgeOperationImplementations(
         workspaceId,
         requestId: commandInput.requestId,
         baseRevision: commandInput.baseRevision,
-        changes: proposal.changes ?? [{ path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes! }],
+        changes: proposal.changes ?? [
+          { path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes! },
+        ],
         summary: proposal.rationale,
       };
       return withGovernedNotebook(request, context, async (owner) => {
@@ -1533,7 +1610,9 @@ export function createKnowledgeOperationImplementations(
         if (
           decision.review.proposalId !== proposalId ||
           decision.review.decision !== 'accepted' ||
-          (proposal.changes ? !proposal.changes.some((change) => change.path === `${input.knowledgePageId}.md`) : input.knowledgePageId !== proposal.knowledgePageId) ||
+          (proposal.changes
+            ? !proposal.changes.some((change) => change.path === `${input.knowledgePageId}.md`)
+            : input.knowledgePageId !== proposal.knowledgePageId) ||
           input.expectedContentDigest !== proposal.contentDigest
         )
           throw new OperationError(
@@ -1551,7 +1630,9 @@ export function createKnowledgeOperationImplementations(
         const path = `${input.knowledgePageId}.md`;
         const original = notebook.readRevision(proposal.baseRevision).files[path] ?? null;
         const baseBytes = notebook.readRevision(input.baseRevision).files[path];
-        const candidateBytes = proposal.changes ? proposal.changes.find((change) => change.path === path)!.content : proposal.canonicalPageBytes;
+        const candidateBytes = proposal.changes
+          ? proposal.changes.find((change) => change.path === path)!.content
+          : proposal.canonicalPageBytes;
         if ((baseBytes ?? null) !== candidateBytes)
           throw new OperationError('conflict', 'Knowledge page changed after Review.', 409);
         const request: NotebookUpdate = {
