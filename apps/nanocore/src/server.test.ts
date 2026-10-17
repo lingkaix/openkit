@@ -1785,7 +1785,7 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      fileCount: 23,
+      fileCount: 26,
       checkedFiles: [
         'records/agent-resource-catalog.json',
         'records/agent-sessions.jsonl',
@@ -1796,6 +1796,9 @@ describe('nanocore server', () => {
         'records/knowledge-conflicts.jsonl',
         'records/knowledge-observations.jsonl',
         'records/knowledge.jsonl',
+        'records/recurring-expired-ranges.jsonl',
+        'records/recurring-occurrences.jsonl',
+        'records/recurring-schedules.jsonl',
         'records/thread-material-bindings.jsonl',
         'records/threads.jsonl',
         'records/turn-events.jsonl',
@@ -1869,7 +1872,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       collision: { status: 'collides', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      verification: { fileCount: 22 },
+      verification: { fileCount: 25 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);

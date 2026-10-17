@@ -6,6 +6,7 @@ import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-work
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import {
   ConversationTargetCatalogSchema,
+  operationToolName,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
@@ -55,17 +56,17 @@ const EXPECTED_ASSISTANT_TOOL_NAMES = [
   'memory.page.delete',
   'memory.page.propose',
   'skill.read',
-  'kernel.apps.search',
+  'kernel.apps.list',
   'kernel.apps.create',
-  'kernel.apps.read',
+  'kernel.apps.get',
   'kernel.schema.update',
-  'kernel.apps.delete',
-  'kernel.records.search',
-  'kernel.records.read',
+  'kernel.apps.retire',
+  'kernel.records.list',
+  'kernel.records.get',
   'kernel.records.create',
   'kernel.records.update',
-  'kernel.records.dispatch',
-  'generative.ui.create',
+  'kernel.records.batch',
+  'generative-ui.publish',
 ] as const;
 
 const EMPTY_SKILL_INDEX_MESSAGE = {
@@ -1123,7 +1124,7 @@ describe('quick chat app API', () => {
     });
     expect(calls[0]?.request).not.toHaveProperty('metadata');
     expect(calls[0]!.request.tools!.map((tool) => tool.name)).toEqual(
-      EXPECTED_ASSISTANT_TOOL_NAMES.map((name) => name.replaceAll('.', '_'))
+      EXPECTED_ASSISTANT_TOOL_NAMES.map(operationToolName)
     );
     const captureDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
