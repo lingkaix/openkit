@@ -2603,7 +2603,7 @@ describe('createCoreClient', () => {
         artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       })
     ).resolves.toEqual({
-      reviews: [review],
+      reviews: [{ ...review, candidateSelections: [] }],
     });
     await expect(
       client.operations['artifact.review.decide']({
