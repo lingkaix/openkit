@@ -2170,13 +2170,15 @@ describe('Knowledge OpenAPI derivation', () => {
         },
       });
       const components = document.components.schemas as Record<string, unknown>;
-      expect(components[`${id}.input`]).toEqual(
-        z.toJSONSchema(
-          'requestId' in definition.inputSchema.shape
-            ? definition.inputSchema.omit({ requestId: true } as never)
-            : definition.inputSchema
-        )
-      );
+      // Project before removing the header field so refined Zod objects are not rebuilt.
+      const expectedInput = z.toJSONSchema(definition.inputSchema);
+      if (definition.mutating && 'requestId' in definition.inputSchema.shape) {
+        delete expectedInput.properties?.requestId;
+        if (expectedInput.required) {
+          expectedInput.required = expectedInput.required.filter((key) => key !== 'requestId');
+        }
+      }
+      expect(components[`${id}.input`]).toEqual(expectedInput);
       expect(components[`${id}.output`]).toEqual(z.toJSONSchema(definition.outputSchema));
     }
     expect(Object.keys(document.paths).filter((path) => /\/knowledge(?:\/|$)/.test(path))).toEqual(

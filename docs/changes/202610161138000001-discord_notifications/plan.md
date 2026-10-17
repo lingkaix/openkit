@@ -99,3 +99,6 @@ The Express landing check refused e068 because Main5c18131e landed the Notebook 
 
 
 The c9 Native gate found the existing Knowledge OpenAPI count still pinned to23 after Main added four Notebook operations. The test now requires27 and retains every exact per-operation route, input and output schema assertion and the old-binding absence check. This is a test-only correction; it adds no production or schema behavior. Retain the failed aggregate and passing suites. The corrected gate reruns every complete file of the failed Native shard, plus any actual Main overlap and the pending browser stage under Express8.
+
+
+The complete corrected OpenAPI file then exposed an existing expected-schema helper that calls Zod omit on the new refined Notebook request object. That check failed29 passing and1 failing case; its output remains notebook-count-repair-check.log. The test now projects the original input schema before removing the mutation-only HTTP request-id header property and required entry. It still compares every remaining JSON Schema field exactly, preserves all output and route assertions, and does not call the production projection helper as its oracle. Production validation and refinements remain unchanged.
