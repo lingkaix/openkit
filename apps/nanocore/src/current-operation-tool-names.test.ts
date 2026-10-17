@@ -26,7 +26,7 @@ import {
   OPENKIT_GENERATIVE_TOOL_OPERATIONS,
   OPENKIT_GENERATIVE_TOOLS,
 } from './runtime/openkit-generative-mcp.js';
-import { OPENKIT_WORK_TOOLS } from './runtime/openkit-work-mcp.js';
+import { OPENKIT_WORK_TOOL_DEFINITIONS, OPENKIT_WORK_TOOLS } from './runtime/openkit-work-mcp.js';
 import { createCoordinatorTaskTool } from './runtime/task-admission.js';
 
 function unused(): never {
@@ -297,7 +297,7 @@ describe('current operation and Tool names', () => {
     ['Administration', administrationTools],
     ['Goal', goalTools],
     ['Task', taskTools],
-    ['Worker', () => OPENKIT_WORK_TOOLS],
+    ['Worker', () => OPENKIT_WORK_TOOL_DEFINITIONS],
   ] as const)('checks actual %s Tool declarations', (_family, createTools) => {
     assertOperationNames(createTools().map((tool) => tool.name));
   });
@@ -307,7 +307,7 @@ describe('current operation and Tool names', () => {
     assertOperationNames([
       ...Object.keys(OPERATION_DEFINITIONS),
       ...tools.map((tool) => tool.name),
-      ...OPENKIT_WORK_TOOLS.map((tool) => tool.name),
+      ...OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name),
       ...Object.values(OPENKIT_GENERATIVE_TOOL_OPERATIONS),
       ...capabilityNames(),
     ]);
@@ -315,6 +315,15 @@ describe('current operation and Tool names', () => {
 
   it('checks the current Worker MCP capability declarations', () => {
     assertOperationNames(capabilityNames());
+  });
+
+  it('derives current Worker Work wire descriptors from their actual canonical declarations', () => {
+    expect(OPENKIT_WORK_TOOLS).toEqual(
+      OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => ({
+        ...tool,
+        name: operationToolName(tool.name),
+      }))
+    );
   });
 
   it('derives current Worker Generative wire names from their actual logical declarations', () => {
