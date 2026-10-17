@@ -35,17 +35,9 @@ export async function runKnowledgeMaintenanceCommand(
           throw new OperationError('recovery_required', 'Knowledge maintenance requires inspection.', 409);
         const retained = turn.items.findLast((item) => item.type === 'status' && item.knowledgeMaintenanceResult);
         if (retained?.type === 'status') return KnowledgeMaintenanceResponseSchema.parse(retained.knowledgeMaintenanceResult);
-        for (const item of turn.items.toReversed()) {
-          if (item.type !== 'tool-call' || item.tool !== 'knowledge.notebook.update' || item.status !== 'completed' || !item.result) continue;
-          const parts = JSON.parse(item.result) as Array<{ type: string; text?: string }>;
-          for (const part of parts) {
-            if (part.type !== 'text' || !part.text) continue;
-            const result = KnowledgeMaintenanceResponseSchema.safeParse(JSON.parse(part.text));
-            if (result.success) return result.data;
-          }
-        }
         const base = turn.internalExecution?.knowledge?.baseRevision;
-        if ((turn.status === 'failed' || turn.status === 'cancelled') && base && turn.error)
+        const nativeEffect = turn.items.some((item) => item.type === 'tool-call' && item.tool === 'knowledge.notebook.update' && item.status === 'completed');
+        if (!nativeEffect && (turn.status === 'failed' || turn.status === 'cancelled') && base && turn.error)
           return KnowledgeMaintenanceResponseSchema.parse({ threadId: turn.threadId, turnId: turn.id,
             outcome: 'failed', notebookRevision: base, summary: turn.error.message });
         throw new OperationError('recovery_required', 'The admitted Knowledge maintenance Turn has no settled result. Inspect it; use a new request for new work.', 409);
