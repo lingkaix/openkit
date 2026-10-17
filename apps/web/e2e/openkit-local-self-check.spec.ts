@@ -1,4 +1,10 @@
-import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
+import { createHash } from 'node:crypto';
+import {
+  type ArtifactReviewView,
+  StartTaskModeResponseSchema,
+  SubmitConversationResponseSchema,
+  ThreadDashboardResponseSchema,
+} from '@openkit/app-api-schemas';
 import { createRequestId } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
@@ -70,14 +76,18 @@ interface MaterialSummary {
 interface MaterialRevision {
   /** Workspace-owned immutable revision identity. */
   revisionId: string;
+  /** Digest of the exact immutable original used by range feedback. */
+  contentDigest: string;
 }
 
 /** Minimal pending proposal identity used only to route visible review actions. */
 interface ProposalArtifactSummary {
   /** Artifact identity exposed by the browser review route. */
   id: string;
-  /** Exact proposal bytes rendered by the review surface. */
-  content: { body: string };
+  /** Immutable version selected for the exact original download. */
+  version: number;
+  /** Digest of the proposal original, independent of its storage form. */
+  contentDigest: string;
 }
 
 /** Minimal Review projection needed to select the exact revision-2 proposals. */
@@ -131,6 +141,22 @@ async function getJson<T>(path: string, input?: Record<string, unknown>): Promis
   const body = await response.text();
   expect(response.status, `${input ? 'POST' : 'GET'} ${path}: ${body}`).toBe(200);
   return JSON.parse(body) as T;
+}
+
+/** Downloads the exact authorized proposal original and verifies its digest before comparing applied Material bytes. */
+async function proposalOriginal(artifact: ProposalArtifactSummary): Promise<string> {
+  if (!stack) throw new Error('The isolated Web stack is not running.');
+  const query = new URLSearchParams({
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    artifactId: artifact.id,
+    artifactVersion: String(artifact.version),
+  });
+  const response = await fetch(`${stack.coreUrl}/api/app/operations/artifact.download?${query}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get('x-openkit-content-digest')).toBe(artifact.contentDigest);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(artifact.contentDigest);
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
 /**
@@ -241,6 +267,42 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   );
   expect(turn.status).toBe('completed');
   expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+}
+
+/** Reads canonical Turn ids before this isolated fixture answers a pending question. */
+async function threadTurnIds(threadId: string): Promise<Set<string>> {
+  const dashboard = ThreadDashboardResponseSchema.parse(
+    await getJson('/api/app/operations/thread.dashboard', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId,
+    })
+  );
+  return new Set(dashboard.turns.map((turn) => turn.id));
+}
+
+/** The answer acknowledgement resolves the question before its separate outcome-delivery Turn finishes. Wait for that real Turn before restarting Core or reading its outputs. */
+async function waitForAnswerTurn(
+  threadId: string,
+  priorTurnIds: ReadonlySet<string>
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const dashboard = ThreadDashboardResponseSchema.parse(
+          await getJson('/api/app/operations/thread.dashboard', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId,
+          })
+        );
+        const delivered = dashboard.turns.filter((turn) => !priorTurnIds.has(turn.id));
+        return delivered.length === 1 && delivered[0]!.status === 'completed';
+      },
+      {
+        timeout: 15_000,
+        message: 'The answer must complete its separate canonical outcome-delivery Turn.',
+      }
+    )
+    .toBe(true);
 }
 
 /**
@@ -356,6 +418,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
 
   await page.goto(`${stack.webUrl}/tasks/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
+  const beforeAnswer = await threadTurnIds(threadId);
   const answerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const answer = await answerResponse;
@@ -366,10 +429,12 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByText('You answered')).toHaveCount(1, { timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
+  await waitForAnswerTurn(threadId, beforeAnswer);
   await stack.restartCore();
   await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
+  const beforeSecondAnswer = await threadTurnIds(threadId);
   const secondAnswerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const secondAnswer = await secondAnswerResponse;
@@ -379,6 +444,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).toBe(true);
   await expect(page.getByText('You answered')).toHaveCount(2, { timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
+
+  await waitForAnswerTurn(threadId, beforeSecondAnswer);
 
   const artifacts = (
     await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
@@ -403,6 +470,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
   ).filter((artifact): artifact is ProposalArtifactSummary => artifact !== null);
   expect(proposals).toHaveLength(2);
+  const proposalTexts = await Promise.all(proposals.map(proposalOriginal));
   await page.goto(
     `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`
   );
@@ -413,6 +481,30 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('complementary', { name: 'Provenance and review' })).toContainText(
     threadId
   );
+  const chosenRange = {
+    materialId: primary.materialId,
+    revisionId: revisionTwo!.revisionId,
+    contentDigest: revisionTwo!.contentDigest,
+    start: revisionTwoContent.indexOf('Revision two'),
+    end: revisionTwoContent.indexOf('Revision two') + 'Revision two'.length,
+    originalText: 'Revision two',
+  };
+  await page
+    .getByRole('textbox', { name: 'Range start', exact: true })
+    .fill(String(chosenRange.start));
+  await page.getByRole('textbox', { name: 'Range end', exact: true }).fill(String(chosenRange.end));
+  await page.getByRole('button', { name: 'Use feedback range', exact: true }).click();
+  await page
+    .getByRole('textbox', { name: 'Review feedback', exact: true })
+    .fill('Keep this exact wording.');
+  const turnsBeforeChoice = await threadTurnIds(threadId);
+  await page
+    .getByRole('textbox', { name: 'Selection reason', exact: true })
+    .fill('Use the first exact candidate.');
+  await page.getByRole('button', { name: 'Select candidate', exact: true }).click();
+  await expect(page.getByText('Candidate selected.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Awaiting decision.', { exact: true })).toBeVisible();
+  expect(await threadTurnIds(threadId)).toEqual(turnsBeforeChoice);
   const previousViewport = page.viewportSize() ?? { width: 1280, height: 720 };
   await page.setViewportSize({ width: 800, height: 600 });
   const overflow = await page.evaluate(() => ({
@@ -426,12 +518,23 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(accept).toBeVisible();
   await accept.click();
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
+  const decidedReview = (
+    await getJson<{ reviews: ArtifactReviewView[] }>('/api/app/operations/artifact.review-list', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: proposals[0]!.id,
+    })
+  ).reviews.find((review) => review.artifactVersion === proposals[0]!.version)!;
+  expect(decidedReview.rangeFeedback).toEqual(chosenRange);
+  expect(decidedReview.candidateSelections).toHaveLength(1);
+  expect(decidedReview.candidateSelections[0]).toMatchObject({
+    reason: 'Use the first exact candidate.',
+  });
   await page.setViewportSize(previousViewport);
 
   await page.goto(
     `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
   );
-  await expect(materialEditor).toHaveValue(proposals[0]!.content.body);
+  await expect(materialEditor).toHaveValue(proposalTexts[0]!);
   const revisionsAfterApply = await materialRevisions(primary.materialId);
   expect(revisionsAfterApply).toHaveLength(3);
   const appliedRevisions = revisionsAfterApply.filter(
@@ -444,7 +547,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(materialRevision(primary.materialId, appliedRevision.revisionId)).resolves.toEqual(
     expect.objectContaining({
       revisionId: appliedRevision.revisionId,
-      content: proposals[0]!.content.body,
+      content: proposalTexts[0]!,
     })
   );
   const materialAfterApply = (
@@ -486,7 +589,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const reviewedProposal = page.getByRole('region', { name: /reviewed artifact proposal/i });
   const recordedBase = page.getByRole('region', { name: /recorded base revision/i });
   await expect(reviewedProposal).toBeVisible();
-  await expect(reviewedProposal).toContainText(proposals[1]!.content.body);
+  await expect(reviewedProposal).toContainText(proposalTexts[1]!);
   await expect(recordedBase).toContainText(revisionTwoContent);
   await page.getByRole('button', { name: /^Accept$/ }).click();
   await expect(page.getByText(/conflict|changed since the proposal base/i)).toBeVisible();
@@ -502,19 +605,20 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     })
   ).material;
   expect(materialAfterConflict.currentRevisionId).toBe(userRevision.revisionId);
-  expect(
-    (
-      await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    ).items.find((artifact) => artifact.id === proposals[1]!.id)?.content.body
-  ).toBe(proposals[1]!.content.body);
+  const retainedProposal = (
+    await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    })
+  ).items.find((artifact) => artifact.id === proposals[1]!.id)!;
+  expect(retainedProposal.version).toBe(proposals[1]!.version);
+  expect(retainedProposal.contentDigest).toBe(proposals[1]!.contentDigest);
+  expect(await proposalOriginal(retainedProposal)).toBe(proposalTexts[1]!);
 
   await stack.restartCore();
   await page.reload();
   await expect(page.getByText('Awaiting decision.')).toBeVisible();
   await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toContainText(
-    proposals[1]!.content.body
+    proposalTexts[1]!
   );
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
@@ -536,7 +640,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).toEqual({
     [revisionOne.revisionId]: revisionOneContent,
     [revisionTwo!.revisionId]: revisionTwoContent,
-    [appliedRevision.revisionId]: proposals[0]!.content.body,
+    [appliedRevision.revisionId]: proposalTexts[0]!,
     [userRevision.revisionId]: revisionThreeContent,
   });
   const recoveredProjection = (
@@ -584,6 +688,92 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .locator('..')
       .locator('dd')
   ).toHaveText('Unknown / none / not available');
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`
+  );
+  await expect(page.getByRole('region', { name: 'Recorded feedback range' })).toContainText(
+    chosenRange.originalText
+  );
+  await expect(page.getByText('Use the first exact candidate.', { exact: true })).toBeVisible();
+  const recoveredReview = (
+    await getJson<{ reviews: ArtifactReviewView[] }>('/api/app/operations/artifact.review-list', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      artifactId: proposals[0]!.id,
+    })
+  ).reviews.find((review) => review.artifactVersion === proposals[0]!.version)!;
+  expect(recoveredReview.rangeFeedback).toEqual(chosenRange);
+  expect(recoveredReview.candidateSelections).toEqual(decidedReview.candidateSelections);
+  const beforeUse = await threadTurnIds(threadId);
+  await page.getByRole('button', { name: 'Use in next Turn', exact: true }).click();
+  await expect(page).toHaveURL(
+    `${stack.webUrl}/chat/ws_00000000-0000-7000-8000-000000000001/${threadId}`
+  );
+  await expect(page.getByRole('group', { name: 'Selected artifacts' })).toBeVisible();
+  expect(await threadTurnIds(threadId)).toEqual(beforeUse);
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Continue from this exact candidate.');
+  await page.getByRole('button', { name: /Conversation agent$/ }).click();
+  await page.getByRole('option', { name: 'New Shard + Worker', exact: true }).click();
+  const nextTurnResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
+      response.request().method() === 'POST'
+  );
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  const nextResponse = await nextTurnResponse;
+  expect(nextResponse.status(), await nextResponse.text()).toBe(202);
+  expect(nextResponse.request().postDataJSON().artifactRefs).toEqual([
+    { artifactId: proposals[0]!.id, artifactVersion: proposals[0]!.version },
+  ]);
+  const nextTurn = SubmitConversationResponseSchema.parse(await nextResponse.json());
+  const nextItems = (
+    await getJson<{
+      items: Array<{
+        type: string;
+        turnId: string;
+        artifactId?: string;
+        artifactVersion?: number;
+        text?: string;
+      }>;
+    }>('/api/app/operations/thread.items', {
+      workspaceId: nextTurn.receivingWorkspaceId,
+      threadId: nextTurn.receivingThreadId,
+    })
+  ).items.filter((item) => item.turnId === nextTurn.turn.id);
+  expect(nextItems).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'artifact-reference',
+        artifactId: proposals[0]!.id,
+        artifactVersion: proposals[0]!.version,
+      }),
+    ])
+  );
+  const workerRequest = nextItems.find((item) => item.type === 'user-message');
+  expect(workerRequest?.text).toBeTruthy();
+  const delegated = JSON.parse(workerRequest!.text!) as {
+    objective: string;
+    resources: Array<{ reference: string }>;
+  };
+  expect(delegated.objective).toContain(proposals[0]!.contentDigest);
+  expect(delegated.objective).toContain(proposalTexts[0]!);
+  expect(delegated.resources).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        reference: `${proposals[0]!.id}:v${proposals[0]!.version}`,
+      }),
+    ])
+  );
+  const deliveredTurn = await getJson<{ contextPackageDigest: string | null }>(
+    '/api/app/operations/turn.read',
+    {
+      workspaceId: nextTurn.receivingWorkspaceId,
+      threadId: nextTurn.receivingThreadId,
+      turnId: nextTurn.turn.id,
+    }
+  );
+  expect(deliveredTurn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
   expect(browserRuntimeErrors, 'Plane 1 browser flow must not raise runtime errors').toEqual([]);
   await expect(page.locator('body')).not.toContainText('sk-openkit');
 });

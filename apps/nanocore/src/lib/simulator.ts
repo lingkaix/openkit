@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   AgentEnvironmentPackage,
@@ -87,8 +88,17 @@ import {
 } from '../runtime/workspace-materializer.js';
 import { recordWorkspaceBackendHandoff } from '../runtime/workspace-sync-records.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import {
+  FileAdmissionError,
+  type FileStorageAdmission,
+} from '../storage/artifacts/file-admission.js';
+import {
+  ArtifactPayloadCleanupError,
+  stageArtifactPayload,
+} from '../storage/artifacts/file-payload.js';
+import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
@@ -185,14 +195,21 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   public readonly itemTypes = SIMULATOR_ITEM_TYPES;
   public readonly itemDeltaKinds = SIMULATOR_ITEM_DELTA_KINDS;
   private readonly coreDb: CoreDb | null;
+  private readonly fileAdmission: FileStorageAdmission | undefined;
 
   /**
    * Creates the deterministic executor with optional durable S39 owners for configured self-checks.
    *
-   * @param options Optional Core database shared with scheduler admission.
+   * @param options Existing Core database and file admission owners shared with App composition.
    */
-  public constructor(options: { readonly coreDb?: CoreDb | undefined } = {}) {
+  public constructor(
+    options: {
+      readonly coreDb?: CoreDb | undefined;
+      readonly fileAdmission?: FileStorageAdmission | undefined;
+    } = {}
+  ) {
     this.coreDb = options.coreDb ?? null;
+    this.fileAdmission = options.fileAdmission;
   }
 
   /** Models submission only for the existing explicit self-check executor; no native effect is inferred. */
@@ -898,7 +915,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             store,
             workspaceDb,
           });
-          this.publishMaterialProposals(
+          await this.publishMaterialProposals(
             store,
             environmentPackage,
             acceptedTrace,
@@ -1362,17 +1379,19 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
    * @param workspaceDb Workspace authority containing Material and Review owners.
    * @param recordedAt Stable simulator timestamp.
    */
-  private publishMaterialProposals(
+  private async publishMaterialProposals(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     trace: WorkerContextPackageTrace,
     workspaceDb: WorkspaceDb,
     recordedAt: string
-  ): void {
+  ): Promise<void> {
     const selection = trace.materialSelections[0];
     if (!selection) {
       return;
     }
+    const admission = this.fileAdmission;
+    if (!admission) throw new FileAdmissionError('storage_capacity_unavailable');
     const proposal = {
       baseContentDigest: selection.contentDigest,
       baseRevisionId: selection.revisionId,
@@ -1399,7 +1418,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         artifactId,
         requestId,
         recordedAt,
-        bytes,
+        payload: {
+          byteLength: bytes.length,
+          contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        },
         checkValues,
         contextPackageTrace: trace,
         metadata: {
@@ -1413,12 +1435,39 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       if (preflightArtifactTuple(store, workspaceDb, prepared.artifact, prepared.reviewInput)) {
         continue;
       }
-      try {
-        store.createArtifact(prepared.artifact);
-        createArtifactReview(workspaceDb, prepared.reviewInput);
-      } catch (error) {
-        store.rollbackArtifactCreation(artifactId);
+      const reservation = admission.reserve({
+        stagingBytes: BigInt(bytes.length),
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: 65_536n,
+      });
+      const staged = await stageArtifactPayload({
+        workspaceRoot: resolveDataRootPath(
+          workspaceDb.dataRoot,
+          'workspaces',
+          environmentPackage.scope.workspaceId
+        ),
+        source: Readable.from([bytes]),
+        expectedByteLength: bytes.length,
+        expectedDigest: prepared.artifact.contentDigest,
+        reservation,
+      }).catch((error: unknown) => {
+        if (!(error instanceof ArtifactPayloadCleanupError)) reservation.release();
         throw error;
+      });
+      try {
+        withCanonicalFileWriteAdmission(admission, () => {
+          try {
+            store.createArtifact(prepared.artifact, staged);
+            createArtifactReview(workspaceDb, prepared.reviewInput);
+          } catch (error) {
+            store.rollbackArtifactCreation(artifactId);
+            throw error;
+          }
+        });
+      } finally {
+        await staged.remove();
+        reservation.release();
       }
     }
   }

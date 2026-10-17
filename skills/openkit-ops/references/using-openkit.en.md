@@ -285,6 +285,17 @@ Report the goal, actual identifiers, observed outcome, relevant evidence and unr
 
 Remove only attempt-owned temporary resources when cleanup is requested and safe. Keep the deployment and its Provider configuration available for the next task. Report unrelated discoveries without expanding the work or closing untested plans.
 
+## Exact Original Artifact Files
+
+Use the Artifact screen to import an arbitrary file as an immutable original. The limit is 1,000,000,000 decimal bytes per upload submission; available disk capacity can refuse an earlier upload. File-backed inspection shows its media type, byte length and SHA-256 digest. **Download original** selects that exact version and checks current access. A failed or uncertain import retains its request identity for **Try again**; do not infer acceptance from a selected filename or an upload progress indicator. Existing text, Markdown and JSON Artifacts retain their original stored representations.
+
+The raw App API binding for `artifact.import` sends bounded query metadata with the original byte body and `X-OpenKit-Request-Id`. `artifact.download` streams one exact id and version. Binary bodies do not belong in JSON operation or model Tool payloads. Use the Web screen or the Core Client `artifactFiles` methods for this binding. `server.fileReserveBytes` in server configuration sets the shared Data Root free-space reserve, default 1,000,000,000 bytes. Current uploads, publication and pending file writes share that reserve. Reducing it changes later admission only and does not remove accepted originals.
+
+## Give exact Review feedback and use a candidate
+
+Open an Artifact Review to inspect its exact version, digest and provenance. For a binary original, use Download original; the metadata is not a text comparison. For a Markdown or plain-text Material proposal, select text from the recorded base and check the displayed revision, digest and original range. Include that range with your Review feedback. Accept still applies the complete reviewed revision; range feedback does not apply a partial edit or relocate text after another edit.
+
+Select candidate records your exact choice and optional reason. It does not accept the result or start work. Use in next Turn opens the source conversation with that exact candidate in the draft. Check the message and select Send when ready. If the candidate is unavailable or has changed, return to the Review and select an available candidate; the app does not substitute a newer version. Finish any existing unfinished message before using another candidate in that conversation.
 A Timeline can contain a `context-summary` Item. `thread.items` returns its continuation text, source-range endpoints, Item count and digests. This shows the earlier history represented in the model window. Exact earlier Items remain available through `thread.items`; a summary does not delete or replace them. If summary production fails, inspect the failed Turn cause before you submit a new request. Exact replay does not regenerate it.
 
 Assistant Task and Goal proposals show the exact shared payload and receiving Workspace in a pending question. Select `Confirm exact handoff` only for the shown work, or `Do not start`. Confirmation selects the work; current permissions and any required effect Approval still apply. The later native outcome creates a linked receiving Thread and keeps the private Timeline history in place.

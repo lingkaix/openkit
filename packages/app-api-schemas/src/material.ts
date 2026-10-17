@@ -1,7 +1,9 @@
 import {
   ArtifactIdSchema,
+  ArtifactMediaTypeSchema,
   ArtifactReviewIdSchema,
   ItemIdSchema,
+  MAX_ARTIFACT_FILE_BYTES,
   MaterialIdSchema,
   MaterialRevisionIdSchema,
   ThreadIdSchema,
@@ -74,6 +76,32 @@ export const ArtifactMaterialProposalSchema = z
   })
   .strict();
 
+/** Exact original-source UTF-16 range on one immutable Material proposal base. */
+export const ArtifactReviewRangeFeedbackSchema = z
+  .object({
+    materialId: MaterialIdSchema,
+    revisionId: MaterialRevisionIdSchema,
+    contentDigest: contentDigestSchema,
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    originalText: z.string().min(1),
+  })
+  .strict()
+  .refine((range) => range.start < range.end, {
+    message: 'The range end must follow its start.',
+    path: ['end'],
+  });
+
+/** Attributable choice evidence retained on its exact version-owned Review. */
+export const ArtifactReviewCandidateSelectionSchema = z
+  .object({
+    actorId: opaqueIdSchema,
+    requestId: opaqueIdSchema,
+    reason: z.string().min(1).nullable(),
+    selectedAt: TimestampSchema,
+  })
+  .strict();
+
 /** Closed public projection of one version-keyed Artifact Review. */
 export const ArtifactReviewViewSchema = z
   .object({
@@ -89,6 +117,8 @@ export const ArtifactReviewViewSchema = z
     decision: ArtifactReviewDecisionSchema.nullable(),
     decisionActorId: opaqueIdSchema.nullable(),
     feedback: z.string().min(1).nullable(),
+    rangeFeedback: ArtifactReviewRangeFeedbackSchema.nullable().optional(),
+    candidateSelections: z.array(ArtifactReviewCandidateSelectionSchema).default([]),
     decidedAt: TimestampSchema.nullable(),
     followUpTurnId: TurnIdSchema.nullable(),
     appliedMaterialRevisionId: MaterialRevisionIdSchema.nullable(),
@@ -107,6 +137,24 @@ export const ArtifactReviewViewSchema = z
     const addDecisionIssue = (message: string, path: string): void => {
       context.addIssue({ code: 'custom', message, path: [path] });
     };
+
+    if (value.rangeFeedback != null) {
+      const range = value.rangeFeedback;
+      const proposal = value.materialProposal;
+      if (
+        proposal === null ||
+        range.materialId !== proposal.materialId ||
+        range.revisionId !== proposal.baseRevisionId ||
+        range.contentDigest !== proposal.baseContentDigest
+      ) {
+        addDecisionIssue(
+          'Range feedback must identify the recorded Material proposal base.',
+          'rangeFeedback'
+        );
+      }
+      if (value.decision === null)
+        addDecisionIssue('Range feedback requires a decision.', 'rangeFeedback');
+    }
 
     if (value.decision === null) {
       if (
@@ -218,26 +266,12 @@ export const ListArtifactReviewsResponseSchema = z
 export const ImportWorkspaceArtifactRequestSchema = z
   .object({
     requestId: requestIdSchema,
-    title: z.string().min(1),
-    mediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
+    title: z.string().min(1).max(1024),
+    mediaType: ArtifactMediaTypeSchema,
     contentDigest: contentDigestSchema,
-    content: z.string().min(1),
+    byteLength: z.number().int().min(0).max(MAX_ARTIFACT_FILE_BYTES),
   })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.mediaType !== 'application/json') {
-      return;
-    }
-    try {
-      JSON.parse(value.content);
-    } catch {
-      context.addIssue({
-        code: 'custom',
-        message: 'application/json content must be syntactically valid JSON',
-        path: ['content'],
-      });
-    }
-  });
+  .strict();
 
 /** Response payload after importing one immutable Workspace Artifact version. */
 export const ImportWorkspaceArtifactResponseSchema = z
@@ -271,6 +305,7 @@ export const SubmitArtifactReviewDecisionRequestSchema = z
     requestId: requestIdSchema,
     decision: ArtifactReviewDecisionSchema,
     feedback: z.string().min(1).optional(),
+    rangeFeedback: ArtifactReviewRangeFeedbackSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -306,6 +341,35 @@ export const SubmitArtifactReviewDecisionResponseSchema = z
       });
     }
   });
+
+/** Request payload for choosing one exact available Artifact candidate. */
+export const SelectArtifactReviewCandidateRequestSchema = z
+  .object({
+    requestId: requestIdSchema,
+    contentDigest: contentDigestSchema,
+    reason: z.string().min(1).optional(),
+  })
+  .strict();
+
+/** Response payload retaining all choice facts on the same version-owned Review. */
+export const SelectArtifactReviewCandidateResponseSchema = z
+  .object({ review: ArtifactReviewViewSchema })
+  .strict();
+
+/** Exact Material source range retained with a Review decision. */
+export type ArtifactReviewRangeFeedback = z.infer<typeof ArtifactReviewRangeFeedbackSchema>;
+/** One attributable choice of the Review's exact Artifact candidate. */
+export type ArtifactReviewCandidateSelection = z.infer<
+  typeof ArtifactReviewCandidateSelectionSchema
+>;
+/** Request for an exact candidate choice without starting work. */
+export type SelectArtifactReviewCandidateRequest = z.infer<
+  typeof SelectArtifactReviewCandidateRequestSchema
+>;
+/** Updated existing Review after an exact candidate choice. */
+export type SelectArtifactReviewCandidateResponse = z.infer<
+  typeof SelectArtifactReviewCandidateResponseSchema
+>;
 
 /** Request payload for creating one Workspace Material. */
 export const CreateWorkspaceMaterialRequestSchema = z
@@ -491,3 +555,45 @@ export type ExcludeThreadMaterialResponse = z.infer<typeof ExcludeThreadMaterial
 export type RestoreThreadMaterialRequest = z.infer<typeof RestoreThreadMaterialRequestSchema>;
 /** Response payload after restoring one bound Material to worker context. */
 export type RestoreThreadMaterialResponse = z.infer<typeof RestoreThreadMaterialResponseSchema>;
+
+/** One paged, validated file member of a disposable exact-source ZIP snapshot. */
+export const ArtifactFolderEntrySchema = z
+  .object({
+    relativePath: z.string().min(1).max(4096),
+    byteLength: z.number().int().nonnegative().max(4_000_000_000),
+    contentDigest: contentDigestSchema,
+  })
+  .strict();
+
+/** Truthful cache availability; the original Artifact remains its sole durable source. */
+export const ArtifactFolderSnapshotResponseSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ready'),
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      processor: z.literal('openkit.zip.v1'),
+      representationDigest: contentDigestSchema,
+      expandedBytes: z.number().int().nonnegative().max(4_000_000_000),
+      fileCount: z.number().int().nonnegative().max(100_000),
+      directoryCount: z.number().int().nonnegative().max(131_072),
+      entries: z.array(ArtifactFolderEntrySchema).max(100),
+      nextOffset: z.number().int().nonnegative().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('unavailable'),
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      reason: z.enum(['not_extracted', 'extraction_failed']),
+    })
+    .strict(),
+]);
+
+/** Bounded source-bound folder projection used by API and Web consumers. */
+export type ArtifactFolderSnapshotResponse = z.infer<typeof ArtifactFolderSnapshotResponseSchema>;

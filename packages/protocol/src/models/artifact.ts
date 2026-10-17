@@ -15,10 +15,32 @@ const Sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 /**
  * Inline artifact content payload.
  */
-export const ArtifactContentSchema = z.object({
+export const ArtifactInlineContentSchema = z.object({
   format: z.enum(['markdown', 'text', 'json']),
   body: z.string().min(1),
 });
+
+/** Decimal byte bound for one upload submission or one Worker-produced file. */
+export const MAX_ARTIFACT_FILE_BYTES = 1_000_000_000;
+
+/** Safe media type metadata; content bytes are never interpreted from this label. */
+export const ArtifactMediaTypeSchema = z
+  .string()
+  .max(255)
+  .regex(/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/);
+
+/** Exact original stored outside the protocol record, including empty and binary files. */
+export const ArtifactFileContentSchema = z.object({
+  format: z.literal('file'),
+  mediaType: ArtifactMediaTypeSchema,
+  byteLength: z.number().int().min(0).max(MAX_ARTIFACT_FILE_BYTES),
+});
+
+/** Retained inline content or a version-owned immutable original file. */
+export const ArtifactContentSchema = z.discriminatedUnion('format', [
+  ArtifactInlineContentSchema,
+  ArtifactFileContentSchema,
+]);
 
 /** Immutable provenance for either a work-produced or directly imported Artifact. */
 export const ArtifactOriginSchema = z.discriminatedUnion('kind', [

@@ -30,6 +30,7 @@ import {
   type AppUpdateHostTransport,
   createSshAppUpdateHostTransport,
 } from './app-update/host-transport.js';
+import { registerArtifactFileRoutes } from './artifact-file-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import {
   resolveSessionDeploymentAdminTokenId,
@@ -167,6 +168,11 @@ import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
 } from './runtime/worker-mcp-gateway.js';
+import {
+  assertWorkerRawOutputFinalStatus,
+  WorkerRawOutputAuthorityError,
+  WorkerRawOutputPendingError,
+} from './runtime/worker-raw-output.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import {
@@ -174,7 +180,13 @@ import {
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import {
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openWorkspaceDb,
+  type WorkspaceDb,
+} from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -239,7 +251,11 @@ function createBrowserCors(
   mode: CoreMode,
   configuredOrigins: readonly string[]
 ): ReturnType<typeof cors> {
-  const allowedCors = cors({ credentials: true, origin: (origin) => origin });
+  const allowedCors = cors({
+    credentials: true,
+    exposeHeaders: ['X-OpenKit-Content-Digest'],
+    origin: (origin) => origin,
+  });
 
   return async (context, next) => {
     const origin = context.req.header('origin') ?? '';
@@ -413,6 +429,8 @@ export interface CreateAppOptions {
   appUpdateHostTransport?: AppUpdateHostTransport | null;
   /** Optional dispatcher bound to the same process-local NanoHost session authority. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch;
+  /** Shared Data Root capacity owner, also used by the boot-created file dispatcher. */
+  fileAdmission?: FileStorageAdmission;
   /** Shared worker lifecycle runtime that owns Harness continuations and Turn credentials. */
   workerLifecycleRuntime?: ConfiguredWorkerLifecycleRuntime;
   /**
@@ -464,6 +482,27 @@ export function createDefaultWorkerControlGateway(
       }
     },
     onFinalStatusAccepted: (input) => {
+      const rawDb = openBootVerifiedWorkspaceDb(coreDb.dataRoot, input.lineage.workspaceId);
+      try {
+        assertWorkerRawOutputFinalStatus(
+          rawDb,
+          input.lineage,
+          input.eventType === 'turn.completed'
+        );
+      } catch (error) {
+        if (
+          error instanceof WorkerRawOutputPendingError ||
+          error instanceof WorkerRawOutputAuthorityError
+        )
+          throw new WorkerControlGatewayError(
+            'worker_raw_output_pending',
+            'Worker raw output proof is not ready.',
+            503
+          );
+        throw error;
+      } finally {
+        rawDb.sqlite.close();
+      }
       const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
 
       if (resolution.status !== 'accepted') {
@@ -824,9 +863,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       return closed;
     };
   }
+  const fileAdmission =
+    options.fileAdmission ??
+    new FileStorageAdmission(dataRoot ?? '.', () =>
+      BigInt(runtimeConfig().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000)
+    );
   const nanoHostSessionDispatch =
     options.nanoHostSessionDispatch ??
     createNanoHostSessionDispatch({
+      fileAdmission,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       sessionAuthority: nanohostTransportSessionAuthority,
     });
@@ -1027,6 +1072,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     (options.turnExecutor || process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? null
       : createConfiguredWorkerLifecycleRuntime({
+          fileAdmission,
           readRuntimeConfig: () => runtimeConfigManager.current(),
           coreDb: options.coreDb,
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
@@ -1038,6 +1084,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.turnExecutor ??
     configuredWorkerRuntime?.turnExecutor ??
     createConfiguredTurnExecutor({
+      fileAdmission,
       coreDb: options.coreDb,
       workerControlGateway,
       workspaceMutationAdmission,
@@ -1178,6 +1225,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+    readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
+    readonly filePayloadPaths?: readonly string[];
+    /** Shared runtime disk owner; never persisted or projected. */
+    readonly fileWriteAdmission?: FileStorageAdmission;
+    /** Synchronous live file-input admission immediately before publication. */
+    readonly assertFileInputAdmission?: () => void;
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
@@ -1199,6 +1252,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       requestedAgentId: input.requestedAgentId,
       ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
       ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
+      ...(input.fileInputs?.length
+        ? {
+            fileInputs: input.fileInputs,
+            filePayloadPaths: input.filePayloadPaths,
+            fileWriteAdmission: input.fileWriteAdmission,
+            assertFileInputAdmission: input.assertFileInputAdmission,
+          }
+        : {}),
       ...(input.requestActor ? { requestActor: input.requestActor } : {}),
       snapshot,
       store: input.store,
@@ -1338,6 +1399,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-inference/*', browserCors);
   registerWorkerInferenceRoutes({
+    onRawOutputStop: (scope, reason) =>
+      turnExecutor.interruptTurn(sharedStore, scope.turnId, {
+        requestId: null,
+        stopReason: reason,
+      }),
     app,
     providerCredentialConfigured,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -1350,6 +1416,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-capabilities/*', browserCors);
   registerWorkerMcpRoutes({
+    fileAdmission,
     ...(configuredWorkerRuntime?.captureArtifact
       ? { captureArtifact: configuredWorkerRuntime.captureArtifact }
       : {}),
@@ -1805,7 +1872,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
   };
 
+  registerArtifactFileRoutes({
+    app,
+    coreDb: options.coreDb,
+    requestStore,
+    repositoryWorkspaceDb,
+    inflightCommands,
+    workspaceMutationAdmission,
+    dataRoot,
+    fileAdmission,
+  });
+
   registerOperationJsonRoutes({
+    fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
     administrationServices,
@@ -1860,6 +1939,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
     administrationServices,

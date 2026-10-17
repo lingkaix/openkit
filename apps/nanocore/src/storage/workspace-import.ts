@@ -216,6 +216,15 @@ const ImportedThreadMaterialBindingSchema = z
   .strip();
 const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.safeExtend({
   materialProposal: ArtifactReviewViewSchema.shape.materialProposal.unwrap().strip().nullable(),
+  rangeFeedback: ArtifactReviewViewSchema.shape.rangeFeedback
+    .unwrap()
+    .unwrap()
+    .strip()
+    .nullable()
+    .optional(),
+  candidateSelections: z
+    .array(ArtifactReviewViewSchema.shape.candidateSelections.unwrap().element.strip())
+    .default([]),
   decisionRequestId: z.string().min(1).nullable(),
 }).strip();
 
@@ -558,6 +567,8 @@ export interface ReadWorkspaceImportSnapshotInput {
 
 /** Importable record snapshot extracted from one workspace export. */
 export interface WorkspaceImportSnapshot {
+  /** Target-relative immutable payload paths mapped to their verified private export sources. */
+  artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Validated current Goal records and Task terminal facts; approval grants remain source-local. */
   goalState: ReturnType<typeof readCurrentGoalImportState>;
   /** Verified dry-run report for the export. */
@@ -1039,8 +1050,44 @@ export function readWorkspaceImportSnapshot(
     recurringHistory,
   };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
+  const sourceArtifactIds = new Map(
+    [...context.artifactIds].map(([sourceId, targetId]) => [targetId, sourceId])
+  );
+  const artifactPayloadFiles = new Map<string, string>();
+  const sourceTurnIds = new Map([...context.turnIds].map(([source, target]) => [target, source]));
+  const sourceThreadIds = new Map(
+    [...context.threadIds].map(([source, target]) => [target, source])
+  );
+  for (const turn of canonical.turns) {
+    const sourceTurnId = sourceTurnIds.get(turn.id);
+    const sourceThreadId = sourceThreadIds.get(turn.threadId);
+    for (const ordinal of (turn.fileInputs ?? []).keys()) {
+      const sourcePath = input.verified.artifactPayloadFiles.get(
+        `threads/${sourceThreadId}/turns/${sourceTurnId}/inputs/${ordinal}/payload`
+      );
+      if (!sourceTurnId || !sourceThreadId || !sourcePath)
+        throw new Error('Imported Turn input payload is unavailable.');
+      artifactPayloadFiles.set(
+        `threads/${turn.threadId}/turns/${turn.id}/inputs/${ordinal}/payload`,
+        sourcePath
+      );
+    }
+  }
+  for (const artifact of canonical.artifacts) {
+    if (artifact.content.format !== 'file') continue;
+    const sourceId = sourceArtifactIds.get(artifact.id);
+    const sourcePath = input.verified.artifactPayloadFiles.get(
+      `artifacts/${sourceId}/versions/${artifact.version}/payload`
+    );
+    if (!sourceId || !sourcePath) throw new Error('Imported Artifact payload is unavailable.');
+    artifactPayloadFiles.set(
+      `artifacts/${artifact.id}/versions/${artifact.version}/payload`,
+      sourcePath
+    );
+  }
 
   return {
+    artifactPayloadFiles,
     report,
     goalState: readCurrentGoalImportState(context),
     workspace: canonical.workspace,
@@ -3053,6 +3100,12 @@ function readWorkResourceImportState(
         ? requiredMapValue(context.turnIds, review.sourceTurnId, 'turn')
         : null,
       materialProposal,
+      rangeFeedback:
+        review.rangeFeedback == null ? null : remapReviewRange(context, review.rangeFeedback),
+      candidateSelections: review.candidateSelections.map((selection) => ({
+        ...selection,
+        requestId: importRequestLineage(context, selection.requestId),
+      })),
       decisionRequestId: review.decisionRequestId
         ? importRequestLineage(context, review.decisionRequestId)
         : null,
@@ -3310,6 +3363,9 @@ function remintWorkerRequest(text: string, context: ImportRemintContext): string
             ),
           }
         : null,
+      ...(followUp.data.rangeFeedback == null
+        ? {}
+        : { rangeFeedback: remapReviewRange(context, followUp.data.rangeFeedback) }),
       decisionRequestId: importRequestLineage(context, followUp.data.decisionRequestId),
       workerRequestId: importRequestLineage(context, followUp.data.workerRequestId),
     });
@@ -3373,6 +3429,18 @@ function remintWorkerRequest(text: string, context: ImportRemintContext): string
   });
 }
 
+/** Remints exact Material source identities while retaining original offsets and bytes. @param context Existing import owner maps. @param range Source Review range. @returns Range bound to the reminted immutable revision. */
+function remapReviewRange(
+  context: ImportRemintContext,
+  range: NonNullable<ImportedArtifactReview['rangeFeedback']>
+): NonNullable<ImportedArtifactReview['rangeFeedback']> {
+  return {
+    ...range,
+    materialId: requiredMapValue(context.materialIds, range.materialId, 'Material'),
+    revisionId: requiredMaterialRevisionId(context, range.materialId, range.revisionId),
+  };
+}
+
 /**
  * Validates one source and reminted Artifact Review against its durable result owners.
  *
@@ -3419,6 +3487,31 @@ function assertArtifactReviewImport(
     source.artifactVersion > artifact.version
   ) {
     throw new Error('Artifact Review source lineage is contradictory.');
+  }
+  if (target.rangeFeedback != null) {
+    const range = target.rangeFeedback;
+    const base = revisions.find(
+      (revision) =>
+        revision.materialId === range.materialId && revision.revisionId === range.revisionId
+    );
+    const content = base?.content;
+    const splitsPair = (offset: number) =>
+      content !== undefined &&
+      offset > 0 &&
+      offset < content.length &&
+      content.charCodeAt(offset - 1) >= 0xd800 &&
+      content.charCodeAt(offset - 1) <= 0xdbff &&
+      content.charCodeAt(offset) >= 0xdc00 &&
+      content.charCodeAt(offset) <= 0xdfff;
+    if (
+      content === undefined ||
+      base?.contentDigest !== range.contentDigest ||
+      range.end > content.length ||
+      splitsPair(range.start) ||
+      splitsPair(range.end) ||
+      content.slice(range.start, range.end) !== range.originalText
+    )
+      throw new Error('Artifact Review range feedback contradicts its immutable Material base.');
   }
   if (source.decision === null) {
     if (
@@ -3530,6 +3623,8 @@ function assertArtifactReviewImport(
       !proposalMatches ||
       request.data.decision !== source.decision ||
       request.data.feedback !== source.feedback ||
+      JSON.stringify(request.data.rangeFeedback ?? null) !==
+        JSON.stringify(source.rangeFeedback ?? null) ||
       request.data.decisionRequestId !== decisionRequestId ||
       request.data.workerRequestId !== sourceTrace.requestId ||
       (!/^import-lineage:sha256:[a-f0-9]{64}$/.test(decisionRequestId) &&
@@ -4177,8 +4272,25 @@ function readExportedArtifacts(
     const artifactId = metadataPath.split('/')[1] as string;
     const metadata = readImportJson(files, metadataPath) as Record<string, unknown>;
     const format = z
-      .enum(['markdown', 'text', 'json'])
+      .enum(['markdown', 'text', 'json', 'file'])
       .parse((metadata.content as { format?: unknown } | undefined)?.format);
+    if (format === 'file') {
+      const artifact = ArtifactSchema.parse(metadata);
+      const payloadPath = `artifacts/${artifactId}/versions/${artifact.version}/payload`;
+      const payload = manifest.contentInventory.find((entry) => entry.path === payloadPath);
+      if (
+        artifact.id !== artifactId ||
+        artifact.content.format !== 'file' ||
+        !payload ||
+        payload.bytes !== artifact.content.byteLength ||
+        payload.digest !== artifact.contentDigest
+      ) {
+        throw new Error('Artifact export payload ownership is inconsistent.');
+      }
+      expectedPaths.add(metadataPath);
+      expectedPaths.add(payloadPath);
+      return artifact;
+    }
     const bodyPath = `artifacts/${artifactId}/files/${artifactContentFileName(format)}`;
 
     expectedPaths.add(metadataPath);
