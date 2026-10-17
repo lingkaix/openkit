@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
-import { userMemoryRoot } from './storage/fs-layout.js';
+import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
@@ -148,5 +149,42 @@ describe('public explicit self Memory', () => {
     expect((await f.call('memory.list')).body.pages.map((page: { id: string }) => page.id)).toEqual(
       ['starter']
     );
+  });
+
+  it('refuses a missing User database before first-save admission can replace its retained authority', async () => {
+    const f = fixture();
+    const content = f.content('Retain my exact preference.\r\n');
+    const first = await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'preferences',
+      content,
+      summary: 'First explicit save',
+    });
+    expect(first.status).toBe(200);
+    const repositoryPath = join(userMemoryRoot(f.dataRoot, f.userId), 'notebook.git');
+    const notebook = new KnowledgeNotebook({ repositoryPath });
+    const before = notebook.readRevision(first.body.notebookRevision);
+    const published = join(repositoryPath, 'refs', 'heads', 'published');
+    const publishedBytes = readFileSync(published);
+    const database = userDbPath(f.dataRoot, f.userId);
+    // Public calls close their UserDb handle before returning, so this removes only the closed authority fixture.
+    rmSync(database);
+    expect(existsSync(database)).toBe(false);
+
+    const response = await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'replacement',
+      content: f.content('Do not create a replacement.', 'replacement'),
+      summary: 'Another first-save attempt',
+    });
+    expect({ response, databaseExists: existsSync(database) }).toMatchObject({
+      response: { status: 503, body: { code: 'recovery_required' } },
+      databaseExists: false,
+    });
+    expect(readFileSync(published)).toEqual(publishedBytes);
+    expect(notebook.readRevision(first.body.notebookRevision)).toEqual(before);
+    expect(before.files['preferences.md']).toBe(content);
   });
 });

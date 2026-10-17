@@ -1,5 +1,5 @@
 import { existsSync, lstatSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   MEMORY_OPERATION_DEFINITIONS,
   MemoryPublicationSchema,
@@ -172,12 +172,18 @@ export function createMemoryOperationImplementations(
     const actor = publicOperationActor(context);
     const target = { kind: 'user' } as const;
     try {
-      resolveScopedNotebookOwner({ coreDb, actor, target });
+      const owner = resolveScopedNotebookOwner({ coreDb, actor, target });
+      // First use may create a UserDb only when neither retained personal record family exists.
+      if (
+        !existsSync(userDbPath(coreDb.dataRoot, actor.userId)) &&
+        (!initialize ||
+          lstatSync(owner.notebookRoot, { throwIfNoEntry: false }) ||
+          lstatSync(join(dirname(owner.notebookRoot), 'sources'), { throwIfNoEntry: false }))
+      )
+        throw new OperationError('recovery_required', 'Memory storage is unavailable.', 503);
     } catch (error) {
       return memoryFailure(error);
     }
-    if (!initialize && !existsSync(userDbPath(coreDb.dataRoot, actor.userId)))
-      throw new OperationError('recovery_required', 'Memory storage is unavailable.', 503);
     const userDb = openUserDb(coreDb.dataRoot, actor.userId);
     try {
       applyScopedMigrations(userDb);
