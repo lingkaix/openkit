@@ -790,7 +790,11 @@ function createWorkResourceLineageExportInput(
     .update(knowledgeContent)
     .digest('hex')}`;
   const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
+    repositoryPath: join(
+      sourceSnapshotRoot ?? join(dirname(input.exportRoot), 'source'),
+      'knowledge',
+      'notebook.git'
+    ),
   });
   const notebookRevision = notebook.initialize({
     files: { [`${knowledgePageId}.md`]: knowledgeContent },
@@ -2555,11 +2559,40 @@ describe('workspace auxiliary lineage reminting', () => {
 
   it('remints one complete Material, Review, and S39 imported-history graph', () => {
     const input = createWorkResourceLineageExportInput(undefined, undefined, false, true);
+    const sourceKnowledgeContent = input.portableFileState!.nativeKnowledgePages.get(
+      'knowledge/pages/knowledge_portable_source.md'
+    )!;
+    const sourceKnowledgeExcerpt = input.portableFileState!.workerContextPackageFiles.get(
+      `threads/${source.threadId}/turns/${source.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
+    )!;
+    expect(sourceKnowledgeContent).toBeDefined();
+    expect(sourceKnowledgeExcerpt).toBeDefined();
     const sourceRetrievalTrace = [...input.portableFileState!.retrievalTraceFiles.values()][0]!;
     const imported = importLineage(input);
     const targetKnowledgeContent = imported.portableFileState.nativeKnowledgePages.get(
       'knowledge/pages/knowledge_portable_source.md'
     )!;
+    // Ownership-header reminting preserves the selected body prefix, without adding unseen bytes.
+    const expectedExcerptBytes = Buffer.from(targetKnowledgeContent).subarray(
+      0,
+      Buffer.byteLength(sourceKnowledgeExcerpt) +
+        Buffer.byteLength(targetKnowledgeContent) -
+        Buffer.byteLength(sourceKnowledgeContent)
+    );
+    const expectedExcerpt = expectedExcerptBytes.toString('utf8');
+    expect(
+      parseOwnedKnowledgeEntry(
+        'knowledge/pages/knowledge_portable_source.md',
+        'knowledge_portable_source',
+        expectedExcerpt
+      ).content
+    ).toBe(
+      parseOwnedKnowledgeEntry(
+        'knowledge/pages/knowledge_portable_source.md',
+        'knowledge_portable_source',
+        sourceKnowledgeExcerpt
+      ).content
+    );
     expect(
       parseOwnedKnowledgeEntry(
         'knowledge/pages/knowledge_portable_source.md',
@@ -2706,8 +2739,9 @@ describe('workspace auxiliary lineage reminting', () => {
             sourceRevision: targetRevision,
             representationDigest: `sha256:${createHash('sha256').update(targetKnowledgeContent).digest('hex')}`,
             representationByteLength: Buffer.byteLength(targetKnowledgeContent),
-            byteLength: 2048,
-            ranges: [{ start: 0, end: 2048 }],
+            deliveredDigest: `sha256:${createHash('sha256').update(expectedExcerptBytes).digest('hex')}`,
+            byteLength: expectedExcerptBytes.byteLength,
+            ranges: [{ start: 0, end: expectedExcerptBytes.byteLength }],
             truncated: true,
           }),
           packagePath: 'knowledge/pages/knowledge_portable_source.md',
@@ -2767,7 +2801,7 @@ describe('workspace auxiliary lineage reminting', () => {
       imported.portableFileState.workerContextPackageFiles.get(
         `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
       )
-    ).toBe(targetKnowledgeContent.slice(0, 2048));
+    ).toBe(expectedExcerpt);
     expect(targetKnowledgeContent.length).toBeGreaterThan(51_200);
     expect(imported.turnEvents[0]?.[1][2]?.data).toMatchObject({
       itemId: imported.turns[0]?.items[0]?.id,
