@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   ConversationTargetCatalogSchema,
   type StartTaskModeRequestSchema,
@@ -152,10 +153,18 @@ import {
   type SchedulerWorkerStorageChoice,
   schedulerAdmissionInputHash,
 } from './scheduler-records.js';
+import {
+  FileAdmissionError,
+  type FileStorageAdmission,
+} from './storage/artifacts/file-admission.js';
+import { readArtifactFileText } from './storage/artifacts/file-records.js';
+import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { resolveDataRootPath } from './storage/fs-layout.js';
 import {
   artifactReferenceItemId,
   isCurrentAgentSessionStatus,
+  verifyTurnFileInputs,
 } from './storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -1954,10 +1963,14 @@ function conversationCommandInput(chatInput: {
   readonly logicalModelId?: string | undefined;
   readonly reasoningEffort?: z.infer<typeof TurnSchema>['reasoningEffort'];
   readonly artifactRefs: unknown;
+  readonly fileInputs?: readonly unknown[] | undefined;
+  readonly fileHandoffConfirmed?: true | undefined;
   readonly workerStorageChoice?: WorkerEnvironmentStorageChoice | undefined;
 }) {
   return {
     artifactRefs: chatInput.artifactRefs,
+    ...(chatInput.fileInputs?.length ? { fileInputs: chatInput.fileInputs } : {}),
+    ...(chatInput.fileHandoffConfirmed ? { fileHandoffConfirmed: true } : {}),
     input: chatInput.input,
     logicalModelId: chatInput.logicalModelId ?? null,
     ...(chatInput.reasoningEffort !== undefined
@@ -2070,7 +2083,10 @@ function publishAssistantHandoffConfirmation(
     status: 'completed',
     responsibleUserId: actorId,
     userInputRequestId: requestId,
-    prompt: 'Confirm the exact work before it becomes shared execution.',
+    prompt:
+      handoff.kind === 'task'
+        ? 'Confirm the exact work before it becomes shared execution. Private files are not included. Attach files explicitly when you select a Worker.'
+        : 'Confirm the exact work before it becomes shared execution.',
     questions,
     assistantHandoff: handoff,
     createdAt: turn.startedAt ?? at,
@@ -2392,6 +2408,11 @@ export function createConversationService({
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+    readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
+    readonly filePayloadPaths?: readonly string[];
+    readonly fileWriteAdmission?: FileStorageAdmission;
+    /** Final synchronous request and source admission, never persisted. */
+    readonly assertFileInputAdmission?: () => void;
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
@@ -2617,6 +2638,7 @@ export function createConversationService({
     targets.push({
       targetRef: 'new-task-worker',
       kind: 'new-task-worker',
+      requiresFileHandoffConfirmation: true,
       label: 'New Shard + Worker',
       description: 'Create a linked Task execution Thread and start a Worker.',
       availability: defaultSetup ? 'available' : 'unavailable',
@@ -2673,7 +2695,13 @@ export function createConversationService({
       threadId: string;
     },
     actor: Actor,
-    triggerActor: ActorRef = { kind: 'user', id: actor.userId }
+    triggerActor: ActorRef = { kind: 'user', id: actor.userId },
+    files?: {
+      readonly fileAdmission: FileStorageAdmission;
+      readonly prepare: () => Promise<readonly string[]>;
+      /** Rechecks the live request, authority and shared capacity before actual publication. */
+      readonly assertCurrent: () => void;
+    }
   ): Promise<{ body: z.infer<typeof SubmitConversationResponseSchema>; status: 200 | 202 }> {
     const { workspaceId, threadId } = chatInput;
     try {
@@ -2812,12 +2840,120 @@ export function createConversationService({
         }
         artifacts.push(artifact);
       }
+      if (
+        chatInput.fileInputs?.length &&
+        acceptedTarget.requiresFileHandoffConfirmation &&
+        !chatInput.fileHandoffConfirmed
+      )
+        throw new TurnStartValidationError(
+          'file_handoff_confirmation_required',
+          'Confirm the exact work brief and selected files for the receiving Workspace.',
+          403
+        );
+      if (chatInput.fileInputs?.length && acceptedTarget.kind === 'goal-coordinator')
+        throw new TurnStartValidationError(
+          'file_inputs_not_applicable',
+          'This Goal operation has no receiving input Turn.',
+          400
+        );
+      if (chatInput.fileInputs?.length && !files)
+        throw new TurnStartValidationError(
+          'file_input_bytes_required',
+          'File submission requires verified original bytes.',
+          400
+        );
+      // Capture all originals before any branch can create work or invoke a model.
+      const filePayloadPaths = chatInput.fileInputs?.length ? await files!.prepare() : undefined;
+      const fileOptions = filePayloadPaths
+        ? {
+            fileInputs: chatInput.fileInputs,
+            filePayloadPaths,
+            fileWriteAdmission: files!.fileAdmission,
+            assertFileInputAdmission: files!.assertCurrent,
+          }
+        : {};
+      if (filePayloadPaths) {
+        const currentTarget = conversationTargetCatalog(
+          store,
+          workspaceId,
+          threadId,
+          actorId
+        ).targets.find((candidate) => candidate.targetRef === acceptedTarget.targetRef);
+        if (!currentTarget || currentTarget.availability !== 'available')
+          throw new TurnStartValidationError(
+            'target_unavailable',
+            'The selected target changed during file transfer.',
+            409
+          );
+        if (
+          logicalModelId &&
+          !currentTarget.logicalModels.some((model) => model.id === logicalModelId)
+        )
+          throw new TurnStartValidationError(
+            'model_not_allowed',
+            'The selected logical model changed during file transfer.',
+            409
+          );
+        const currentArtifacts = new Map(
+          listOutputArtifacts(store, coreDb, workspaceId, actorId).map((artifact) => [
+            artifact.id,
+            artifact,
+          ])
+        );
+        for (const artifact of artifacts) {
+          const current = currentArtifacts.get(artifact.id);
+          if (
+            !current ||
+            current.version !== artifact.version ||
+            current.contentDigest !== artifact.contentDigest
+          )
+            throw new TurnStartValidationError(
+              'artifact_version_mismatch',
+              'A selected Artifact changed during file transfer.',
+              409
+            );
+        }
+      }
       const conversationPrompt = [
         chatInput.input,
-        ...artifacts.map(
-          (artifact) =>
-            `Artifact ${artifact.title} (${artifact.id} v${artifact.version}):\n${artifact.content.body}`
-        ),
+        ...(chatInput.fileInputs?.length
+          ? [
+              `${chatInput.fileInputs.length} conversation file inputs are retained with the receiving Turn. Original bytes are not included in this prompt.`,
+            ]
+          : []),
+        ...artifacts.map((artifact) => {
+          const identity = `Artifact ${artifact.title} (${artifact.id} v${artifact.version}, ${artifact.contentDigest})`;
+          const content = artifact.content;
+          if (content.format === 'file') {
+            const textMedia =
+              content.mediaType === 'text/plain' ||
+              content.mediaType === 'text/markdown' ||
+              content.mediaType === 'application/json';
+            const text = textMedia
+              ? readArtifactFileText({
+                  workspaceRoot: resolveDataRootPath(coreDb!.dataRoot, 'workspaces', workspaceId),
+                  artifactId: artifact.id,
+                  version: artifact.version,
+                  byteLength: content.byteLength,
+                  contentDigest: artifact.contentDigest,
+                  maximumBytes: 2048,
+                })
+              : null;
+            return text !== null && text.split('\n').length <= 50
+              ? `${identity}:\n${text}`
+              : `${identity}: ${content.mediaType}, ${content.byteLength} bytes.`;
+          }
+          const preview = new TextDecoder()
+            .decode(Buffer.from(content.body.slice(0, 2048), 'utf8').subarray(0, 2048), {
+              stream: true,
+            })
+            .split('\n')
+            .slice(0, 50)
+            .join('\n');
+          const originalBytes = Buffer.byteLength(content.body, 'utf8');
+          const previewBytes = Buffer.byteLength(preview, 'utf8');
+          return `${identity} (${previewBytes < originalBytes ? 'bounded preview' : 'complete text'}, ${previewBytes} of ${originalBytes} bytes):\n${preview}`;
+        }),
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -2830,49 +2966,64 @@ export function createConversationService({
        * @returns Created turn.
        */
       const createChatTurn = (completedAt: string, turnId?: string) => {
-        const turn = store.createTurn(workspaceId, threadId, chatInput.input, triggerActor, null, {
-          turnId: turnId ?? providerTurnId,
-          ...(chatInput.reasoningEffort !== undefined
-            ? { reasoningEffort: chatInput.reasoningEffort }
-            : {}),
-        });
-        store.updateTurn(turn.id, {
-          agentId:
-            acceptedTarget.kind === 'knowledge-manager' ? 'knowledge-manager' : QUICK_CHAT_AGENT_ID,
-        });
+        const writeTurnAndItems = () => {
+          const turn = store.createTurn(
+            workspaceId,
+            threadId,
+            chatInput.input,
+            triggerActor,
+            null,
+            {
+              ...fileOptions,
+              turnId: turnId ?? providerTurnId,
+              ...(chatInput.reasoningEffort !== undefined
+                ? { reasoningEffort: chatInput.reasoningEffort }
+                : {}),
+            }
+          );
+          store.updateTurn(turn.id, {
+            agentId:
+              acceptedTarget.kind === 'knowledge-manager'
+                ? 'knowledge-manager'
+                : QUICK_CHAT_AGENT_ID,
+          });
 
-        store.createItem({
-          id: deriveEntityId('it', ['chat-user', turn.id]),
-          workspaceId,
-          threadId,
-          turnId: turn.id,
-          type: 'user-message',
-          status: 'completed',
-          actor: triggerActor,
-          text: chatInput.input,
-          createdAt: turn.startedAt ?? completedAt,
-          completedAt,
-        });
-
-        for (const artifact of artifacts) {
           store.createItem({
-            id: artifactReferenceItemId(artifact.id, turn.id),
+            id: deriveEntityId('it', ['chat-user', turn.id]),
             workspaceId,
             threadId,
             turnId: turn.id,
-            type: 'artifact-reference',
+            type: 'user-message',
             status: 'completed',
-            artifactId: artifact.id,
-            artifactVersion: artifact.version,
-            title: artifact.title,
-            summary: artifact.summary,
-            lastMutationRequestId: chatInput.requestId,
+            actor: triggerActor,
+            text: chatInput.input,
             createdAt: turn.startedAt ?? completedAt,
             completedAt,
           });
-        }
 
-        return store.getTurn(workspaceId, threadId, turn.id);
+          for (const artifact of artifacts) {
+            store.createItem({
+              id: artifactReferenceItemId(artifact.id, turn.id),
+              workspaceId,
+              threadId,
+              turnId: turn.id,
+              type: 'artifact-reference',
+              status: 'completed',
+              artifactId: artifact.id,
+              artifactVersion: artifact.version,
+              title: artifact.title,
+              summary: artifact.summary,
+              lastMutationRequestId: chatInput.requestId,
+              createdAt: turn.startedAt ?? completedAt,
+              completedAt,
+            });
+          }
+
+          return store.getTurn(workspaceId, threadId, turn.id);
+        };
+        return fileOptions.fileWriteAdmission
+          ? withCanonicalFileWriteAdmission(fileOptions.fileWriteAdmission, writeTurnAndItems)
+          : writeTurnAndItems();
       };
 
       /**
@@ -2914,6 +3065,9 @@ export function createConversationService({
       /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
       const answerFromWorkspaceKnowledge = async (): Promise<ConversationCommandResult | null> => {
         if (!store.getDataRoot()) return null;
+        const inputTurn = filePayloadPaths
+          ? createChatTurn(new Date().toISOString(), providerTurnId)
+          : undefined;
         const knowledgeAnswer = await createOperationInvocation({
           coreDb,
           store,
@@ -2930,7 +3084,7 @@ export function createConversationService({
           }
         );
         const completedAt = new Date().toISOString();
-        const turn = createChatTurn(completedAt);
+        const turn = inputTurn ?? createChatTurn(completedAt);
         const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
         const answerItem = store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
@@ -2965,8 +3119,15 @@ export function createConversationService({
 
       /** Validates the objective before creating receiving work through the existing product Turn owner. */
       const startSelectedWorker = async (): Promise<ConversationCommandResult> => {
+        // The confirmed file handoff admits this exact brief and verified originals.
+        // The receiving Thread below has no access to the private source history.
+        const confirmedFileHandoff =
+          acceptedTarget.requiresFileHandoffConfirmation &&
+          chatInput.fileHandoffConfirmed &&
+          filePayloadPaths;
         if (
-          store.getThread(workspaceId, threadId).visibility === 'private' ||
+          (store.getThread(workspaceId, threadId).visibility === 'private' &&
+            !confirmedFileHandoff) ||
           artifacts.some(
             (artifact) =>
               artifact.origin.kind === 'turn-output' &&
@@ -3165,6 +3326,7 @@ export function createConversationService({
                       : 'Task Knowledge retrieval could not establish one coherent selection.'
                   );
                 }
+                if (filePayloadPaths) files!.assertCurrent();
                 return {
                   delegationRequest: workerRequest,
                   contextPackageDigest: commandInputHash(workerRequest),
@@ -3178,6 +3340,7 @@ export function createConversationService({
                   chatInput.workerStorageChoice
                 );
                 const turn = await startModeWorkerTurn({
+                  ...fileOptions,
                   triggerActor,
                   requestActor: actor,
                   store,
@@ -3656,6 +3819,31 @@ export function createConversationService({
         inflightCommands,
         input: conversationCommandInput(chatInput),
         replay: async (record) => {
+          if (chatInput.fileInputs?.length) {
+            try {
+              const metadata = record.response.conversationMetadata;
+              const inputTurnId =
+                metadata?.resultKind === 'task-handoff' && metadata.downstream?.kind === 'task'
+                  ? metadata.downstream.turnId
+                  : record.response.id;
+              const inputTurn = store.getTurnById(inputTurnId);
+              if (
+                !isDeepStrictEqual(inputTurn.fileInputs, chatInput.fileInputs) ||
+                !store.getDataRoot()
+              )
+                throw new Error('Input inventory differs.');
+              verifyTurnFileInputs(
+                resolveDataRootPath(store.getDataRoot()!, 'workspaces', inputTurn.workspaceId),
+                inputTurn
+              );
+            } catch {
+              throw new TurnStartValidationError(
+                'recovery_required',
+                'The accepted Turn input proof is unavailable.',
+                409
+              );
+            }
+          }
           const downstream = record.response.conversationMetadata?.downstream;
           if (coreDb && record.response.conversationMetadata?.resultKind === 'worker-turn') {
             const receivingWorkspaceId = record.response.conversationMetadata.receivingWorkspaceId;
@@ -3808,6 +3996,9 @@ export function createConversationService({
           error.status
         );
       }
+
+      if (chatInput.fileInputs?.length && error instanceof FileAdmissionError)
+        throw new TurnStartValidationError(error.code, error.message, 507);
 
       console.error(
         'chat_mode_failed',

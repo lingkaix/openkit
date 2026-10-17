@@ -23,6 +23,7 @@ import {
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { FsStore } from './store.js';
@@ -1813,7 +1814,7 @@ describe('FsStore canonical reload', () => {
     expect(() => store.getWorkspace(workspaceId)).toThrow(`Workspace not found: ${workspaceId}`);
   });
 
-  it('cleans orphaned import staging roots on startup', () => {
+  it('cleans orphaned import staging roots during exclusive startup recovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staging-cleanup-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Staging cleanup workspace');
@@ -1827,6 +1828,11 @@ describe('FsStore canonical reload', () => {
     mkdirSync(stagingRoot, { recursive: true });
     writeFileSync(join(stagingRoot, 'orphaned-import'), 'discarded');
 
+    const offlineReader = new FsStore({ dataRoot });
+    expect(offlineReader.getWorkspace(workspace.id)).toEqual(workspace);
+    expect(existsSync(stagingRoot)).toBe(true);
+
+    discardAbandonedWorkspaceStaging(dataRoot);
     const restarted = new FsStore({ dataRoot });
 
     expect(restarted.getWorkspace(workspace.id)).toEqual(workspace);

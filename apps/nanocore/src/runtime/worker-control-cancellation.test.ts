@@ -501,10 +501,14 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('rebuilds a cancellation-closing first-final opportunity after restart without changing its deadline', () => {
+  it.each([
+    'turn-cancelled',
+    'raw-output-exhausted',
+    'raw-output-unavailable',
+  ])('rebuilds a %s first-final opportunity after restart without changing its deadline', (cause) => {
     const fixture = createFixture();
     try {
-      fixture.close();
+      fixture.close(cause);
       expectOrdinaryEffectsRefused(fixture);
       const before = fixture.durableState();
       fixture.restart();

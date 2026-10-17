@@ -2342,11 +2342,6 @@ describe('createCoreClient', () => {
     };
     const routeCases = [
       [
-        'POST /api/app/operations/artifact.import',
-        { artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af', artifactVersion: 1 },
-        201,
-      ],
-      [
         'POST /api/app/operations/artifact.introduce',
         {
           artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
@@ -2420,15 +2415,6 @@ describe('createCoreClient', () => {
     );
 
     const responses = [
-      await client.operations['artifact.import']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        ...{
-          title: 'Imported artifact',
-          mediaType: 'text/markdown',
-          contentDigest,
-          content: '# Imported artifact',
-        },
-      }),
       await client.operations['artifact.introduce']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2499,22 +2485,15 @@ describe('createCoreClient', () => {
       }),
     ];
 
-    expect(requests.slice(0, 2).map(({ headers }) => headers['x-openkit-request-id'])).toEqual([
-      expect.any(String),
-      expect.any(String),
-    ]);
+    // Binary bindings have their own exact-byte transport suite; generated JSON methods cannot publish file bodies.
+    expect(client.operations).not.toHaveProperty('artifact.import');
+    expect(client.operations).not.toHaveProperty('artifact.download');
+    expect(requests[0]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
     expect(responses).toEqual(routeCases.map(([, body]) => body));
     expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual(
       routeCases.map(([path]) => path)
     );
     expect(requests.map(({ body }) => body)).toEqual([
-      {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        title: 'Imported artifact',
-        mediaType: 'text/markdown',
-        contentDigest,
-        content: '# Imported artifact',
-      },
       {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',

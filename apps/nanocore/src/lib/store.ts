@@ -68,6 +68,10 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
+import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js';
+import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import {
   getCommandRequestRecord,
   getCommandRequestRecordFromDb,
@@ -105,6 +109,7 @@ import {
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
+  publishArtifactFileRecord,
   publishCanonicalPath,
   readCanonicalTextFile,
   readWorkspaceKnowledgeEntries,
@@ -573,6 +578,14 @@ export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
 };
 
 interface CreateTurnOptions {
+  /** Exact ordered metadata and verified private payload sources published with this Turn. */
+  fileInputs?: Turn['fileInputs'];
+  /** Private same-filesystem sources; never serialized into protocol records. */
+  filePayloadPaths?: readonly string[];
+  /** Shared runtime disk owner for exact serialized writes of a fresh file Turn. */
+  fileWriteAdmission?: FileStorageAdmission;
+  /** Entry-owned final synchronous request, authority and capacity check. */
+  assertFileInputAdmission?: () => void;
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
@@ -1332,14 +1345,24 @@ export class FsStore {
    *
    * @param workspaceId Workspace to persist.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
+   * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    */
-  private persist(workspaceId: string, updateWorkspaceConfigName = false): void {
+  private persist(
+    workspaceId: string,
+    updateWorkspaceConfigName = false,
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
+  ): void {
     if (!this.dataRoot) {
       return;
     }
 
     const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
-    this.writeWorkspaceFileRecordsToRoot(workspaceId, workspaceRoot, updateWorkspaceConfigName);
+    this.writeWorkspaceFileRecordsToRoot(
+      workspaceId,
+      workspaceRoot,
+      updateWorkspaceConfigName,
+      turnFilePayloads
+    );
   }
 
   /**
@@ -1430,11 +1453,13 @@ export class FsStore {
    * @param workspaceId Workspace to write.
    * @param workspaceRoot Resolved workspace root.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
+   * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
-    updateWorkspaceConfigName = false
+    updateWorkspaceConfigName = false,
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
   ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
@@ -1446,6 +1471,7 @@ export class FsStore {
     writeWorkspaceFileRecords(
       workspaceRoot,
       {
+        ...(turnFilePayloads ? { turnFilePayloads } : {}),
         workspace,
         knowledge: this.getWorkspaceResources(workspaceId).knowledge,
         threads: this.listThreads(workspaceId),
@@ -2682,6 +2708,7 @@ export class FsStore {
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
+      ...(options.fileInputs?.length ? { fileInputs: options.fileInputs } : {}),
       ...(options.reasoningEffort !== undefined
         ? { reasoningEffort: options.reasoningEffort }
         : {}),
@@ -2692,6 +2719,7 @@ export class FsStore {
       ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
       ...(options.triggerSource !== undefined ? { triggerSource: options.triggerSource } : {}),
     });
+    if (options.fileInputs?.length) options.assertFileInputAdmission?.();
     this.turns.set(turn.id, turn);
     if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
     this.threads.set(threadId, {
@@ -2707,14 +2735,42 @@ export class FsStore {
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
     try {
-      this.persist(workspaceId);
+      const publish = () =>
+        this.persist(
+          workspaceId,
+          false,
+          options.filePayloadPaths ? new Map([[turn.id, options.filePayloadPaths]]) : undefined
+        );
+      if (options.fileInputs?.length) {
+        if (!options.fileWriteAdmission)
+          throw new Error('File Turn publication admission is unavailable.');
+        withCanonicalFileWriteAdmission(options.fileWriteAdmission, publish);
+      } else publish();
     } catch (error) {
-      // Publication can finish before acknowledgement fails. Retain files, discard only this candidate.
-      this.turns.delete(turn.id);
-      this.streams.delete(turn.id);
-      this.turnCaptureCoverage.delete(turn.id);
-      this.turnExecutors.delete(turn.id);
-      this.threads.set(threadId, thread);
+      // No-file failures discard the derivative candidate; file inputs retain present or unknown canonical authority.
+      let discardCandidate = !options.fileInputs?.length;
+      if (options.fileInputs?.length && this.dataRoot) {
+        try {
+          const turnRoot = join(
+            this.workspaceRootPath(workspaceId),
+            'threads',
+            threadId,
+            'turns',
+            turn.id
+          );
+          assertCanonicalDirectory(dirname(turnRoot));
+          discardCandidate = lstatSync(turnRoot, { throwIfNoEntry: false }) === undefined;
+        } catch {
+          // A present or uninspectable canonical owner remains with existing recovery; absence is never inferred from an I/O refusal.
+        }
+      }
+      if (discardCandidate) {
+        this.turns.delete(turn.id);
+        this.turnExecutors.delete(turn.id);
+        this.streams.delete(turn.id);
+        this.turnCaptureCoverage.delete(turn.id);
+        this.threads.set(threadId, thread);
+      }
       throw error;
     }
     this.turnAdmissionHooks?.onAdmitted?.(turn);
@@ -3313,10 +3369,11 @@ export class FsStore {
    * Creates one immutable Artifact and its producing-Turn reference when applicable.
    *
    * @param input Complete Artifact authority.
+   * @param filePayload Exact privately staged original for file-backed content.
    * @returns Created Artifact.
    * @throws ArtifactAuthorityError when content proof or create-only ownership is invalid.
    */
-  public createArtifact(input: Artifact): Artifact {
+  public createArtifact(input: Artifact, filePayload?: StagedArtifactPayload): Artifact {
     const parsed = ArtifactSchema.safeParse(input);
     if (!parsed.success) {
       throw new ArtifactAuthorityError('invalid_request', 'Artifact input is invalid.');
@@ -3333,13 +3390,23 @@ export class FsStore {
       );
     }
     this.getWorkspace(artifact.workspaceId);
-    const contentDigest = `sha256:${createHash('sha256')
-      .update(artifact.content.body, 'utf8')
-      .digest('hex')}`;
+    const contentDigest =
+      artifact.content.format === 'file'
+        ? filePayload?.contentDigest
+        : `sha256:${createHash('sha256').update(artifact.content.body, 'utf8').digest('hex')}`;
     if (contentDigest !== artifact.contentDigest) {
       throw new ArtifactAuthorityError(
         'source_digest_mismatch',
         'Artifact content does not match its digest.'
+      );
+    }
+    if (
+      artifact.content.format === 'file' &&
+      (!this.dataRoot || !filePayload || filePayload.byteLength !== artifact.content.byteLength)
+    ) {
+      throw new ArtifactAuthorityError(
+        'invalid_request',
+        'Artifact file creation requires exact privately staged bytes and durable storage.'
       );
     }
     if (
@@ -3389,6 +3456,13 @@ export class FsStore {
     this.artifacts.set(artifact.id, artifact);
     this.refreshWorkspaceCounts(artifact.workspaceId);
     try {
+      if (artifact.content.format === 'file' && filePayload) {
+        publishArtifactFileRecord({
+          workspaceRoot: this.workspaceRootPath(artifact.workspaceId),
+          artifact,
+          payloadPath: filePayload.path,
+        });
+      }
       this.persist(artifact.workspaceId);
     } catch (error) {
       this.artifacts.delete(artifact.id);
@@ -3486,9 +3560,8 @@ export class FsStore {
         'The requested Artifact is not workspace-only imported content.'
       );
     }
-    const contentDigest = `sha256:${createHash('sha256')
-      .update(artifact.content.body, 'utf8')
-      .digest('hex')}`;
+    this.assertArtifactContent(artifact);
+    const contentDigest = artifact.contentDigest;
     if (
       contentDigest !== artifact.contentDigest ||
       contentDigest !== artifact.origin.sourceDigest
@@ -3609,6 +3682,37 @@ export class FsStore {
     }
 
     return artifact;
+  }
+
+  /** Verifies the exact original without materializing a file body or substituting another version. */
+  public assertArtifactContent(artifact: Artifact): void {
+    if (artifact.content.format === 'file') {
+      if (!this.dataRoot) {
+        throw new ArtifactAuthorityError(
+          'recovery_required',
+          'Artifact file storage is unavailable.'
+        );
+      }
+      try {
+        verifyArtifactFilePayload({
+          workspaceRoot: this.workspaceRootPath(artifact.workspaceId),
+          artifactId: artifact.id,
+          version: artifact.version,
+          byteLength: artifact.content.byteLength,
+          contentDigest: artifact.contentDigest,
+        });
+      } catch {
+        throw new ArtifactAuthorityError('recovery_required', 'The Artifact file is unavailable.');
+      }
+      return;
+    }
+    const digest = `sha256:${createHash('sha256').update(artifact.content.body, 'utf8').digest('hex')}`;
+    if (digest !== artifact.contentDigest) {
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Artifact content integrity is invalid.'
+      );
+    }
   }
 
   /** Resolves this Workspace's existing single Git content owner. */

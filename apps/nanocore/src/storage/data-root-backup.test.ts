@@ -121,10 +121,10 @@ describe('data-root backup manifest', () => {
   });
 
   it('retains owner-only vault directory mode through hot backup and restore under umask 022', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-data-root-vault-mode-'));
     const previousUmask = process.umask(0o022);
 
     try {
-      const parent = mkdtempSync(join(tmpdir(), 'openkit-data-root-vault-mode-'));
       const dataRoot = join(parent, 'data');
       const backupRoot = join(parent, 'backup');
       const restoredRoot = join(parent, 'restored', 'data');
@@ -187,6 +187,12 @@ describe('data-root backup manifest', () => {
       }
     } finally {
       process.umask(previousUmask);
+      // Restore only fixture permissions after proving backup and restore preserved them.
+      for (const root of ['data', 'backup', 'restored/data']) {
+        const directory = join(parent, root, 'server', 'readonly');
+        if (existsSync(directory)) chmodSync(directory, 0o755);
+      }
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 
