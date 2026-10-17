@@ -49,6 +49,7 @@ import {
 } from './runtime/execution-attempt-records.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-records.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import { readWorkerRawOutput } from './runtime/worker-raw-output.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -801,6 +802,75 @@ describe('worker inference routes', () => {
       workspaceDb.sqlite.close();
     }
   });
+  it('refuses a complete final request before inference and retains known zero raw output', async () => {
+    const providerRegistry = new ProviderRegistry([
+      {
+        id: 'agent-openrouter',
+        displayName: 'Agent OpenRouter',
+        kind: 'gateway',
+        vendor: 'openrouter',
+        secretRef: 'test:worker-api-key',
+        models: [WORKER_PROVIDER_MODEL],
+        modelMetadata: {
+          [WORKER_PROVIDER_MODEL]: {
+            limit: { context: 16_384, output: 1_024 },
+            modalities: { input: ['text'], output: ['text'] },
+          },
+        },
+      },
+    ]);
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      providerRegistry,
+    });
+    const source = vi.spyOn(fixture.dispatcher, 'observeSource');
+    const dispatch = vi
+      .spyOn(fixture.dispatcher, 'createResponses')
+      .mockImplementationOnce(async (_provider, _request, context) => {
+        const admit = context?.transport?.finalRequestAdmission;
+        expect(admit).toBeTypeOf('function');
+        const final = {
+          payload: { input: '界'.repeat(6_000) },
+          contextWindowTokens: 16_384,
+          outputReserveTokens: 1_024,
+        };
+        await admit!(final);
+        // The final text fits alone. Native continuity makes the same complete request exceed capacity.
+        await admit!({ ...final, codexTurnState: '界'.repeat(6_000) });
+        throw new Error('An oversized final request reached inference.');
+      });
+
+    const response = await postWorkerResponses(fixture, {
+      model: WORKER_LOGICAL_MODEL_ID,
+      input: 'Inspect a bounded excerpt.',
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        type: 'provider_error',
+        code: 'gateway_context_overflow',
+        message: 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.',
+      },
+    });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(source).not.toHaveBeenCalled();
+    const workspaceDb = openWorkspaceDb(
+      fixture.coreDb!.dataRoot,
+      fixture.environmentPackage.scope.workspaceId
+    );
+    try {
+      expect(readWorkerRawOutput(workspaceDb, fixture.environmentPackage.scope)).toEqual({
+        rawOutputBytes: 0,
+        exhausted: false,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
+      expect.objectContaining({ status: 'failed', errorCode: 'worker_inference_failed' }),
+    ]);
+  });
+
   it('dispatches canonical Responses through the AEP provider', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     const response = await postWorkerResponses(
@@ -2694,7 +2764,7 @@ describe('Round 2 worker exhaustion cause', () => {
                         ? 'gateway_provider_rate_limited'
                         : 'gateway_provider_authentication_failed',
                     message: terminal
-                      ? 'Provider context limit exceeded.'
+                      ? 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.'
                       : scenario.kind === 'rate_limited'
                         ? 'Provider rate limit exceeded.'
                         : 'Provider authentication failed.',

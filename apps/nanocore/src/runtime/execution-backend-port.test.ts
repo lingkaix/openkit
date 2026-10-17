@@ -10,6 +10,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -205,6 +206,7 @@ function fixture(
     collectTranscript: async () => ({}),
   };
   const executor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(db.dataRoot, () => 0n),
     coreDb: db,
     backend,
     workerControlGateway: controlGateway,

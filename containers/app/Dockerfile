@@ -3,6 +3,7 @@ FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd3
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV RUST_VERSION=1.97.1
 ENV CARGO_HOME="/usr/local/cargo"
+ENV CARGO_BUILD_JOBS="1"
 ENV RUSTUP_HOME="/usr/local/rustup"
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
 # Keep generated dictionaries with Cargo artifacts so incremental cache hits retain their include_bytes! inputs.
