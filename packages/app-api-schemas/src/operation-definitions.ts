@@ -29,6 +29,7 @@ import {
   KNOWLEDGE_OPERATION_DEFINITIONS,
 } from './knowledge-operation-definitions.js';
 import { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
+import { MEMORY_OPERATION_DEFINITIONS } from './memory.js';
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
 import { composeOperationTables } from './operation-contract.js';
 import { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
@@ -116,6 +117,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   TURN_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
   KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+  MEMORY_OPERATION_DEFINITIONS,
   ARTIFACT_OPERATION_DEFINITIONS,
   GOAL_OPERATION_DEFINITIONS,
   SYNC_OPERATION_DEFINITIONS,

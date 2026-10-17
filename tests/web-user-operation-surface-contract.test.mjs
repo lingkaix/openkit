@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 269;
+const EXPECTED_CATALOG_SIZE = 281;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 191;
+const EXPECTED_INCLUDED_SIZE = 203;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -27,6 +27,18 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.archive-import', 'R008'],
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
+  ['memory.create', 'R069'],
+  ['memory.forget', 'R069'],
+  ['memory.forget.prepare', 'R069'],
+  ['memory.list', 'R069'],
+  ['memory.notebook.diff', 'R069'],
+  ['memory.notebook.history', 'R069'],
+  ['memory.notebook.restore', 'R069'],
+  ['memory.read', 'R069'],
+  ['memory.source.list', 'R069'],
+  ['memory.source.read', 'R069'],
+  ['memory.source.register', 'R069'],
+  ['memory.update', 'R069'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -169,6 +181,20 @@ const WEB_OPERATION_GROUPS = {
     'knowledge.conflict.resolve': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.retrieval': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.repair.suggest': { disposition: 'live', surface: 'Knowledge' },
+  },
+  Memory: {
+    'memory.create': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.forget': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.forget.prepare': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.list': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.notebook.diff': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.notebook.history': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.notebook.restore': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.read': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.source.list': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.source.read': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.source.register': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.update': { disposition: 'roadmap', roadmap: 'R069' },
   },
   Materials: {
     'material.bind': { disposition: 'live', surface: 'Material' },
