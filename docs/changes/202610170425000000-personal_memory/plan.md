@@ -6,7 +6,7 @@ status: in-progress
 
 ## Intent
 
-Coordinator01:35 transferred scoped Memory and bounded editing from L-AK to L-ID, including the23:38 S31 family-manifest ruling. RESUME04:25 releases the maintenance stop. The existing Personal Memory, Notebook editing, Knowledge Manager, Permissions, Storage and record-envelope owners govern behavior. This record is execution evidence, not new authority.
+Coordinator01:35 transferred scoped Memory and bounded editing from L-AK to L-ID, including the23:38 S31 family-manifest ruling. RESUME04:25 releases the maintenance stop. The accepted [Personal Memory](../../specs/20260909-personal_memory_and_knowledge_learning.md), [Notebook editing](../../specs/20260909-knowledge_notebook_editing.md), [Knowledge Manager](../../specs/20260704-knowledge_manager_internal_agent_runtime.md), [Permissions](../../core/permissions.md), [Storage](../../core/storage.md) and [record-envelope](../../specs/20260703-schema_evolution_record_envelope.md) owners govern behavior. This record is execution evidence, not new authority.
 
 ## Scope And Increments
 
