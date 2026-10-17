@@ -105,7 +105,13 @@ Workspace clone/remint rewrites scope and source IDs using existing portability 
 
 ## Current Implementation Projection
 
-Workspace Git read and write paths implement fresh notebooks, fixed-base human publication, current authorized pinned reads, saved-candidate human Review with bounded reverse and explicit removal, and public Workspace history/diff/restore. Historical bodies use current canonical source/audience admission; denied history rows withhold their summary, producer and changed paths. Restore uses the common publisher and creates a new commit; its selected normalized diff supports explicit removal confirmation. The integrated public and Web joins enable this Workspace behavior when landed. User and Server Memory, scoped virtual Agent editing and full required-review invocation, forget suppression, and full historical trace and archive disclosure closure remain incomplete. This projection does not accept complete Notebook, Memory or P20 behavior.
+Workspace Git read and write paths implement fresh notebooks, fixed-base human publication, current authorized pinned reads, saved-candidate human Review with bounded reverse and explicit removal, and public Workspace history/diff/restore. Historical bodies use current canonical source/audience admission; denied history rows withhold their summary, producer and changed paths. Restore uses the common publisher and creates a new commit; its selected normalized diff supports explicit removal confirmation. The integrated public and Web joins enable this Workspace behavior when landed.
+
+Explicit human operations support source-free self User Memory save, list, read, edit, history, diff and restore. Each operation rechecks current self authority. Writes use the common Git publisher with existing Audit and command receipts. Historical reads check current schema, sensitivity and suppression before disclosure. Denied history rows withhold their summary, producer and changed paths. Restore creates a new commit and refuses removal or a suppressed identity.
+
+Forget binds the exact page revision and digest to an Item-backed human confirmation and rechecks current self authority. It suppresses normal current and historical reads before Git removal. Git, Source, evidence and backup bytes retain their separate retention authority.
+
+Server Knowledge operations, Source-bearing User Memory, private Memory recall and extraction, scoped virtual Agent editing, semantic maintenance, automatic consolidation and AI assessment remain incomplete. Full required-review invocation and full historical trace and archive disclosure closure also remain incomplete. This projection does not accept complete Notebook, Memory or P20 behavior.
 
 ## Implementation Cutover And Acceptance
 
