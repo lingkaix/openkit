@@ -74,11 +74,13 @@ export function internalContextItems(store: Pick<FsStore, 'listThreadTurns'>, tu
     );
 }
 
-/** Binds exact known source Items and the terminal outcomes that qualify their interpretation. */
+/** Binds canonical source Items; only cross-run rolling history also binds terminal Turn outcomes. */
 export function internalContextSourceDigest(
   store: Pick<FsStore, 'getTurnById'>,
-  items: readonly Item[]
+  items: readonly Item[],
+  strategy: Summary['strategy'] = 'rolling'
 ): string {
+  if (strategy === 'compaction') return internalContextDigest({ version: 1, sources: items });
   return internalContextDigest({
     version: 1,
     sources: items.map((item) => {
@@ -160,6 +162,7 @@ export async function prepareInternalAgentContext(
   const signal = AbortSignal.any([input.signal, deadline]);
   const environmentDigest = internalContextDigest({
     version: 1,
+    strategy: 'rolling',
     systemPrompt: input.systemPrompt,
     tools: input.tools.map(({ name, description, inputSchema }) => ({
       name,
@@ -227,6 +230,8 @@ export async function prepareInternalAgentContext(
     const producer = input.store.getTurnById(summary.turnId);
     const range = items.slice(0, summary.sourceRange.itemCount);
     if (
+      summary.strategy !== 'rolling' ||
+      summary.logicalModelId !== input.model.logicalModelId ||
       producer.agentSessionId ||
       producer.agentId !== input.turn.agentId ||
       summary.environmentDigest !== environmentDigest ||
@@ -254,7 +259,7 @@ export async function prepareInternalAgentContext(
   let usedModelTurns = 0;
   const assemble = () => [
     ...(input.prefixMessages ?? []),
-    ...(summary ? [summaryMessage(summary)] : []),
+    ...(summary ? [internalContextSummaryMessage(summary)] : []),
     ...contextMessages(input.store, items.slice(boundary)),
     ...input.requiredMessages,
   ];
@@ -288,7 +293,7 @@ export async function prepareInternalAgentContext(
       throw capacity();
     const requestFor = (end: number): AgentMessage[] => [
       ...(input.prefixMessages ?? []),
-      ...(summary ? [summaryMessage(summary)] : []),
+      ...(summary ? [internalContextSummaryMessage(summary)] : []),
       ...contextMessages(input.store, items.slice(boundary, end)),
       {
         role: 'user',
@@ -320,7 +325,7 @@ export async function prepareInternalAgentContext(
     const messages = requestFor(end);
     const beforeBytes = Buffer.byteLength(
       JSON.stringify([
-        ...(summary ? [summaryMessage(summary)] : []),
+        ...(summary ? [internalContextSummaryMessage(summary)] : []),
         ...contextMessages(input.store, items.slice(boundary, end)),
       ])
     );
@@ -382,6 +387,8 @@ export async function prepareInternalAgentContext(
       threadId: input.turn.threadId,
       turnId: input.turn.id,
       type: 'context-summary',
+      strategy: 'rolling',
+      logicalModelId: input.model.logicalModelId,
       status: 'completed',
       text,
       environmentDigest,
@@ -392,7 +399,7 @@ export async function prepareInternalAgentContext(
       createdAt: completedAt,
       completedAt,
     };
-    if (Buffer.byteLength(JSON.stringify([summaryMessage(next)])) >= beforeBytes)
+    if (Buffer.byteLength(JSON.stringify([internalContextSummaryMessage(next)])) >= beforeBytes)
       throw invalidSummary();
     assertCurrent();
     const stored = input.store.createItem(next);
@@ -415,7 +422,7 @@ export async function prepareInternalAgentContext(
 }
 
 /** Range annotation remains model-visible untrusted context and gives exact history retrieval endpoints. */
-function summaryMessage(summary: Summary): AgentMessage {
+export function internalContextSummaryMessage(summary: Summary): AgentMessage {
   return {
     role: 'assistant',
     truncated: false,
@@ -426,6 +433,8 @@ function summaryMessage(summary: Summary): AgentMessage {
           summaryItemId: summary.id,
           workspaceId: summary.workspaceId,
           threadId: summary.threadId,
+          strategy: summary.strategy,
+          logicalModelId: summary.logicalModelId,
           sourceRange: summary.sourceRange,
           text: summary.text,
           exactHistory:
@@ -460,6 +469,8 @@ export function internalContextFailure(error: unknown): { code: string; message:
     internal_agent_context_unavailable: 'The selected model has no usable context bounds.',
     internal_agent_summary_invalid:
       'Continuation summary production failed. Its source boundary did not advance.',
+    internal_agent_model_turns_exceeded:
+      'The admitted model-call budget expired before a bounded answer could complete.',
     internal_agent_context_deadline:
       'The admitted deadline expired during continuation summary production.',
   };

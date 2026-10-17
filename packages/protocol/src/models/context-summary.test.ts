@@ -8,6 +8,8 @@ const summary = {
   threadId: allocateEntityId('th'),
   turnId: allocateEntityId('tu'),
   type: 'context-summary',
+  strategy: 'rolling',
+  logicalModelId: 'internal-role',
   status: 'completed',
   createdAt: '2026-10-16T00:00:00.000Z',
   completedAt: '2026-10-16T00:00:00.000Z',
@@ -25,6 +27,7 @@ const summary = {
 describe('source-bound continuation summary Item', () => {
   it('accepts the required closed summary core and ignores descriptive additions', () => {
     expect(ItemSchema.parse(summary)).toEqual(summary);
+    expect(ItemSchema.parse({ ...summary, strategy: 'compaction' }).strategy).toBe('compaction');
     expect(
       ItemSchema.parse({
         ...summary,
@@ -51,6 +54,10 @@ describe('source-bound continuation summary Item', () => {
     }
     for (const patch of [
       { environmentDigest: undefined },
+      { strategy: undefined },
+      { strategy: 'unknown' },
+      { logicalModelId: undefined },
+      { logicalModelId: '' },
       { status: 'in_progress' },
       { text: '' },
       { text: 'x'.repeat(65_537) },

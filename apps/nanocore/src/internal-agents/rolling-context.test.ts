@@ -273,6 +273,8 @@ describe('source-bound internal rolling context', () => {
         evidence(f.history.slice(0, summary.sourceRange.itemCount))
       );
       expect(summary.turnId).toBe(f.turn.id);
+      expect(summary.strategy).toBe('rolling');
+      expect(summary.logicalModelId).toBe(model.logicalModelId);
       boundary = summary.sourceRange.itemCount;
     }
     expect(prepared.limits.maxModelTurns).toBe(limits.maxModelTurns - requests.length);

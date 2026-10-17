@@ -93,6 +93,8 @@ export const ContextSummarySourceRangeSchema = z.object({
 /** Completed untrusted continuation text; exact source history remains canonical and retrievable. */
 export const ContextSummaryItemSchema = BaseItemSchema.extend({
   type: z.literal('context-summary'),
+  strategy: z.enum(['rolling', 'compaction']),
+  logicalModelId: z.string().min(1),
   status: z.literal('completed'),
   text: z
     .string()
