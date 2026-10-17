@@ -208,6 +208,7 @@ describe('database setup', () => {
         '0002_durable_recurring_schedules.sql',
         '0003_notebook_admission.sql',
         '0004_equal_workspace_members.sql',
+        '0005_external_trigger_admissions.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -220,6 +221,7 @@ describe('database setup', () => {
         'core_0002_durable_recurring_schedules',
         'core_0003_notebook_admission',
         'core_0004_equal_workspace_members',
+        'core_0005_external_trigger_admissions',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));

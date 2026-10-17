@@ -32,6 +32,17 @@ export function findExternalTriggerAdmission(
   return row ? readAdmission(coreDb, row) : null;
 }
 
+/** Resolves an event admission from the existing queue owner without creating history. */
+export function findExternalTriggerAdmissionForQueue(
+  coreDb: CoreDb,
+  queueEntryId: string
+): ExternalTriggerAdmission | null {
+  const row = coreDb.sqlite
+    .prepare(`${SELECT_ADMISSION} WHERE queue_entry_id = ?`)
+    .get(queueEntryId);
+  return row ? readAdmission(coreDb, row) : null;
+}
+
 /** Inserts within the queue owner's Core transaction; duplicate keys retain their original lineage. */
 export function insertExternalTriggerAdmission(
   coreDb: CoreDb,
