@@ -370,6 +370,9 @@ describe('published Workspace notebook reads', () => {
       'denied-path-marker.md': secret,
       'public.md': entryBytes('public', 'Public page', [], 'Public control page.\n'),
     });
+    // A later ordinary Store mutation refreshes the cached aggregate from both published pages.
+    f.store.createThread(f.workspaceId, 'Count refresh');
+    expect(f.store.getWorkspace(f.workspaceId).counts.knowledgeEntryCount).toBe(2);
     expect(readAuthorizedWorkspaceNotebookPages(f).pages).toHaveLength(2);
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(true);
     const memberId = addMember(f);
@@ -397,15 +400,23 @@ describe('published Workspace notebook reads', () => {
         handler: async () => new Response(null, { status: 404 }),
       },
     });
-    for (const operation of ['workspace.read', 'workspace.dashboard']) {
+    for (const operation of ['workspace.read', 'workspace.dashboard', 'workspace.list']) {
       const response = await app.request(`/api/app/operations/${operation}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: f.workspaceId }),
+        body: JSON.stringify(operation === 'workspace.list' ? {} : { workspaceId: f.workspaceId }),
       });
       expect(response.status, `${operation}: ${await response.clone().text()}`).toBe(200);
-      const body = (await response.json()) as { counts: { knowledgeEntryCount: number } };
-      expect(body.counts.knowledgeEntryCount).toBe(1);
+      const body = (await response.json()) as {
+        counts?: { knowledgeEntryCount: number };
+        items?: Array<{ workspace: { id: string; counts: { knowledgeEntryCount: number } } }>;
+      };
+      expect(
+        operation === 'workspace.list'
+          ? body.items?.find(({ workspace }) => workspace.id === f.workspaceId)?.workspace.counts
+              .knowledgeEntryCount
+          : body.counts?.knowledgeEntryCount
+      ).toBe(1);
     }
 
     const result = readAuthorizedWorkspaceNotebookPages({ ...f, notebookRevision: revision });
