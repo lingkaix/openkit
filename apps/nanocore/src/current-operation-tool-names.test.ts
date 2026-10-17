@@ -3,6 +3,7 @@ import {
   OPERATION_DEFINITIONS,
   operationToolName,
 } from '@openkit/app-api-schemas';
+import { AgentEnvironmentCapabilitiesSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createAdministrationTools } from './administration/administration-tools.js';
 import { createAdministrationConfigurationTools } from './administration/configuration-tools.js';
@@ -124,6 +125,16 @@ function taskTools(): readonly AgentTool[] {
   ];
 }
 
+function capabilityNames(): string[] {
+  const enabled = AgentEnvironmentCapabilitiesSchema.options.find(
+    (option) => option.shape.mode.value === 'enabled'
+  );
+  if (!enabled || enabled.shape.routes.type !== 'tuple') {
+    throw new Error('Enabled Worker capability routes must expose their declared tuple.');
+  }
+  return enabled.shape.routes.def.items.map((route) => route.value);
+}
+
 describe('current operation and Tool names', () => {
   it.each([
     ['Assistant', assistantTools],
@@ -142,13 +153,18 @@ describe('current operation and Tool names', () => {
       ...tools.map((tool) => tool.name),
       ...OPENKIT_WORK_TOOLS.map((tool) => tool.name),
       ...Object.values(OPENKIT_GENERATIVE_TOOL_OPERATIONS),
+      ...capabilityNames(),
     ]);
+  });
+
+  it('checks the current Worker MCP capability declarations', () => {
+    assertOperationNames(capabilityNames());
   });
 
   it('derives current Worker Generative wire names from their actual logical declarations', () => {
     for (const tool of OPENKIT_GENERATIVE_TOOLS) {
       const canonical = OPENKIT_GENERATIVE_TOOL_OPERATIONS[tool.name];
-      expect(canonical).toBeDefined();
+      if (canonical === undefined) throw new Error(`Unmapped Worker Generative Tool: ${tool.name}`);
       expect(tool.name).toBe(operationToolName(canonical));
     }
   });
