@@ -1607,20 +1607,17 @@ describe('quick chat app API', () => {
               ]
             : [
                 {
-                  type: 'message',
-                  content: [
-                    {
-                      type: 'output_text',
-                      text: JSON.stringify({
-                        answer:
-                          'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
-                        citationIds: [
-                          'page/workspace/ws_00000000-0000-7000-8000-000000000001/launch-cadence',
-                        ],
-                        uncertainty: 'Server Knowledge is unavailable in this fixture.',
-                      }),
-                    },
-                  ],
+                  type: 'function_call',
+                  call_id: 'knowledge-result',
+                  name: operationToolName('knowledge.result'),
+                  arguments: JSON.stringify({
+                    answer:
+                      'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
+                    citationIds: [
+                      'page/workspace/ws_00000000-0000-7000-8000-000000000001/launch-cadence',
+                    ],
+                    uncertainty: 'Server Knowledge is unavailable in this fixture.',
+                  }),
                 },
               ];
         return { id: `knowledge-response-${step}`, object: 'response', output };
