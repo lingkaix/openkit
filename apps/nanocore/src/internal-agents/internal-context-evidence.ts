@@ -6,6 +6,7 @@ import {
   RetrievalTraceReferenceSchema,
 } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
+import type { Actor } from '../auth/identity.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -37,6 +38,8 @@ export function readInternalContextEvidence(
     readonly strategy?: 'rolling' | 'compaction';
     /** Trusted retained asking lineage for a query; maintenance defaults to its source Turn. */
     readonly retrievalContext?: { readonly threadId: string; readonly turnId: string };
+    /** Actual current Server credential from native query admission, never model input. */
+    readonly serverKnowledgeActor?: Actor | undefined;
   }
 ): string {
   input.nativeAuthority?.assertCurrent();
@@ -90,6 +93,7 @@ export function readInternalContextEvidence(
           id: input.actor!.userId,
         },
         ...(input.actor ? { requestActor: input.actor } : {}),
+        ...(input.serverKnowledgeActor ? { serverKnowledgeActor: input.serverKnowledgeActor } : {}),
         outputThreadId:
           input.strategy === 'compaction'
             ? contexts.find((context) => scopeFor(context) === reference.scopeId)!.threadId

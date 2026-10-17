@@ -241,6 +241,7 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
       readEvidence: (items) => readInternalContextEvidence({
         store, coreDb: input.access.coreDb!, workspaceId: input.workspaceId, threadId: thread.id,
         nativeAuthority, items, strategy: 'compaction',
+        serverKnowledgeActor: access.serverKnowledgeActor ?? access.requestActor,
         ...(access.outputThreadId && access.outputTurnId ? { retrievalContext: {
           threadId: access.outputThreadId, turnId: access.outputTurnId,
         } } : {}),
