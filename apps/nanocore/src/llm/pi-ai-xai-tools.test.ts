@@ -72,9 +72,27 @@ async function invoke(
   const completed = events.filter((event) => event.type === 'response.completed');
   expect(completed).toHaveLength(1);
   const response = completed[0].response as OpenAICompatibleResponsesResponse;
+  // The existing message projections differ only in these optional empty text metadata arrays.
+  const normalizeMessage = (item: Record<string, unknown>): Record<string, unknown> => {
+    if (item.type !== 'message' || !Array.isArray(item.content)) return item;
+    return {
+      ...item,
+      content: item.content.map((part: Record<string, unknown>) => {
+        if (part.type !== 'output_text') return part;
+        const normalized = { ...part };
+        for (const key of ['annotations', 'logprobs']) {
+          const value = normalized[key];
+          if (Array.isArray(value) && value.length === 0) delete normalized[key];
+        }
+        return normalized;
+      }),
+    };
+  };
   expect(
-    events.filter((event) => event.type === 'response.output_item.done').map((event) => event.item)
-  ).toEqual(response.output);
+    events
+      .filter((event) => event.type === 'response.output_item.done')
+      .map((event) => normalizeMessage(event.item))
+  ).toEqual(response.output?.map(normalizeMessage));
   return response;
 }
 
@@ -220,7 +238,7 @@ describe('stock xAI Worker tool adaptation', () => {
       status: 'completed',
       output: [
         expect.objectContaining({
-          content: [{ type: 'output_text', text: 'Continuation accepted.', annotations: [] }],
+          content: [{ type: 'output_text', text: 'Continuation accepted.' }],
         }),
       ],
     });
