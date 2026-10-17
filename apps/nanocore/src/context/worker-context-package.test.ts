@@ -1724,11 +1724,6 @@ describe('bounded S39 source representations', () => {
       byteLength: Buffer.byteLength(deliveredContent),
       truncated: true,
       availability: 'incomplete',
-      tokenAccounting: {
-        identity: 'explicit-parent-accounting',
-        budgetTokens: 256,
-        countedTokens: 7,
-      },
     };
     const files = createWorkerContextPackageFiles({
       workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
@@ -2211,7 +2206,6 @@ describe('S39 exact original UTF-8 ranges', () => {
         ],
       })
     ).toThrow(/excerpt does not match/);
-    expect(files.materialSelections[0]!.projection?.tokenAccounting).toBeUndefined();
   });
 });
 
