@@ -748,7 +748,19 @@ describe('SimulatedTurnExecutor', () => {
       () => configuredReserve,
       () => capacity
     );
-    const executions = vi.spyOn(SimulatedTurnExecutor.prototype, 'startTurn');
+    type StartedExecution = { turnId: string; completion: Promise<void> };
+    let notifyStartedExecution!: (execution: StartedExecution) => void;
+    const startedExecution = new Promise<StartedExecution>((resolve) => {
+      notifyStartedExecution = resolve;
+    });
+    const startTurn = SimulatedTurnExecutor.prototype.startTurn;
+    const executions = vi
+      .spyOn(SimulatedTurnExecutor.prototype, 'startTurn')
+      .mockImplementation(function (this: SimulatedTurnExecutor, ...args) {
+        const completion = startTurn.apply(this, args);
+        notifyStartedExecution({ turnId: args[1], completion });
+        return completion;
+      });
     const publisher = SimulatedTurnExecutor.prototype as unknown as MaterialProposalPublisher;
     const publish = publisher.publishMaterialProposals;
     let admissionProof: Promise<void> | undefined;
@@ -1048,7 +1060,10 @@ describe('SimulatedTurnExecutor', () => {
       const turnBody = await turnResponse.json();
       expect(turnResponse.status, JSON.stringify(turnBody)).toBe(202);
       const task = StartTaskModeResponseSchema.parse(turnBody);
-      await vi.waitFor(() => expect(admissionProof).toBeDefined());
+      const execution = await startedExecution;
+      expect(execution.turnId).toBe(task.turn.id);
+      await execution.completion;
+      expect(admissionProof).toBeDefined();
       await admissionProof;
       await vi.waitFor(() => expect(store.getTurnById(task.turn.id).status).toBe('completed'));
       const workerTurn = store.getTurnById(task.turn.id);
@@ -1382,12 +1397,12 @@ describe('SimulatedTurnExecutor', () => {
         deliveredDb.sqlite.close();
       }
     } finally {
-      publication.mockRestore();
       await Promise.allSettled(
         executions.mock.results
           .filter((result) => result.type === 'return')
           .map((result) => result.value)
       );
+      publication.mockRestore();
       // Let the scheduler's already-attached completion observer settle before closing its database.
       await new Promise<void>((resolve) => setImmediate(resolve));
       executions.mockRestore();
