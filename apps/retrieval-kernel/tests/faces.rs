@@ -215,6 +215,8 @@ fn executable_process_resource_limits() {
 #[test]
 fn filesystem_growth_failure_preserves_last_commit() {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
+    // The sidecar exceeds this fixed ceiling while the manifest and empty index still fit.
+    const FILE_CEILING: libc::rlim_t = 14_500;
     let root = TempDir::new().unwrap();
     let store = TempDir::new().unwrap();
     let kernel = retrieval_kernel::Kernel::new(root.path(), store.path()).unwrap();
@@ -226,7 +228,10 @@ fn filesystem_growth_failure_preserves_last_commit() {
     let prior = kernel.publish(empty, None).unwrap();
     fs::write(root.path().join("source"), b"canonical bytes").unwrap();
     let digest = format!("{:x}", Sha256::digest(b"canonical bytes"));
-    let view = json!({"scope":"scope","documents":[{"key":{"namespace":"fixture","id":"source"},"revision":"1","digest":digest,"size":15,"name":"source","media_type":"text/plain","content":{"kind":"text","path":"source"}}]});
+    let metadata: std::collections::BTreeMap<_, _> = (0..64)
+        .map(|number| (format!("f{number:02}"), "x".repeat(200)))
+        .collect();
+    let view = json!({"scope":"scope","documents":[{"key":{"namespace":"fixture","id":"source"},"revision":"1","digest":digest,"size":15,"name":"source","media_type":"application/octet-stream","content":{"kind":"unreadable"},"metadata":metadata}]});
     let mut command = Command::new(env!("CARGO_BIN_EXE_retrieval-kernel"));
     command
         .args([
@@ -243,8 +248,8 @@ fn filesystem_growth_failure_preserves_last_commit() {
     unsafe {
         command.pre_exec(|| {
             let limit = libc::rlimit {
-                rlim_cur: 1,
-                rlim_max: 1,
+                rlim_cur: FILE_CEILING,
+                rlim_max: FILE_CEILING,
             };
             if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
                 return Err(std::io::Error::last_os_error());
@@ -262,9 +267,13 @@ fn filesystem_growth_failure_preserves_last_commit() {
     .unwrap();
     drop(stdin);
     let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.signal(), Some(libc::SIGXFSZ));
+    assert_eq!(output.status.signal(), None);
+    assert!(output.status.success(), "{output:?}");
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["error"]["code"], "resource-limited");
     assert!(
-        output.stdout.is_empty(),
+        reply.get("result").is_none(),
         "failed publication was acknowledged"
     );
     assert_eq!(kernel.generation("scope").unwrap(), Some(prior));
