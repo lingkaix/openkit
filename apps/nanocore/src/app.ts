@@ -44,6 +44,7 @@ import {
   isLoopbackHost,
 } from './auth/middleware.js';
 import { registerNanoHostTransportAdmissionRoutes } from './auth/nanohost-transport-admission.js';
+import { fenceNanoHostTransportAuthority } from './auth/nanohost-transport-lifecycle.js';
 import {
   createNanoHostTransportSessionAuthority,
   type NanoHostTransportSessionAuthority,
@@ -817,6 +818,43 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
     options.nanohostTransportSessionAuthority ?? createNanoHostTransportSessionAuthority();
+  // A real startup-config mismatch ends this App lifetime's NanoHost authority, even when strict reload rejects the candidate or a later file edit restores it. Dry-run remains observational.
+  let nanoHostRestartRequired = false;
+  const admitNanoHostSession = nanohostTransportSessionAuthority.admit.bind(
+    nanohostTransportSessionAuthority
+  );
+  nanohostTransportSessionAuthority.admit = (input) =>
+    nanoHostRestartRequired
+      ? {
+          connectionGeneration: input.connectionGeneration,
+          identityId: input.identityId,
+          role: 'rejected',
+        }
+      : admitNanoHostSession(input);
+  const reloadRuntimeConfig = runtimeConfigManager.reload.bind(runtimeConfigManager);
+  runtimeConfigManager.reload = (input) => {
+    const response = reloadRuntimeConfig(input);
+    if (
+      !input.dryRun &&
+      response.plan.requiresRestart.some((change) => change.path.startsWith('nanohost.'))
+    ) {
+      nanoHostRestartRequired = true;
+      const identityId = startupOpenKitConfig.nanohost?.identityId;
+      if (identityId) {
+        if (options.coreDb) {
+          fenceNanoHostTransportAuthority(
+            options.coreDb,
+            nanohostTransportSessionAuthority,
+            identityId,
+            new Date().toISOString()
+          );
+        } else {
+          nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
+        }
+      }
+    }
+    return response;
+  };
   if (options.coreDb && startupOpenKitConfig.nanohost) {
     const coreDb = options.coreDb;
     const targetId = startupOpenKitConfig.nanohost.identityId;

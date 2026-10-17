@@ -10,8 +10,6 @@ import { SURFACES, surfaceById, surfacesInGroup } from '../../app/surfaces';
 import { AutomationsScreen } from './AutomationsScreen';
 import { TIER_B_SURFACE_IDS } from './data';
 
-const EXPECTED_TIER_B_SURFACE_IDS = ['automations'] as const;
-
 /** Minimal client — Tier-B demos use sample fixtures, not live reads. */
 function makeClient(): CoreClient {
   return {
@@ -48,34 +46,34 @@ function Providers({ children, path }: { children?: ReactNode; path: string }) {
 }
 
 describe('WP-8 Tier-B surface catalog', () => {
-  it('keeps fixture ownership limited to the remaining Tier-B demos', () => {
-    expect(TIER_B_SURFACE_IDS).toEqual(EXPECTED_TIER_B_SURFACE_IDS);
+  it('keeps the existing sample fixture inventory separate from live publication', () => {
+    expect(TIER_B_SURFACE_IDS).toEqual(['automations']);
   });
 
-  it.each(EXPECTED_TIER_B_SURFACE_IDS)('keeps %s flag-off (isSurfaceLive false)', (id) => {
-    const surface = surfaceById(id);
-    expect(surface).toBeDefined();
-    expect(surface?.tier).toBe('B');
-    expect(isSurfaceLive(surface!)).toBe(false);
+  it('publishes durable automations as a live Workspace surface', () => {
+    const surface = surfaceById('automations');
+    expect(surface).toMatchObject({ tier: 'A', nav: 'workspace-compact' });
+    expect(isSurfaceLive(surface!)).toBe(true);
   });
 
-  it('keeps Tier-B surfaces out of primary navigation', () => {
-    const primaryIds = surfacesInGroup('primary').map((s) => s.id);
-    for (const id of EXPECTED_TIER_B_SURFACE_IDS) {
-      expect(primaryIds).not.toContain(id);
-    }
+  it('publishes Channels as a live Settings surface', () => {
+    const surface = surfaceById('channels');
+    expect(surface).toMatchObject({ tier: 'A', nav: 'settings-user' });
+    expect(isSurfaceLive(surface!)).toBe(true);
+  });
+
+  it('keeps published surfaces out of demo navigation', () => {
     const demoIds = [
       ...surfacesInGroup('demos').map((s) => s.id),
       ...surfacesInGroup('settings-demos').map((s) => s.id),
     ];
-    for (const id of EXPECTED_TIER_B_SURFACE_IDS) {
-      expect(demoIds).toContain(id);
-    }
+    expect(demoIds).not.toContain('automations');
+    expect(demoIds).not.toContain('channels');
   });
 
   it('registers every Tier-B WP-8 surface in the catalog', () => {
     const wp8 = SURFACES.filter((s) => s.wp === 'WP-8' && s.tier === 'B');
-    expect(wp8.map((s) => s.id).sort()).toEqual([...EXPECTED_TIER_B_SURFACE_IDS].sort());
+    expect(wp8).toEqual([]);
   });
 });
 

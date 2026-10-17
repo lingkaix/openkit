@@ -285,6 +285,12 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
   'vault',
   'appUpdate',
   'channels',
+  'nanohost.bind',
+  'nanohost.credentialRef',
+  'nanohost.credentialSlots',
+  'nanohost.deploymentId',
+  'nanohost.identityId',
+  'nanohost.rendezvousUrl',
   'policy.workspaceApprovalModes',
 ] as const;
 
@@ -635,7 +641,13 @@ function applySafeRuntimeConfigReload(
   const restartPaths = new Set(plan.requiresRestart.map((change) => change.path));
 
   for (const restartChange of plan.requiresRestart) {
-    restorePath(openKitConfig, previous.openKitConfig, restartChange.path);
+    // The optional NanoHost envelope has required children. Restore its whole prior shape across addition or removal so capacity cannot leave an invalid partial envelope.
+    const path =
+      restartChange.path.startsWith('nanohost.') &&
+      (!previous.openKitConfig.nanohost || !next.openKitConfig.nanohost)
+        ? 'nanohost'
+        : restartChange.path;
+    restorePath(openKitConfig, previous.openKitConfig, path);
   }
 
   return Object.freeze(
