@@ -3167,15 +3167,19 @@ mod tests {
                 let raw_import = *kind == RuntimeEffectKind::ImportReference && !extra;
                 let additive_collect = *kind == RuntimeEffectKind::CollectWorkspace;
                 let body = if raw_import {
-                    command["body"]["hex"]
-                        .as_str()
-                        .unwrap()
-                        .as_bytes()
-                        .chunks_exact(2)
-                        .map(|pair| {
-                            u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
-                        })
-                        .collect()
+                    match command["entryKind"].as_str().unwrap() {
+                        "directory" => Vec::new(),
+                        "file" => command["body"]["hex"]
+                            .as_str()
+                            .unwrap()
+                            .as_bytes()
+                            .chunks_exact(2)
+                            .map(|pair| {
+                                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+                            })
+                            .collect(),
+                        _ => panic!("invalid fixture import entry kind"),
+                    }
                 } else {
                     serde_json::to_vec(&command).unwrap()
                 };
@@ -3199,13 +3203,16 @@ mod tests {
                                 RELATIVE_PATH_HEADER,
                                 command["relativePath"].as_str().unwrap(),
                             )
-                            .header(ENTRY_KIND_HEADER, command["entryKind"].as_str().unwrap())
-                            .header(
-                                EXECUTABLE_HEADER,
-                                command["executable"].as_bool().unwrap().to_string(),
-                            )
-                            .header(SHA256_HEADER, command["sha256"].as_str().unwrap())
-                            .header(BYTE_LENGTH_HEADER, body.len().to_string());
+                            .header(ENTRY_KIND_HEADER, command["entryKind"].as_str().unwrap());
+                        if command["entryKind"] == "file" {
+                            headers = headers
+                                .header(
+                                    EXECUTABLE_HEADER,
+                                    command["executable"].as_bool().unwrap().to_string(),
+                                )
+                                .header(SHA256_HEADER, command["sha256"].as_str().unwrap())
+                                .header(BYTE_LENGTH_HEADER, body.len().to_string());
+                        }
                     }
                     let mut response = respond
                         .send_response(headers.body(()).unwrap(), false)
@@ -3389,12 +3396,19 @@ mod tests {
                             );
                         }
                         RuntimeEffectKind::ExportFile | RuntimeEffectKind::ImportReference => {
-                            let (sandbox_id, slot, path, sha256, byte_length, presence) =
+                            let (sandbox_id, slot, path, sha256, byte_length, presence, file_kind) =
                                 if let Some(raw) = &command.file_data {
-                                    let crate::sandbox_bridge::ImportEntry::File { file, .. } =
-                                        &raw.entry
-                                    else {
-                                        panic!("fixture file expected");
+                                    let (sha256, byte_length, file_kind) = match &raw.entry {
+                                        crate::sandbox_bridge::ImportEntry::File { executable, file } => (
+                                            file.digest().to_string(),
+                                            file.length(),
+                                            crate::sandbox_bridge::FileEffectKind::ImportReference { executable: *executable },
+                                        ),
+                                        crate::sandbox_bridge::ImportEntry::Directory => (
+                                            String::new(),
+                                            0,
+                                            crate::sandbox_bridge::FileEffectKind::ImportDirectory,
+                                        ),
                                     };
                                     (
                                         fixture["command"]["sandboxId"]
@@ -3403,9 +3417,10 @@ mod tests {
                                             .to_string(),
                                         raw.slot.clone(),
                                         raw.relative_path.clone(),
-                                        file.digest().to_string(),
-                                        file.length(),
+                                        sha256,
+                                        byte_length,
                                         crate::sandbox_bridge::FileEffectPresence::Required,
+                                        file_kind,
                                     )
                                 } else {
                                     assert_eq!(input["finalStatusAccepted"], true);
@@ -3425,6 +3440,7 @@ mod tests {
                                             }
                                             _ => panic!("invalid file presence"),
                                         },
+                                        crate::sandbox_bridge::FileEffectKind::ExportFile,
                                     )
                                 };
                             crate::sandbox_bridge::FileEffectRequest {
@@ -3436,15 +3452,7 @@ mod tests {
                                 sha256,
                                 byte_length,
                                 presence,
-                                kind: if raw_import {
-                                    crate::sandbox_bridge::FileEffectKind::ImportReference {
-                                        executable: fixture["command"]["executable"]
-                                            .as_bool()
-                                            .unwrap(),
-                                    }
-                                } else {
-                                    crate::sandbox_bridge::FileEffectKind::ExportFile
-                                },
+                                kind: file_kind,
                             }
                             .validate()
                             .unwrap();
