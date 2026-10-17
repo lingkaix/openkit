@@ -32,7 +32,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 ## Client Shape
 
-- `client.operations`: definition-derived product operations, including `chat.quick`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, redacted Agent Environment Package snapshot readback, Material reads and mutations, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership, and personal administrator-token inventory and default selection.
+- `client.operations`: definition-derived product operations, including `conversation.submit`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, redacted Agent Environment Package snapshot readback, Material reads and mutations, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership, and personal administrator-token inventory and default selection.
 - `client.core`: metadata discovery and the Thread event stream.
 - `client.app`: raw portable archive download, dry-run, and import streams.
 - `client.operations` exposes the seven current-administrator Worker environment operations and the private administration conversation entry. Every input carries its complete logical selectors; destructive purge binds confirmation to the same storage reference and revision.
@@ -88,7 +88,7 @@ NanoHost administration, deployment backup and layout inspection use `client.ope
 
 Automation, Scheduler and Recovery use nine definition-derived `client.operations` methods with complete selector objects. Recovery retry carries Workspace, Thread, Turn and request identities. A declared empty success requires HTTP 204 with zero response bytes and maps to the output schema’s logical `null`; a different successful status or exposed bytes raise `ProtocolValidationError`; API failures still use `ApiCallError`, and other JSON responses retain schema validation. The old App methods are removed.
 
-Scheduler response fixtures mirror the current FIFO admission projection without retired priority, aging or pool-constraint fields.
+Scheduler response fixtures mirror the current FIFO admission projection without retired priority, aging or pool-constraint fields. Automation fixtures use a typed paused definition with an existing Thread, complete interval cadence and immutable responsible actor; resume supplies the expected revision and exact UTC instant.
 
 Server-managed JSON transfer uses `client.operations['workspace.export']({ workspaceId })`, `client.operations['workspace.import-dry-run']({ sourceWorkspaceId, exportId })`, and `client.operations['workspace.import']({ sourceWorkspaceId, exportId, requestId })`. The shared operation client preserves an explicit request id and generates one when omitted. Binary archive methods remain under `client.app`.
 

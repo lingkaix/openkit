@@ -184,7 +184,7 @@ describe('administration conversation route', () => {
       .fn()
       .mockImplementationOnce(async (_provider, request) => {
         expect(request.instructions).toContain(
-          `{"workspaceId":"${workspaceId}","threadId":"${thread.id}","workspaceKind":"quick-chat"}`
+          `{"workspaceId":"${workspaceId}","threadId":"${thread.id}","workspaceKind":"personal"}`
         );
         expect(request.instructions).toContain(
           'NanoHost is the execution host, not an LLM Provider.'

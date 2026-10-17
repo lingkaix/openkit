@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: 2026-09-02
 updated: "2026-10-15"
@@ -207,6 +207,8 @@ If ordinary inference returns a confirmed context-overflow error before any outp
 
 This specification authors the context-management failure conditions and stable codes under the Gateway's existing public error envelope and transport owner. Invalid, mismatched, malformed, or forbidden context-management control or input uses HTTP `400`, type `invalid_request_error`, code `invalid_context_management`, and fixed message `Invalid context management request.` A required compaction that cannot complete before ordinary output uses HTTP `503`, type `provider_error`, code `context_compaction_unavailable`, and fixed message `Context compaction is unavailable.` Caller cancellation and a failure after streaming begins retain the Gateway's existing cancellation and terminal-SSE transport rules; raw Provider or summary content never enters the public error.
 
+The trusted Codex adapter carries its already validated native request kind as optional ephemeral `requestKind` (`turn`, `prewarm`, or `compaction`) in the existing inference hint. The Gateway consumes it before Provider dispatch. Only a confirmed `compaction` request that fails before output receives the required-compaction envelope above. Absence of this phase evidence, an ordinary request, cancellation, and failure after output retain their existing categories. A subagent label or prompt content alone does not prove the compaction phase. This [approved phase seam](../decisions/20261016-native_compaction_phase_hint.md) adds neither durable state nor a compactor.
+
 If the compaction Provider outcome is unknown after output may have begun, the Gateway admits no item and performs no automatic repeat. The owning internal execution fails and a later request reconstructs from Core-owned source history; a Worker follows its AgentSession and adapter interruption contract. An uncertain compaction never authorizes replay of an earlier Tool call or external effect.
 
 ### Missing, Invalid, Stale, And Restarted State
@@ -257,6 +259,22 @@ Reconstruction, each source read, and publication use current permission and out
 
 Acceptance covers reconstruction by two distinct durable role owners into the same private input shape, exact committed boundaries, complete Tool pairing, budget failure before dispatch, and a new window after committed input advances. Crash before canonical acceptance retains no invented output; crash after acceptance reconstructs it without another effect. Revocation between runs or before a later read/publication withholds affected material.
 
+### Source-Bound Summary Items
+
+A `context-summary` is an additive known Item kind under the existing Thread and Item owners. The Item has completed status, bounded untrusted continuation text, an environment digest, and one exact source range. The range records its first and last Item references, count, ordered canonical source digest, and dependent retrieval-evidence digest. It is derived context, not Memory, an authorization decision, executable Tool output, a second transcript, or a Provider checkpoint. Unknown Item kinds remain invalid; readers ignore descriptive additive fields without changing these required semantics.
+
+The summary Item uses the shared Item UUIDv5 generator with the exact JCS name `{ "kind": "internal-context-summary", "turnId": admittedTurnId, "environmentDigest": environmentDigest, "sourceRange": sourceRange }`. These values are the exact canonical producing Turn and accepted proof fields; no text, clock or random input changes retry identity. This identity grants no summary validity or source authority.
+
+The existing internal role owner creates a summary only under an admitted Turn and the same current source and output-audience authority. Its source range is an ordered prefix of eligible canonical history before that Turn. It excludes hidden reasoning, credentials, previous summaries and unaccepted transient output. Exact Items stay retained under their original owners. The model sees the covered range and can read exact source Items on demand through the existing history Tool. Web and CLI Item projections show the covered range and continuation text.
+
+At new admission, the shared assembler first uses complete eligible history when it fits. Under physical capacity pressure, it combines a verified prior summary with the largest whole canonical source prefix that fits an ordinary summary request. Required fresh input, fixed instructions, fixed Tool definitions and output reserve must fit too. Large retained history may require consecutive prefix batches. Each successful batch must advance the exact source boundary and reduce pending raw context. There is no authored pressure threshold, retained-tail setting or summary model.
+
+Summary production uses the ordinary selected Provider path, capture, usage, audit and failure accounting. It preserves the Turn's pinned System Prompt and Tool definitions, adds the bounded summary task as untrusted user context, and rejects any summary response that requests Tools before a closure executes. The summary and answer share the existing model-turn, Tool-call and absolute deadline budget; reserve an ordinary answer call. A summary must preserve constraints, decisions, unresolved work, exact continuation references, failures and untrusted-data boundaries. An incomplete response or one that cannot reduce the window fails explicitly.
+
+Before accepting or reusing a summary, assembly verifies its full source range, current canonical source digests, current dependent retrieval evidence, role environment and audience. A missing, changed, revoked or contradictory source invalidates it. An invalid summary cannot justify truncation; if complete current eligible history cannot fit, return the safe capacity failure. A failed producer accepts no new summary and exposes its typed cause through the existing Turn failure path. Previously accepted batches remain canonical; do not claim cross-call rollback. Restart derives the last valid window from Items and source evidence without replaying any Tool or inference effect.
+
+Acceptance includes exact range display, bounded input after several admissions and restart, exact history retrieval past the window, complete source validation, lost access between calls, failed producer without boundary advancement, shared budget exhaustion, and reuse by distinct internal role owners. No new store, runner or checkpoint owner is introduced.
+
 ## Worker Runtime Policy
 
 Worker native implementations remain valuable because they understand their own session tree, reasoning state, Tool representation, overflow recovery, and retained-tail semantics. OpenKit therefore does not translate Pi summaries into OpenCode checkpoints, feed a Codex opaque Provider item to another route, or require every Harness to use the OpenKit summarization prompt.
@@ -287,7 +305,7 @@ The OpenKit prompt, tail policy, or implementation may be optimized behind the s
 
 The pending implementation requires `packages/config-schema/src/gateway.ts` to admit one authored logical-model `contextManagement` entry and `apps/nanocore/src/llm/logical-models.ts` to validate its threshold against each route's effective context limit and known output reserve, and project the resolved policy without changing model identity. Missing policy must reject the configuration snapshot; shipped configuration must supply the required field. Existing deployments must update their configuration before that snapshot becomes eligible, under the existing last-known-good configuration owner.
 
-The Gateway exposes `POST /v1/responses`, but the pinned pi-ai Responses abstraction does not admit `context_management` or parse a compaction output item. The current Codex worker hint recognizes `request_kind: "compaction"` and a `compact` subagent classification only as ephemeral native provenance; those hints do not implement this contract.
+The Gateway exposes `POST /v1/responses`, but the pinned pi-ai Responses abstraction does not admit `context_management` or parse a compaction output item. The Codex worker hint carries the validated native request kind for the pre-output failure mapping above; a `compact` subagent classification alone is not phase evidence. This classification does not implement central compaction policy.
 
 Internal-role rolling context and migration to the shared loop remain implementation work under the accepted internal-role contract above. Existing direct Quick Chat calls and transient administration transcripts are implementation facts, not accepted substitutes. The unimplemented Gateway compactor is no longer a dependency for those migrations.
 

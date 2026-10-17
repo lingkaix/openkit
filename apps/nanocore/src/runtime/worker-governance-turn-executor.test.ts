@@ -475,8 +475,11 @@ async function createWorkerContextExecutorFixture(
       'Receiving Task',
       threadId,
       'conversation',
-      { visibility: 'workspace' },
-      options.originatingThreadId
+      {
+        visibility: 'workspace',
+        threadSource: 'worker',
+        parentThreadId: options.originatingThreadId,
+      }
     );
   }
 

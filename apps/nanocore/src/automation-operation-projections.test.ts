@@ -2,117 +2,63 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
+import { ensureLocalUser } from './auth/identity.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { createApp } from './test-support/app.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
-/** Real HTTP and derived-client seam with explicit local Workspace authority. */
-describe('automation operation projections', () => {
-  it('creates, updates and deletes through the derived client, mapping bodyless success to null', async () => {
-    const automationStore = new AutomationStore();
-    const app = createAppWithWorkspaceAuthority({ store: createDemoStore(), automationStore });
-    const responses: Response[] = [];
-    const client = createCoreClient({
-      baseUrl: 'http://nanocore.test',
-      fetch: async (url, init) => {
-        const response = await app.request(new Request(url, init));
-        responses.push(response.clone());
-        return response;
-      },
-    });
+it('projects the same durable lifecycle through HTTP and the derived Core Client', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'recurrence-projections-'));
+  const coreDb = openCoreDb(root);
+  applyMigrations(coreDb);
+  const localUserId = ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot: root });
+  const workspace = store.createWorkspace('Recurring');
+  const thread = store.createThread(workspace.id, 'Target');
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
+  const automationStore = new AutomationStore(coreDb, new WorkspaceMutationAdmission());
+  const app = createApp({ store, coreDb, dataRoot: root, automationStore });
+  const responses: Response[] = [];
+  const client = createCoreClient({
+    baseUrl: 'http://nanocore.test',
+    fetch: async (url, init) => {
+      const response = await app.request(new Request(url, init));
+      responses.push(response.clone());
+      return response;
+    },
+  });
+  try {
     const record = await client.operations['automation.create']({
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId: workspace.id,
+      threadId: thread.id,
       name: 'Morning',
-      cron: '0 9 * * *',
+      intervalSeconds: 60,
       prompt: 'Summarize work',
     });
     expect(responses[0]!.status).toBe(201);
+    expect(automationStore.getAutomation(record.id)).toEqual(record);
     expect(
-      automationStore.getAutomation('usr_00000000-0000-7000-8000-000000000001', record.id)
-    ).toEqual(record);
-    expect(
-      await client.operations['automation.update']({ automationId: record.id, status: 'enabled' })
-    ).toMatchObject({ status: 'enabled' });
+      await client.operations['automation.update']({
+        automationId: record.id,
+        expectedRevision: record.revision,
+        status: 'active',
+        scheduledAt: '2999-01-01T00:00:00.000Z',
+      })
+    ).toMatchObject({ status: 'active', revision: 2 });
     expect(await client.operations['automation.delete']({ automationId: record.id })).toBeNull();
     const deleted = responses.at(-1)!;
     expect(deleted.status).toBe(204);
     expect(deleted.headers.get('content-type')).toBeNull();
     expect(await deleted.text()).toBe('');
-    expect(automationStore.listAutomations('usr_00000000-0000-7000-8000-000000000001')).toEqual([]);
     expect(deleted.headers.get('cache-control')).toBe('no-store');
-  });
-  it.each([
-    'list',
-    'create',
-    'update',
-    'delete',
-  ] as const)('preserves %s availability refusal when Core admits an unavailable Workspace record', async (action) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b9-absent-workspace-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      workspaceId: 'ws_00000000-0000-7d93-b1f9-1e6b689ecf61',
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    const store = new FsStore({ dataRoot });
-    const automationStore = new AutomationStore();
-    const retained =
-      action === 'create'
-        ? undefined
-        : automationStore.createAutomation('usr_00000000-0000-7000-8000-000000000001', {
-            workspaceId: 'ws_00000000-0000-7d93-b1f9-1e6b689ecf61',
-            name: 'Retained',
-            cron: '*',
-            prompt: 'Work',
-          });
-    const before = automationStore
-      .listAutomations('usr_00000000-0000-7000-8000-000000000001')
-      .map((record) => ({ ...record }));
-    const app = createApp({ coreDb, dataRoot, store, automationStore });
-    try {
-      const input =
-        action === 'list'
-          ? {}
-          : action === 'create'
-            ? {
-                workspaceId: 'ws_00000000-0000-7d93-b1f9-1e6b689ecf61',
-                name: 'Unexpected',
-                cron: '*',
-                prompt: 'Work',
-              }
-            : { automationId: retained!.id, ...(action === 'update' ? { status: 'enabled' } : {}) };
-      const response = await app.request(`/api/app/operations/automation.${action}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input),
-      });
-      expect(response.status).toBe(action === 'list' || action === 'create' ? 500 : 404);
-      if (action === 'update' || action === 'delete') {
-        await expect(response.json()).resolves.toMatchObject({
-          code: `automation_${action}_failed`,
-          message: 'Workspace not found: ws_00000000-0000-7d93-b1f9-1e6b689ecf61',
-        });
-      } else {
-        await expect(response.json()).resolves.toEqual({
-          protocolVersion: '0.6.0',
-          code: 'internal_error',
-          message: 'Internal Server Error',
-        });
-      }
-      expect(automationStore.listAutomations('usr_00000000-0000-7000-8000-000000000001')).toEqual(
-        before
-      );
-    } finally {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
-  });
+    expect(automationStore.getAutomation(record.id).status).toBe('deleted');
+  } finally {
+    coreDb.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

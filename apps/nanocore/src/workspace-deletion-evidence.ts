@@ -24,7 +24,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
+import { listSqliteAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import { listWorkspaceUsageRecords } from './capability/usage-ledger.js';
 import { listStoredWorkspaceEvidenceBundles } from './evidence-bundles.js';
 import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
@@ -32,12 +32,19 @@ import { listWorkspaceQuarantineRecords } from './runtime/workspace-quarantine-r
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import {
+  ExpiredOccurrenceRangeSchema,
+  readRecurringOccurrence,
+  readRecurringSchedule,
+} from './storage/recurring-records.js';
+import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
 } from './storage/workspace-file-records.js';
 import { listExportableWorkspaceVaultUseRecords } from './vault/vault-use-records.js';
 
 const DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const RECURRING_HISTORY_FEATURE = 'recurring-history-v1';
+const RECURRING_HISTORY_PATH = 'records/recurring-history.jsonl';
 const CLOSURE_RECORD_PATHS = [
   'records/core-workspace-registry.jsonl',
   'records/core-workspace-memberships.jsonl',
@@ -48,6 +55,7 @@ const CLOSURE_RECORD_PATHS = [
   'records/vault-use.jsonl',
   'records/usage-aggregates.jsonl',
   'records/evidence-manifests.jsonl',
+  RECURRING_HISTORY_PATH,
 ] as const;
 
 /** Durable record families whose legal holds block Workspace deletion. */
@@ -93,7 +101,10 @@ export const WorkspaceDeletionClosureSchema = z
   })
   .strip()
   .superRefine((manifest, context) => {
-    if (manifest.requiredFeatures.length > 0) {
+    if (
+      manifest.requiredFeatures.some((feature) => feature !== RECURRING_HISTORY_FEATURE) ||
+      new Set(manifest.requiredFeatures).size !== manifest.requiredFeatures.length
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'Unsupported Workspace deletion closure required feature.',
@@ -199,9 +210,7 @@ export function createWorkspaceDeletionClosure(input: {
       ],
       [
         'records/core-audit-events.jsonl',
-        listServerAuditEvents(input.coreDb).filter(
-          (event) => event.workspaceId === input.workspaceId
-        ),
+        listSqliteAuditEvents(input.coreDb.sqlite, input.workspaceId),
       ],
       [
         'records/workspace-audit-events.jsonl',
@@ -230,6 +239,8 @@ export function createWorkspaceDeletionClosure(input: {
         join(closureRoot, 'evidence', bundle.id)
       );
     }
+    const recurringHistory = captureRecurringClosureHistory(input.coreDb, input.workspaceId);
+    writePrivateText(join(closureRoot, RECURRING_HISTORY_PATH), `${recurringHistory.trimEnd()}\n`);
     const contentInventory = listRegularFiles(closureRoot)
       .map((path) => inventoryEntry(closureRoot, path))
       .sort((left, right) => left.path.localeCompare(right.path));
@@ -244,7 +255,7 @@ export function createWorkspaceDeletionClosure(input: {
       contentDigest: digestText(JSON.stringify(contentInventory)),
       redactionLevel: 'restricted',
       sensitivity: 'internal',
-      requiredFeatures: [],
+      requiredFeatures: [RECURRING_HISTORY_FEATURE],
       extensions: {},
       closureVersion: 1,
       sourceDeploymentId: readDataRootLayoutMarker(input.dataRoot).deploymentId,
@@ -337,6 +348,8 @@ export function verifyWorkspaceDeletionClosure(input: {
       .map((bundle) => bundle.id)
   );
   assertClosureShape(input.closureRoot, retainedEvidenceIds);
+  const text = readFileSync(join(input.closureRoot, RECURRING_HISTORY_PATH), 'utf8');
+  validateRecurringClosureHistory(text, input.workspaceId);
   return { ...manifest, manifestDigest: digestText(manifestText) };
 }
 
@@ -530,4 +543,84 @@ function fsyncDirectory(path: string): void {
 
 function digestText(value: string | Buffer): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+/** Captures complete native source history for the restricted same-deployment closure, never portable import. */
+function captureRecurringClosureHistory(coreDb: CoreDb, workspaceId: string): string {
+  const readRows = (
+    table: 'recurring_schedules' | 'recurring_occurrences' | 'recurring_expired_ranges'
+  ) =>
+    (
+      coreDb.sqlite
+        .prepare(`SELECT record_json FROM ${table} WHERE workspace_id = ? ORDER BY id`)
+        .all(workspaceId) as { record_json: string }[]
+    ).map((row) => JSON.parse(row.record_json));
+  const schedules = readRows('recurring_schedules');
+  const occurrences = readRows('recurring_occurrences');
+  const expiredRanges = readRows('recurring_expired_ranges');
+  const text = JSON.stringify({
+    historyVersion: 1,
+    sources:
+      schedules.length || occurrences.length || expiredRanges.length
+        ? [{ workspaceId, schedules, occurrences, expiredRanges }]
+        : [],
+  });
+  validateRecurringClosureHistory(text, workspaceId);
+  return text;
+}
+
+/** Validates native recurrence ownership while retaining its exact source bytes and additive content. */
+function validateRecurringClosureHistory(text: string, workspaceId: string): void {
+  const sourceSchema = z
+    .object({
+      workspaceId: z.string(),
+      schedules: z.array(z.record(z.string(), z.unknown())),
+      occurrences: z.array(z.record(z.string(), z.unknown())),
+      expiredRanges: z.array(z.record(z.string(), z.unknown())),
+      requiredFeatures: z.array(z.never()).optional(),
+    })
+    .passthrough();
+  const bundle = z
+    .object({
+      historyVersion: z.literal(1),
+      sources: z.array(sourceSchema).max(1),
+      requiredFeatures: z.array(z.never()).optional(),
+    })
+    .passthrough()
+    .parse(JSON.parse(text));
+  for (const source of bundle.sources) {
+    if (source.workspaceId !== workspaceId)
+      throw new Error('Recurring closure Workspace mismatch.');
+    const schedules = new Map(
+      source.schedules.map((row) => {
+        const schedule = readRecurringSchedule(JSON.stringify(row));
+        if (schedule.workspaceId !== workspaceId)
+          throw new Error('Recurring closure definition ownership mismatch.');
+        return [schedule.id, schedule] as const;
+      })
+    );
+    if (schedules.size !== source.schedules.length)
+      throw new Error('Recurring closure repeats a definition.');
+    for (const row of source.occurrences) {
+      const occurrence = readRecurringOccurrence(JSON.stringify(row));
+      const schedule = schedules.get(occurrence.scheduleId);
+      if (
+        !schedule ||
+        occurrence.workspaceId !== workspaceId ||
+        occurrence.snapshot.actor.responsibleUserId !== schedule.responsibleUserId
+      )
+        throw new Error('Recurring closure occurrence ownership mismatch.');
+    }
+    for (const row of source.expiredRanges) {
+      const range = ExpiredOccurrenceRangeSchema.parse(row);
+      const schedule = schedules.get(range.scheduleId);
+      if (
+        !schedule ||
+        range.workspaceId !== workspaceId ||
+        range.snapshot.actor.id !== schedule.id ||
+        range.snapshot.actor.responsibleUserId !== schedule.responsibleUserId
+      )
+        throw new Error('Recurring closure range ownership mismatch.');
+    }
+  }
 }

@@ -158,6 +158,8 @@ Follow the current design-to-code loop in [`docs/cookbooks/claude-design-web-ui-
 
 The Goal screen shows the responsible person and actual decision actor. A granted request remains distinct from the Goal owner's applied outcome. Accepted completion retains its candidate summary and unresolved work. Task reservations without an admitted Turn stay visibly unadmitted. Run `src/screens/goal/goal-journey.test.tsx` for these local states.
 
+`docs/specs/20260711-scheduler_recurring_event_triggers.md` owns the live selected-Workspace Automations surface in `src/screens/automations/`. It creates paused fixed-interval or monthly UTC definitions for existing Threads and projects revision-bound edit, pause, explicit UTC resume and confirmed deletion. Monthly definitions use day 1 to 28 and an explicit HH:MM:SS time, with no local timezone conversion. Create and edit send exactly one complete cadence; monthly resume must match its saved UTC rule. An open edit or resume form retains its captured revision even when polling returns a newer definition, so submission conflicts instead of silently overwriting that change. Deleted definitions remain readable with history and Thread links only. Bounded history shows individual admission attempts, current scheduler status, exact expired ranges and recorded Turn links separately. Missing or contradictory Turn publication remains inspection-required; an existing queued admission can be cancelled without repairing or resubmitting it. Unknown write outcomes require inspection before another action; switching Workspace discards its local form and isolates pending results. Run `src/screens/automations/automations.test.tsx` for these local states.
+
 `DESIGN.md` (§9.5) owns the Draft › Plan › Execute › Review strip.
 
 `DESIGN.md` (§3.1, §3.2, §3.3, §9.4, §12, and §13) owns:
@@ -270,6 +272,8 @@ The live Tier-A **Catalog** screen projects selected-Workspace Skill, MCP, and A
 ### Generative UI
 
 The live Chat surface renders `generative-ui-reference` Thread Items through the eight native A2UI types mapped onto OpenKit primitives.
+
+Generative refresh and action results preserve changed scalar fields from the rendered surface as a local draft. Surface construction has no ref side effect, so React Strict Mode cannot direct draft reads to a discarded surface. The presentation regression runs inside the same Strict Mode as the app.
 
 ### Debug
 
@@ -407,7 +411,7 @@ Agents reads selected-Workspace current Workers through `client.operations['work
 
 ### Status inventory
 
-The current React baseline includes the app shell, three-theme token bridge, sidebar-triggered global application search, one persistent selected-Workspace switcher, one active Conversations list with New conversation below it, archived Thread recovery, the Settings Debug component gallery and inspection panels, the deployment-admin Administration private conversation and retained-environment inspection and deletion controls, the deployment-admin Configuration file tree and JSONC editor, the deployment-admin Gateway destination for Providers, effective Models, Logical models, subscription accounts, API keys, and revision-protected configuration, live Chat, Task, Goal, Overview, selected-Workspace Agents, Knowledge, Artifacts, Recovery, Portability, Workspace changes, Repositories, Workspace Vault and Usage & audit, the bounded live Plane 1 Material surface, and internal unpublished Automations, Channels, and Generative UI review implementations. The Material surface includes identity, editing, immutable-revision history and comparison; one singular Thread binding with inclusion and queue state; and version-keyed Artifact Review proposal, base, and current comparison with conflict-safe decisions and historical decision evidence.
+The current React baseline includes the app shell, three-theme token bridge, sidebar-triggered global application search, one persistent selected-Workspace switcher, one active Conversations list with New conversation below it, archived Thread recovery, the Settings Debug component gallery and inspection panels, the deployment-admin Administration private conversation and retained-environment inspection and deletion controls, the deployment-admin Configuration file tree and JSONC editor, the deployment-admin Gateway destination for Providers, effective Models, Logical models, subscription accounts, API keys, and revision-protected configuration, live Chat, Task, Goal, Overview, selected-Workspace Agents, Knowledge, Artifacts, Recovery, Portability, Workspace changes, Repositories, Workspace Vault and Usage & audit, the bounded live Plane 1 Material surface, live fixed-interval Automations, and internal unpublished Channels and Generative UI review implementations. The Material surface includes identity, editing, immutable-revision history and comparison; one singular Thread binding with inclusion and queue state; and version-keyed Artifact Review proposal, base, and current comparison with conflict-safe decisions and historical decision evidence.
 
 Thread and Overview approval cards show the bounded summary and the responsible user’s loaded complete exact effect before enabling grant. Unavailable detail states `Exact effect unavailable; approval disabled`; authorized denial and withdrawal stay available under the current request state. Detail is supplied by the existing Thread dashboard, without a preview acknowledgement command.
 
@@ -449,7 +453,11 @@ Gateway account rows clear cached quota while pending or logged out, including l
 
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
+The conversation Item projection renders source-bound continuation summaries with their text, covered Item count and inspectable exact source endpoints. The history remains available through its existing Thread. A summary is a view of model continuity and does not remove original Items.
+
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
+
+Knowledge Manager answers show returned citations with owner-checked links to current full page content. Failed page refetches withhold those links even when cached entries remain. Add knowledge can retain an explicitly selected registered Source and its captured digest. The picker accepts only Sources owned by the selected Workspace with a captured digest; a new Source-linked save waits for catalog refresh and requires the selected exact reference to remain available. An uncertain command retries its original Source reference and request identity through current server admission. Source selection stays in its Workspace draft; matching text does not create a relationship. Source listing, detail, registration replay and linked saves retain current source audience checks. Selecting a private-origin Source does not authorize shared Workspace publication; its owner may use it in the owner-only personal Workspace.
 
 New API-key Provider profiles allocate one canonical Vault reference through the browser-safe Protocol codec. The form retains that candidate across a failed create retry and stores it in the authored Provider file; reads and key rotation use the recorded reference.
 

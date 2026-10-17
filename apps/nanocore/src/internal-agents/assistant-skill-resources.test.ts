@@ -160,7 +160,7 @@ async function read(assembled: Assembly, path?: string, selection = assembled.in
       contentDigest: selection.contentDigest,
       ...(path === undefined ? {} : { path }),
     },
-    { callId: 'read-once', signal: new AbortController().signal }
+    { callId: 'read-once', toolOccurrence: 1, signal: new AbortController().signal }
   );
 }
 
@@ -272,7 +272,7 @@ describe('Assistant selected Skill assembly', () => {
           versionId: `sha256:${'a'.repeat(64)}`,
           contentDigest: `sha256:${'a'.repeat(64)}`,
         },
-        { callId: 'unselected', signal: new AbortController().signal }
+        { callId: 'unselected', toolOccurrence: 1, signal: new AbortController().signal }
       ),
       f
     );
@@ -478,7 +478,7 @@ describe('Assistant progressive Skill reads', () => {
       threadId: testEntityId('th', 'another-thread'),
       turnId: testEntityId('tu', 'another-turn'),
       kind: 'worker',
-      entryScope: 'chat.quick',
+      entryScope: 'untrusted-entry',
       requestId: '00000000-0000-4000-8000-000000000145',
     };
     const missing = { ...admitted } as Record<string, unknown>;
@@ -704,7 +704,11 @@ describe('Assistant progressive Skill reads', () => {
       versionId: selected.versionId,
       contentDigest: selected.contentDigest,
     };
-    const context = { callId: 'invalid-read', signal: new AbortController().signal };
+    const context = {
+      callId: 'invalid-read',
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
     const unsafePaths = [
       '../outside.txt',
       '/absolute.txt',

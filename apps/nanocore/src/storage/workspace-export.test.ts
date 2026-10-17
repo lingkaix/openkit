@@ -10,6 +10,7 @@ import { FsStore } from '../lib/store.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -168,6 +169,49 @@ function writeExportTree(
 }
 
 describe('workspace export verifier', () => {
+  it('always exports all three empty recurring families with their required feature', () => {
+    const root = freshExportRoot('recurring-empty-export-');
+    const verified = writeWorkspaceExportTree({
+      exportRoot: root,
+      exportId: testEntityId('wsexp', 'recurring-empty-export'),
+      sourceDeploymentId: testEntityId('dep', 'recurring-empty-export'),
+      createdAt: timestamp,
+      workspace: {
+        id: testEntityId('ws', 'recurring-empty-export'),
+        name: 'Demo',
+        kind: 'code',
+        status: 'active',
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      threads: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+      knowledge: [],
+    });
+    expect(verified.manifest.requiredFeatures).toContain('workspace.recurring-triggers.v1');
+    for (const family of ['schedules', 'occurrences', 'expired-ranges'])
+      expect(verified.fileContents.get(`records/recurring-${family}.jsonl`)).toBe('');
+    expect(verified.fileContents.has('workspace-files/imports/recurrence-history.json')).toBe(
+      false
+    );
+  });
+
+  it('rejects a recurring file without its feature and a feature without all three families', () => {
+    const root = writeExportTree('records/recurring-schedules.jsonl', '');
+    expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow('all three families');
+    const path = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    manifest.requiredFeatures = ['workspace.recurring-triggers.v1'];
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow('all three families');
+  });
+
   it('verifies manifest shape and inventory file digests offline', () => {
     const verified = verifyWorkspaceExportTree({ exportRoot: writeExportTree() });
 
@@ -363,6 +407,9 @@ describe('workspace export verifier', () => {
       'records/knowledge-conflicts.jsonl',
       'records/knowledge-observations.jsonl',
       'records/knowledge.jsonl',
+      'records/recurring-expired-ranges.jsonl',
+      'records/recurring-occurrences.jsonl',
+      'records/recurring-schedules.jsonl',
       'records/thread-material-bindings.jsonl',
       'records/threads.jsonl',
       'records/turn-events.jsonl',
@@ -393,7 +440,7 @@ describe('workspace export verifier', () => {
       id: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest).toMatchObject({
-      requiredFeatures: ['agent.resource-catalog.v1'],
+      requiredFeatures: ['agent.resource-catalog.v1', 'workspace.recurring-triggers.v1'],
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   });
@@ -1392,7 +1439,7 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
       },
       verification: {
-        fileCount: 18,
+        fileCount: 21,
         checkedFiles: [
           'records/agent-resource-catalog.json',
           'records/agent-sessions.jsonl',
@@ -1402,6 +1449,9 @@ describe('workspace export verifier', () => {
           'records/knowledge-conflicts.jsonl',
           'records/knowledge-observations.jsonl',
           'records/knowledge.jsonl',
+          'records/recurring-expired-ranges.jsonl',
+          'records/recurring-occurrences.jsonl',
+          'records/recurring-schedules.jsonl',
           'records/thread-material-bindings.jsonl',
           'records/threads.jsonl',
           'records/turn-events.jsonl',

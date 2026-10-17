@@ -10,6 +10,7 @@ import fs, {
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';

@@ -18,7 +18,12 @@ import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runti
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import { type AgentTool, runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
+import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
+import {
+  internalContextFailure,
+  prepareInternalAgentContext,
+} from '../internal-agents/rolling-context.js';
 import type { FsStore } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
@@ -456,58 +461,99 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         async (capture) => {
           // Native acceptance of exact source input proves delivery, never grant consumption.
           proveFrozenDelivery(db.sqlite, turnId, new Date().toISOString());
+          const provider = createInternalAgentGatewayProvider({
+            capture,
+            logicalModel: selection.logicalModel,
+            resolveLogicalModel: (id) => {
+              const current = options.runtimeConfig();
+              return resolveLogicalModel(
+                current.gatewayConfig,
+                current.providerRegistry,
+                id,
+                options.providerSubscriptionAccountManager,
+                options.providerCredentialConfigured
+              );
+            },
+            dispatcher: options.llmGatewayDispatcher,
+            resolveGatewayProvider: options.resolveGatewayProvider,
+            ...(options.providerSubscriptionAccountManager
+              ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
+              : {}),
+            promptCacheScope: { sessionId: `goal:${goal.goalId}`, workspaceId: goal.workspaceId },
+            usageEndpoint: 'responses',
+            callContext: {
+              authorityActor: { kind: 'user', id: actor.userId },
+              agentId: 'goal-coordinator',
+              workspaceId: goal.workspaceId,
+              family: 'llm',
+              operation: 'goal.coordinate',
+              capabilityId: 'inference.local.goal_coordinator',
+              providerRef: null,
+              requestId: null,
+              serviceRef: 'llm-gateway',
+              redactionClass: 'metadata-only',
+              summary: 'Goal Coordinator Turn.',
+            },
+          });
+          const model = {
+            logicalModelId: selection.logicalModel.id,
+            capabilities: selection.logicalModel.capabilities,
+            modelFamilyId: selection.logicalModel.modelFamilyId,
+          };
+          const window = await prepareInternalAgentContext({
+            store,
+            turn,
+            systemPrompt,
+            tools,
+            model,
+            bounds: {
+              context: selection.logicalModel.contract?.context,
+              output: selection.logicalModel.contract?.output,
+            },
+            requiredMessages: [
+              { role: 'user', content: [{ type: 'text', text: JSON.stringify(view) }] },
+            ],
+            limits: selection.profile?.limits ?? {
+              maxModelTurns: 8,
+              maxToolCalls: 24,
+              deadlineMs: 120000,
+            },
+            signal: new AbortController().signal,
+            assertCurrent: () => {
+              if (
+                !authorizeWorkspace(options.coreDb!, actor, goal.workspaceId, {
+                  policyOperation: 'workspace.write',
+                  mutating: true,
+                })
+              )
+                throw new Error('Coordinator current authority is unavailable.');
+            },
+            readEvidence: (items) =>
+              readInternalContextEvidence({
+                store,
+                coreDb: options.coreDb!,
+                actor,
+                workspaceId: goal.workspaceId,
+                threadId: goal.threadId,
+                items,
+              }),
+            callProvider: provider,
+          });
           const exit = await runInternalAgentLoop(
             {
               systemPrompt,
-              messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify(view) }] }],
               tools,
-              model: {
-                logicalModelId: selection.logicalModel.id,
-                capabilities: selection.logicalModel.capabilities,
-                modelFamilyId: selection.logicalModel.modelFamilyId,
-              },
-              limits: selection.profile?.limits ?? {
-                maxModelTurns: 8,
-                maxToolCalls: 24,
-                deadlineMs: 120000,
-              },
-              signal: new AbortController().signal,
+              model,
+              messages: window.messages,
+              limits: window.limits,
+              signal: window.signal,
             },
-            createInternalAgentGatewayProvider({
-              capture,
-              logicalModel: selection.logicalModel,
-              resolveLogicalModel: (id) => {
-                const current = options.runtimeConfig();
-                return resolveLogicalModel(
-                  current.gatewayConfig,
-                  current.providerRegistry,
-                  id,
-                  options.providerSubscriptionAccountManager,
-                  options.providerCredentialConfigured
-                );
-              },
-              dispatcher: options.llmGatewayDispatcher,
-              resolveGatewayProvider: options.resolveGatewayProvider,
-              ...(options.providerSubscriptionAccountManager
-                ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
-                : {}),
-              promptCacheScope: { sessionId: `goal:${goal.goalId}`, workspaceId: goal.workspaceId },
-              usageEndpoint: 'responses',
-              callContext: {
-                authorityActor: { kind: 'user', id: actor.userId },
-                agentId: 'goal-coordinator',
-                workspaceId: goal.workspaceId,
-                family: 'llm',
-                operation: 'goal.coordinate',
-                capabilityId: 'inference.local.goal_coordinator',
-                providerRef: null,
-                requestId: null,
-                serviceRef: 'llm-gateway',
-                redactionClass: 'metadata-only',
-                summary: 'Goal Coordinator Turn.',
-              },
-            })
+            (request) => {
+              window.assertCurrent();
+              return provider(request);
+            }
           );
+          window.assertCurrent();
           if (exit.kind !== 'quiescent')
             throw new Error(
               `Coordinator Turn did not finish: ${exit.kind}${'code' in exit ? ` (${exit.code})` : ''}.`
@@ -540,7 +586,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         store.updateTurn(turnId, {
           status: 'failed',
           completedAt: new Date().toISOString(),
-          error: {
+          error: internalContextFailure(error) ?? {
             code: 'goal_coordinator_failed',
             message: error instanceof Error ? error.message : 'Coordinator failed.',
           },

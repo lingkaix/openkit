@@ -4,6 +4,7 @@ import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
@@ -15,7 +16,6 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { testEntityId } from './test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -262,7 +262,7 @@ describe('exact Artifact file import and download', () => {
           expectedDigest: digest,
           reservation,
         });
-    const artifactId = testEntityId('ar', 'review-file-output');
+    const artifactId = allocateEntityId('ar');
     const recordedAt = new Date().toISOString();
     try {
       store.createArtifact(

@@ -2004,7 +2004,7 @@ test('Artifact CLI transfers import and download originals through the bundled c
         if (headers.get('x-openkit-request-id') !== 'cli-raw-import') throw new Error('request identity changed');
         const body = Buffer.from(await new Response(options.body).arrayBuffer());
         if (!body.equals(Buffer.from('${bytes.toString('hex')}', 'hex'))) throw new Error('original changed');
-        return Response.json({ artifactId: ${JSON.stringify(artifactId)}, artifactVersion: 1 }, { status: 201 });
+        return Response.json({ artifactId: '${artifactId}', artifactVersion: 1 }, { status: 201 });
       }
       if (parsed.pathname !== '/api/app/operations/artifact.download' || options.method !== 'GET') throw new Error('unexpected download');
       if (parsed.searchParams.get('artifactVersion') !== '1' || parsed.searchParams.has('requestId')) throw new Error('selector changed');
@@ -2058,14 +2058,14 @@ test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local
   const sourcePath = join(root, 'source.bin');
   const destinationPath = join(root, 'download.bin');
   writeFileSync(sourcePath, bytes);
-  const workspaceId = protocol.allocateEntityId('ws');
-  const artifactId = protocol.allocateEntityId('ar');
   const { operationCatalog } = await operations();
   const upload = operationCatalog.find((entry) => entry.id === 'artifact.import');
   const download = operationCatalog.find((entry) => entry.id === 'artifact.download');
   assert.equal(upload.clientMethod, 'artifactFiles.import');
   assert.equal(download.clientMethod, 'artifactFiles.download');
   assert.equal(download.mutating, true, 'writing the destination is a local mutation');
+  const workspaceId = protocol.allocateEntityId('ws');
+  const artifactId = protocol.allocateEntityId('ar');
   const metadata = {
     workspaceId,
     requestId: 'artifact-cli-import',

@@ -513,6 +513,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               workspaceId={workspaceId}
               threadId={threadId}
               readOnly={disconnected}
+              focusTurnId={new URLSearchParams(location.search).get('turnId')}
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
             />
             {feedbackTurn ? (

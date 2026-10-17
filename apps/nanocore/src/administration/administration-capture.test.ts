@@ -201,7 +201,7 @@ it('binds the actual Administration prompt and ordered tools before model access
       assembleBuiltInSystemPrompt('administration', {
         workspaceId,
         threadId: thread.id,
-        workspaceKind: 'quick-chat',
+        workspaceKind: 'personal',
       })
     );
     expect(rowsAtModelAccess[0]).toMatchObject({ type: 'env.bound', obs: 'core', turnId: turn.id });

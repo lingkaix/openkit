@@ -1024,7 +1024,12 @@ function isCommandRequestExpired(record: CommandRequestRecord, referenceTime: st
   return new Date(record.expiresAt).getTime() <= new Date(referenceTime).getTime();
 }
 
-/** Derives the built-in private Workspace from the recorded canonical User owner. */
+/**
+ * Derives the built-in owner-only personal Workspace id for one canonical user.
+ *
+ * @param userId Canonical user id.
+ * @returns Stable personal Workspace id.
+ */
 export function quickChatWorkspaceIdForUser(userId: string): string {
   return deriveEntityId('ws', ['quick_chat', userId]);
 }
@@ -1139,9 +1144,7 @@ export class FsStore {
       this.workspaces.set(records.workspace.id, records.workspace);
       this.workspaceResources.set(
         records.workspace.id,
-        records.workspace.kind === 'quick-chat'
-          ? { knowledge: [...records.knowledge], skills: [], agents: [], models: [] }
-          : createWorkspaceResources([...records.knowledge])
+        createWorkspaceResources([...records.knowledge])
       );
       for (const thread of records.threads) {
         this.threads.set(thread.id, thread);
@@ -1919,18 +1922,18 @@ export class FsStore {
   }
 
   /**
-   * Ensures the built-in owner-only Quick Chat Workspace for one canonical user.
+   * Ensures the built-in owner-only personal Workspace for one canonical user.
    *
    * @param userId Canonical user id that determines the stable Workspace id.
-   * @returns Existing or newly created Quick Chat Workspace.
+   * @returns Existing or newly created personal Workspace.
    * @throws Error when the reserved id already belongs to another Workspace kind.
    */
   public ensureQuickChatWorkspace(userId: string): WorkspaceRecord {
     const workspaceId = quickChatWorkspaceIdForUser(userId);
     const existing = this.workspaces.get(workspaceId);
     if (existing) {
-      if (existing.kind !== 'quick-chat') {
-        throw new Error(`Reserved Quick Chat workspace id ${workspaceId} has another kind.`);
+      if (existing.kind !== 'personal') {
+        throw new Error(`Reserved personal workspace id ${workspaceId} has another kind.`);
       }
       return existing;
     }
@@ -1938,8 +1941,8 @@ export class FsStore {
     const timestamp = now();
     const workspace: WorkspaceRecord = {
       id: workspaceId,
-      name: 'Quick Chat',
-      kind: 'quick-chat',
+      name: 'Personal',
+      kind: 'personal',
       status: 'active',
       counts: {
         threadCount: 0,
@@ -2519,39 +2522,37 @@ export class FsStore {
     title: string,
     threadId?: string,
     entryPath: Thread['entryPath'] = 'conversation',
-    audience?: { visibility: Thread['visibility']; privateOwnerUserId?: string },
-    parentThreadId?: string
+    audience?: {
+      visibility: Thread['visibility'];
+      privateOwnerUserId?: string;
+      threadSource?: Thread['threadSource'];
+      parentThreadId?: string;
+    }
   ): Thread {
     const id = threadId ?? allocateEntityId('th');
     if (this.threads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
     }
-    if (
-      !audience &&
-      (this.getWorkspace(workspaceId).kind === 'quick-chat' || entryPath === 'administration')
-    ) {
+    if (!audience && entryPath === 'administration')
       throw new Error('Private Thread creation requires its explicit canonical User audience.');
-    }
     audience ??= { visibility: 'workspace' };
     if (
-      this.getWorkspace(workspaceId).kind === 'quick-chat' &&
-      (audience.visibility !== 'private' ||
-        workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? ''))
+      this.getWorkspace(workspaceId).kind === 'personal' &&
+      audience.visibility === 'private' &&
+      workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? '')
     ) {
-      throw new Error('Quick Chat requires its owner-only private audience.');
+      throw new Error('Personal Workspace private Threads require their owner.');
     }
-    if (parentThreadId !== undefined) {
-      if (parentThreadId === id) throw new Error('A receiving Thread must differ from its parent.');
-      this.getThread(workspaceId, parentThreadId);
-    }
+    if (audience.parentThreadId === id)
+      throw new Error('A receiving Thread must differ from its parent.');
     const thread = ThreadSchema.parse({
       id,
       workspaceId,
-      ...(parentThreadId === undefined ? {} : { parentThreadId }),
       name: title,
       preview: title,
       status: 'active',
       entryPath,
+      threadSource: 'conversation',
       ...audience,
       createdAt: now(),
       updatedAt: now(),
@@ -2618,7 +2619,7 @@ export class FsStore {
    * @param configVersion Runtime config version captured for the turn.
    * @param options Optional turn creation controls, including the admission-time capture pair.
    * @returns Created turn.
-   * @throws Error when the requested turn id already exists.
+   * @throws Error when the requested turn id already exists or file publication fails; retained files remain intact.
    */
   public createTurn(
     workspaceId: string,
@@ -2685,8 +2686,9 @@ export class FsStore {
         withCanonicalFileWriteAdmission(options.fileWriteAdmission, publish);
       } else publish();
     } catch (error) {
+      // No-file failures discard the derivative candidate; file inputs retain present or unknown canonical authority.
+      let discardCandidate = !options.fileInputs?.length;
       if (options.fileInputs?.length && this.dataRoot) {
-        let unpublished = false;
         try {
           const turnRoot = join(
             this.workspaceRootPath(workspaceId),
@@ -2696,17 +2698,17 @@ export class FsStore {
             turn.id
           );
           assertCanonicalDirectory(dirname(turnRoot));
-          unpublished = lstatSync(turnRoot, { throwIfNoEntry: false }) === undefined;
+          discardCandidate = lstatSync(turnRoot, { throwIfNoEntry: false }) === undefined;
         } catch {
           // A present or uninspectable canonical owner remains with existing recovery; absence is never inferred from an I/O refusal.
         }
-        if (unpublished) {
-          this.turns.delete(turn.id);
-          this.turnExecutors.delete(turn.id);
-          this.streams.delete(turn.id);
-          this.turnCaptureCoverage.delete(turn.id);
-          this.threads.set(threadId, thread);
-        }
+      }
+      if (discardCandidate) {
+        this.turns.delete(turn.id);
+        this.turnExecutors.delete(turn.id);
+        this.streams.delete(turn.id);
+        this.turnCaptureCoverage.delete(turn.id);
+        this.threads.set(threadId, thread);
       }
       throw error;
     }

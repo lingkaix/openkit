@@ -42,10 +42,10 @@ export { useCurrentWorkspaceId, useWorkspaces };
  * Returns whether the selected Workspace may publish Workspace Sync reads and actions.
  *
  * @param workspace Selected Workspace record, or null when unresolved.
- * @returns False for Quick Chat; true for ordinary Workspace kinds.
+ * @returns True when an ordinary Workspace is available.
  */
 export function isWorkspaceSyncEligible(workspace: { kind: string } | null | undefined): boolean {
-  return workspace != null && workspace.kind !== 'quick-chat';
+  return workspace != null;
 }
 
 /**
