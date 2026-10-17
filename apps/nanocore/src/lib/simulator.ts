@@ -1539,7 +1539,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         'work_request_input',
         { requestId: state.userInputRequestId, prompt, questions }
       );
-      state.userInputRequestId = result.structuredContent.requestId as string;
+      state.userInputRequestId = result.structuredContent!.requestId as string;
       const recordedItem = store
         .listThreadItems(state.workspaceId, state.threadId)
         .find(

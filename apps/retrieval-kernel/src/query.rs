@@ -83,6 +83,16 @@ impl Kernel {
                 if matches!(record.document.content, Content::Unreadable) {
                     result.coverage.unsupported_bodies += 1;
                 }
+                if matches!(
+                    record.document.content,
+                    Content::Representation {
+                        complete: false,
+                        ..
+                    }
+                ) {
+                    result.coverage.representations_complete = false;
+                    reason(&mut result.coverage, "partial");
+                }
                 if !matches!(
                     record.status,
                     TextStatus::TextExtracted | TextStatus::Unsupported
@@ -276,6 +286,9 @@ impl Kernel {
             Content::Text { path, range } => {
                 TextFile::new(open_source(&self.source, path)?, range.as_ref())
             }
+            Content::Representation { path, .. } => {
+                TextFile::new(open_source(&self.source, path)?, None)
+            }
             Content::InlineText { .. } => match &current.content {
                 Content::InlineText { text } => TextFile::inline(text),
                 _ => Err(error("stale", "canonical text handle changed")),
@@ -314,8 +327,12 @@ impl Kernel {
             let (hash, size, _) = inspect(&mut file, budget)?;
             (hash, size)
         };
+        let expected_size = match &record.document.content {
+            Content::Representation { size, .. } => *size,
+            _ => record.document.size,
+        };
         if hash != record.representation_digest
-            || (record.sidecar.is_none() && size != record.document.size)
+            || (record.sidecar.is_none() && size != expected_size)
         {
             return Err(error("stale", "representation changed since publication"));
         }
@@ -603,7 +620,13 @@ fn hit(
         Locator::Text {
             start,
             end,
-            original: record.document.locator.clone(),
+            original: match &record.document.content {
+                Content::Representation { fragments, .. } => fragments
+                    .iter()
+                    .find(|fragment| start >= fragment.start && end <= fragment.end)
+                    .map(|fragment| fragment.locator.clone()),
+                _ => record.document.locator.clone(),
+            },
         }
     };
     Hit {
@@ -611,14 +634,19 @@ fn hit(
         scope: pin.manifest.scope.clone(),
         revision: record.document.revision.clone(),
         digest: record.document.digest.clone(),
-        representation: if record.sidecar.is_some() {
+        representation: if record.sidecar.is_some()
+            || matches!(record.document.content, Content::Representation { .. })
+        {
             "sidecar"
         } else {
             "text"
         }
         .into(),
         representation_digest: record.representation_digest.clone(),
-        processor: record.sidecar.as_ref().map(|_| PROCESSOR.into()),
+        processor: match &record.document.content {
+            Content::Representation { processor, .. } => Some(processor.clone()),
+            _ => record.sidecar.as_ref().map(|_| PROCESSOR.into()),
+        },
         locator,
         chunk,
         score,

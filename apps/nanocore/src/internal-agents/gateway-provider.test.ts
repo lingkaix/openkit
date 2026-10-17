@@ -59,6 +59,7 @@ import { attachPiAiFailure } from '../llm/pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 import { type InternalAgentProviderRequest, runInternalAgentLoop } from './internal-agent-loop.js';
+import { internalContextFailure } from './rolling-context.js';
 
 const logicalModel: ResolvedLogicalModel = {
   id: 'assistant',
@@ -1904,6 +1905,59 @@ describe('internal rolling context Gateway boundary', () => {
 
     expect(createResponses).not.toHaveBeenCalled();
     expect(assembled.messages).toEqual(before);
+  });
+
+  it('retains final serialized admission failure through stock normalization without replay', async () => {
+    const { provider, createResponses } = boundaryFixture();
+    createResponses.mockImplementationOnce(async (_provider, _input, context) => {
+      try {
+        context.transport.finalRequestAdmission({
+          payload: { instructions: 'Final overlay. '.repeat(30_000) },
+          contextWindowTokens: 64_000,
+          outputReserveTokens: 8_000,
+          codexTurnState: 'native-continuity',
+        });
+      } catch {
+        throw new Error('Stock normalized the local hook refusal.');
+      }
+      throw new Error('Final payload was not admitted.');
+    });
+
+    await expect(provider(request())).rejects.toMatchObject({
+      code: 'internal_agent_context_exceeded',
+      message: expect.stringContaining('retrieve a smaller excerpt'),
+    });
+    expect(createResponses).toHaveBeenCalledOnce();
+  });
+
+  it('retains a Provider context rejection through the shared loop and Assistant Turn projection', async () => {
+    const { provider, createResponses } = boundaryFixture();
+    createResponses.mockRejectedValueOnce(
+      Object.assign(new Error('private-provider-context'), {
+        failure: { kind: 'context_overflow', settled: true, status: 400 },
+      })
+    );
+    let observed: unknown;
+    const initial = request();
+    const result = await runInternalAgentLoop(
+      { ...initial, tools: [], limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 } },
+      async (call) => {
+        try {
+          return await provider(call);
+        } catch (error) {
+          observed = error;
+          throw error;
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ kind: 'failed', code: 'provider_call_failed' });
+    expect(internalContextFailure(observed)).toEqual({
+      code: 'internal_agent_context_exceeded',
+      message:
+        'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
+    });
+    expect(createResponses).toHaveBeenCalledOnce();
   });
 
   it('reserves known output capacity when fitting an otherwise admissible request', async () => {

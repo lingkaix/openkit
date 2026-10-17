@@ -75,6 +75,7 @@ import {
   assertPortableWorkspaceNotebookDisclosure,
   bindImportedWorkspaceNotebookTraces,
   importedWorkspaceNotebookFiles,
+  readPortableWorkspaceNotebookPages,
 } from '../knowledge/notebook-workspace-portability.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -948,6 +949,7 @@ export function importVerifiedWorkspace({
     targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
+    snapshot.finalizeNotebookKnowledge?.(readPortableWorkspaceNotebookPages(workspaceRoot));
     writeWorkspacePortableFileState(workspaceRoot, {
       ...snapshot.portableFileState,
       retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({

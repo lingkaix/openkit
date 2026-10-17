@@ -714,3 +714,31 @@ it('keeps an indistinguishable ordinary native failure in its existing category'
   });
   expect(f.dispatch).toHaveBeenCalledTimes(1);
 });
+
+it('returns one actionable redacted context overflow after output begins', async () => {
+  const f = fixture();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockResolvedValue(
+    failedStream(
+      Object.assign(new Error('private-context-canary'), {
+        failure: { kind: 'context_overflow', settled: true, status: 400 },
+      })
+    )
+  );
+
+  const response = await f.post(true);
+  const body = await response.text();
+  const terminal = body
+    .split('\n')
+    .filter((line) => line.startsWith('data: {'))
+    .map((line) => JSON.parse(line.slice(6)))
+    .filter((frame) => frame.error || frame.response?.error);
+  expect(terminal).toHaveLength(1);
+  expect(terminal[0]?.error ?? terminal[0]?.response?.error).toMatchObject({
+    code: 'gateway_context_overflow',
+    message: 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.',
+  });
+  expect(body).not.toContain('private-context-canary');
+  expect(f.dispatch).toHaveBeenCalledOnce();
+  expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'gateway_context_overflow' }]);
+});

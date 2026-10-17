@@ -568,6 +568,11 @@ export interface ReadWorkspaceImportSnapshotInput {
 
 /** Importable record snapshot extracted from one workspace export. */
 export interface WorkspaceImportSnapshot {
+  /** Request-local completion under the existing initialized staging root; never serialized or a read grant. */
+  finalizeNotebookKnowledge?: (binding: {
+    notebookRevision: string;
+    nativeKnowledgePages: ReadonlyMap<string, string>;
+  }) => void;
   /** Target-relative immutable payload paths mapped to their verified private export sources. */
   artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Validated current Goal records and Task terminal facts; approval grants remain source-local. */
@@ -1117,8 +1122,37 @@ export function readWorkspaceImportSnapshot(
     );
   }
 
+  const projectEnvironmentPackages = () =>
+    workResources.agentEnvironmentPackageSnapshots.map((record) => {
+      const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
+      const snapshot = {
+        ...environmentPackage,
+        extensions: {
+          ...environmentPackage.extensions,
+          openkit: {
+            ...(environmentPackage.extensions.openkit as Record<string, unknown>),
+            sessionWorkspace: planSessionWorkspaceMaterialization({ environmentPackage }),
+          },
+        },
+      };
+      return {
+        ...record,
+        contentDigest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),
+        snapshot,
+      };
+    });
+  const agentEnvironmentPackageSnapshots = projectEnvironmentPackages();
+
   return {
     artifactPayloadFiles,
+    finalizeNotebookKnowledge: (binding) => {
+      workResources.finalizeNotebookKnowledge(binding);
+      agentEnvironmentPackageSnapshots.splice(
+        0,
+        agentEnvironmentPackageSnapshots.length,
+        ...projectEnvironmentPackages()
+      );
+    },
     report,
     goalState: readCurrentGoalImportState(context),
     workspace: canonical.workspace,
@@ -1151,26 +1185,7 @@ export function readWorkspaceImportSnapshot(
     dataSourceCatalog: securityRuntime.dataSourceCatalog,
     gitPushRecords: securityRuntime.gitPushRecords,
     resolvedAgentSetups: securityRuntime.resolvedAgentSetups,
-    agentEnvironmentPackageSnapshots: workResources.agentEnvironmentPackageSnapshots.map(
-      (record) => {
-        const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
-        const snapshot = {
-          ...environmentPackage,
-          extensions: {
-            ...environmentPackage.extensions,
-            openkit: {
-              ...(environmentPackage.extensions.openkit as Record<string, unknown>),
-              sessionWorkspace: planSessionWorkspaceMaterialization({ environmentPackage }),
-            },
-          },
-        };
-        return {
-          ...record,
-          contentDigest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),
-          snapshot,
-        };
-      }
-    ),
+    agentEnvironmentPackageSnapshots,
     workspaceRepositories: workspaceSync.workspaceRepositories,
     workspaceInputSnapshots: workResources.workspaceInputSnapshots,
     workspaceMaterializationRecords: workResources.workspaceMaterializationRecords,
@@ -2678,6 +2693,10 @@ function readWorkResourceImportState(
   const threadPreviewText = new Map<string, string>();
   const tracesBySourceTurn = new Map<string, WorkerContextPackageTrace>();
   const workerContextPackageFiles = new Map<string, string>();
+  const notebookFinalizers: ((binding: {
+    notebookRevision: string;
+    nativeKnowledgePages: ReadonlyMap<string, string>;
+  }) => void)[] = [];
   const artifactPayloadFiles = new Map<string, string>();
   const agentEnvironmentPackageSnapshots = [...canonical.agentEnvironmentPackageSnapshots];
   const workspaceInputSnapshots = [...workspaceSync.workspaceInputSnapshots];
@@ -2746,11 +2765,19 @@ function readWorkResourceImportState(
       throw new Error('Worker Context Package source manifest is not canonical.');
     }
     const knowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => ({
-      content: requiredExportFile(context.files, `${sourcePackageRoot}/${selection.packagePath}`),
-      contentDigest: selection.contentDigest,
-      knowledgePageId: selection.knowledgePageId,
-      notebookRevision: selection.notebookRevision,
-      sourceRefs: selection.sourceRefs,
+      ...selection,
+      content: requiredExportFile(
+        context.files,
+        `workspace-files/knowledge/pages/${selection.knowledgePageId}.md`
+      ),
+      ...(selection.projection
+        ? {
+            deliveredContent: requiredExportFile(
+              context.files,
+              `${sourcePackageRoot}/${selection.packagePath}`
+            ),
+          }
+        : {}),
     }));
     const targetKnowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => {
       const target = requiredMapValue(
@@ -2972,222 +2999,256 @@ function readWorkResourceImportState(
           )
         );
     }
-    const targetPackage = createWorkerContextPackageFiles({
-      sourceFiles: targetSourceFiles,
-      contextBudgetTokens: sourceManifest.contextBudgetTokens,
-      includedItemIds: sourceTrace.includedItemIds.map((id) =>
-        requiredMapValue(context.itemIds, id, 'included Item')
-      ),
-      knowledgeSelections: targetKnowledgeSelections,
-      materialSelections: sourceTrace.materialSelections.map((selection) => {
-        const sourceRevision = requireMaterialRevision(
-          context.sourceWorkspaceMaterialRevisions,
-          selection.materialId,
-          selection.revisionId
-        );
-        const sourceMaterial = requireMaterial(
-          context.sourceWorkspaceMaterials,
-          selection.materialId
-        );
-        return {
-          ...selection,
-          materialId: requiredMapValue(context.materialIds, selection.materialId, 'Material'),
-          revisionId: requiredMaterialRevisionId(
-            context,
+    tracesBySourceTurn.set(sourceTurnId, sourceTrace);
+    const finalizeTargetPackage = (binding?: {
+      notebookRevision: string;
+      nativeKnowledgePages: ReadonlyMap<string, string>;
+    }) => {
+      const targetPackage = createWorkerContextPackageFiles({
+        sourceFiles: targetSourceFiles,
+        contextBudgetTokens: sourceManifest.contextBudgetTokens,
+        includedItemIds: sourceTrace.includedItemIds.map((id) =>
+          requiredMapValue(context.itemIds, id, 'included Item')
+        ),
+        knowledgeSelections: targetKnowledgeSelections.map((target, index) => {
+          const source = sourceTrace.knowledgeSelections[index]!;
+          if (!source.projection) return target;
+          if (
+            !binding ||
+            binding.nativeKnowledgePages.get(`knowledge/pages/${target.knowledgePageId}.md`) !==
+              target.content
+          )
+            throw new Error(
+              'Portable Knowledge history requires unavailable historical notebook closure.'
+            );
+          return remintKnowledgeDelivery(
+            source,
+            knowledgeSelections[index]!.content,
+            target,
+            requiredExportFile(context.files, `${sourcePackageRoot}/${source.packagePath}`),
+            binding.notebookRevision
+          );
+        }),
+        materialSelections: sourceTrace.materialSelections.map((selection) => {
+          const sourceRevision = requireMaterialRevision(
+            context.sourceWorkspaceMaterialRevisions,
             selection.materialId,
             selection.revisionId
-          ),
-          parentRevisionId: selection.parentRevisionId
-            ? requiredMaterialRevisionId(context, selection.materialId, selection.parentRevisionId)
-            : null,
-          bindingMutationRequestId: selection.bindingMutationRequestId
-            ? importRequestLineage(context, selection.bindingMutationRequestId)
-            : null,
-          content: sourceRevision.content,
-          ...(selection.projection
-            ? {
-                deliveredContent: requiredExportFile(
-                  context.files,
-                  `${sourcePackageRoot}/${selection.packagePath}`
-                ),
-                projection: {
-                  ...selection.projection,
-                  sourceRevision: requiredMaterialRevisionId(
-                    context,
-                    selection.materialId,
-                    selection.revisionId
-                  ),
-                  ...(selection.projection.originalSnapshotPath
-                    ? {
-                        originalSnapshotPath: remintContextSourcePath(
-                          selection.projection.originalSnapshotPath,
-                          selection.materialId,
-                          requiredMapValue(context.materialIds, selection.materialId, 'Material'),
-                          selection.revisionId,
-                          requiredMaterialRevisionId(
-                            context,
-                            selection.materialId,
-                            selection.revisionId
-                          )
-                        ),
-                      }
-                    : {}),
-                },
-              }
-            : {}),
-          sensitivity: sourceMaterial.sensitivity,
-        };
-      }),
-      threadId: targetThreadId,
-      turnId: targetTurnId,
-      workerRequestBytes: targetRequestBytes,
-      workerRequestItemId: targetRequestItemId,
-      workspaceId: context.targetWorkspaceId,
-    });
-    const targetPackageSnapshotId = requiredMapValue(
-      context.agentEnvironmentPackageSnapshotIds,
-      sourceTrace.packageSnapshotId,
-      'agent environment package snapshot'
-    );
-    const targetTrace = createWorkerContextPackageTrace({
-      agentSessionId: requiredMapValue(
-        context.agentSessionIds,
-        sourceTrace.agentSessionId,
-        'AgentSession'
-      ),
-      excludedItems: sourceTrace.excludedItems.map((exclusion) => ({
-        ...exclusion,
-        itemId: requiredMapValue(context.itemIds, exclusion.itemId, 'excluded Item'),
-      })),
-      goalId: sourceTrace.goalId ? sourceTrace.goalId : null,
-      knowledgeExclusions: sourceTrace.knowledgeExclusions.map((exclusion) => {
-        const target = requiredMapValue(
-          targetSelectedPages,
-          exclusion.knowledgePageId,
-          'Knowledge retrieval exclusion page'
-        );
-        if (target.sourceContentDigest !== exclusion.contentDigest) {
-          throw new Error(
-            'Worker Context Package Knowledge exclusion contradicts its retrieval trace.'
           );
-        }
-        return { ...exclusion, contentDigest: target.contentDigest };
-      }),
-      knowledgeSelectionInput: targetRetrievalReference
-        ? { retrievalTraceRef: targetRetrievalReference }
-        : null,
-      materialExclusions: sourceTrace.materialExclusions.map((exclusion) => ({
-        ...exclusion,
-        materialId: requiredMapValue(context.materialIds, exclusion.materialId, 'Material'),
-        revisionId: requiredMaterialRevisionId(context, exclusion.materialId, exclusion.revisionId),
-      })),
-      packageFiles: targetPackage,
-      packageSnapshotId: targetPackageSnapshotId,
-      requestId: importRequestLineage(context, sourceTrace.requestId),
-      taskId: sourceTrace.taskId ? sourceTrace.taskId : null,
-    });
-    context.contextPackageReferences.set(
-      `context-package:${sourceTurnId}@${sourceTrace.contextPackageDigest}`,
-      `context-package:${targetTurnId}@${targetTrace.contextPackageDigest}`
-    );
-    for (const file of targetPackage.files) {
-      workerContextPackageFiles.set(
-        `${targetRoot}/context-package/${file.path}`,
-        Buffer.from(file.bytes).toString('utf8')
-      );
-    }
-    workerContextPackageFiles.set(
-      `${targetRoot}/context-package.json`,
-      serializeWorkerContextPackageTrace(targetTrace)
-    );
-    tracesBySourceTurn.set(sourceTurnId, sourceTrace);
-
-    const packageIndex = agentEnvironmentPackageSnapshots.findIndex(
-      (record) => record.snapshotId === targetPackageSnapshotId
-    );
-    if (packageIndex < 0) {
-      throw new Error('Worker Context Package AEP snapshot is missing.');
-    }
-    const record = agentEnvironmentPackageSnapshots[packageIndex]!;
-    const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
-    const rewrittenEnvironmentPackage = AgentEnvironmentPackageSchema.parse({
-      ...environmentPackage,
-      scope: {
-        ...environmentPackage.scope,
-        requestId: targetTrace.requestId,
-        itemId: targetRequestItemId,
-      },
-      workspace: {
-        ...environmentPackage.workspace,
-        inputs: environmentPackage.workspace.inputs.map((candidate) =>
-          candidate.materialization?.slotId === 'context'
-            ? buildWorkerContextPackageWorkspaceInput({
-                agentSessionId: targetTrace.agentSessionId,
-                packageRootDigest: targetPackage.packageRootDigest,
-                threadId: targetThreadId,
-                turnId: targetTurnId,
-              })
-            : candidate
-        ),
-      },
-    });
-    agentEnvironmentPackageSnapshots[packageIndex] = {
-      ...record,
-      contentDigest: createHash('sha256')
-        .update(JSON.stringify(rewrittenEnvironmentPackage))
-        .digest('hex'),
-      snapshot: rewrittenEnvironmentPackage,
-    };
-
-    const sourceInputIndex = workspaceInputSnapshots.findIndex(
-      (snapshot) => snapshot.id === sourceTrace.workspaceInputSnapshotId
-    );
-    const sourceMaterializationIndex = workspaceMaterializationRecords.findIndex(
-      (materialization) => materialization.id === sourceTrace.workspaceMaterializationRecordId
-    );
-    if (sourceInputIndex < 0 || sourceMaterializationIndex < 0) {
-      throw new Error('Worker Context Package workspace handoff owner is missing.');
-    }
-    const sourceInput = workspaceInputSnapshots[sourceInputIndex]!;
-    const sourceMaterialization = workspaceMaterializationRecords[sourceMaterializationIndex]!;
-    const historicalWorkerSessionId = `import-history-worker_${targetPackageSnapshotId}`;
-    workspaceInputSnapshots[sourceInputIndex] = WorkspaceInputSnapshotSchema.parse({
-      backend: sourceInput.backend,
-      base: { commit: null, contentDigest: targetPackage.packageRootDigest },
-      createdAt: targetTurn.startedAt,
-      generatedFiles: [],
-      id: targetTrace.workspaceInputSnapshotId,
-      ignoredPaths: [],
-      pathScope: [`context_${targetTurnId}`],
-      resourceId: `context_${targetTurnId}`,
-      resourceKind: 'filesystem',
-      strategy: 'filesystem',
-      workspaceId: context.targetWorkspaceId,
-      writableRoots: [],
-    });
-    workspaceMaterializationRecords[sourceMaterializationIndex] =
-      WorkspaceMaterializationRecordSchema.parse({
-        backendKind: sourceMaterialization.backendKind,
-        base: { commit: null, contentDigest: targetPackage.packageRootDigest },
-        createdAt: targetTurn.startedAt,
-        id: targetTrace.workspaceMaterializationRecordId,
-        inputSnapshotId: targetTrace.workspaceInputSnapshotId,
-        materializedRootRef: workerSessionInputPaths(targetTrace.agentSessionId).contextRoot,
-        packageSnapshotId: targetPackageSnapshotId,
-        policyDigest: createWorkerContextPackagePolicyDigest({
-          backendKind: sourceMaterialization.backendKind,
-          packageSnapshotId: targetPackageSnapshotId,
-          requiredCapabilities: rewrittenEnvironmentPackage.backend.requiredCapabilities,
+          const sourceMaterial = requireMaterial(
+            context.sourceWorkspaceMaterials,
+            selection.materialId
+          );
+          return {
+            ...selection,
+            materialId: requiredMapValue(context.materialIds, selection.materialId, 'Material'),
+            revisionId: requiredMaterialRevisionId(
+              context,
+              selection.materialId,
+              selection.revisionId
+            ),
+            parentRevisionId: selection.parentRevisionId
+              ? requiredMaterialRevisionId(
+                  context,
+                  selection.materialId,
+                  selection.parentRevisionId
+                )
+              : null,
+            bindingMutationRequestId: selection.bindingMutationRequestId
+              ? importRequestLineage(context, selection.bindingMutationRequestId)
+              : null,
+            content: sourceRevision.content,
+            ...(selection.projection
+              ? {
+                  deliveredContent: requiredExportFile(
+                    context.files,
+                    `${sourcePackageRoot}/${selection.packagePath}`
+                  ),
+                  projection: {
+                    ...selection.projection,
+                    sourceRevision: requiredMaterialRevisionId(
+                      context,
+                      selection.materialId,
+                      selection.revisionId
+                    ),
+                    ...(selection.projection.originalSnapshotPath
+                      ? {
+                          originalSnapshotPath: remintContextSourcePath(
+                            selection.projection.originalSnapshotPath,
+                            selection.materialId,
+                            requiredMapValue(context.materialIds, selection.materialId, 'Material'),
+                            selection.revisionId,
+                            requiredMaterialRevisionId(
+                              context,
+                              selection.materialId,
+                              selection.revisionId
+                            )
+                          ),
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
+            sensitivity: sourceMaterial.sensitivity,
+          };
         }),
-        readinessEvidence: sourceMaterialization.readinessEvidence.map((entry) =>
-          entry.kind.startsWith('sandbox.') && entry.ref === sourceMaterialization.workerSessionId
-            ? { ...entry, ref: historicalWorkerSessionId }
-            : entry
-        ),
-        strategy: 'filesystem',
-        workerSessionId: historicalWorkerSessionId,
+        threadId: targetThreadId,
+        turnId: targetTurnId,
+        workerRequestBytes: targetRequestBytes,
+        workerRequestItemId: targetRequestItemId,
         workspaceId: context.targetWorkspaceId,
       });
+      const targetPackageSnapshotId = requiredMapValue(
+        context.agentEnvironmentPackageSnapshotIds,
+        sourceTrace.packageSnapshotId,
+        'agent environment package snapshot'
+      );
+      const targetTrace = createWorkerContextPackageTrace({
+        agentSessionId: requiredMapValue(
+          context.agentSessionIds,
+          sourceTrace.agentSessionId,
+          'AgentSession'
+        ),
+        excludedItems: sourceTrace.excludedItems.map((exclusion) => ({
+          ...exclusion,
+          itemId: requiredMapValue(context.itemIds, exclusion.itemId, 'excluded Item'),
+        })),
+        goalId: sourceTrace.goalId ? sourceTrace.goalId : null,
+        knowledgeExclusions: sourceTrace.knowledgeExclusions.map((exclusion) => {
+          const target = requiredMapValue(
+            targetSelectedPages,
+            exclusion.knowledgePageId,
+            'Knowledge retrieval exclusion page'
+          );
+          if (target.sourceContentDigest !== exclusion.contentDigest) {
+            throw new Error(
+              'Worker Context Package Knowledge exclusion contradicts its retrieval trace.'
+            );
+          }
+          return { ...exclusion, contentDigest: target.contentDigest };
+        }),
+        knowledgeSelectionInput: targetRetrievalReference
+          ? { retrievalTraceRef: targetRetrievalReference }
+          : null,
+        materialExclusions: sourceTrace.materialExclusions.map((exclusion) => ({
+          ...exclusion,
+          materialId: requiredMapValue(context.materialIds, exclusion.materialId, 'Material'),
+          revisionId: requiredMaterialRevisionId(
+            context,
+            exclusion.materialId,
+            exclusion.revisionId
+          ),
+        })),
+        packageFiles: targetPackage,
+        packageSnapshotId: targetPackageSnapshotId,
+        requestId: importRequestLineage(context, sourceTrace.requestId),
+        taskId: sourceTrace.taskId ? sourceTrace.taskId : null,
+      });
+      context.contextPackageReferences.set(
+        `context-package:${sourceTurnId}@${sourceTrace.contextPackageDigest}`,
+        `context-package:${targetTurnId}@${targetTrace.contextPackageDigest}`
+      );
+      for (const file of targetPackage.files) {
+        workerContextPackageFiles.set(
+          `${targetRoot}/context-package/${file.path}`,
+          Buffer.from(file.bytes).toString('utf8')
+        );
+      }
+      workerContextPackageFiles.set(
+        `${targetRoot}/context-package.json`,
+        serializeWorkerContextPackageTrace(targetTrace)
+      );
+
+      const packageIndex = agentEnvironmentPackageSnapshots.findIndex(
+        (record) => record.snapshotId === targetPackageSnapshotId
+      );
+      if (packageIndex < 0) {
+        throw new Error('Worker Context Package AEP snapshot is missing.');
+      }
+      const record = agentEnvironmentPackageSnapshots[packageIndex]!;
+      const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
+      const rewrittenEnvironmentPackage = AgentEnvironmentPackageSchema.parse({
+        ...environmentPackage,
+        scope: {
+          ...environmentPackage.scope,
+          requestId: targetTrace.requestId,
+          itemId: targetRequestItemId,
+        },
+        workspace: {
+          ...environmentPackage.workspace,
+          inputs: environmentPackage.workspace.inputs.map((candidate) =>
+            candidate.materialization?.slotId === 'context'
+              ? buildWorkerContextPackageWorkspaceInput({
+                  agentSessionId: targetTrace.agentSessionId,
+                  packageRootDigest: targetPackage.packageRootDigest,
+                  threadId: targetThreadId,
+                  turnId: targetTurnId,
+                })
+              : candidate
+          ),
+        },
+      });
+      agentEnvironmentPackageSnapshots[packageIndex] = {
+        ...record,
+        contentDigest: createHash('sha256')
+          .update(JSON.stringify(rewrittenEnvironmentPackage))
+          .digest('hex'),
+        snapshot: rewrittenEnvironmentPackage,
+      };
+
+      const sourceInputIndex = workspaceInputSnapshots.findIndex(
+        (snapshot) => snapshot.id === sourceTrace.workspaceInputSnapshotId
+      );
+      const sourceMaterializationIndex = workspaceMaterializationRecords.findIndex(
+        (materialization) => materialization.id === sourceTrace.workspaceMaterializationRecordId
+      );
+      if (sourceInputIndex < 0 || sourceMaterializationIndex < 0) {
+        throw new Error('Worker Context Package workspace handoff owner is missing.');
+      }
+      const sourceInput = workspaceInputSnapshots[sourceInputIndex]!;
+      const sourceMaterialization = workspaceMaterializationRecords[sourceMaterializationIndex]!;
+      const historicalWorkerSessionId = `import-history-worker_${targetPackageSnapshotId}`;
+      workspaceInputSnapshots[sourceInputIndex] = WorkspaceInputSnapshotSchema.parse({
+        backend: sourceInput.backend,
+        base: { commit: null, contentDigest: targetPackage.packageRootDigest },
+        createdAt: targetTurn.startedAt,
+        generatedFiles: [],
+        id: targetTrace.workspaceInputSnapshotId,
+        ignoredPaths: [],
+        pathScope: [`context_${targetTurnId}`],
+        resourceId: `context_${targetTurnId}`,
+        resourceKind: 'filesystem',
+        strategy: 'filesystem',
+        workspaceId: context.targetWorkspaceId,
+        writableRoots: [],
+      });
+      workspaceMaterializationRecords[sourceMaterializationIndex] =
+        WorkspaceMaterializationRecordSchema.parse({
+          backendKind: sourceMaterialization.backendKind,
+          base: { commit: null, contentDigest: targetPackage.packageRootDigest },
+          createdAt: targetTurn.startedAt,
+          id: targetTrace.workspaceMaterializationRecordId,
+          inputSnapshotId: targetTrace.workspaceInputSnapshotId,
+          materializedRootRef: workerSessionInputPaths(targetTrace.agentSessionId).contextRoot,
+          packageSnapshotId: targetPackageSnapshotId,
+          policyDigest: createWorkerContextPackagePolicyDigest({
+            backendKind: sourceMaterialization.backendKind,
+            packageSnapshotId: targetPackageSnapshotId,
+            requiredCapabilities: rewrittenEnvironmentPackage.backend.requiredCapabilities,
+          }),
+          readinessEvidence: sourceMaterialization.readinessEvidence.map((entry) =>
+            entry.kind.startsWith('sandbox.') && entry.ref === sourceMaterialization.workerSessionId
+              ? { ...entry, ref: historicalWorkerSessionId }
+              : entry
+          ),
+          strategy: 'filesystem',
+          workerSessionId: historicalWorkerSessionId,
+          workspaceId: context.targetWorkspaceId,
+        });
+    };
+    if (sourceTrace.knowledgeSelections.some((entry) => entry.projection)) {
+      notebookFinalizers.push((binding) => finalizeTargetPackage(binding));
+    } else finalizeTargetPackage();
   }
   const orphanWorkerFile = [...context.files.keys(), ...context.payloadFiles.keys()].find(
     (path) =>
@@ -3310,10 +3371,84 @@ function readWorkResourceImportState(
     turnEvents,
     turns,
     workerContextPackageFiles,
+    finalizeNotebookKnowledge: (binding: {
+      notebookRevision: string;
+      nativeKnowledgePages: ReadonlyMap<string, string>;
+    }) => {
+      for (const finalize of notebookFinalizers) finalize(binding);
+    },
     workspaceInputSnapshots,
     workspaceMaterialRevisions,
     workspaceMaterializationRecords,
     workspaceMaterials,
+  };
+}
+
+/**
+ * Carries exact delivered ranges through the owned page remint; partially rewritten ranges fail closed.
+ * @param selection Verified source selection and delivered range proof.
+ * @param original Verified source canonical Notebook page.
+ * @param target Owned target page and reference remint.
+ * @param delivered Exact source package excerpt.
+ * @param notebookRevision Actual initialized target Notebook commit.
+ * @returns Target selection with reminted ranges and separate original and delivered identities.
+ * @throws Error when a range cuts an owned rewrite or source bytes are contradictory.
+ */
+function remintKnowledgeDelivery(
+  selection: WorkerContextPackageTrace['knowledgeSelections'][number],
+  original: string,
+  target: {
+    content: string;
+    contentDigest: string;
+    knowledgePageId: string;
+    sourceRefs: readonly string[];
+  },
+  delivered: string,
+  notebookRevision: string
+) {
+  const before = Buffer.from(original),
+    after = Buffer.from(target.content);
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix])
+    prefix++;
+  while (prefix > 0 && ((before[prefix] ?? 0) & 0xc0) === 0x80) prefix--;
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  )
+    suffix++;
+  while (suffix > 0 && ((before[before.length - suffix] ?? 0) & 0xc0) === 0x80) suffix--;
+  const oldEnd = before.length - suffix,
+    newEnd = after.length - suffix;
+  const ranges = selection.projection!.ranges.map((range) => {
+    if (range.end <= prefix) return range;
+    if (range.start >= oldEnd)
+      return { start: range.start + newEnd - oldEnd, end: range.end + newEnd - oldEnd };
+    if (range.start <= prefix && range.end >= oldEnd)
+      return { start: range.start, end: range.end + newEnd - oldEnd };
+    throw new Error('Portable Knowledge history requires unavailable historical notebook closure.');
+  });
+  const bytes = Buffer.concat(ranges.map(({ start, end }) => after.subarray(start, end)));
+  if (original === target.content && !bytes.equals(Buffer.from(delivered)))
+    throw new Error('Portable Knowledge excerpt bytes are contradictory.');
+  return {
+    ...target,
+    notebookRevision,
+    deliveredContent: bytes.toString('utf8'),
+    projection: {
+      ...selection.projection!,
+      sourceRevision: notebookRevision,
+      representationDigest: target.contentDigest,
+      representationByteLength: after.length,
+      deliveredDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      ranges,
+      byteLength: bytes.length,
+      truncated: bytes.length !== after.length,
+      availability:
+        bytes.length !== after.length ? ('incomplete' as const) : ('available' as const),
+    },
   };
 }
 

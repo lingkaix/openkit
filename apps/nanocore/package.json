@@ -37,6 +37,7 @@
     "@modelcontextprotocol/client": "2.2.0",
     "@modelcontextprotocol/core": "2.2.0",
     "@modelcontextprotocol/server": "2.2.0",
+    "@napi-rs/canvas": "1.0.11",
     "@openkit/app-api-schemas": "workspace:*",
     "@openkit/config-schema": "workspace:*",
     "@openkit/models-dev-catalog": "workspace:*",
