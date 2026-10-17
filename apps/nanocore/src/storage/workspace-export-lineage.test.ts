@@ -749,6 +749,7 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
  *
  * @param followUp Optional exact Artifact Review follow-up fixture.
  * @param sourceSnapshotRoot Optional original snapshot fixture root.
+ * @param retainRepresentation Whether the binary source retains a separate UTF-8 representation.
  * @returns Complete export fixture covering the accepted work-resource lineage.
  * @throws Error when the structured worker request or package fixture cannot be built.
  */
@@ -757,7 +758,8 @@ function createWorkResourceLineageExportInput(
     artifactMediaType?: 'text/markdown' | 'text/plain' | 'application/json';
     decisionRequestId?: string;
   },
-  sourceSnapshotRoot?: string
+  sourceSnapshotRoot?: string,
+  retainRepresentation = false
 ): WriteWorkspaceExportTreeInput {
   const input = createLineageExportInput();
   const materialId = 'mat_00000000-0000-7807-b767-6378f3fcdcf3';
@@ -928,17 +930,21 @@ function createWorkResourceLineageExportInput(
     originalSnapshotPath: materialOriginalPath,
   };
   const inputOriginalPath = 'originals/turn-inputs/0/payload';
-  const inputDescriptor = JSON.stringify({
-    status: 'unavailable',
-    reason: 'unsupported',
-    source: {
-      scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`,
-      objectId: '0',
-    },
-    originalDigest: binaryDigest,
-    byteLength: binaryOriginal.byteLength,
-    mediaType: 'application/octet-stream',
-  });
+  const representation = `Retained representation preview\n${'Later extracted text\n'.repeat(8)}`;
+  const representationPath = 'representations/turn-inputs/0/text.txt';
+  const inputDescriptor = retainRepresentation
+    ? 'Retained representation preview'
+    : JSON.stringify({
+        status: 'unavailable',
+        reason: 'unsupported',
+        source: {
+          scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`,
+          objectId: '0',
+        },
+        originalDigest: binaryDigest,
+        byteLength: binaryOriginal.byteLength,
+        mediaType: 'application/octet-stream',
+      });
   if (sourceSnapshotRoot) {
     input.sourceWorkspaceRoot = sourceSnapshotRoot;
     input.turns = input.turns.map((turn) => ({
@@ -956,6 +962,9 @@ function createWorkResourceLineageExportInput(
     for (const [path, bytes] of [
       [`${packageRoot}/${materialOriginalPath}`, Buffer.from(baseContent)],
       [`${packageRoot}/${inputOriginalPath}`, binaryOriginal],
+      ...(retainRepresentation
+        ? [[`${packageRoot}/${representationPath}`, Buffer.from(representation)] as const]
+        : []),
       [`threads/${source.threadId}/turns/${source.turnId}/inputs/0/payload`, binaryOriginal],
     ] as const) {
       mkdirSync(dirname(join(sourceSnapshotRoot, path)), { recursive: true });
@@ -1028,19 +1037,37 @@ function createWorkResourceLineageExportInput(
               originalSnapshotPath: inputOriginalPath,
               packagePath: 'sources/turn-inputs/0.txt',
               projection: {
-                kind: 'descriptor' as const,
+                kind: retainRepresentation ? ('excerpt' as const) : ('descriptor' as const),
                 sourceRevision: '0',
-                representationId: 'unavailable-original-view-v1',
-                representationDigest: binaryDigest,
-                representationByteLength: binaryOriginal.byteLength,
+                representationId: retainRepresentation
+                  ? 'retained-text-fixture-v1'
+                  : 'unavailable-original-view-v1',
+                representationDigest: retainRepresentation
+                  ? `sha256:${createHash('sha256').update(representation).digest('hex')}`
+                  : binaryDigest,
+                representationByteLength: retainRepresentation
+                  ? Buffer.byteLength(representation)
+                  : binaryOriginal.byteLength,
                 deliveredDigest: `sha256:${createHash('sha256').update(inputDescriptor).digest('hex')}`,
-                ranges: [],
+                ranges: retainRepresentation
+                  ? [{ start: 0, end: Buffer.byteLength(inputDescriptor) }]
+                  : [],
                 byteLength: Buffer.byteLength(inputDescriptor),
                 truncated: true,
-                availability: 'unavailable' as const,
+                availability: retainRepresentation
+                  ? ('incomplete' as const)
+                  : ('unavailable' as const),
+                ...(retainRepresentation ? { representationSnapshotPath: representationPath } : {}),
                 originalSnapshotPath: inputOriginalPath,
               },
               deliveredBytes: Buffer.from(inputDescriptor),
+              ...(retainRepresentation
+                ? {
+                    async *openRepresentation() {
+                      yield Buffer.from(representation);
+                    },
+                  }
+                : {}),
               async *open() {
                 yield binaryOriginal;
               },
@@ -2309,13 +2336,20 @@ describe('workspace auxiliary lineage reminting', () => {
     );
   });
 
-  it('round trips binary source originals and a Material excerpt without expanding its preview', () => {
+  it.each([
+    false,
+    true,
+  ])('round trips binary originals and bounded previews with retained representation=%s', (retainRepresentation) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-source-snapshot-portability-'));
     let fixtureParent: string | undefined;
     try {
       const sourceRoot = join(root, 'source');
       mkdirSync(sourceRoot);
-      const input = createWorkResourceLineageExportInput(undefined, sourceRoot);
+      const input = createWorkResourceLineageExportInput(
+        undefined,
+        sourceRoot,
+        retainRepresentation
+      );
       fixtureParent = dirname(input.exportRoot);
       input.exportRoot = join(root, 'export');
       writeWorkspacePortableFileState(sourceRoot, input.portableFileState!);
@@ -2389,11 +2423,27 @@ describe('workspace auxiliary lineage reminting', () => {
       expect(material.originalSnapshotPath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
       expect(material.packagePath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
       const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
-      expect(JSON.parse(descriptorText).source).toEqual(binary.source.reference);
+      if (retainRepresentation) {
+        const retainedPath = binary.projection.representationSnapshotPath!;
+        const retained = readFileSync(join(packageRoot, retainedPath));
+        expect(retained.toString('utf8')).toContain('Later extracted text');
+        expect(retained.byteLength).toBeGreaterThan(Buffer.byteLength(descriptorText));
+        expect(descriptorText).toBe('Retained representation preview');
+        expect(binary.projection.representationDigest).toBe(
+          `sha256:${createHash('sha256').update(retained).digest('hex')}`
+        );
+        expect(binary.projection.representationDigest).not.toBe(binary.originalDigest);
+        // A retained representation is delivery evidence; a current source cannot repair it.
+        writeFileSync(join(packageRoot, retainedPath), 'changed representation');
+        expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).toThrow();
+        writeFileSync(join(packageRoot, retainedPath), retained);
+      } else {
+        expect(JSON.parse(descriptorText).source).toEqual(binary.source.reference);
+        expect(binary.projection.representationDigest).toBe(binary.originalDigest);
+      }
       expect(binary.projection.deliveredDigest).toBe(
         `sha256:${createHash('sha256').update(descriptorText).digest('hex')}`
       );
-      expect(binary.projection.representationDigest).toBe(binary.originalDigest);
       expect(material.projection.ranges).toEqual([{ start: 0, end: 10 }]);
       rmSync(join(packageRoot, binary.originalSnapshotPath));
       expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).toThrow();
