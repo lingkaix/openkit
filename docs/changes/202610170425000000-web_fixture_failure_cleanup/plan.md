@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: implemented
+status: verified
 date: 2026-10-17
 ---
 # Web Fixture Failure Cleanup
@@ -20,3 +20,9 @@ The complete fixture module on the builder's pre-Notebook base ended 15 passed a
 The first integrated exact-head gate at 2b777bd0 passed repository, lint, typecheck, all nine matching builds and the complete 16-case fixture module, including Material. The browser aggregate remains failed: 27 passed and one Workspace self-check failed. That case expected Overview within five seconds while Workspace creation was still pending. Its later connection refusal followed test teardown, so it does not prove a backend rejection. Test-only correction 3859f777 captures the exact creation POST response before the click and checks success before the unchanged navigation assertion. No timeout or existing assertion changed. The focused corrected journey passed, including every later privacy, member, disclosure and Debug check. The primary normally merged this correction and current main; independent delta review and the corrected complete browser gate remain required.
 
 Next Action: normally merge the committed helper branch, inspect exact terminal evidence, obtain independent review of the integrated head, and run the exact local gate including the complete Web browser suite. Land through the express path after current main is green and watch the containing main-push CI. P27 stays separate and waits for P17 on main.
+
+## Implementation Summary and Final Verification Evidence
+
+The correction retains actual owned children and detached process groups during each failure fixture, sends emergency signals before startup settlement, and reaps the children. One real-child regression distinguishes the old and corrected ordering. The later Workspace self-check correction waits for successful creation before its unchanged navigation assertion. No production behavior, authority, durable data or timeout changed.
+
+Exact head 0fa4a5d656e2da19ebfbd6fad9300030f34cfb6e completed LOCAL-GATE PASS at 2026-10-17 04:57:57Z. Repository checks, lint, typecheck, matching Retrieval Kernel and Native/Web builds passed. All 28 browser cases passed in 7.5 minutes, including all 16 fixture cases and both Workspace and Material journeys. The earlier failed gate and direct e2e typecheck limits remain recorded above. Independent source review L-WEB-cleanup-0fa4a5d656e2.md approves the correction; the external lane evidence retains the exact commands and terminal logs. This document-only closeout preserves the checked implementation and requires its exact repository/static check before landing. Publication still waits for current green main and the landing window, followed by the containing main-push CI. No deployed authentication or whole-server backup is claimed.
