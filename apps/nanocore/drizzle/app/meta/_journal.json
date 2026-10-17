@@ -15,6 +15,13 @@
       "when": 1792147966006,
       "tag": "0001_notebook_admission",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792227600000,
+      "tag": "0002_light_app_versions",
+      "breakpoints": true
     }
   ]
 }
