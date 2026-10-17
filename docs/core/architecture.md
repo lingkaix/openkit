@@ -85,7 +85,7 @@ Core may use lightweight internal roles for coordination. These roles remain ins
 | --- | --- | --- |
 | Core Assistant | Personal Assistant for private replies, clarification, state-query, triage and a bounded management entry using current user authority. After v0.1.0, the only agent in shared Chat acts as a Workspace role without personal context or administration Tools ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)). | Independent privileged identity, non-trivial worker execution or long-running workflow progression. |
 | Workflow Coordinator | Bounded structured decisions for workflow routing, worker selection, semantic worker-context composition, planning, and stopping. | Durable mode state, workflow side effects, context materialization or delivery, heavy execution, or direct Knowledge Store ownership. |
-| Knowledge Manager | Governed knowledge retrieval and maintenance coordination. | Overall workflow progression or final worker-context authority. |
+| Knowledge Manager | Agent role for source-cited answers and authorized writing, integration and organization of Memory and Knowledge. Maintains the bounded notebook overview for working agents. | Overall workflow progression or final worker-context authority. |
 | Task Evaluator | Reserved direction for governed evaluation of outcomes, verification, and improvement proposals. | Current worker execution or an unpromoted concrete evaluation architecture. |
 
 Internal roles may produce decisions or proposals only through normal Core services and records. They must not create private workflow, knowledge, evaluation, or product-state authorities.
