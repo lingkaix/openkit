@@ -24,6 +24,7 @@ import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import { readSkillCandidateArtifact } from '../skill-candidate-artifact.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -269,8 +270,10 @@ describe('synthetic Skill Artifact/catalog component', () => {
       join(dataRoot, 'config/gateway.jsonc'),
       JSON.stringify(createTestGatewayConfig())
     );
-    const executor = new SimulatedTurnExecutor({ coreDb });
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
+    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     const app = createApp({
+      fileAdmission,
       coreDb,
       dataRoot,
       store,
