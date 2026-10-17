@@ -3010,6 +3010,7 @@ export class FsStore {
       if (existing) return existing;
       const terminalSnapshot =
         envelope.data.type === 'turn-completed' &&
+        stopReasonMatchesSealedStatus(envelope.data.stopReason, turn.status) &&
         alreadyDecidedPublicationBytesEqual(envelope.data.turn, turn);
       const decidedItemSnapshot =
         admission?.category === 'already-decided-publication' &&
