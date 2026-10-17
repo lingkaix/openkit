@@ -17,6 +17,16 @@ OpenKit does not provide a generic Skill-authoring system. Users may select an a
 
 The engineer selected these three curated sources and explicit user choice at about 03:20 UTC on 2026-10-17, after excluding a generic OpenKit Skill author at about 03:05 UTC. The coordinator's 04:25 UTC RESUME assignment confirms the scope and defers Meta-Skill v1. Existing source admission and retained catalog authority serve this need without a new loader, registry or durable lifecycle.
 
+## Rejected Alternatives
+
+- Installing or updating recommended Skills with every App release would remove the required user choice.
+- A separate source registry or loader would duplicate existing catalog admission without a present need.
+- Shipping a generic OpenKit author would retain the product scope that the engineer excluded.
+
+## Revisit When
+
+Revisit when the engineer accepts another curated source or a separate authoring requirement. The future BWM Meta-Skill needs its own brief and does not reopen generic authoring by itself.
+
 ## Affected Owners
 
 - [Skill Catalog Versioning And Pinning](../specs/20260711-skill_catalog_versioning_pinning.md)

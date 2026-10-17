@@ -6528,6 +6528,224 @@
         }
       }
     },
+    "/api/app/operations/knowledge.notebook.history": {
+      "post": {
+        "operationId": "knowledge.notebook.history",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Read currently authorized Workspace notebook history.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/knowledge.notebook.history.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read currently authorized Workspace notebook history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/knowledge.notebook.history.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/knowledge.notebook.diff": {
+      "post": {
+        "operationId": "knowledge.notebook.diff",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Compare exact published Workspace notebook revisions or preview a selected restore.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/knowledge.notebook.diff.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Compare exact published Workspace notebook revisions or preview a selected restore.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/knowledge.notebook.diff.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/knowledge.notebook.restore": {
+      "post": {
+        "operationId": "knowledge.notebook.restore",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Restore selected historical pages through a new fixed-base Workspace publication.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/knowledge.notebook.restore.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restore selected historical pages through a new fixed-base Workspace publication.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/knowledge.notebook.restore.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/knowledge.notebook.update": {
+      "post": {
+        "operationId": "knowledge.notebook.update",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Publish one fixed-base Workspace notebook changeset.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/knowledge.notebook.update.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Publish one fixed-base Workspace notebook changeset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/knowledge.notebook.update.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/knowledge.list": {
       "post": {
         "operationId": "knowledge.list",
@@ -28639,8 +28857,7 @@
                   "minLength": 1
                 },
                 "content": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "string"
                 },
                 "sourceReferences": {
                   "type": "array",
@@ -29120,6 +29337,10 @@
                 "type": "number",
                 "const": 3
               },
+              "knowledgeNotebookRevision": {
+                "type": "string",
+                "minLength": 1
+              },
               "contentInventory": {
                 "type": "array",
                 "items": {
@@ -29331,6 +29552,10 @@
               "exportFormatVersion": {
                 "type": "number",
                 "const": 3
+              },
+              "knowledgeNotebookRevision": {
+                "type": "string",
+                "minLength": 1
               },
               "contentInventory": {
                 "type": "array",
@@ -29615,6 +29840,10 @@
               "exportFormatVersion": {
                 "type": "number",
                 "const": 3
+              },
+              "knowledgeNotebookRevision": {
+                "type": "string",
+                "minLength": 1
               },
               "contentInventory": {
                 "type": "array",
@@ -34374,6 +34603,10 @@
                       "exportFormatVersion": {
                         "type": "number",
                         "const": 3
+                      },
+                      "knowledgeNotebookRevision": {
+                        "type": "string",
+                        "minLength": 1
                       },
                       "contentInventory": {
                         "type": "array",
@@ -50093,7 +50326,7 @@
                         "invalid",
                         "OKF-compatible",
                         "OpenKit-profile-valid",
-                        "Workspace-schema-valid"
+                        "scope-schema-valid"
                       ]
                     },
                     "active": {
@@ -50887,6 +51120,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
           "knowledgePageId": {
             "type": "string",
             "maxLength": 240,
@@ -50922,6 +51159,7 @@
           }
         },
         "required": [
+          "baseRevision",
           "knowledgePageId",
           "canonicalPageBytes",
           "contentDigest",
@@ -50969,7 +51207,68 @@
               },
               "operation": {
                 "type": "string",
-                "const": "create"
+                "const": "notebook-change"
+              },
+              "ownerScope": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "userId": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "userId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "workspace"
+                      },
+                      "workspaceId": {
+                        "type": "string",
+                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "workspaceId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "server"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "baseRevision": {
+                "type": "string",
+                "minLength": 1
+              },
+              "candidateRevision": {
+                "type": "string",
+                "minLength": 1
               },
               "knowledgePageId": {
                 "type": "string",
@@ -51099,6 +51398,9 @@
               "id",
               "workspaceId",
               "operation",
+              "ownerScope",
+              "baseRevision",
+              "candidateRevision",
               "knowledgePageId",
               "canonicalPageBytes",
               "contentDigest",
@@ -51116,7 +51418,7 @@
             "properties": {
               "conformance": {
                 "type": "string",
-                "const": "Workspace-schema-valid"
+                "const": "scope-schema-valid"
               },
               "generatedFromCompletedWorkHistory": {
                 "type": "boolean"
@@ -51415,6 +51717,18 @@
               "deferred"
             ]
           },
+          "proposalDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "candidateRevision": {
+            "type": "string",
+            "minLength": 1
+          },
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -51426,6 +51740,9 @@
         },
         "required": [
           "decision",
+          "proposalDigest",
+          "baseRevision",
+          "candidateRevision",
           "workspaceId",
           "proposalId"
         ],
@@ -51445,6 +51762,67 @@
               "workspaceId": {
                 "type": "string",
                 "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ownerScope": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "userId": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "userId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "workspace"
+                      },
+                      "workspaceId": {
+                        "type": "string",
+                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "workspaceId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "server"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "baseRevision": {
+                "type": "string",
+                "minLength": 1
+              },
+              "candidateRevision": {
+                "type": "string",
+                "minLength": 1
               },
               "reviewId": {
                 "type": "string",
@@ -51576,6 +51954,9 @@
             "required": [
               "proposalId",
               "workspaceId",
+              "ownerScope",
+              "baseRevision",
+              "candidateRevision",
               "reviewId",
               "requestId",
               "decision",
@@ -51604,12 +51985,17 @@
                   },
                   "present": {
                     "type": "boolean"
+                  },
+                  "notebookRevision": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [
                   "knowledgePageId",
                   "contentDigest",
-                  "present"
+                  "present",
+                  "notebookRevision"
                 ],
                 "additionalProperties": false
               },
@@ -51629,6 +52015,14 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confirmRemoval": {
+            "type": "boolean",
+            "const": true
+          },
           "reviewId": {
             "type": "string",
             "pattern": "^kr_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -51652,6 +52046,7 @@
           }
         },
         "required": [
+          "baseRevision",
           "reviewId",
           "knowledgePageId",
           "expectedContentDigest",
@@ -51685,14 +52080,18 @@
                 "pattern": "^sha256:[a-f0-9]{64}$"
               },
               "present": {
-                "type": "boolean",
-                "const": false
+                "type": "boolean"
+              },
+              "notebookRevision": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "knowledgePageId",
               "contentDigest",
-              "present"
+              "present",
+              "notebookRevision"
             ],
             "additionalProperties": false
           }
@@ -51701,6 +52100,593 @@
           "proposalId",
           "reviewId",
           "application"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.history.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.history.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revisions": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "revision": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "parentRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "availability": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "producer": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "integration",
+                                "system"
+                              ]
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "automation"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "changedPaths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 243,
+                        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                      }
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "parentRevision",
+                    "availability",
+                    "summary",
+                    "producer",
+                    "changedPaths"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "revision": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "parentRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "availability": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "parentRevision",
+                    "availability"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "nextRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "notebookRevision",
+          "revisions",
+          "nextRevision"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.diff.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fromRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pageIds": {
+            "minItems": 1,
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "forRestore": {
+            "type": "boolean",
+            "const": true
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "baseRevision",
+          "fromRevision",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.diff.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fromRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "forRestore": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "changes": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                },
+                "before": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "after": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "before",
+                "after"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "baseRevision",
+          "fromRevision",
+          "forRestore",
+          "truncated",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.restore.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fromRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pageIds": {
+            "minItems": 1,
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "confirmRemoval": {
+            "type": "boolean",
+            "const": true
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "baseRevision",
+          "fromRevision",
+          "pageIds",
+          "summary",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.restore.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "workspaceId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "const": "knowledge.notebook.restore"
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.update.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changes": {
+            "minItems": 1,
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                },
+                "content": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "baseRevision",
+          "changes",
+          "summary",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.notebook.update.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "workspaceId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "const": "knowledge.notebook.update"
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
         ],
         "additionalProperties": false
       },
@@ -51722,6 +52708,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
           "items": {
             "type": "array",
             "items": {
@@ -51744,8 +52734,7 @@
                   "minLength": 1
                 },
                 "content": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "string"
                 },
                 "sourceReferences": {
                   "type": "array",
@@ -51761,6 +52750,10 @@
                 "updatedAt": {
                   "type": "string",
                   "minLength": 1
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
                 }
               },
               "required": [
@@ -51769,13 +52762,15 @@
                 "title",
                 "content",
                 "createdAt",
-                "updatedAt"
+                "updatedAt",
+                "contentDigest"
               ],
               "additionalProperties": false
             }
           }
         },
         "required": [
+          "notebookRevision",
           "items"
         ],
         "additionalProperties": false
@@ -51784,6 +52779,14 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "knowledgePageId": {
+            "type": "string",
+            "minLength": 1
+          },
           "kind": {
             "type": "string",
             "enum": [
@@ -51813,6 +52816,8 @@
           }
         },
         "required": [
+          "baseRevision",
+          "knowledgePageId",
           "kind",
           "title",
           "content",
@@ -51841,8 +52846,7 @@
             "minLength": 1
           },
           "content": {
-            "type": "string",
-            "minLength": 1
+            "type": "string"
           },
           "sourceReferences": {
             "type": "array",
@@ -51874,6 +52878,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
           "title": {
             "type": "string",
             "minLength": 1
@@ -51892,6 +52900,7 @@
           }
         },
         "required": [
+          "baseRevision",
           "workspaceId",
           "knowledgeEntryId"
         ],
@@ -51918,8 +52927,7 @@
             "minLength": 1
           },
           "content": {
-            "type": "string",
-            "minLength": 1
+            "type": "string"
           },
           "sourceReferences": {
             "type": "array",
@@ -51951,9 +52959,21 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "expectedContentDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "confirmRemoval": {
+            "type": "boolean",
+            "const": true
           },
           "knowledgeEntryId": {
             "type": "string",
@@ -51961,7 +52981,10 @@
           }
         },
         "required": [
+          "baseRevision",
           "workspaceId",
+          "expectedContentDigest",
+          "confirmRemoval",
           "knowledgeEntryId"
         ],
         "additionalProperties": false
@@ -72781,6 +73804,18 @@
                           "type": "string",
                           "minLength": 1
                         },
+                        "proposalDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "baseRevision": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "candidateRevision": {
+                          "type": "string",
+                          "minLength": 1
+                        },
                         "workspaceId": {
                           "type": "string",
                           "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -72793,6 +73828,9 @@
                       "required": [
                         "type",
                         "knowledgeProposalId",
+                        "proposalDigest",
+                        "baseRevision",
+                        "candidateRevision",
                         "workspaceId",
                         "status"
                       ],
@@ -78480,6 +79518,232 @@
                     }
                   ]
                 },
+                "notebookAdmission": {
+                  "type": "object",
+                  "properties": {
+                    "ownerScope": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "userId": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "userId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "workspace"
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "workspaceId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "server"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "inputDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "baseRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "candidateRevision": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "producer": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "integration",
+                                "system"
+                              ]
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "automation"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "authority": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "direct"
+                            },
+                            "instructionReference": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "instructionReference"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "proposal"
+                            },
+                            "proposalId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "proposalId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "sourceReferences": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "ownerScope",
+                    "requestId",
+                    "inputDigest",
+                    "baseRevision",
+                    "candidateRevision",
+                    "producer",
+                    "authority",
+                    "sourceReferences"
+                  ],
+                  "additionalProperties": false
+                },
                 "outcome": {
                   "type": "string",
                   "enum": [
@@ -78929,6 +80193,232 @@
                       "type": "null"
                     }
                   ]
+                },
+                "notebookAdmission": {
+                  "type": "object",
+                  "properties": {
+                    "ownerScope": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "userId": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "userId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "workspace"
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "workspaceId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "server"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "inputDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "baseRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "candidateRevision": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "producer": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "integration",
+                                "system"
+                              ]
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "automation"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "responsibleUserId": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id",
+                            "responsibleUserId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "authority": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "direct"
+                            },
+                            "instructionReference": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "instructionReference"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "proposal"
+                            },
+                            "proposalId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "proposalId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "sourceReferences": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "ownerScope",
+                    "requestId",
+                    "inputDigest",
+                    "baseRevision",
+                    "candidateRevision",
+                    "producer",
+                    "authority",
+                    "sourceReferences"
+                  ],
+                  "additionalProperties": false
                 },
                 "outcome": {
                   "type": "string",
@@ -97813,6 +99303,10 @@
                         "type": "number",
                         "const": 3
                       },
+                      "knowledgeNotebookRevision": {
+                        "type": "string",
+                        "minLength": 1
+                      },
                       "contentInventory": {
                         "type": "array",
                         "items": {
@@ -100406,6 +101900,10 @@
                 "type": "number",
                 "const": 3
               },
+              "knowledgeNotebookRevision": {
+                "type": "string",
+                "minLength": 1
+              },
               "contentInventory": {
                 "type": "array",
                 "items": {
@@ -100669,6 +102167,10 @@
                 "type": "number",
                 "const": 3
               },
+              "knowledgeNotebookRevision": {
+                "type": "string",
+                "minLength": 1
+              },
               "contentInventory": {
                 "type": "array",
                 "items": {
@@ -100917,5 +102419,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e443a1e399e99ea83af8c0b37f8137313996cdeb55fd9bf685117b25bb754637"
+  "x-openkit-source-digest": "sha256:659ab6b1c93f11236c85e688a4a0f266254b090692367737a815cc6ee8033c41"
 }
