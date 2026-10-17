@@ -56,7 +56,7 @@ function digest(bytes: string): string {
 export function createServerNotebookProposal(
   context: ServerNotebookProposalContext,
   edit: NotebookEdit,
-  producer: Extract<ActorRef, { kind: 'agent' }>,
+  producer: ActorRef & { kind: 'agent' },
   sourceReferences: readonly string[]
 ): Proposal {
   requireCurrentDeploymentAdmin(context.coreDb, context.actor);
@@ -72,7 +72,7 @@ export function createServerNotebookProposal(
           ? content
           : attributedNotebookPageBytes(path, content, { kind: 'server' }, 'delegated'),
     }))
-    .sort((a, b) => a.path.localeCompare(b.path));
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const files = { ...base.files };
   for (const { path, content } of changes) {
     if (content === null) delete files[path];
@@ -172,7 +172,13 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
     )
   )
     throw new NotebookError('recovery_required');
-  context.revalidate();
+  const validation = validateNotebookCandidate({
+    ownerScope: { kind: 'server' },
+    base,
+    candidate: { files: candidate.files },
+    ...context.revalidate(),
+  });
+  if (validation.errors.length) throw new NotebookError('recovery_required');
   return {
     proposal,
     proposalDigest: digest(bytes),

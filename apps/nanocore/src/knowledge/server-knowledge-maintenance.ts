@@ -159,7 +159,6 @@ export function prepareServerKnowledgeMaintenance(
   const busy = history.some((turn) => turn.status === 'running' || turn.status === 'pending');
   const turn = store.createServerTurn(thread.id, input.instructions, input.actor, null, {
     agentId: 'knowledge-manager',
-    executorKind: 'assistant',
     ...(input.startedAt ? { startedAt: input.startedAt } : {}),
     ...(busy ? { status: 'completed' as const } : {}),
     triggerSource: {
@@ -611,4 +610,22 @@ export async function runServerKnowledgeMaintenanceCommand(
       );
     },
   });
+}
+
+/** Boot marks interrupted Server KM work inspect-only; it never replays a model or notebook effect. */
+export function recoverServerKnowledgeManagerTurns(store: FsStore): void {
+  for (const thread of store.listServerThreads())
+    for (const turn of store.listServerThreadTurns(thread.id)) {
+      if (turn.agentId !== 'knowledge-manager' || !['pending', 'running'].includes(turn.status))
+        continue;
+      store.updateServerTurn(turn.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: {
+          code: 'recovery_required',
+          message:
+            'Server Knowledge maintenance was interrupted. Inspect its retained work and start a new request.',
+        },
+      });
+    }
 }

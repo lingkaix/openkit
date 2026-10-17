@@ -117,7 +117,7 @@ export function pinKnowledgeManagerExecution(
     throw new Error('Knowledge Manager input is unavailable.');
   const snapshot = dependencies.runtimeConfig();
   const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
-  const workspaceId = 'workspaceId' in turn ? turn.workspaceId : undefined;
+  const workspaceId = 'owner' in turn ? undefined : turn.workspaceId;
   const workspaceConfig = workspaceId
     ? findWorkspaceConfig(snapshot, workspaceId)?.config
     : undefined;
@@ -283,12 +283,19 @@ async function executeKnowledgeManagerAgent(
     ];
     const commitMessages = createKnowledgeManagerTranscript(store, turn, turn.triggerActor);
     const result = await withTurnModelCapture(
-      {
-        store,
-        turn,
-        ...('kind' in input ? { coreDb: input.coreDb } : { workspaceDb: input.workspaceDb }),
-        environment: { systemPrompt, tools },
-      },
+      'kind' in input
+        ? {
+            store,
+            turn: store.getServerTurnById(turn.id),
+            coreDb: input.coreDb,
+            environment: { systemPrompt, tools },
+          }
+        : {
+            store,
+            turn: store.getTurnById(turn.id),
+            workspaceDb: input.workspaceDb,
+            environment: { systemPrompt, tools },
+          },
       async (capture) => {
         const ordinary = createInternalAgentGatewayProvider({
           capture,
@@ -312,17 +319,15 @@ async function executeKnowledgeManagerAgent(
             : {}),
           promptCacheScope: {
             sessionId: turn.threadId,
-            ...('workspaceId' in turn
-              ? { workspaceId: turn.workspaceId }
-              : { owner: { kind: 'server' as const } }),
+            ...('owner' in turn ? {} : { workspaceId: turn.workspaceId }),
           },
           usageEndpoint: 'responses',
           callContext: {
             authorityActor: turn.triggerActor,
             agentId: 'knowledge-manager',
-            ...('workspaceId' in turn
-              ? { workspaceId: turn.workspaceId }
-              : { owner: { kind: 'server' as const } }),
+            ...('owner' in turn
+              ? { owner: { kind: 'server' as const } }
+              : { workspaceId: turn.workspaceId }),
             family: 'llm',
             operation: 'knowledge.run',
             capabilityId: 'inference.local.knowledge-manager',
@@ -480,9 +485,9 @@ export function createKnowledgeManagerTranscript(
           const timestamp = new Date().toISOString();
           const base = {
             id: allocateEntityId('it'),
-            ...('workspaceId' in turn
-              ? { workspaceId: turn.workspaceId }
-              : { owner: { kind: 'server' as const } }),
+            ...('owner' in turn
+              ? { owner: { kind: 'server' as const } }
+              : { workspaceId: turn.workspaceId }),
             threadId: turn.threadId,
             turnId: turn.id,
             status: 'completed' as const,
@@ -516,9 +521,9 @@ export function createKnowledgeManagerTranscript(
             key,
             create({
               id: allocateEntityId('it'),
-              ...('workspaceId' in turn
-                ? { workspaceId: turn.workspaceId }
-                : { owner: { kind: 'server' as const } }),
+              ...('owner' in turn
+                ? { owner: { kind: 'server' as const } }
+                : { workspaceId: turn.workspaceId }),
               threadId: turn.threadId,
               turnId: turn.id,
               type: 'tool-call',

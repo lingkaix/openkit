@@ -241,6 +241,8 @@ const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export type CommandRequestName =
   | 'knowledge.tell'
   | 'knowledge.maintain'
+  | 'knowledge.server.maintain'
+  | 'knowledge.server.tell'
   | 'administration.server-mcp-create'
   | 'administration.server-mcp-stage-version'
   | 'administration.server-mcp-select-version'
