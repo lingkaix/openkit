@@ -6,11 +6,24 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactVersionHistory } from './ArtifactVersionHistory';
 
-const { list, read } = vi.hoisted(() => ({ list: vi.fn(), read: vi.fn() }));
+const { list, read, commit, commitFile, threads } = vi.hoisted(() => ({
+  list: vi.fn(),
+  read: vi.fn(),
+  commit: vi.fn(),
+  commitFile: vi.fn(),
+  threads: vi.fn(),
+}));
 vi.mock('../../app/core-client', () => ({
   useCoreClient: () => ({
-    operations: { 'artifact.version-list': list, 'artifact.version-read': read },
+    operations: {
+      'artifact.version-list': list,
+      'artifact.version-read': read,
+      'artifact.read': () => Promise.resolve(current),
+      'artifact.version-commit': commit,
+      'thread.list': threads,
+    },
     artifactFiles: {
+      commitVersion: commitFile,
       browserDownloadUrl: (input: { artifactId: string; artifactVersion: number }) =>
         `/download/${input.artifactId}/${input.artifactVersion}`,
     },
@@ -57,6 +70,8 @@ const firstVersion = {
   artifactVersion: 1,
   parentVersion: null,
   contentDigest: first.contentDigest,
+  title: first.title,
+  summary: first.summary,
   actor,
   threadId: null,
   turnId: null,
@@ -81,6 +96,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   list.mockResolvedValue({ items: [firstVersion, secondVersion] });
   read.mockResolvedValue({ artifact: first, version: firstVersion });
+  threads.mockResolvedValue({
+    items: [
+      {
+        id: secondVersion.threadId,
+        name: 'Report discussion',
+        visibility: 'workspace',
+        status: 'active',
+      },
+    ],
+  });
+  commit.mockRejectedValue(new Error('uncertain private transport failure'));
+  commitFile.mockRejectedValue(new Error('uncertain private transport failure'));
 });
 
 /** Mounts real query state around controlled exact-version operations. */
@@ -101,6 +128,112 @@ function mount(artifact = current) {
 }
 
 describe('Artifact version history', () => {
+  it('streams exact selected replacement bytes with their digest under the retained parent', async () => {
+    // JSDOM needs FileReader to supply the browser Blob byte-read method.
+    Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+      configurable: true,
+      value: function (this: Blob) {
+        return new Promise<ArrayBuffer>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as ArrayBuffer);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsArrayBuffer(this);
+        });
+      },
+    });
+    mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create next version' }));
+    await user.click(await screen.findByRole('button', { name: /Publishing conversation/ }));
+    await user.click(await screen.findByRole('option', { name: 'Report discussion' }));
+    const file = new File([new Uint8Array([0, 255, 128, 13, 10])], 'replacement.bin', {
+      type: 'application/octet-stream',
+    });
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
+    await user.click(screen.getByRole('button', { name: 'Save new version' }));
+    await waitFor(() => expect(commitFile).toHaveBeenCalledTimes(1));
+    expect(commitFile.mock.calls[0]).toEqual([
+      expect.objectContaining({
+        workspaceId: current.workspaceId,
+        artifactId: current.id,
+        threadId: secondVersion.threadId,
+        expectedArtifactVersion: 2,
+        byteLength: 5,
+        mediaType: 'application/octet-stream',
+        contentDigest: 'sha256:6171db06a1c89b1ff8ab77e479d5df976ccd88a7b63567b4b18f413649e12ff3',
+      }),
+      file,
+    ]);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('renders binary originals as metadata and exact downloads without a text preview', async () => {
+    mount(
+      ArtifactSchema.parse({
+        ...current,
+        content: { format: 'file', mediaType: 'application/octet-stream', byteLength: 5 },
+      })
+    );
+    expect(await screen.findByText('application/octet-stream')).toBeInTheDocument();
+    expect(screen.getByText('5 bytes')).toBeInTheDocument();
+    expect(screen.queryByText('# Exact second version')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download original' })).toHaveAttribute(
+      'href',
+      `/download/${current.id}/2`
+    );
+  });
+
+  it('requires a current read and explicit parent choice after a version conflict', async () => {
+    commit.mockRejectedValue(new ApiCallError(409, 'private conflict', { code: 'conflict' }));
+    mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create next version' }));
+    await user.click(await screen.findByRole('button', { name: /Publishing conversation/ }));
+    await user.click(await screen.findByRole('option', { name: 'Report discussion' }));
+    await user.click(screen.getByRole('button', { name: 'Save new version' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The artifact changed.');
+    expect(
+      screen.queryByRole('button', { name: 'Retry same version request' })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Use version 2 as parent' })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Version content' })).toHaveValue(
+      current.content.format === 'file' ? '' : current.content.body
+    );
+    await user.click(screen.getByRole('button', { name: 'Refresh current version' }));
+    await user.click(await screen.findByRole('button', { name: 'Use version 2 as parent' }));
+    expect(screen.getByRole('button', { name: 'Save new version' })).toBeEnabled();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the edited next-version draft and retries an uncertain commit with the same request', async () => {
+    mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create next version' }));
+    const content = await screen.findByRole('textbox', { name: 'Version content' });
+    await user.clear(content);
+    await user.type(content, '# Explicit next version');
+    await user.click(screen.getByRole('button', { name: /Publishing conversation/ }));
+    await user.click(await screen.findByRole('option', { name: 'Report discussion' }));
+    await user.click(screen.getByRole('button', { name: 'Save new version' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The result is unknown.');
+    expect(alert).not.toHaveTextContent('private transport');
+    expect(content).toHaveValue('# Explicit next version');
+    expect(screen.getByRole('button', { name: 'Save new version' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Retry same version request' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    expect(commit.mock.calls[1]).toEqual(commit.mock.calls[0]);
+    expect(commit.mock.calls[0][0]).toMatchObject({
+      workspaceId: current.workspaceId,
+      artifactId: current.id,
+      threadId: secondVersion.threadId,
+      expectedArtifactVersion: 2,
+      content: { format: 'markdown', body: '# Explicit next version' },
+    });
+  });
+
   it('inspects exact retained content and provenance without changing the current head', async () => {
     const view = mount();
     expect(await screen.findByText('Current head: version 2')).toBeInTheDocument();
@@ -123,7 +256,7 @@ describe('Artifact version history', () => {
       artifactId: first.id,
       artifactVersion: 1,
     });
-    expect(view.onVersionChange).toHaveBeenLastCalledWith(1);
+    expect(view.onVersionChange).toHaveBeenLastCalledWith(1, true);
     expect(screen.getByText('Current head: version 2')).toBeInTheDocument();
   });
 
