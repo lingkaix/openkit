@@ -7,6 +7,7 @@ import {
   SchedulerAdmissionReadModelSchema,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient, createCoreClient } from '@openkit/core-client';
+import { ArtifactSchema, ArtifactVersionSchema } from '@openkit/protocol';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -295,17 +296,42 @@ const SEARCH_ARTIFACT_DISTRACTOR = {
   summary: 'Distractor summary',
   version: 1,
 };
-const SEARCH_ARTIFACT_RECORD = {
+const SEARCH_ARTIFACT_RECORD = ArtifactSchema.parse({
   id: SEARCH_ARTIFACT.id,
   workspaceId: WORKSPACE_B.id,
+  threadId: 'th_00000000-0000-7fe0-b2ef-80794233eb26',
+  turnId: 'tu_00000000-0000-7000-8000-000000000002',
   kind: 'report' as const,
   status: 'ready' as const,
   title: SEARCH_ARTIFACT.title,
   summary: 'One-page research summary.',
   version: 1,
   content: { format: 'markdown' as const, body: SEARCH_ARTIFACT_BODY },
-  origin: { kind: 'turn-output' as const },
-};
+  contentDigest: 'sha256:52286f2e0bdbacafd902f852cd871cd72fff890de36045da99bc90e55038e11e',
+  lastMutationRequestId: 'artifact-search-preview',
+  origin: {
+    kind: 'turn-output',
+    threadId: 'th_00000000-0000-7fe0-b2ef-80794233eb26',
+    turnId: 'tu_00000000-0000-7000-8000-000000000002',
+    requestId: 'artifact-search-preview',
+  },
+  createdAt: TIMESTAMP,
+  updatedAt: TIMESTAMP,
+});
+const SEARCH_ARTIFACT_VERSION = ArtifactVersionSchema.parse({
+  workspaceId: SEARCH_ARTIFACT_RECORD.workspaceId,
+  artifactId: SEARCH_ARTIFACT_RECORD.id,
+  artifactVersion: SEARCH_ARTIFACT_RECORD.version,
+  parentVersion: null,
+  title: SEARCH_ARTIFACT_RECORD.title,
+  summary: SEARCH_ARTIFACT_RECORD.summary,
+  contentDigest: SEARCH_ARTIFACT_RECORD.contentDigest,
+  actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+  threadId: SEARCH_ARTIFACT_RECORD.threadId,
+  turnId: SEARCH_ARTIFACT_RECORD.turnId,
+  requestId: SEARCH_ARTIFACT_RECORD.lastMutationRequestId,
+  recordedAt: SEARCH_ARTIFACT_RECORD.updatedAt,
+});
 const SEARCH_ARTIFACT_DESTINATION = `/artifacts?workspaceId=${WORKSPACE_B.id}&artifact=${SEARCH_ARTIFACT.id}`;
 const WORKER_RELEASE_ACTION = /release checkpoint|fresh attempt/i;
 const WORKER_RETRY_SUCCESS = RetryInterruptedWorkerCheckpointResponseSchema.parse({
@@ -2719,9 +2745,26 @@ describe('Recovery and search', () => {
           return Promise.reject(new Error(`Artifact not found: ${artifactId}`));
         }
       );
+    const listVersions = vi
+      .fn()
+      .mockImplementation(
+        ({
+          workspaceId,
+          artifactId,
+        }: Parameters<CoreClient['operations']['artifact.version-list']>[0]) => {
+          if (workspaceId === WORKSPACE_B.id && artifactId === SEARCH_ARTIFACT.id) {
+            return Promise.resolve({ items: [SEARCH_ARTIFACT_VERSION] });
+          }
+          return Promise.reject(new Error(`Artifact history not found: ${artifactId}`));
+        }
+      );
     const client = makeClient(
       { 'app.search': vi.fn().mockResolvedValue({ items: [SEARCH_ARTIFACT] }) },
-      { 'artifact.list': listArtifacts, 'artifact.read': getArtifact }
+      {
+        'artifact.list': listArtifacts,
+        'artifact.read': getArtifact,
+        'artifact.version-list': listVersions,
+      }
     );
     renderApp('/chat', client, (next) => {
       pathname = next;
@@ -2749,6 +2792,9 @@ describe('Recovery and search', () => {
       ])
     );
     expect(await screen.findByText(SEARCH_ARTIFACT_BODY)).toBeInTheDocument();
+    expect(listVersions.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE_B.id, artifactId: SEARCH_ARTIFACT.id }],
+    ]);
     expect(screen.queryByText(SEARCH_ARTIFACT_DISTRACTOR_BODY)).not.toBeInTheDocument();
     expect(screen.queryByText(SEARCH_ARTIFACT_DISTRACTOR.title)).toBeInTheDocument();
     unsubscribe();
