@@ -164,6 +164,8 @@ function MaterialDetail({
   const [openedRevisionId, setOpenedRevisionId] = useState<string | null>(null);
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [rangeApplyBusy, setRangeApplyBusy] = useState(false);
   const record = material.data?.material;
   const currentRevisionId = record?.currentRevisionId ?? null;
   const selectedRevisionId = openedRevisionId ?? currentRevisionId;
@@ -242,13 +244,18 @@ function MaterialDetail({
         ) : null}
         <div className="mt-5">
           {currentContent !== undefined || currentRevisionId === null ? (
-            <fieldset disabled={disconnected}>
+            <fieldset
+              disabled={
+                disconnected || rangeApplyBusy || material.isError || currentRevision.isError
+              }
+            >
               <MaterialEditor
                 key={currentRevisionId ?? 'empty'}
                 label={record.title}
                 kind={record.kind}
                 initialValue={currentContent ?? ''}
                 onSave={saveDraft}
+                onDirtyChange={setEditorDirty}
               />
             </fieldset>
           ) : currentRevision.isError ? null : (
@@ -274,15 +281,17 @@ function MaterialDetail({
               onRetry={() => void revisions.refetch()}
             />
           ) : null}
-          <RevisionHistory
-            revisions={revisionItems}
-            selectedRevisionId={selectedRevisionId}
-            onOpen={(revisionId) => {
-              setOpenedRevisionId(revisionId);
-              setComparisonOpen(false);
-            }}
-            onCompare={() => setComparisonOpen(true)}
-          />
+          <fieldset disabled={rangeApplyBusy}>
+            <RevisionHistory
+              revisions={revisionItems}
+              selectedRevisionId={selectedRevisionId}
+              onOpen={(revisionId) => {
+                setOpenedRevisionId(revisionId);
+                setComparisonOpen(false);
+              }}
+              onCompare={() => setComparisonOpen(true)}
+            />
+          </fieldset>
         </>
       )}
 
@@ -293,6 +302,8 @@ function MaterialDetail({
           revision={revision.data.revision}
           disabled={disconnected || revision.isFetching || material.isFetching}
           unavailable={!revision.isSuccess || material.isError}
+          applyDisabled={editorDirty || save.isPending}
+          onApplyBusyChange={setRangeApplyBusy}
           onInspect={() => setOpenedRevisionId(selectedRevisionId)}
           onRefresh={async () => (await revision.refetch()).isSuccess}
         />

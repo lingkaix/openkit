@@ -1,5 +1,5 @@
 import { type CoreClient, createRequestId } from '@openkit/core-client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { TextField as AriaTextField, Label, TextArea } from 'react-aria-components';
 import { Button, TextField } from '../../primitives';
 import {
@@ -20,6 +20,10 @@ export function MaterialJudgements(props: {
   revision: Awaited<ReturnType<CoreClient['operations']['material.revision-read']>>['revision'];
   disabled: boolean;
   unavailable?: boolean;
+  /** Applying advances the editor baseline; annotations and rejection have no content effect. */
+  applyDisabled?: boolean;
+  /** Projects the existing Apply mutation state so the main editor cannot race its revision effect. */
+  onApplyBusyChange?: (busy: boolean) => void;
   onRefresh?: () => Promise<boolean>;
   onInspect?: () => void;
 }) {
@@ -54,6 +58,12 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
   const [note, setNote] = useState('');
   const assessment = useAddJudgement();
   const correction = useCorrectMaterialRange();
+  const applyBusy =
+    correction.variables?.decision === 'apply' &&
+    (correction.isPending || (correction.isError && !judgementRefused(correction.error)));
+  useEffect(() => {
+    props.onApplyBusyChange?.(applyBusy);
+  }, [applyBusy, props.onApplyBusyChange]);
   const locked =
     assessment.isPending || assessment.isError || correction.isPending || correction.isError;
   const disabled = props.disabled || props.unavailable || locked;
@@ -72,7 +82,7 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
   for (const record of [assessment.data, correction.data])
     if (record && !items.some((entry) => entry.requestId === record.requestId)) items.push(record);
   function correct(decision: 'apply' | 'reject') {
-    if (!target || disabled) return;
+    if (!target || disabled || (decision === 'apply' && props.applyDisabled)) return;
     correction.mutate({
       workspaceId: props.workspaceId,
       requestId: createRequestId(),
@@ -128,7 +138,7 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
         <Button
           size="sm"
           variant="outline"
-          isDisabled={disabled || !target}
+          isDisabled={disabled || !target || props.applyDisabled}
           onPress={() => correct('apply')}
         >
           Apply range correction
@@ -142,6 +152,17 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
           Reject range correction
         </Button>
       </div>
+      {applyBusy ? (
+        <p className="text-xs text-notice-fg">
+          The main editor and revision selection are locked while Apply is pending or its result is
+          unknown. Retry the same request after an unknown result.
+        </p>
+      ) : null}
+      {props.applyDisabled ? (
+        <p className="text-xs text-notice-fg">
+          Save the main editor draft before applying a range correction.
+        </p>
+      ) : null}
       <p className="text-xs text-fg-muted">
         Apply requests a new Material revision from this exact original range. Reject records the
         correction without changing content. Empty replacement text deletes the range.
