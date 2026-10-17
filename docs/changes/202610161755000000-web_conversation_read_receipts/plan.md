@@ -1,7 +1,7 @@
 ---
 type: change-plan
-status: in-progress
-date: "2026-10-16"
+status: verified
+date: "2026-10-17"
 branch: lane/web-p26-interrupt-actor
 ---
 # Conversation Read Receipts and Goal Navigation
@@ -91,3 +91,12 @@ Initial merge resolves the eight actual conflicts by composing criteria: Audit r
 ## Landed Timeline Integration Evidence
 
 At merged source 6d50dcc50c3e6e02c6af850168177d42cc7db7dd, matching dependency and CLI builds, OpenAPI generation and validation, Web typecheck, the complete App/Chat/Workspace/Settings Web modules (779 tests in 32 files) and the complete operation-inventory guard passed. The actual runtime inventory is 243 total, 58 server, two Gateway and 183 Web-included operations. Generation adds only thread.mark-read and thread.read-state plus their four schemas, and updates conversation.navigation.output; no existing endpoint changes or disappears. The only additional Web source diff is formatter output. Raw evidence is retained under evidence/L-WEB/p26-timeline-integration in the assigned backlog. These are integration components, not the first complete exact-head Express gate. Native owner checks, shared Message/root App coverage, local browser checks and independent authored-merge review remain open.
+
+
+## Implementation Summary and Final Verification Evidence
+
+The combined P26 increment landed at c3c6530c449796cc809f29fbff38c449ba9417fe on 2026-10-17 at 00:51Z. Independent review L-WEB-P26-9441803eaab7.md approved the source and named the complete retained owner suites. Exact head 9441803eaab7 passed its complete 27-case browser gate. Its clean main merge c3c passed repository, lint, typecheck and all 78 cases in the three complete overlapping Native files. The external L-WEB checkpoint retains the exact commands, source limits and gate logs; failed earlier attempts remain failed evidence.
+
+The containing main run 38988296286 exposed one browser fixture failure: scrollIntoViewIfNeeded used a detached receipt body element after the display check. Reviewed test-only repair 3a61a8608257b5b8104600aa750e26ec3f751580 retains the current-locator visibility and viewport checks, exact receipt payload and read state, and persistence after Core restart. Its exact-head gate passed all 27 browser cases and required repository/static checks. Independent review L-WEB-P26-repair-3a61a8608257.md approved the correction and its evidence. The repair landed through the reviewed express repair path at 01:12Z. Containing main CI run 38989883655 completed SUCCESS, including the Web browser, Native, root and coverage jobs.
+
+These results verify User-owned display and explicit-read receipts, real Goal card grouping with retained attempts, Assistant and member navigation, and the existing Audit projection of the actual Stop requester. P19 retains Timeline internals. The feature adds no Turn merely to open Assistant and never marks prefetched content read. Local simulator and main CI evidence do not establish deployed real-authentication acceptance; L-OPS retains that separate responsibility. No deployment, whole-server backup, release or tag is claimed.

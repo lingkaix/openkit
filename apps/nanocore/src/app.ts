@@ -81,6 +81,7 @@ import {
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import { registerDiscordInteractionRoutes } from './discord-interaction-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
+import { checkMemoryForgetIntent } from './knowledge/memory-forget.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
@@ -151,6 +152,7 @@ import {
 } from './runtime/orchestrator.js';
 import {
   installPendingRequestAdmission,
+  type PendingAdmissionDependencies,
   setPendingRequestAttentionObserver,
 } from './runtime/pending-request-flow.js';
 import { cancelOwnedQueuedAdmission, startProductTurn } from './runtime/product-turn-start.js';
@@ -1685,6 +1687,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     record: import('./runtime/pending-requests.js').PendingRequestRecord
   ): void => advanceGoalForThread(sqlite, record.threadId);
 
+  const checkCommandIntent: NonNullable<PendingAdmissionDependencies['checkCommandIntent']> = (
+    sqlite,
+    record,
+    actor
+  ) => {
+    if (record.governedIntent?.operation === 'memory.forget')
+      checkMemoryForgetIntent(sqlite, record, actor, options.coreDb!, sharedStore);
+    else checkGoalCommandIntent(sqlite, record);
+  };
+
   const chatService = createConversationService({
     providerCredentialConfigured,
     coreDb: options.coreDb,
@@ -1774,7 +1786,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       coordinatorDelivery: goalCoordinator,
       ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
       requesterAuthority: goalRequesterAuthority,
-      checkCommandIntent: checkGoalCommandIntent,
+      checkCommandIntent,
       requestCommitted: goalRequestCommitted,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       openWorkspace(workspaceId) {
@@ -1794,7 +1806,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coordinatorDelivery: goalCoordinator,
     ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
     requesterAuthority: goalRequesterAuthority,
-    checkCommandIntent: checkGoalCommandIntent,
+    checkCommandIntent,
     requestCommitted: goalRequestCommitted,
     agentAuthority: (record) =>
       runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
