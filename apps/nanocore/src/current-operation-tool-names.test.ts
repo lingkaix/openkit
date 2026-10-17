@@ -1,9 +1,13 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   assertOperationNames,
   OPERATION_DEFINITIONS,
   operationToolName,
 } from '@openkit/app-api-schemas';
 import { AgentEnvironmentCapabilitiesSchema } from '@openkit/config-schema';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { createAdministrationTools } from './administration/administration-tools.js';
 import { createAdministrationConfigurationTools } from './administration/configuration-tools.js';
@@ -135,7 +139,159 @@ function capabilityNames(): string[] {
   return enabled.shape.routes.def.items.map((route) => route.value);
 }
 
+/** Removes syntax-only wrappers without evaluating an expression. */
+function unwrap(expression: ts.Expression): ts.Expression {
+  while (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  )
+    expression = expression.expression;
+  return expression;
+}
+
+/** Reads a literal or one ordinary lexical const binding; computed and imported values stay with runtime admission. */
+function authoredName(expression: ts.Expression | undefined): string | undefined {
+  if (!expression) return undefined;
+  const value = unwrap(expression);
+  if (ts.isStringLiteralLike(value)) return value.text;
+  if (!ts.isIdentifier(value)) return undefined;
+  for (let scope: ts.Node | undefined = value.parent; scope; scope = scope.parent) {
+    if (
+      ts.isFunctionLike(scope) &&
+      scope.parameters.some(
+        (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === value.text
+      )
+    )
+      return undefined;
+    if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+    for (const statement of scope.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || declaration.name.text !== value.text) continue;
+        if (!(statement.declarationList.flags & ts.NodeFlags.Const) || !declaration.initializer)
+          return undefined;
+        const initializer = unwrap(declaration.initializer);
+        return ts.isStringLiteralLike(initializer) ? initializer.text : undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Reads authored Tool descriptors and projection arguments without importing source modules or executing factories. */
+function authoredOperationNames(text: string, fileName: string): string[] {
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+  const names: string[] = [];
+  const projections = new Set(['operationToolName']);
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const binding of bindings.elements) {
+      if ((binding.propertyName ?? binding.name).text === 'operationToolName')
+        projections.add(binding.name.text);
+    }
+  }
+  const visit = (node: ts.Node): void => {
+    if (ts.isObjectLiteralExpression(node)) {
+      const fields = new Map(
+        node.properties.flatMap((property) => {
+          if (ts.isSpreadAssignment(property)) return [];
+          const key = property.name;
+          return ts.isIdentifier(key) || ts.isStringLiteralLike(key)
+            ? [[key.text, property] as const]
+            : [];
+        })
+      );
+      if (fields.has('inputSchema') && (fields.has('description') || fields.has('execute'))) {
+        const property = fields.get('name');
+        const name = authoredName(
+          property &&
+            (ts.isPropertyAssignment(property)
+              ? property.initializer
+              : ts.isShorthandPropertyAssignment(property)
+                ? property.name
+                : undefined)
+        );
+        if (name !== undefined) names.push(name);
+      }
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ((ts.isIdentifier(node.expression) && projections.has(node.expression.text)) ||
+        (ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'operationToolName'))
+    ) {
+      for (const argument of node.arguments) {
+        const name = authoredName(argument);
+        if (name !== undefined) names.push(name);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return names;
+}
+
+/** Tests and fixture code are not product Tool producers. All other current source files participate without a family list. */
+function currentAuthoredOperationNames(): string[] {
+  const root = dirname(fileURLToPath(import.meta.url));
+  return readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+    .map((entry) => join(entry.parentPath, entry.name))
+    .filter((file) => !/\.(?:test(?:-d)?|spec)\.ts$/.test(file))
+    .filter(
+      (file) =>
+        !relative(root, file)
+          .split(sep)
+          .some((part) => ['fixtures', '__fixtures__', '__tests__', 'test-support'].includes(part))
+    )
+    .sort()
+    .flatMap((file) => authoredOperationNames(readFileSync(file, 'utf8'), file));
+}
+
 describe('current operation and Tool names', () => {
+  it('rejects a newly added private Tool descriptor without a factory or family list entry', () => {
+    const source = `
+      const KM_TOOL_NAME = 'knowledge_ask';
+      export function createPrivateTools() {
+        return [{ name: KM_TOOL_NAME, description: 'Ask', inputSchema: {}, execute() {} }];
+      }
+    `;
+    expect(() =>
+      assertOperationNames(authoredOperationNames(source, 'new-private-factory.ts'))
+    ).toThrow('Invalid operation name: knowledge_ask');
+  });
+
+  it('reads descriptor arrays, constants and projection arguments while excluding opaque names and accounting labels', () => {
+    const source = `
+      import { operationToolName as project } from '@openkit/app-api-schemas';
+      const TOOL_NAME = 'knowledge.ask';
+      const vendorName = configuration.name;
+      const tools = [
+        { name: TOOL_NAME, description: 'Ask', inputSchema: {} },
+        { name: 'knowledge.tell', inputSchema: {}, execute() {} },
+        { name: vendorName, description: 'External', inputSchema: {} },
+      ];
+      const usage = { name: 'inference.local.quick_chat', description: 'Accounting' };
+      project('knowledge.health-check');
+    `;
+    expect(authoredOperationNames(source, 'unlisted-factory.ts')).toEqual([
+      'knowledge.ask',
+      'knowledge.tell',
+      'knowledge.health-check',
+    ]);
+  });
+
+  it('checks authored names across every current product source file with the composed operation names', () => {
+    assertOperationNames([
+      ...Object.keys(OPERATION_DEFINITIONS),
+      ...currentAuthoredOperationNames(),
+    ]);
+  });
+
   it.each([
     ['Assistant', assistantTools],
     ['Administration', administrationTools],
