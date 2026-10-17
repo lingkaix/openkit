@@ -271,8 +271,8 @@ describe('stock xAI HTTP rejection diagnostics', () => {
       const response = new Response(
         JSON.stringify({
           error: {
-            type: 'invalid_request_error',
-            code: 'unsupported_tool_type',
+            type: 'schema_error',
+            code: 'tool_type_rejected',
             param: 'tools[0].type',
             message: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
             body: 'body-canary',
@@ -320,8 +320,8 @@ describe('stock xAI HTTP rejection diagnostics', () => {
       [
         422,
         {
-          type: 'invalid_request_error',
-          code: 'unsupported_tool_type',
+          type: 'schema_error',
+          code: 'tool_type_rejected',
           param: 'tools[0].type',
           message: `Unsupported custom tool; [redacted]; ${'detail '.repeat(80)}`.slice(0, 200),
         },
