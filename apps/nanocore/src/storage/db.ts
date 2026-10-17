@@ -139,7 +139,7 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
  * Validates and migrates existing user- and workspace-scope databases at boot.
  *
  * @param dataRoot Data root to scan.
- * @throws When any existing authoritative database fails SQLite integrity validation.
+ * @throws When a Workspace database is missing or any existing authoritative database fails integrity validation.
  */
 export function verifyAndMigrateExistingScopedDatabases(dataRoot: string): void {
   ensureLayout(dataRoot);
@@ -279,11 +279,13 @@ function verifyAndMigrateUserDatabase(dataRoot: string, userId: string): void {
  *
  * @param dataRoot Data root that owns the database.
  * @param workspaceId Workspace id that owns the database.
- * @throws When the existing authoritative database fails SQLite integrity validation.
+ * @throws When the authoritative Workspace database is missing or fails SQLite integrity validation.
  */
 function verifyAndMigrateWorkspaceDatabase(dataRoot: string, workspaceId: string): void {
-  assertSqliteIntegrity(workspaceDbPath(dataRoot, workspaceId));
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  const path = workspaceDbPath(dataRoot, workspaceId);
+  if (!existsSync(path)) throw new Error(`Workspace database is missing: ${workspaceId}.`);
+  assertSqliteIntegrity(path);
+  const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
 
   try {
     applyScopedMigrations(workspaceDb);
