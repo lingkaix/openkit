@@ -18,7 +18,7 @@ import type {
   WorkspaceMaterialRevisionView,
   WorkspaceMaterialView,
 } from '@openkit/app-api-schemas';
-import { JudgementRecordSchema } from '@openkit/app-api-schemas';
+import { JudgementRecordReaderSchema } from '@openkit/app-api-schemas';
 import { type ActorRef, deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 
 import type { WorkspaceDb } from './storage/db.js';
@@ -75,6 +75,11 @@ export function assertWorkspaceMaterialRange(
   }
   return revision;
 }
+
+/** Portable revision retains its raw descriptive annotations without exposing their SQLite encoding. */
+type ExportableRevisionRow = Omit<RevisionRow, 'judgementsJson'> & {
+  readonly judgements: WorkspaceMaterialRevisionView['judgements'];
+};
 
 /** Thread binding authority row. */
 type BindingRow = {
@@ -170,18 +175,24 @@ FROM thread_material_bindings`;
 /** Lists raw portable Material, revision, and binding owners in stable identity order. @param workspaceDb Workspace database. @returns Private export rows retaining request proof. */
 export function listExportableWorkspaceMaterialRows(workspaceDb: WorkspaceDb): {
   readonly materials: readonly MaterialRow[];
-  readonly revisions: readonly RevisionRow[];
+  readonly revisions: readonly ExportableRevisionRow[];
   readonly bindings: readonly BindingRow[];
 } {
   return {
     materials: workspaceDb.sqlite
       .prepare(`${MATERIAL_SELECT} WHERE workspace_id = ? ORDER BY material_id`)
       .all(workspaceDb.workspaceId) as MaterialRow[],
-    revisions: workspaceDb.sqlite
-      .prepare(
-        `${REVISION_SELECT} WHERE workspace_id = ? ORDER BY material_id, created_at, revision_id`
-      )
-      .all(workspaceDb.workspaceId) as RevisionRow[],
+    revisions: (
+      workspaceDb.sqlite
+        .prepare(
+          `${REVISION_SELECT} WHERE workspace_id = ? ORDER BY material_id, created_at, revision_id`
+        )
+        .all(workspaceDb.workspaceId) as RevisionRow[]
+    ).map(({ judgementsJson, ...row }) => {
+      const judgements: unknown = JSON.parse(judgementsJson);
+      JudgementRecordReaderSchema.array().parse(judgements);
+      return { ...row, judgements: judgements as WorkspaceMaterialRevisionView['judgements'] };
+    }),
     bindings: workspaceDb.sqlite
       .prepare(`${BINDING_SELECT} WHERE workspace_id = ? ORDER BY thread_id, material_id`)
       .all(workspaceDb.workspaceId) as BindingRow[],
@@ -782,7 +793,7 @@ function toRevisionView(row: RevisionRow): WorkspaceMaterialRevisionView {
   return {
     ...toRevisionSummary(row),
     content: row.content,
-    judgements: JudgementRecordSchema.array().parse(JSON.parse(row.judgementsJson)),
+    judgements: JudgementRecordReaderSchema.array().parse(JSON.parse(row.judgementsJson)),
   };
 }
 

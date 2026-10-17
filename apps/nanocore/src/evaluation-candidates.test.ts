@@ -221,7 +221,14 @@ describe('Workspace candidate set authority', () => {
       descriptiveAnnotation: { retained: true },
       createdBy: { displayName: 'Historical creator' },
       candidates: [{ description: 'Original description' }, {}],
-      judgements: [{ actor: { displayName: 'Historical reviewer' }, choice: { description: 'Chosen original' } }, {}, {}],
+      judgements: [
+        {
+          actor: { displayName: 'Historical reviewer' },
+          choice: { description: 'Chosen original' },
+        },
+        {},
+        {},
+      ],
     });
     expect(
       rated.judgements.filter((judgement) => judgement.kind === 'select').at(-1)?.choice

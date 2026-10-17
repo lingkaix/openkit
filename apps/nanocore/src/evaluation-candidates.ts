@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   type CandidateSetRecord,
-  CandidateSetRecordSchema,
   CandidateSetRecordReaderSchema,
+  CandidateSetRecordSchema,
   type CreateCandidateSetRequest,
   EVALUATION_OPERATION_DEFINITIONS,
   type EvaluationCandidate,

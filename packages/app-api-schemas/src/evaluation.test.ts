@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { CandidateSetRecordSchema, JudgementRecordSchema } from './evaluation.js';
-import { CandidateSetRecordReaderSchema, JudgementRecordReaderSchema } from './evaluation-readers.js';
+import {
+  CandidateSetRecordReaderSchema,
+  JudgementRecordReaderSchema,
+} from './evaluation-readers.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' };
@@ -30,19 +33,51 @@ const judgement = {
 describe('evaluation retained shapes', () => {
   it('reads descriptive nested additions without weakening new command or core-kind admission', () => {
     const retained = {
-      formatVersion: 1, workspaceId, candidateSetId: 'comparison-one',
-      createdBy: { ...actor, displayName: 'Historical name' }, createdAt: judgement.recordedAt,
+      formatVersion: 1,
+      workspaceId,
+      candidateSetId: 'comparison-one',
+      createdBy: { ...actor, displayName: 'Historical name' },
+      createdAt: judgement.recordedAt,
       candidates: [{ ...candidate, description: 'Original' }, secondCandidate],
-      judgements: [{ ...judgement, actor: { ...actor, displayName: 'Reviewer' }, choice: { ...candidate, description: 'Choice' } }], extensions: {},
+      judgements: [
+        {
+          ...judgement,
+          actor: { ...actor, displayName: 'Reviewer' },
+          choice: { ...candidate, description: 'Choice' },
+        },
+      ],
+      extensions: {},
     };
     expect(CandidateSetRecordSchema.safeParse(retained).success).toBe(false);
     const read = CandidateSetRecordReaderSchema.parse(retained);
     expect(read.createdBy).toEqual(actor);
     expect(read.candidates).toEqual([candidate, secondCandidate]);
     expect(read.judgements).toEqual([judgement]);
-    expect(CandidateSetRecordReaderSchema.safeParse({ ...retained, judgements: [{ ...judgement, kind: 'automatic-winner' }] }).success).toBe(false);
-    const range = {kind:'material-range',offsetUnit:'utf-16',materialId:'mat_00000000-0000-7000-8000-000000000001',revisionId:'mrev_00000000-0000-7000-8000-000000000001',contentDigest:candidate.contentDigest,start:0,end:1,originalText:'a',description:'Retained original'};
-    expect(JudgementRecordReaderSchema.parse({...judgement,kind:'accept',target:range,choice:null}).target).not.toHaveProperty('description');
+    expect(
+      CandidateSetRecordReaderSchema.safeParse({
+        ...retained,
+        judgements: [{ ...judgement, kind: 'automatic-winner' }],
+      }).success
+    ).toBe(false);
+    const range = {
+      kind: 'material-range',
+      offsetUnit: 'utf-16',
+      materialId: 'mat_00000000-0000-7000-8000-000000000001',
+      revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
+      contentDigest: candidate.contentDigest,
+      start: 0,
+      end: 1,
+      originalText: 'a',
+      description: 'Retained original',
+    };
+    expect(
+      JudgementRecordReaderSchema.parse({
+        ...judgement,
+        kind: 'accept',
+        target: range,
+        choice: null,
+      }).target
+    ).not.toHaveProperty('description');
   });
   it('retains exact attributable selections and rejects unknown core or contradictory membership', () => {
     expect(
