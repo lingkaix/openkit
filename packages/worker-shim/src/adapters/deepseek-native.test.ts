@@ -24,6 +24,7 @@ import type {
   WorkerResidentSession,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import type { RuntimeObservation } from '../runtime-capture.js';
 import {
   requestTexts,
   type SyntheticInference,
@@ -105,6 +106,92 @@ it.each(['bash', 'write'])(
     expect(JSON.stringify(toolResults)).toContain(
       name === 'bash' ? 'shell-observed' : 'Created file'
     );
+  },
+  NATIVE_FIXTURE_TIMEOUT
+);
+
+it(
+  'retains collected native tool work and answer after native state is removed',
+  async () => {
+    const target = join(work, 'captured-effect.txt');
+    const command = `printf captured-effect > ${JSON.stringify(target)}; printf captured-shell-result`;
+    const inference = await startSyntheticInference((_request, n) =>
+      n === 1
+        ? {
+            toolCall: {
+              name: 'bash',
+              arguments: { command, description: 'Write the capture sentinel' },
+            },
+          }
+        : { text: 'captured-native-answer' }
+    );
+    closers.push(() => inference.close());
+    const collected: { record: RuntimeObservation; body?: Uint8Array }[] = [];
+    const session = await open(inference);
+    const input = turn();
+    const outcome = await (
+      await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'workspace', value: 'on' },
+          emit: async (record, body) => {
+            collected.push({ record: structuredClone(record), body: body && Buffer.from(body) });
+          },
+        },
+      })
+    ).settled;
+    expect(inference.requests).toHaveLength(2);
+    expect(readFileSync(target, 'utf8')).toBe('captured-effect');
+
+    await session.close();
+    rmSync(state, { recursive: true, force: true });
+    expect(existsSync(state)).toBe(false);
+    // Only records emitted during execution and the settled outcome remain under inspection.
+    expect(outcome).toMatchObject({ status: 'completed', assistantText: 'captured-native-answer' });
+    const argumentsEntry = collected.find(
+      ({ record, body }) =>
+        body &&
+        record.content.state === 'expected' &&
+        record.content.boundary === 'runtime.tool.arguments'
+    );
+    expect(argumentsEntry).toBeDefined();
+    expect(JSON.parse(Buffer.from(argumentsEntry!.body!).toString())).toMatchObject({ command });
+    const call = argumentsEntry!.record.fact;
+    expect(call.kind).toBe('tool');
+    expect(call.callRef).toBeDefined();
+    const toolFacts = collected
+      .map(({ record }) => record.fact)
+      .filter((fact) => fact.kind === 'tool' && fact.callRef === call.callRef);
+    expect(toolFacts.some(({ phase }) => phase === 'started' || phase === 'running')).toBe(true);
+    expect(toolFacts.some(({ phase }) => phase === 'completed')).toBe(true);
+    const toolResults = collected.filter(
+      ({ record, body }) =>
+        body &&
+        record.fact.callRef === call.callRef &&
+        record.fact.runtimeOriginRef === call.runtimeOriginRef &&
+        record.content.state === 'expected' &&
+        record.content.boundary === 'runtime.tool.result'
+    );
+    expect(Buffer.concat(toolResults.map(({ body }) => Buffer.from(body!))).toString()).toContain(
+      'captured-shell-result'
+    );
+    const assistant = collected.filter(
+      ({ record }) =>
+        record.fact.kind === 'assistant' && record.fact.runtimeOriginRef === call.runtimeOriginRef
+    );
+    expect(
+      Buffer.concat(assistant.flatMap(({ body }) => (body ? [Buffer.from(body)] : []))).toString()
+    ).toBe('captured-native-answer');
+    expect(assistant.some(({ record }) => record.fact.phase === 'completed')).toBe(true);
+    expect(
+      collected.some(
+        ({ record }) =>
+          record.fact.kind === 'origin' &&
+          record.fact.runtimeOriginRef === call.runtimeOriginRef &&
+          record.fact.phase === 'completed'
+      )
+    ).toBe(true);
   },
   NATIVE_FIXTURE_TIMEOUT
 );

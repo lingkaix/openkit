@@ -1469,16 +1469,21 @@ describe('Codex App Server adapter', () => {
     await expect.poll(() => broken.length).toBe(1);
   });
 
-  it('does not report ready for an allocated id without a rollout', async () => {
+  it('retains the correlated native failure cause without a rollout or ready handle', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
     const child = spawnScriptedCodex('terminal-failed');
     trackChild(child);
     const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
     sessions.push(session);
-    await expect((await session.startTurn(turnInput(roots, []))).settled).resolves.toMatchObject({
+    const result = await (await session.startTurn(turnInput(roots, []))).settled;
+    expect(result).toMatchObject({
       status: 'failed',
+      assistantText: null,
+      diagnostics: { native: 'Native policy refused the request: [redacted].' },
     });
+    expect(JSON.stringify(result)).not.toContain(INFERENCE_SECRET);
+    expect(JSON.stringify(result)).not.toContain('private-provider-body');
     expect(await session.nativeHandle()).toEqual({ state: 'pending' });
   });
 
@@ -3901,7 +3906,7 @@ process.stdin.on('data', (chunk) => {
       const item = mode === 'terminal-unknown-item' ? { type: 'futureCoreItem', text: 'bad' } : { type: 'agentMessage', text: mode === 'terminal-malformed-assistant' ? 7 : 'ok' };
       const terminal = { method: 'turn/completed', params: {
         ...(mode === 'terminal-missing-thread' ? {} : { threadId: mode === 'terminal-wrong-thread' ? 7 : 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }),
-        turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: mode === 'terminal-failed' ? 'failed' : mode === 'terminal-unknown-status' ? 'futureStatus' : mode === 'terminal-in-progress' ? 'inProgress' : 'completed', items: [item] }
+        turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: mode === 'terminal-failed' ? 'failed' : mode === 'terminal-unknown-status' ? 'futureStatus' : mode === 'terminal-in-progress' ? 'inProgress' : 'completed', items: [item], ...(mode === 'terminal-failed' ? { error: { message: 'Native policy refused the request: ${INFERENCE_SECRET}.', additionalDetails: 'private-provider-body' } } : {}) }
       }};
       const a = JSON.stringify(accepted) + '\\n';
       const t = JSON.stringify(terminal) + '\\n';
