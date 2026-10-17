@@ -111,7 +111,7 @@ A runtime may execute agents:
 - through a managed sandbox provider
 - through a future runtime service
 
-Runtime owns execution lifecycle and infrastructure concerns such as startup, liveness, interruption, recovery, sandbox attachment, workspace materialization, artifact and workspace-change collection, and capability-plane connectivity. Workspace changes are collected by a read-only scan from outside the Sandbox, at Turn end, at AgentSession release, and before a successor uses the same work volume, without stopping the running worker.
+Runtime owns execution lifecycle and infrastructure concerns such as startup, liveness, interruption, recovery, sandbox attachment, workspace materialization, artifact and workspace-change collection, and capability-plane connectivity. Workspace changes are collected by a read-only scan from outside the Sandbox, at Turn end, at AgentSession release, and before a successor uses the same work volume, without stopping the running worker. Collection happens while the work runs, so loss of the Sandbox, the Harness or native history does not lose the collected work record; [Fault Tolerance](fault-tolerance.md) defines complete collection and how incomplete collection is reported.
 
 Runtime is separate from permission. Runtime may enforce sandbox constraints, but authorization decisions belong to the permission model.
 
