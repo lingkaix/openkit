@@ -1,4 +1,6 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { parse } from 'jsonc-parser';
 import type { Actor } from '../auth/identity.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
@@ -55,13 +57,19 @@ export function createRuntimeConfigOperationImplementations(
         owner().filesForActor(publicOperationActor(context)).readFile(input.id)
       ),
     'runtime.file-create': (input, context) =>
-      runConfigOperation(() =>
-        owner().filesForActor(publicOperationActor(context)).createFile(input)
-      ),
+      runConfigOperation(() => {
+        const files = owner().filesForActor(publicOperationActor(context));
+        if (input.kind === 'workspace' && input.content !== undefined)
+          requireUnchangedResourcePolicy(undefined, input.content);
+        return files.createFile(input);
+      }),
     'runtime.file-update': (input, context) =>
-      runConfigOperation(() =>
-        owner().filesForActor(publicOperationActor(context)).updateFile(input)
-      ),
+      runConfigOperation(() => {
+        const files = owner().filesForActor(publicOperationActor(context));
+        if (input.kind === 'workspace' && input.content !== undefined)
+          requireUnchangedResourcePolicy(files.readFile(input.id).content, input.content);
+        return files.updateFile(input);
+      }),
     'runtime.file-delete': (input, context) =>
       runConfigOperation(() => {
         owner().filesForActor(publicOperationActor(context)).deleteFile(input);
@@ -87,4 +95,23 @@ function runConfigOperation<T>(operation: () => T): T {
       throw new OperationError(error.code, error.message, error.status, { cause: error });
     throw error;
   }
+}
+
+/** Reads the exact authored authority subtree without stripping unsupported configuration values. */
+function authoredResourcePolicy(content: string | undefined): unknown {
+  if (content === undefined) return undefined;
+  const root: unknown = parse(content);
+  if (!root || typeof root !== 'object') return undefined;
+  const workspace: unknown = Reflect.get(root, 'workspace');
+  return workspace && typeof workspace === 'object' ? Reflect.get(workspace, 'policy') : undefined;
+}
+
+/** Generic file editing cannot create, widen, revoke or remove resource authority without its confirmed request. */
+function requireUnchangedResourcePolicy(previous: string | undefined, next: string): void {
+  if (!isDeepStrictEqual(authoredResourcePolicy(previous), authoredResourcePolicy(next)))
+    throw new OperationError(
+      'resource_policy_confirmation_required',
+      'Change Workspace resource Policy through its approved request and confirmation.',
+      409
+    );
 }

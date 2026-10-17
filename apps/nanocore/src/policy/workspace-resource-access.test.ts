@@ -65,6 +65,9 @@ describe('named Workspace resource Kernel projection', () => {
     const agentEntry = { ...entry, grants: [{ subject, operations: ['thread.read' as const] }] };
     expect(decide([entry], 'thread.read', agent).effect).toBe('deny');
     expect(decide([agentEntry], 'thread.read', agent).effect).toBe('allow');
+    expect(
+      decide([{ ...agentEntry, prohibitions: entry.grants }], 'thread.read', agent).effect
+    ).toBe('deny');
     expect(decide([agentEntry], 'thread.read', { ...agent, agentId: 'another-agent' }).effect).toBe(
       'deny'
     );

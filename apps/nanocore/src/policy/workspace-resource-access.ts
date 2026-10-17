@@ -109,21 +109,27 @@ export function evaluateWorkspaceResourceAccess(input: {
     policy.elements = elements;
     policy.assignments = assignments;
     policy.associations = associations;
-    policy.prohibitions = managed.prohibitions.flatMap((prohibition, index) =>
-      matches(prohibition.subject, input.actor)
-        ? [
-            {
-              id: `prohibition:resource:${index}`,
-              kind: input.actor.kind === 'agent' ? ('process' as const) : ('user' as const),
-              subject: input.actor.kind === 'agent' ? input.actor.processId : user,
-              accessRights: prohibition.operations.map(
-                (operation) => PRODUCT_OPERATION_ACCESS_RIGHTS[operation]
-              ),
-              range: { type: 'disjunctive' as const, include: [resourceObjects] },
-            },
-          ]
-        : []
-    );
+    policy.prohibitions = managed.prohibitions.flatMap((prohibition, index) => {
+      // A User restriction follows that User's mapped processes; an Agent restriction stays exact.
+      const restrictUser =
+        prohibition.subject.kind === 'user' && prohibition.subject.userId === input.actor.userId;
+      if (!restrictUser && !matches(prohibition.subject, input.actor)) return [];
+      return [
+        {
+          id: `prohibition:resource:${index}`,
+          kind: restrictUser ? ('user' as const) : ('process' as const),
+          subject: restrictUser
+            ? user
+            : input.actor.kind === 'agent'
+              ? input.actor.processId
+              : user,
+          accessRights: prohibition.operations.map(
+            (operation) => PRODUCT_OPERATION_ACCESS_RIGHTS[operation]
+          ),
+          range: { type: 'disjunctive' as const, include: [resourceObjects] },
+        },
+      ];
+    });
   }
   return evaluateAccess(policy, {
     user,

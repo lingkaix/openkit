@@ -106,6 +106,41 @@ function fixture() {
 }
 
 describe('resource Policy Pending Request commands', () => {
+  it('keeps missing request lineage inspect-only after a first Item publication failure', () => {
+    const f = fixture();
+    try {
+      const turn = f.store.createTurn(f.workspace.id, f.thread.id, 'Request resource Policy', {
+        kind: 'user',
+        id: f.actor.userId,
+      });
+      const input = {
+        requestId: randomUUID(),
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        raisingTurnId: turn.id,
+        requestItemId: allocateEntityId('it'),
+        requesterKind: 'person' as const,
+        responsibleUserId: f.actor.userId,
+        now: new Date().toISOString(),
+      };
+      const change = {
+        resource: f.replacement.resource,
+        replacement: f.replacement,
+        expectedRevision: f.files.readFile(`workspaces/${f.workspace.id}/workspace.jsonc`).file
+          .revision!,
+      };
+      const publish = vi.spyOn(f.store, 'createItem').mockImplementationOnce(() => {
+        throw new Error('Item publication failed');
+      });
+      expect(() => raiseResourcePolicyRequest(f, input, change)).toThrow('Item publication failed');
+      publish.mockRestore();
+      expect(() => raiseResourcePolicyRequest(f, input, change)).toThrow('contradictory');
+      expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual([]);
+    } finally {
+      f.close();
+    }
+  });
+
   it('captures unavailable caller-selected targets without resolving or disclosing their metadata', () => {
     const f = fixture();
     try {

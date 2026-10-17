@@ -20,6 +20,7 @@ import {
   finishPendingExecution,
   PendingRequestCommandError,
   type PendingRequestRecord,
+  preflightPendingRequest,
   type RaisePendingRequestInput,
 } from '../runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -79,7 +80,7 @@ export function raiseResourcePolicyRequest(
   input: Omit<RaisePendingRequestInput, 'kind' | 'approval' | 'governedIntent' | 'call'>,
   change: z.input<typeof ResourcePolicyChangeSchema>
 ): PendingRequestRecord {
-  const record = raiseRecordedPendingRequest(dependencies.store, dependencies.workspaceDb.sqlite, {
+  const raisedInput: RaisePendingRequestInput = {
     ...input,
     kind: 'approval',
     governedIntent: IntentSchema.parse({ operation: 'workspace.resource-access-change', change }),
@@ -89,27 +90,37 @@ export function raiseResourcePolicyRequest(
       description:
         'Review the captured family, resource, target rights and configuration revision. Approval alone changes no assignment.',
     },
-  });
-  if (
-    !dependencies.store
-      .listThreadItems(input.workspaceId, input.threadId)
-      .some((item) => item.id === record.requestItemId)
-  ) {
-    dependencies.store.createItem({
-      id: record.requestItemId,
-      workspaceId: record.workspaceId,
-      threadId: record.threadId,
-      turnId: record.raisingTurnId,
-      type: 'approval-request',
-      approvalRequestId: record.requestId,
-      kind: 'permission',
-      status: 'completed',
-      title: 'Workspace resource access change',
-      description: record.description ?? '',
-      createdAt: record.createdAt,
-      completedAt: record.createdAt,
-    });
+  };
+  const prior = preflightPendingRequest(dependencies.workspaceDb.sqlite, raisedInput);
+  if (prior) {
+    // Existing partial lineage is inspect-only; retry must not reconstruct its missing counterpart.
+    return requireUsableRecord(
+      dependencies.store,
+      dependencies.workspaceDb.sqlite,
+      prior.requestId,
+      prior.workspaceId,
+      prior.threadId
+    );
   }
+  const record = raiseRecordedPendingRequest(
+    dependencies.store,
+    dependencies.workspaceDb.sqlite,
+    raisedInput
+  );
+  dependencies.store.createItem({
+    id: record.requestItemId,
+    workspaceId: record.workspaceId,
+    threadId: record.threadId,
+    turnId: record.raisingTurnId,
+    type: 'approval-request',
+    approvalRequestId: record.requestId,
+    kind: 'permission',
+    status: 'completed',
+    title: record.title ?? '',
+    description: record.description ?? '',
+    createdAt: record.createdAt,
+    completedAt: record.createdAt,
+  });
   return record;
 }
 
