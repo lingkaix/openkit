@@ -16,6 +16,13 @@ import {
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from './action-center.js';
 import {
+  KnowledgeAskRequestSchema,
+  KnowledgeAskResponseSchema,
+  KnowledgeMaintainRequestSchema,
+  KnowledgeMaintenanceResponseSchema,
+  KnowledgeTellRequestSchema,
+} from './knowledge-agent.js';
+import {
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerRequestSchema,
   KnowledgeManagerAnswerResponseSchema,
@@ -57,6 +64,10 @@ import {
   RestoreKnowledgeNotebookRequestSchema,
   RestoreKnowledgeNotebookResponseSchema,
 } from './knowledge-notebook-history.js';
+import {
+  ReadKnowledgeProposalRequestSchema,
+  ReadKnowledgeProposalResponseSchema,
+} from './knowledge-proposal-preview.js';
 import type { OperationDefinition } from './operation-contract.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
@@ -71,6 +82,47 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 
 /** Sole public contracts for the governed Knowledge family, including its request-scoped Manager views. */
 export const KNOWLEDGE_OPERATION_DEFINITIONS = {
+  'knowledge.ask': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Ask the Knowledge Manager one bounded question in the current Workspace query context.',
+    inputSchema: KnowledgeAskRequestSchema,
+    outputSchema: KnowledgeAskResponseSchema,
+    credentials: [...publicCredentials, 'worker-package'],
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.read',
+    mutating: false,
+  },
+  'knowledge.tell': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Give information and Source references to one bounded Knowledge Manager maintenance run.',
+    inputSchema: KnowledgeTellRequestSchema,
+    outputSchema: KnowledgeMaintenanceResponseSchema,
+    credentials: [...publicCredentials, 'worker-package'],
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.write',
+    mutating: true,
+  },
+  'knowledge.maintain': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Request one bounded fixed-base Knowledge Manager maintenance run.',
+    inputSchema: KnowledgeMaintainRequestSchema,
+    outputSchema: KnowledgeMaintenanceResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.write',
+    mutating: true,
+  },
   'knowledge.answer': {
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -301,6 +353,20 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
     policyOperation: 'knowledge.read',
+    mutating: false,
+  },
+  'knowledge.proposal.read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Read the exact saved Proposal inventory or bounded candidate text under current source authority.',
+    inputSchema: ReadKnowledgeProposalRequestSchema,
+    outputSchema: ReadKnowledgeProposalResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'review.apply',
     mutating: false,
   },
   'knowledge.proposal.decide': {

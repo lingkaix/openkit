@@ -10,6 +10,7 @@ import {
   assertConversationRetrievalTraceReadable,
   createAssistantHistory,
 } from './internal-agents/assistant-history.js';
+import { createCompactingInternalAgentProvider } from './internal-agents/compacting-context.js';
 import type { AgentMessage } from './internal-agents/internal-agent-loop.js';
 import { readInternalContextEvidence } from './internal-agents/internal-context-evidence.js';
 import {
@@ -295,6 +296,8 @@ async function seedTiedOrderSummaryChain() {
         threadId: thread.id,
         turnId: turn.id,
         type: 'context-summary',
+        strategy: 'rolling',
+        logicalModelId: model.logicalModelId,
         status: 'completed',
         text: summaryText,
         environmentDigest: sha('tied-order role environment'),
@@ -325,6 +328,199 @@ function sha(value: string) {
 }
 
 describe('Assistant conversation context portability', () => {
+  it('remints a current-run compaction summary and its later exact-history trace without resuming the run', async () => {
+    const source = deployment();
+    const thread = source.store.createThread(
+      source.workspace.id,
+      'Bounded Knowledge run',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
+    const past = admit(source, source.workspace.id, thread.id);
+    const pastItem = message(source, past, 'user-message', 'The prior decision is pending.');
+    source.store.updateTurn(past.id, { status: 'completed', completedAt: timestamp });
+    const turn = source.store.createTurn(
+      source.workspace.id,
+      thread.id,
+      'Maintain the notebook.',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { agentId: 'knowledge-manager', executorKind: 'assistant', startedAt: timestamp }
+    );
+    const original = message(
+      source,
+      turn,
+      'user-message',
+      `Keep the decision pending. ${'source '.repeat(1600)}`
+    );
+    const owner = {
+      store: source.store,
+      coreDb: source.coreDb,
+      actor: { kind: 'local' as const, userId: LOCAL_USER_ID },
+      workspaceId: source.workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+    };
+    const history = createAssistantHistory(owner);
+    const priorRead = await history.tool.execute(
+      {
+        range: {
+          threadId: thread.id,
+          firstItemId: pastItem.id,
+          lastItemId: pastItem.id,
+          sourceDigest: internalContextSourceDigest(source.store, [pastItem]),
+        },
+      },
+      { callId: randomUUID(), signal: new AbortController().signal }
+    );
+    expect(priorRead.isError).not.toBe(true);
+    const tool = source.store.createItem({
+      id: allocateEntityId('it'),
+      workspaceId: source.workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'tool-call',
+      status: 'completed',
+      tool: 'thread.history.read',
+      server: null,
+      arguments: {},
+      result: JSON.stringify(priorRead.content),
+      error: null,
+      durationMs: 1,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    const provider = vi.fn(async () => ({
+      message: {
+        role: 'assistant' as const,
+        truncated: false,
+        content: [{ type: 'text' as const, text: summaryText }],
+      },
+    }));
+    await createCompactingInternalAgentProvider({
+      store: source.store,
+      turn,
+      compactThreshold: 10_000,
+      limits: { maxModelTurns: 3, maxToolCalls: 3, deadlineMs: 60_000 },
+      assertCurrent: history.assertCurrent,
+      readEvidence: (items) =>
+        readInternalContextEvidence({ ...owner, items, strategy: 'compaction' }),
+      commitMessages: () => [original, tool],
+      callProvider: provider,
+    })({
+      systemPrompt: 'Preserve current constraints.',
+      tools: [],
+      model,
+      signal: new AbortController().signal,
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: original.type === 'user-message' ? original.text : '' }],
+        },
+      ],
+    });
+    const summary = source.store
+      .getTurnById(turn.id)
+      .items.find((item) => item.type === 'context-summary')!;
+    const read = await history.tool.execute(
+      {
+        range: {
+          threadId: thread.id,
+          firstItemId: original.id,
+          lastItemId: tool.id,
+          sourceDigest: summary.sourceRange.sourceDigest,
+        },
+        limit: 1,
+      },
+      { callId: randomUUID(), signal: new AbortController().signal }
+    );
+    expect(read.isError).not.toBe(true);
+    source.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+    const { verified } = await exportHistory(source);
+    const target = deployment();
+    const imported = importVerifiedWorkspace({
+      authorityUserId: LOCAL_USER_ID,
+      coreDb: target.coreDb,
+      dataRoot: target.dataRoot,
+      requestId: randomUUID(),
+      store: target.store,
+      verified,
+    });
+    target.store = new FsStore({ dataRoot: target.dataRoot });
+    const importedThread = target.store
+      .listThreads(imported.importedWorkspaceId)
+      .find((entry) => entry.name === thread.name)!;
+    const importedTurn = target.store
+      .listThreadTurns(imported.importedWorkspaceId, importedThread.id)
+      .find((entry) => entry.agentId === 'knowledge-manager')!;
+    const importedItems = target.store.getTurnById(importedTurn.id).items;
+    const importedSource = importedItems.find((item) => item.type === 'user-message')!;
+    const importedTool = importedItems.find((item) => item.type === 'tool-call')!;
+    const importedSummary = importedItems.find((item) => item.type === 'context-summary')!;
+    expect(importedSummary).toMatchObject({
+      strategy: 'compaction',
+      logicalModelId: model.logicalModelId,
+      text: summaryText,
+      sourceRange: {
+        firstItemId: importedSource.id,
+        lastItemId: importedTool.id,
+        itemCount: 2,
+        sourceDigest: internalContextSourceDigest(
+          target.store,
+          [importedSource, importedTool],
+          'compaction'
+        ),
+        evidenceDigest: readInternalContextEvidence({
+          store: target.store,
+          coreDb: target.coreDb,
+          actor: { kind: 'local', userId: LOCAL_USER_ID },
+          workspaceId: imported.importedWorkspaceId,
+          threadId: importedThread.id,
+          items: [importedSource, importedTool],
+          strategy: 'compaction',
+        }),
+      },
+    });
+    expect(importedSummary.sourceRange.sourceDigest).not.toBe(summary.sourceRange.sourceDigest);
+    const traces = readTurnRetrievalTraces(
+      join(target.dataRoot, 'workspaces', imported.importedWorkspaceId),
+      imported.importedWorkspaceId,
+      importedThread.id,
+      importedTurn.id
+    );
+    expect(traces).toHaveLength(2);
+    const trace = traces.find(
+      ({ trace }) =>
+        'sourceKind' in trace &&
+        trace.retrievalParameters.mode === 'range' &&
+        trace.retrievalParameters.range.firstItemId === importedSource.id
+    )!;
+    expect(importedTool.result).toContain(
+      `retrieval-trace/turn/${imported.importedWorkspaceId}/${importedThread.id}/${importedTurn.id}`
+    );
+    expect(trace.trace).toMatchObject({
+      retrievalParameters: {
+        mode: 'range',
+        range: {
+          firstItemId: importedSource.id,
+          lastItemId: importedTool.id,
+          sourceDigest: importedSummary.sourceRange.sourceDigest,
+        },
+      },
+    });
+    expect(() =>
+      assertConversationRetrievalTraceReadable({
+        store: target.store,
+        coreDb: target.coreDb,
+        actor: { kind: 'local', userId: LOCAL_USER_ID },
+        workspaceId: imported.importedWorkspaceId,
+        retrievalTraceRef: trace!.reference,
+      })
+    ).not.toThrow();
+    expect(provider).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a corrupt original predecessor before publication when tied source order changes on import', async () => {
     const source = await seedTiedOrderSummaryChain();
     const control = deployment();

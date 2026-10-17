@@ -13,6 +13,7 @@ import {
 } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { ActorRefSchema, UserActorRefSchema } from './actor.js';
+import { KnowledgeMaintenanceOutcomeSchema } from './knowledge-notebook.js';
 
 /**
  * Closed lifecycle states shared by all turn item records.
@@ -93,6 +94,8 @@ export const ContextSummarySourceRangeSchema = z.object({
 /** Completed untrusted continuation text; exact source history remains canonical and retrievable. */
 export const ContextSummaryItemSchema = BaseItemSchema.extend({
   type: z.literal('context-summary'),
+  strategy: z.enum(['rolling', 'compaction']),
+  logicalModelId: z.string().min(1),
   status: z.literal('completed'),
   text: z
     .string()
@@ -295,6 +298,8 @@ export const AgentHandoffItemSchema = BaseItemSchema.extend({
  * Product-visible status item for bounded progress and state transitions.
  */
 export const StatusItemSchema = BaseItemSchema.extend({
+  /** Actual native result, never model-authored authority; the existing command receipt points to this Turn. */
+  knowledgeMaintenanceResult: KnowledgeMaintenanceOutcomeSchema.optional(),
   type: z.literal('status'),
   level: z.enum(['info', 'warning', 'error']),
   title: z.string().min(1),

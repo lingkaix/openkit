@@ -670,6 +670,16 @@ const NON_KNOWLEDGE_PROPOSAL_DECOY = {
   source: APPROVAL_ROW.source,
 };
 
+/** Inspect the exact candidate before a test submits its human acceptance. */
+async function inspectKnowledgeProposal(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: 'Inspect changes' }));
+  await user.click(await screen.findByRole('button', { name: 'Read writing/weekly-updates.md' }));
+  await user.click(
+    await screen.findByRole('button', { name: 'Mark writing/weekly-updates.md inspected' })
+  );
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Accept' })).toBeEnabled());
+}
+
 type MethodOverrides = Partial<Record<string, unknown>>;
 
 /** Creates a caller-controlled promise for proving pre-settlement UI state. */
@@ -759,6 +769,24 @@ function makeClient(
       'knowledge.list': vi
         .fn()
         .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [] }),
+      'knowledge.proposal.read': vi
+        .fn()
+        .mockImplementation(async ({ proposalId, path }: { proposalId: string; path?: string }) => {
+          const source =
+            proposalId === KNOWLEDGE_PROPOSAL_ROW_B.source.knowledgeProposalId
+              ? KNOWLEDGE_PROPOSAL_ROW_B.source
+              : KNOWLEDGE_PROPOSAL_ROW.source;
+          return {
+            proposalId,
+            proposalDigest: source.proposalDigest,
+            baseRevision: source.baseRevision,
+            candidateRevision: source.candidateRevision,
+            paths: ['writing/weekly-updates.md'],
+            ...(path
+              ? { path, before: 'Earlier note.', after: 'Reviewed note.', nextOffset: null }
+              : {}),
+          };
+        }),
       'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
       'knowledge.update': vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
       'knowledge.delete': vi.fn().mockResolvedValue(undefined),
@@ -4235,6 +4263,7 @@ describe('Knowledge (board 14)', () => {
     for (const absentLabel of ['Accept', 'Reject', 'Defer'].filter((item) => item !== label)) {
       expect(screen.queryByRole('button', { name: absentLabel })).not.toBeInTheDocument();
     }
+    if (decision === 'accepted') await inspectKnowledgeProposal(user);
     await user.click(action);
     await waitFor(() =>
       expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
@@ -4306,6 +4335,7 @@ describe('Knowledge (board 14)', () => {
       })
     );
 
+    await inspectKnowledgeProposal(user);
     await user.click(await screen.findByRole('button', { name: 'Accept' }));
     await waitFor(() => expect(submitKnowledgeProposalDecision).toHaveBeenCalledTimes(1));
     for (const label of ['Accept', 'Reject', 'Defer']) {
@@ -5046,6 +5076,50 @@ describe('Knowledge (board 14)', () => {
     expect(retrieveKnowledge.mock.calls).toEqual([
       [{ workspaceId: WORKSPACE_A.id, ...{ query: RETRIEVAL_QUERY } }],
     ]);
+  });
+
+  it('shows answer uncertainty and citation scopes without linking Server pages to Workspace content', async () => {
+    const user = userEvent.setup();
+    const uncertainty = 'Server guidance does not cover the current Workspace deadline.';
+    const serverCitation = {
+      ...KNOWLEDGE_ANSWER.citations[0],
+      reference: { scopeId: 'page/server', objectId: KNOWLEDGE_ENTRY.id },
+      title: 'Server update guidance',
+      excerpt: 'Keep updates brief across all Workspaces.',
+    };
+    renderApp(
+      '/knowledge',
+      makeClient({
+        app: {
+          'knowledge.answer': vi.fn().mockResolvedValue({
+            ...KNOWLEDGE_ANSWER,
+            citations: [...KNOWLEDGE_ANSWER.citations, serverCitation],
+            uncertainty,
+          }),
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
+        },
+      })
+    );
+
+    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+    const manager = knowledgePanel('Manager');
+    await fillKnowledgeFields(user, manager, [['Question', MANAGER_QUESTION]]);
+    await user.click(within(manager).getByRole('button', { name: 'Answer' }));
+    const citations = await within(manager).findByRole('list', { name: 'Citations' });
+    expect(within(manager).getByText(uncertainty)).toBeVisible();
+    const [workspaceCitationRow, serverCitationRow] = within(citations).getAllByRole('listitem');
+    expect(within(workspaceCitationRow).getByText('Workspace Knowledge')).toBeVisible();
+    expect(within(serverCitationRow).getByText('Server Knowledge')).toBeVisible();
+    expect(within(workspaceCitationRow).getByRole('link')).toHaveAttribute(
+      'href',
+      `#${encodeURIComponent(`knowledge-content-${encodeURIComponent(WORKSPACE_A.id)}-${encodeURIComponent(KNOWLEDGE_ENTRY.id)}`)}`
+    );
+    expect(within(citations).getAllByRole('link')).toHaveLength(1);
+    expect(within(serverCitationRow).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(serverCitationRow).getByText('Current content unavailable.')).toBeVisible();
   });
 
   it('answers, suggests repairs, and inspects health from the Manager panel', async () => {
@@ -6003,6 +6077,7 @@ describe('Knowledge (board 14)', () => {
         },
       })
     );
+    await inspectKnowledgeProposal(user);
     await user.click(await screen.findByRole('button', { name: 'Accept' }));
     await waitFor(() => expect(submitKnowledgeProposalDecision).toHaveBeenCalledTimes(1));
     expect(submitKnowledgeProposalDecision.mock.calls[0]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);

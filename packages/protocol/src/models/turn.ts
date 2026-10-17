@@ -4,6 +4,8 @@ import {
   AgentIdSchema,
   AgentProfileIdSchema,
   AgentSessionIdSchema,
+  CapabilityCallIdSchema,
+  ItemIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
@@ -14,6 +16,35 @@ import { GitFailureExplanationSchema } from '../errors/failure-explanation.js';
 import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
 import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from './artifact.js';
 import { ItemSchema } from './item.js';
+import { KnowledgeOwnerScopeSchema } from './knowledge-notebook.js';
+
+/** Pinned choices and admitted inputs of an existing internal-role Turn, never an execution store. */
+const InternalAgentExecutionSchema = z.object({
+  roleId: z.string().min(1),
+  logicalModelId: z.string().min(1),
+  contextStrategy: z.enum(['rolling', 'compaction']),
+  threshold: z.number().int().positive(),
+  knowledge: z
+    .object({
+      purpose: z.enum(['query', 'maintenance']),
+      ownerScope: KnowledgeOwnerScopeSchema,
+      baseRevision: z.string().min(1),
+      trigger: z.enum(['schedule', 'request']),
+      instructions: z.string().min(1),
+      sourceRange: z.array(
+        z.object({
+          threadId: ThreadIdSchema,
+          turnId: TurnIdSchema,
+          firstItemId: ItemIdSchema,
+          lastItemId: ItemIdSchema,
+        })
+      ),
+      askingThreadId: ThreadIdSchema.optional(),
+      askingTurnId: TurnIdSchema.optional(),
+      askingCapabilityCallId: CapabilityCallIdSchema.optional(),
+    })
+    .optional(),
+});
 
 /**
  * Closed lifecycle states for a user-visible turn.
@@ -140,6 +171,8 @@ const TurnBaseSchema = z.object({
   skillSelections: TurnSkillSelectionsSchema.optional(),
   triggerSource: TurnTriggerSourceSchema.nullable().optional(),
   configVersion: z.number().int().positive().nullable(),
+  /** Trusted role admission pins these facts before the first Provider call. */
+  internalExecution: InternalAgentExecutionSchema.optional(),
   startedAt: TimestampSchema.nullable(),
   completedAt: TimestampSchema.nullable(),
   durationMs: z.number().int().nonnegative().nullable(),

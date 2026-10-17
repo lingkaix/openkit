@@ -26,6 +26,7 @@ import {
   KnowledgeProposalReviewSchema,
   KnowledgeSourceSchema,
   MaterializedWorkspaceRootSchema,
+  validKnowledgeProposalShape,
 } from '@openkit/app-api-schemas';
 import { parseRecordEnvelope, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
@@ -182,15 +183,20 @@ export const WorkspaceSystemRecordSchema = WorkspaceRecordSchema.omit({
   name: true,
   counts: true,
 }).strip();
-export const KnowledgeProposalRecordSchema = KnowledgeManagerDraftedProposalSchema.omit({
-  status: true,
-})
+const { status: _proposalStatus, ...knowledgeProposalRecordShape } =
+  KnowledgeManagerDraftedProposalSchema.shape;
+export const KnowledgeProposalRecordSchema = z
+  .object(knowledgeProposalRecordShape)
   .extend({
     id: z.string().regex(/^kp_[a-f0-9]{64}$/),
     producer: ActorRefReaderSchema,
   })
-  .strip();
-export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.extend({
+  .strip()
+  .refine(
+    validKnowledgeProposalShape,
+    'Knowledge Proposal must contain exactly one complete candidate shape.'
+  );
+export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.safeExtend({
   reviewId: z.string().regex(entityIdPattern('kr')),
   actor: ActorRefReaderSchema,
 })
@@ -198,7 +204,9 @@ export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema
   .superRefine((review, context) => {
     const accepted = review.decision === 'accepted';
     if (
-      accepted ? review.targetAbsentAtDecision === null : review.targetAbsentAtDecision !== null
+      accepted
+        ? !review.changedPageIds && review.targetAbsentAtDecision === null
+        : review.targetAbsentAtDecision !== null
     ) {
       context.addIssue({
         code: 'custom',
@@ -626,6 +634,10 @@ export function parseCanonicalWorkspaceHistory(input: {
       review.workspaceId !== workspace.id ||
       review.knowledgePageId !== proposal.knowledgePageId ||
       review.contentDigest !== proposal.contentDigest ||
+      !isDeepStrictEqual(
+        review.changedPageIds,
+        proposal.changes?.map(({ path }) => path.slice(0, -3))
+      ) ||
       review.proposalDigest !== proposalDigest
     ) {
       throw new Error(`Knowledge proposal review ${review.reviewId} has invalid lineage.`);
@@ -1743,11 +1755,17 @@ export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalReco
     `owner_scope: ${JSON.stringify(proposal.ownerScope)}`,
     `base_revision: ${JSON.stringify(proposal.baseRevision)}`,
     `candidate_revision: ${JSON.stringify(proposal.candidateRevision)}`,
-    `knowledge_page_id: ${JSON.stringify(proposal.knowledgePageId)}`,
+    ...(proposal.changes
+      ? [
+          `changes: ${JSON.stringify(proposal.changes.map(({ path, content }) => ({ path, removed: content === null })))}`,
+        ]
+      : [`knowledge_page_id: ${JSON.stringify(proposal.knowledgePageId)}`]),
     `content_digest: ${JSON.stringify(proposal.contentDigest)}`,
     `source_references: ${JSON.stringify(proposal.sourceReferences)}`,
     `rationale: ${JSON.stringify(proposal.rationale)}`,
-    `confidence: ${JSON.stringify(proposal.confidence)}`,
+    ...(proposal.confidence === undefined
+      ? []
+      : [`confidence: ${JSON.stringify(proposal.confidence)}`]),
     'review_required: true',
     `producer: ${JSON.stringify(proposal.producer)}`,
     `created_at: ${JSON.stringify(proposal.createdAt)}`,
@@ -1791,7 +1809,7 @@ function loadKnowledgeProposals(
         sourceReferences === null ||
         typeof producerValue !== 'object' ||
         producerValue === null ||
-        typeof confidenceValue !== 'number'
+        (parsed.document.frontmatter.changes === undefined && typeof confidenceValue !== 'number')
       ) {
         throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
       }
@@ -1805,7 +1823,17 @@ function loadKnowledgeProposals(
         path
       );
       const baseRevision = requiredFrontmatterString(parsed.document, 'base_revision', path);
-      const knowledgePageId = requiredFrontmatterString(parsed.document, 'knowledge_page_id', path);
+      const changedMetadata = parsed.document.frontmatter.changes;
+      if (
+        changedMetadata !== undefined &&
+        (Object.hasOwn(parsed.document.frontmatter, 'knowledge_page_id') ||
+          confidenceValue !== undefined)
+      )
+        throw new Error('Knowledge Proposal mixes candidate forms.');
+      const knowledgePageId =
+        changedMetadata === undefined
+          ? requiredFrontmatterString(parsed.document, 'knowledge_page_id', path)
+          : undefined;
       const candidate = notebook.retainedCandidate(id);
       if (
         candidate.revision !== candidateRevision ||
@@ -1814,8 +1842,26 @@ function loadKnowledgeProposals(
         candidate.metadata.authority.proposalId !== id
       )
         throw new Error('Knowledge Proposal retained candidate is unavailable.');
-      const canonicalPageBytes =
-        notebook.readRevision(candidateRevision).files[`${knowledgePageId}.md`];
+      const candidateFiles = notebook.readRevision(candidateRevision).files;
+      const baseFiles = notebook.readRevision(baseRevision).files;
+      const changes =
+        changedMetadata === undefined
+          ? undefined
+          : [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateFiles)])]
+              .sort()
+              .filter((path) => baseFiles[path] !== candidateFiles[path])
+              .map((path) => ({ path, content: candidateFiles[path] ?? null }));
+      if (
+        changes &&
+        !isDeepStrictEqual(
+          changedMetadata,
+          changes.map(({ path, content }) => ({ path, removed: content === null }))
+        )
+      )
+        throw new Error('Knowledge Proposal changed paths contradict its candidate.');
+      const canonicalPageBytes = knowledgePageId
+        ? candidateFiles[`${knowledgePageId}.md`]
+        : undefined;
       const proposal = KnowledgeProposalRecordSchema.parse({
         id,
         workspaceId,
@@ -1823,17 +1869,19 @@ function loadKnowledgeProposals(
         ownerScope: parsed.document.frontmatter.owner_scope,
         baseRevision,
         candidateRevision,
-        knowledgePageId,
-        canonicalPageBytes,
+        ...(changes ? { changes } : { knowledgePageId, canonicalPageBytes }),
         contentDigest: requiredFrontmatterString(parsed.document, 'content_digest', path),
         sourceReferences,
         rationale: requiredFrontmatterString(parsed.document, 'rationale', path),
-        confidence: confidenceValue,
+        ...(changes ? {} : { confidence: confidenceValue }),
         producer: producerValue,
         createdAt: requiredFrontmatterString(parsed.document, 'created_at', path),
       });
       const candidateDigest = `sha256:${createHash('sha256')
-        .update(proposal.canonicalPageBytes, 'utf8')
+        .update(
+          proposal.changes ? JSON.stringify(proposal.changes) : proposal.canonicalPageBytes!,
+          'utf8'
+        )
         .digest('hex')}`;
       if (
         proposal.contentDigest !== candidateDigest ||

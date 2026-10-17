@@ -235,6 +235,145 @@ Exact human body.\r\n\t  `;
     expect(await f.publish(request)).toEqual(published);
   });
 
+  it('publishes Agent bytes under responsible human authority without claiming human authorship and preserves a later human winner', async () => {
+    const f = fixture();
+    const content = `---
+type: KnowledgePage
+title: Agent note
+schema_version: openkit-scope-knowledge-schema-v4
+requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+openkit_status: active
+status: stable
+scope: {kind: workspace, workspaceId: ${workspaceId}}
+source_refs: []
+review_state: user-authored
+sensitivity: normal
+freshness: current
+created_at: "2026-10-16T00:00:00.000Z"
+updated_at: "2026-10-16T00:00:00.000Z"
+custom: {keep: [one, two]}
+---
+Exact Agent body.\r\n\t  `;
+    const agent = {
+      kind: 'agent',
+      id: 'knowledge-manager',
+      responsibleUserId: producer.id,
+    } as const;
+    const authority = {
+      kind: 'delegated',
+      settingReference: '{"enabled":true,"reviewRequiredPageIds":[]}',
+      settingDigest: commandInputHash({ enabled: true, reviewRequiredPageIds: [] }),
+    } as const;
+    const dependencies = {
+      ...f,
+      producer: agent,
+      actor: producer,
+      publicationAuthority: authority,
+    };
+    const request = { ...f.request, changes: [{ path: 'entry.md', content }] };
+    const result = await publishWorkspaceNotebook(dependencies, request);
+    const revision = f.notebook.readRevision(result.notebookRevision);
+    expect(revision.metadata.producer).toEqual(agent);
+    expect(revision.metadata.authority).toEqual(authority);
+    expect(revision.files['entry.md']).toContain('review_state: delegated');
+    expect(revision.files['entry.md']!.split('\n---\n')[1]).toBe(content.split('\n---\n')[1]);
+    expect(
+      parseOkfDocument({ path: 'entry.md', content: revision.files['entry.md']! }).document
+        ?.frontmatter.custom
+    ).toEqual({ keep: ['one', 'two'] });
+    expect(await publishWorkspaceNotebook(dependencies, request)).toEqual(result);
+    const winner = await f.publish({
+      ...f.request,
+      requestId: randomUUID(),
+      baseRevision: result.notebookRevision,
+      summary: 'Human winner',
+    });
+    await expect(
+      publishWorkspaceNotebook(dependencies, { ...request, requestId: randomUUID() })
+    ).rejects.toMatchObject({ code: 'conflict', currentRevision: winner.notebookRevision });
+    expect(f.notebook.publishedRevision()).toBe(winner.notebookRevision);
+  });
+
+  it('retains an exact multi-page pending Proposal through restart and records Review against its full candidate', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-multi-proposal-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    let store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Exact candidate', {
+      requestId: randomUUID(),
+      producer,
+      instructionReference: 'fixture-create',
+    });
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
+    });
+    const baseRevision = notebook.publishedRevision();
+    const agent = {
+      kind: 'agent',
+      id: 'knowledge-manager',
+      responsibleUserId: producer.id,
+    } as const;
+    const page = `---
+type: KnowledgePage
+title: Topic
+schema_version: openkit-scope-knowledge-schema-v4
+requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+openkit_status: active
+status: stable
+scope: {kind: workspace, workspaceId: ${workspace.id}}
+source_refs: []
+review_state: delegated
+sensitivity: normal
+freshness: current
+created_at: "2026-10-16T00:00:00.000Z"
+updated_at: "2026-10-16T00:00:00.000Z"
+custom: {keep: [one, two]}
+---
+Exact retained candidate.\r\n`;
+    const changes = [
+      {
+        path: 'index.md',
+        content: '---\nokf_version: "0.2"\n---\n# Notebook\n[Topic](topic.md)\n',
+      },
+      { path: 'topic.md', content: page },
+    ];
+    const proposal = store.createKnowledgeProposal({
+      workspaceId: workspace.id,
+      requestId: randomUUID(),
+      baseRevision,
+      changes,
+      summary: 'Organize pages',
+      sourceReferences: [],
+      verifiedExternalReferences: [],
+      producer: agent,
+      createdAt: '2026-10-17T00:00:00.000Z',
+    });
+    expect(proposal.changes).toEqual(changes);
+    expect(proposal.knowledgePageId).toBeUndefined();
+    expect(notebook.publishedRevision()).toBe(baseRevision);
+    expect(notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+    store = new FsStore({ dataRoot });
+    expect(store.projectKnowledgeProposalDraft(workspace.id, proposal.id)).toEqual(proposal);
+    const reviewed = store.recordKnowledgeProposalReviewDecision({
+      workspaceId: workspace.id,
+      proposalId: proposal.id,
+      requestId: randomUUID(),
+      decision: 'accepted',
+      baseRevision,
+      candidateRevision: proposal.candidateRevision,
+      proposalDigest: store.knowledgeProposalDigest(workspace.id, proposal.id),
+      actor: producer,
+      decidedAt: '2026-10-17T00:01:00.000Z',
+      verifiedExternalReferences: [],
+    });
+    expect(reviewed.review.changedPageIds).toEqual(['index', 'topic']);
+    expect(reviewed.application).toMatchObject({
+      changedPageIds: ['index', 'topic'],
+      notebookRevision: proposal.candidateRevision,
+    });
+    expect(notebook.readRevision(proposal.candidateRevision).files['topic.md']).toBe(page);
+    expect(notebook.publishedRevision()).toBe(baseRevision);
+  });
+
   it('publishes once, retains exact facts, and replays the old commit after a later publication', async () => {
     const f = fixture();
     const [first, duplicate] = await Promise.all([f.publish(), f.publish()]);

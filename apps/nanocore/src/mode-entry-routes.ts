@@ -56,6 +56,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from './internal-agents/delegation.js';
 import { readInternalContextEvidence } from './internal-agents/internal-context-evidence.js';
+import { interruptKnowledgeManagerTurn } from './internal-agents/knowledge-manager-agent.js';
 import { resolveInternalRoleProfile } from './internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import { internalContextFailure } from './internal-agents/rolling-context.js';
@@ -2379,6 +2380,7 @@ export function createConversationService({
   startModeWorkerTurn,
   workerCoordinatorCandidates,
   goalServices,
+  knowledgeAgent,
 }: {
   readonly coreDb: CoreDb | undefined;
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
@@ -2419,6 +2421,7 @@ export function createConversationService({
     ) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly goalServices?: () => GoalOwnerServices;
+  readonly knowledgeAgent?: import('./operation-composition.js').OperationInvocationDependencies['knowledgeAgent'];
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string,
@@ -3065,27 +3068,28 @@ export function createConversationService({
       /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
       const answerFromWorkspaceKnowledge = async (): Promise<ConversationCommandResult | null> => {
         if (!store.getDataRoot()) return null;
-        const inputTurn = filePayloadPaths
-          ? createChatTurn(new Date().toISOString(), providerTurnId)
-          : undefined;
+        const inputTurn = createChatTurn(new Date().toISOString(), providerTurnId);
         const knowledgeAnswer = await createOperationInvocation({
           coreDb,
           store,
           inflightCommands,
           repositoryWorkspaceDb,
           workspaceMutationAdmission,
+          knowledgeAgent,
         })(
-          'knowledge.answer',
-          { workspaceId, query: conversationPrompt, limit: 3 },
+          'knowledge.ask',
+          { workspaceId, question: conversationPrompt },
           {
             kind: 'public',
             actor: actor,
-            queryContext: { threadId },
+            queryContext: { threadId, turnId: inputTurn.id },
           }
         );
         const completedAt = new Date().toISOString();
         const turn = inputTurn ?? createChatTurn(completedAt);
-        const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
+        const sourceTitles = knowledgeAnswer.citations
+          .map((citation) => citation.reference)
+          .join(', ');
         const answerItem = store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
           workspaceId,
@@ -3104,7 +3108,7 @@ export function createConversationService({
           body: ConversationCommandBodySchema.parse({
             outcome: 'answered',
             explanation:
-              knowledgeAnswer.outcome === 'answered'
+              knowledgeAnswer.citations.length > 0
                 ? 'The Knowledge Manager answered from Workspace Knowledge.'
                 : 'The Knowledge Manager found insufficient Workspace evidence.',
             turn: completedTurn,
@@ -3635,6 +3639,7 @@ export function createConversationService({
                 inflightCommands,
                 repositoryWorkspaceDb,
                 workspaceMutationAdmission,
+                knowledgeAgent,
                 ...(goalServices ? { goalServices: goalServices() } : {}),
               })(id, value, {
                 kind: 'public',
@@ -4012,6 +4017,7 @@ export function createConversationService({
     targets,
     submit,
     async interrupt(store: FsStore, turnId: string) {
+      if (await interruptKnowledgeManagerTurn(store, turnId)) return true;
       const run = activeChatRuns.get(store)?.get(turnId);
       if (!run) return false;
       run.controller.abort();
@@ -4439,6 +4445,7 @@ export function createConversationService({
               inflightCommands,
               repositoryWorkspaceDb,
               workspaceMutationAdmission,
+              knowledgeAgent,
               ...(goalServices ? { goalServices: goalServices() } : {}),
             })(id, value, {
               kind: 'public',

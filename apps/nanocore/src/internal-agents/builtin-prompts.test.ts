@@ -5,7 +5,12 @@ import {
   type BuiltInSystemPromptId,
 } from './builtin-prompts.js';
 
-const CURRENT_ENTRYPOINTS = ['administration', 'goal-orchestrator', 'quick-chat'] as const;
+const CURRENT_ENTRYPOINTS = [
+  'administration',
+  'goal-orchestrator',
+  'quick-chat',
+  'knowledge-manager',
+] as const;
 
 describe('built-in Agent System Prompts', () => {
   it('keeps every complete fixed assembly within 3000 Unicode code points', () => {

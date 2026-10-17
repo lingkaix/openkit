@@ -77,7 +77,7 @@ export function boundedNotebookDiff(changes: Change[], requireComplete: boolean)
 }
 
 /** One immutable inventory pair, with bodies obtained only through the current canonical reader. */
-class AuthorizedHistory {
+export class AuthorizedHistory {
   constructor(
     readonly notebook: KnowledgeNotebook,
     readonly dataRoot: string,
