@@ -591,12 +591,14 @@ describe('database setup', () => {
 
       expect(listMigrationIds(userDb, 'user')).toEqual([
         'user_0000_setup',
-        'user_0001_notebook_admission',
+        'user_0001_thread_read_receipts',
+        'user_0002_notebook_admission',
       ]);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
         'audit_events',
         'idempotency_requests',
+        'thread_read_receipts',
       ]);
       expect(listMigrationIds(workspaceDb, 'workspace')).toEqual([
         'workspace_0000_setup',

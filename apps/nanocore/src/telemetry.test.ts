@@ -10,11 +10,15 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  captureTelemetryContext,
   createHttpTelemetryMiddleware,
+  injectTelemetryContext,
+  recordNanoHostEffectAcceptance,
   resolveTelemetryConfiguration,
   shutdownTelemetry,
   startTelemetry,
   tracesExportUrl,
+  withTurnDispatchTelemetry,
 } from './telemetry.js';
 
 const VALID_ENDPOINT = 'http://127.0.0.1:4318';
@@ -84,6 +88,59 @@ describe('process.telemetry configuration', () => {
 });
 
 describe('telemetry lifecycle', () => {
+  it('keeps ended Turn initiation context through deferred work without inheriting a later poll', async () => {
+    const exporter = new InMemorySpanExporter();
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    startTelemetry({
+      bootId: TEST_BOOT_ID,
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT },
+      exporter,
+    });
+    let resume!: () => void;
+    const held = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const work = withTurnDispatchTelemetry('turn-existing', async () => {
+      await held;
+      const headers: Record<string, string> = {};
+      injectTelemetryContext(captureTelemetryContext(), headers);
+      return headers;
+    });
+    const initiation = soleSpan(exporter);
+    expect(initiation.name).toBe('worker.turn.dispatch');
+    expect(initiation.attributes).toEqual({ 'openkit.turn.id': 'turn-existing' });
+    await httpApp().request('/items/poll-private-canary');
+    const outside: Record<string, string> = {};
+    injectTelemetryContext(captureTelemetryContext(), outside);
+    expect(outside).toEqual({});
+    resume();
+    expect((await work).traceparent).toBe(
+      `00-${initiation.spanContext().traceId}-${initiation.spanContext().spanId}-01`
+    );
+    expect(exporter.getFinishedSpans()).toHaveLength(2);
+  });
+
+  it.each([
+    undefined,
+    new Headers({ traceparent: 'malformed-private-canary', tracestate: 'also=private' }),
+  ])('accepts a result without valid returned context as a bounded root: %s', (headers) => {
+    const exporter = new InMemorySpanExporter();
+    startTelemetry({
+      bootId: TEST_BOOT_ID,
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT },
+      exporter,
+    });
+    withTurnDispatchTelemetry('turn-existing', () => recordNanoHostEffectAcceptance(headers));
+    const spans = exporter.getFinishedSpans();
+    const acceptance = spans.find((span) => span.name === 'nanohost.effect.accept')!;
+    const initiation = spans.find((span) => span.name === 'worker.turn.dispatch')!;
+    expect(acceptance.parentSpanContext).toBeUndefined();
+    expect(acceptance.spanContext().traceId).not.toBe(initiation.spanContext().traceId);
+    expect(acceptance.attributes).toEqual({});
+    expect(acceptance.events).toEqual([]);
+    expect(acceptance.status).toEqual({ code: SpanStatusCode.UNSET });
+  });
+
   it('records HTTP handoff spans without caller headers, URLs, or host paths', async () => {
     const exporter = new InMemorySpanExporter();
     const logs: string[] = [];

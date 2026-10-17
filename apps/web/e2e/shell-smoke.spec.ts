@@ -25,8 +25,9 @@ test('contains long conversation previews and keeps the next row clickable', asy
             createdAt: '2026-09-18T00:00:00.000Z',
             updatedAt: '2026-09-18T00:00:00.000Z',
           },
-          activity: 'chat',
+          activity: index === 0 ? 'goal' : 'chat',
           state: 'idle',
+          unreadCount: 0,
           lastActivityAt: '2026-09-18T00:00:00.000Z',
         })),
       },
@@ -36,10 +37,26 @@ test('contains long conversation previews and keeps the next row clickable', asy
   await page.goto(stack.webUrl);
   const row = page.getByRole('button', { name: title, exact: true });
   const next = page.getByRole('button', { name: 'Next conversation', exact: true });
+  const navigation = page.getByRole('navigation', { name: 'Primary workspace navigation' });
+  const expander = page.getByRole('button', { name: `Show tasks for ${title}`, exact: true });
   for (const width of [824, 600]) {
     await page.setViewportSize({ width, height: 803 });
     if (width < 800) await page.getByRole('button', { name: 'Navigation', exact: true }).click();
     await expect(row).toBeVisible();
+    await expect(expander).toBeVisible();
+    const navigationBounds = await navigation.boundingBox();
+    const expanderBounds = await expander.boundingBox();
+    expect(navigationBounds).not.toBeNull();
+    expect(expanderBounds).not.toBeNull();
+    expect(expanderBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x);
+    expect(expanderBounds!.x + expanderBounds!.width).toBeLessThanOrEqual(
+      navigationBounds!.x + navigationBounds!.width
+    );
+    const navigationOverflow = await navigation.evaluate((element) => ({
+      client: element.clientWidth,
+      scroll: element.scrollWidth,
+    }));
+    expect(navigationOverflow.scroll).toBeLessThanOrEqual(navigationOverflow.client);
     await page.mouse.move(width - 20, 100);
     await row.hover();
     const tooltip = page.getByRole('tooltip');

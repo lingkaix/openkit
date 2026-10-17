@@ -182,6 +182,7 @@ File-backed source-of-truth records:
 SQLite source-of-truth records:
 
 - auth session records delegated to the auth implementation
+- User-owned conversation read receipts in `users/<userId>/db/user.sqlite`, keyed by Workspace and Thread, under the [Web projection receipt contract](20260628-web_product_surface_projection.md#user-owned-read-receipts); portable Workspace copies exclude this User state
 - idempotency ledger rows
 - audit events
 - usage records

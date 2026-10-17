@@ -125,7 +125,6 @@ describe('release-declared catalog Skill supply', () => {
       prepareLaunch: unexpectedBackendCall,
       update: unexpectedBackendCall,
       collectEvidence: unexpectedBackendCall,
-      collectProviderRefreshStatuses: unexpectedBackendCall,
       collectTranscript: unexpectedBackendCall,
       collectWorkspaceChanges: unexpectedBackendCall,
     };
