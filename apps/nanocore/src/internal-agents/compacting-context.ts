@@ -90,7 +90,10 @@ export function createCompactingInternalAgentProvider(
     const evidenceDigest = input.readEvidence(sources);
     const assertSources = () => {
       request.signal.throwIfAborted();
-      const currentTurn = 'owner' in input.turn ? input.store.getServerTurnById(input.turn.id) : input.store.getTurnById(input.turn.id);
+      const currentTurn =
+        'owner' in input.turn
+          ? input.store.getServerTurnById(input.turn.id)
+          : input.store.getTurnById(input.turn.id);
       if (currentTurn.agentSessionId || currentTurn.agentId !== 'knowledge-manager')
         throw capacity();
       const canonical = currentTurn.items;
@@ -218,7 +221,9 @@ export function createCompactingInternalAgentProvider(
           environmentDigest,
           sourceRange,
         }),
-        ...('owner' in input.turn ? { owner: input.turn.owner } : { workspaceId: input.turn.workspaceId }),
+        ...('owner' in input.turn
+          ? { owner: input.turn.owner }
+          : { workspaceId: input.turn.workspaceId }),
         threadId: input.turn.threadId,
         turnId: input.turn.id,
         type: 'context-summary',
@@ -238,9 +243,10 @@ export function createCompactingInternalAgentProvider(
       if (Buffer.byteLength(JSON.stringify(compacted)) >= beforeBytes || !fits(compacted))
         throw invalidSummary();
       assertSources();
-      const stored = 'owner' in next
-        ? input.store.createServerItem(ServerItemSchema.parse(next))
-        : input.store.createItem(ItemSchema.parse(next));
+      const stored =
+        'owner' in next
+          ? input.store.createServerItem(ServerItemSchema.parse(next))
+          : input.store.createItem(ItemSchema.parse(next));
       if (stored.type !== 'context-summary') throw invalidSummary();
       summary = stored;
       coveredMessageCount = request.messages.length;

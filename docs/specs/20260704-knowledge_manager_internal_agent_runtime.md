@@ -267,3 +267,11 @@ S18 alone owns the real Knowledge L6 story. This specification adds no story or 
 - `docs/specs/20260704-chat_mode_assistant.md`
 - `docs/specs/20260704-workflow_coordinator_internal_agent.md`
 - `docs/specs/20260813-internal_agent_runtime.md`
+
+### Server Maintenance Implementation
+
+The Server maintenance Thread uses the general `server` owner and has no Workspace selector. Current Server administration authority admits its history, Stop, explicit inputs and human Review. `knowledge.server.tell` and `knowledge.server.maintain` start bounded Turns; `thread.server.list`, `thread.server.read` and `turn.server.interrupt` expose their existing work records. Workers retain Workspace-only tell. Server administration and evaluation roles are not implemented by this change.
+
+Server maintenance learns only from its explicit requests, their retained Server Sources, and human changes in its own notebook since the last completed processed base. Its retained `sourceRange` is empty because it does not learn from Threads. No Workspace or User Thread history, or prior Knowledge Manager run output, is supplied. Explicit tell bytes use the existing Server Source owner. The run's bounded input includes exact Source references, the pinned notebook base, human edit diffs, trigger and instructions. Selected pages are fixed-base inputs; omitted pages remain immutable. Daily scheduling is independently off by default and uses the existing scanner. Current usable Server administration responsibility supplies the scheduled system actor; missing authority or an active writer produces a visible failed or skipped Turn, without a model effect.
+
+Delegated publication uses the existing Server `knowledgeMaintenance.enabled` setting and notebook publisher. Otherwise the existing Proposal and Review families retain the Server owner, base, candidate, sources, producer and decision without a Workspace field. `knowledge.server.proposal.read` exposes the exact candidate diff, and `knowledge.server.proposal.decide` accepts only that reviewed tuple under current authority. Changed bases conflict before publication. The shared role runner, result Tool, one repair limit, model resolver, compaction, usage and restart rules apply unchanged. Exact current-run compaction ranges are readable through `thread.history.read`; that Tool cannot read other work.

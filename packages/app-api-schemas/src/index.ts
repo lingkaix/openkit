@@ -49,6 +49,7 @@ export * from './runtime-evidence.js';
 export { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 export * from './search.js';
 export { SERVER_MCP_OPERATION_DEFINITIONS } from './server-mcp-operations.js';
+export * from './server-threads.js';
 export * from './storage.js';
 export { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 export * from './task-mode.js';
@@ -66,5 +67,3 @@ export * from './workspace-lifecycle-operations.js';
 export * from './workspace-sharing.js';
 export * from './workspace-sync.js';
 export * from './workspace-transfer.js';
-
-export * from './server-threads.js';

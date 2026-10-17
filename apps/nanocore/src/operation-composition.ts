@@ -1,4 +1,3 @@
-import { createServerThreadOperations } from './server-thread-operations.js';
 import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
@@ -59,6 +58,7 @@ import { createSchedulerAdmissionOperationImplementations } from './runtime/sche
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
+import { createServerThreadOperations } from './server-thread-operations.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';

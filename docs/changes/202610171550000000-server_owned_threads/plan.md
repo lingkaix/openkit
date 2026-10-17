@@ -28,9 +28,13 @@ The coordinator approved the eight-line plan on 2026-10-17 at 15:4xZ under the e
 
 Core Concepts, Thread: replace exactly-one-Workspace placement with exactly one immutable Workspace or Server owner; preserve default Workspace ownership, sequential Turns, single current AgentSession, immutable lineage and no inferred authority. Creation fixes that owner, and the no-history-movement invariant now covers all owners. Server visibility requires current Server administration authority. Work Model projects this extension; Knowledge and the KM spec bind Server maintenance to it. No existing Workspace audience criterion is removed.
 
-## Checkpoint
+## Implementation Boundary
 
-Main c35c68a9 is merged. Before source work, the open-branch ownership check found required shared seams held by L-AW (workspace-file-records.ts), L-ID naming and L-AW Text (internal-agents/gateway-provider.ts), and L-GA (operation-resolvers.ts). No held path is edited. Free owner text is prepared; implementation and deciding tests wait for a release or an agreed join. The operator real-provider runbook is separate evidence, not acceptance.
+Coordinator GO on 2026-10-17 releases P18 paths; L-ID naming paths remain held until its main landing. Root joins Server maintenance and the existing operation composition. Two built-in Sol builders own separate storage and shared usage/capture branches, merged normally. Memory, Skills and Web remain with their assigned lanes.
+
+Server Thread, Turn, Item and event variants add `owner: {kind: server}` and omit Workspace identity. Existing Workspace schemas remain unchanged. Canonical Server history uses `server/threads/<thread>/turns/<turn>/` and the same envelope, Item revision and event families. The supported required feature is `openkit.server-threads.v1`. Server capability/usage, work observations and evidence bundles extend their existing families in the Core database and Server evidence root; they do not allocate a new ledger or store. Ordinary Core migration adds the existing table families with a null Workspace column. Server observations bind the same capture coverage and environment record to their actual owner.
+
+Server Proposal and Review variants omit Workspace identity and retain `ownerScope: {kind: server}`. Seven additive operation IDs expose Server tell/maintain, general Thread list/read, Turn Stop and exact Proposal read/decide. No new Item kind or configuration key is added. Existing Server `knowledgeMaintenance.enabled` and `schedule.enabled` remain independent and off by default. User Memory, future Server roles, cross-Workspace learning and deployment are excluded.
 
 ## Verification And Closeout
 

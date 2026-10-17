@@ -180,3 +180,5 @@ External domain systems own their raw source-of-truth records; OpenKit may cite,
 - Worker receipt of selected Knowledge requires its owning Context Package delivery trace or the exact answer bytes in its existing Knowledge Manager capability call.
 - Knowledge Pages MUST NOT store secret values.
 - Raw external records MUST remain owned by their external system unless explicitly captured as OpenKit source material.
+
+Server Knowledge maintenance records its work and approval on a Server-owned Thread. Current Server administration authority controls visibility; Workspace membership grants no access. A run uses explicit Server inputs and human notebook changes, with no automatic learning across Workspaces.
