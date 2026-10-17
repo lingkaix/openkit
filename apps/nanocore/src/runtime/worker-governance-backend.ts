@@ -1006,13 +1006,6 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
   collectEvidence(packageSnapshotId: string): Promise<WorkerGovernanceEvidenceRecord[]>;
 
   /**
-   * Polls refresh status evidence for active provider-backed sessions.
-   *
-   * @returns Product-safe refresh status evidence records.
-   */
-  collectProviderRefreshStatuses(): Promise<WorkerGovernanceEvidenceRecord[]>;
-
-  /**
    * Collects worker-written OpenKit transcript files for canonical turn-end import.
    *
    * @param packageSnapshotId Package snapshot id whose transcript should be collected.

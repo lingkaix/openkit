@@ -33,6 +33,7 @@ import {
 } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
   bindSchedulerExecutionAttemptSession,
@@ -202,7 +203,9 @@ export async function runSchedulerDispatchLoop(
         resolve(result);
       };
     });
-    const promise = dispatchSchedulerAdmission(input, entry, acknowledgeSubmission);
+    const promise = withTurnDispatchTelemetry(entry.turnId, () =>
+      dispatchSchedulerAdmission(input, entry, acknowledgeSubmission)
+    );
     claims.set(entry.queueEntryId, promise);
     const forget = () => {
       if (claims.get(entry.queueEntryId) === promise) claims.delete(entry.queueEntryId);
