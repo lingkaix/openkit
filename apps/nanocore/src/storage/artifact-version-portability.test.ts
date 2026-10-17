@@ -6,6 +6,7 @@ import {
   WorkspaceExportResponseSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
@@ -272,4 +273,136 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
   const downloadedBytes = new Uint8Array(await downloaded.arrayBuffer());
   expect(Buffer.from(downloadedBytes)).toEqual(original);
   expect(digest(downloadedBytes)).toBe(first.version.contentDigest);
+});
+
+it('retains historical Artifact event snapshots and Item deltas after a newer version is imported', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-events-'));
+  const coreDb = openCoreDb(dataRoot);
+  onTestFinished(() => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Historical event snapshots', {
+    requestId: randomUUID(),
+    producer: actor,
+    instructionReference: 'test:historical-artifact-events',
+  });
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId: workspace.id });
+  const thread = store.createThread(workspace.id, 'Retained output events');
+  const turn = store.createTurn(workspace.id, thread.id, 'Produce original output', actor);
+  const requestId = randomUUID();
+  const recordedAt = new Date().toISOString();
+  const artifact = store.createArtifact({
+    id: allocateEntityId('ar'),
+    workspaceId: workspace.id,
+    threadId: thread.id,
+    turnId: turn.id,
+    kind: 'report',
+    title: 'Original event output',
+    summary: null,
+    status: 'ready',
+    version: 1,
+    content: { format: 'text', body: 'Original retained output' },
+    contentDigest: digest(Buffer.from('Original retained output')),
+    lastMutationRequestId: requestId,
+    origin: { kind: 'turn-output', threadId: thread.id, turnId: turn.id, requestId },
+    createdAt: recordedAt,
+    updatedAt: recordedAt,
+  });
+  const reference = store
+    .getTurn(workspace.id, thread.id, turn.id)
+    .items.find((item) => item.type === 'artifact-reference' && item.artifactId === artifact.id)!;
+  const eventScope = {
+    workspaceId: workspace.id,
+    threadId: thread.id,
+    turnId: turn.id,
+    requestId: null,
+  };
+  store.emitTurnEvent(turn.id, {
+    ...eventScope,
+    event: 'artifact.created',
+    data: { type: 'artifact-created', artifact },
+  });
+  store.emitTurnEvent(turn.id, {
+    ...eventScope,
+    event: 'item.delta',
+    data: {
+      type: 'item-delta',
+      itemId: reference.id,
+      itemType: 'artifact-reference',
+      deltaKind: 'artifact-updated',
+      artifactId: artifact.id,
+    },
+  });
+  store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt, durationMs: 0 });
+  const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
+  const committed = await app.request(
+    ...operationRequest(
+      'artifact.version-commit',
+      {},
+      {
+        body: JSON.stringify({
+          workspaceId: workspace.id,
+          artifactId: artifact.id,
+          threadId: thread.id,
+          requestId: randomUUID(),
+          expectedArtifactVersion: 1,
+          title: 'Current event output',
+          summary: null,
+          content: { format: 'text', body: 'Current retained output' },
+        }),
+      }
+    )
+  );
+  expect(committed.status, await committed.clone().text()).toBe(201);
+  const exportedResponse = await app.request(
+    ...operationRequest('workspace.export', { workspaceId: workspace.id })
+  );
+  expect(exportedResponse.status, await exportedResponse.clone().text()).toBe(200);
+  const exported = WorkspaceExportResponseSchema.parse(await exportedResponse.json());
+  const importedResponse = await app.request(
+    ...operationRequest(
+      'workspace.import',
+      {},
+      {
+        body: JSON.stringify({
+          sourceWorkspaceId: workspace.id,
+          exportId: exported.exportId,
+          requestId: randomUUID(),
+        }),
+      }
+    )
+  );
+  expect(importedResponse.status, await importedResponse.clone().text()).toBe(200);
+  const imported = WorkspaceImportResponseSchema.parse(await importedResponse.json());
+  const reopened = new FsStore({ dataRoot });
+  const restored = reopened.listArtifacts(imported.importedWorkspaceId)[0]!;
+  const first = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 1);
+  const events = reopened.getTurnEventsForExport(first.version.turnId!);
+  expect(restored.version).toBe(2);
+  expect(events.find((event) => event.data.type === 'artifact-created')?.data).toEqual({
+    type: 'artifact-created',
+    artifact: first.artifact,
+  });
+  expect(events.find((event) => event.data.type === 'item-delta')?.data).toMatchObject({
+    type: 'item-delta',
+    deltaKind: 'artifact-updated',
+    artifactId: restored.id,
+  });
+  const importedTurn = reopened.getTurn(
+    imported.importedWorkspaceId,
+    first.version.threadId!,
+    first.version.turnId!
+  );
+  expect(importedTurn.items).toContainEqual(
+    expect.objectContaining({
+      type: 'artifact-reference',
+      artifactId: restored.id,
+      artifactVersion: 1,
+    })
+  );
 });

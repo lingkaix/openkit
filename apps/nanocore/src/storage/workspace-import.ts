@@ -1747,6 +1747,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
           turns: importedTurns,
           items: importedItems,
           artifacts: importedArtifacts,
+          artifactVersions: artifactVersions.map(({ record }) => record),
           agentSessions: importedAgentSessions,
           approvalRequestIds,
         })
@@ -4902,6 +4903,7 @@ function rewritePortableTurnEvent(
     turns: ReadonlyMap<string, Turn>;
     items: ReadonlyMap<string, Item>;
     artifacts: ReadonlyMap<string, Artifact>;
+    artifactVersions: readonly ArtifactVersionRecord[];
     agentSessions: ReadonlyMap<string, AgentSession>;
     approvalRequestIds: ReadonlyMap<string, string>;
   }
@@ -4958,7 +4960,10 @@ function rewritePortableTurnEvent(
         if (
           item.type !== 'artifact-reference' ||
           item.artifactId !== artifact.id ||
-          item.artifactVersion !== artifact.version
+          !records.artifactVersions.some(
+            (record) =>
+              record.artifact.id === artifact.id && record.artifact.version === item.artifactVersion
+          )
         ) {
           throw new Error('Artifact update delta has contradictory artifact-reference lineage.');
         }
@@ -4988,12 +4993,31 @@ function rewritePortableTurnEvent(
       };
       break;
     case 'artifact-created':
-    case 'artifact-updated':
+    case 'artifact-updated': {
+      const current = requiredMapValue(records.artifacts, data.artifact.id, 'artifact');
+      const retained = records.artifactVersions.find(
+        (record) =>
+          record.artifact.id === current.id && record.artifact.version === data.artifact.version
+      );
+      if (
+        !retained ||
+        retained.artifact.contentDigest !== data.artifact.contentDigest ||
+        retained.artifact.title !== data.artifact.title ||
+        retained.artifact.summary !== data.artifact.summary ||
+        !isDeepStrictEqual(retained.artifact.content, data.artifact.content)
+      ) {
+        throw new Error('Artifact event snapshot contradicts its exact retained version.');
+      }
       rewrittenData = {
         ...data,
-        artifact: requiredMapValue(records.artifacts, data.artifact.id, 'artifact'),
+        artifact: {
+          ...retained.artifact,
+          status: data.artifact.status,
+          updatedAt: data.artifact.updatedAt,
+        },
       };
       break;
+    }
     case 'error':
       rewrittenData = data;
       break;
