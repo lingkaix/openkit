@@ -132,7 +132,6 @@ export function createCompactingInternalAgentProvider(
       }
       request.signal.throwIfAborted();
     };
-    assertSources();
     const messages = () => [
       ...(summary ? [internalContextSummaryMessage(summary)] : []),
       ...request.messages.slice(coveredMessageCount),
@@ -171,6 +170,9 @@ export function createCompactingInternalAgentProvider(
         sourceDigest: digest,
         evidenceDigest,
       };
+      // Validate immediately before each effect, including summary production; pure window
+      // fitting above does not need another complete canonical source reread.
+      assertSources();
       const response = await call({
         systemPrompt: COMPACTION_INSTRUCTION,
         model: request.model,

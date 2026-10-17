@@ -270,7 +270,7 @@ async function executeKnowledgeManagerAgent(
         const callIds = new Set<string>();
         const resultProvider: InternalAgentProviderCall = async (request) => {
           request.signal.throwIfAborted();
-          input.assertCurrent();
+          // The compacting Provider owns pre-dispatch and post-response source validation.
           // The result Tool is terminal. End the loop without another Provider effect.
           if (resultText !== undefined)
             return { message: { role: 'assistant', content: [], truncated: false } };

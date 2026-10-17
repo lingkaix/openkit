@@ -230,10 +230,13 @@ export async function askKnowledgeAgent(
       const content = store.readKnowledgeSourceMaterial(input.workspaceId, sourceId);
       return content === null ? null : { source, content };
     };
-    const assertCurrent = () => {
+    const assertCallerCurrent = () => {
       input.assertCurrent?.();
       input.signal.throwIfAborted();
       admitKnowledgeRetrieval(bound);
+    };
+    const assertCurrent = () => {
+      assertCallerCurrent();
       // Initial overviews are delivered evidence even when no page Tool reads them again.
       for (const overview of overviews) {
         const candidate = candidates.get(overview.pageId)!;
@@ -476,7 +479,9 @@ export async function askKnowledgeAgent(
             coreDb: input.access.coreDb!,
             workspaceId: input.workspaceId,
             threadId: thread.id,
-            nativeAuthority,
+            // Trace readers recheck their own sources. The context provider checks the full
+            // overview/citation set around dispatch; repeating it inside every trace check is quadratic.
+            nativeAuthority: { ...nativeAuthority, assertCurrent: assertCallerCurrent },
             items,
             strategy: 'compaction',
             knowledgeProjection: 'selection',
