@@ -150,6 +150,7 @@ and are not listed here.
 - `docs/specs/20261002-remote_mcp_interface.md` — Accepted, Partial — The remote MCP endpoint on the configured public origin, its Streamable HTTP posture, and static-bearer admission.
 - `docs/specs/20261012-product_integrity_check.md` — Accepted, Not Started — This specification owns one read-only Workspace integrity check.
 - `docs/specs/20261014-retrieval_kernel.md` — Accepted, Partial — The Document, derived Markdown sidecar, source key, scope, chunk, provenance, index generation, query, and result contracts.
+- `docs/specs/20261017-retained_format_register.md` — Accepted, Implemented — The register owns the family inventory, authority classification, current marker evidence, reader boundary, fixture pointers and identified gaps.
 
 ## Terminal Specifications
 
