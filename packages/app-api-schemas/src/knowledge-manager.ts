@@ -34,7 +34,13 @@ const KnowledgeProposalSafeTextSchema = z
   });
 
 /** Server-assigned semantic owner of one Knowledge Manager invocation path. */
-export const KnowledgeManagerCallerSchema = z.enum(['assistant', 'task-mode', 'app-api']);
+export const KnowledgeManagerCallerSchema = z.enum([
+  'assistant',
+  'task-mode',
+  'app-api',
+  'internal-agent',
+  'worker',
+]);
 
 /** Workspace knowledge source material category. */
 export const KnowledgeSourceKindSchema = z.enum([
@@ -598,6 +604,44 @@ export const KnowledgeManagerDraftProposalRequestSchema = z
   })
   .strict();
 
+/** Exact bundle-relative candidate changes retained by the existing Notebook Proposal owner. */
+export const KnowledgeNotebookProposalChangesSchema = z
+  .array(
+    z
+      .object({
+        path: z.string().min(1),
+        content: z.string().nullable(),
+      })
+      .strict()
+  )
+  .min(1)
+  .max(256);
+
+/** Requires exactly one complete existing single-page draft or native multi-page candidate. */
+export function validKnowledgeProposalShape(value: {
+  changes?: unknown;
+  knowledgePageId?: unknown;
+  canonicalPageBytes?: unknown;
+  confidence?: unknown;
+  sourceReferences: readonly string[];
+}): boolean {
+  if (value.changes !== undefined)
+    return (
+      value.knowledgePageId === undefined &&
+      value.canonicalPageBytes === undefined &&
+      value.confidence === undefined
+    );
+  return (
+    typeof value.knowledgePageId === 'string' &&
+    typeof value.canonicalPageBytes === 'string' &&
+    typeof value.confidence === 'number' &&
+    value.sourceReferences.length > 0 &&
+    value.sourceReferences.every(
+      (reference, index) => index === 0 || value.sourceReferences[index - 1]! < reference
+    )
+  );
+}
+
 /** Pending immutable fixed-base Notebook Proposal projected after drafting. */
 export const KnowledgeManagerDraftedProposalSchema = z
   .object({
@@ -607,17 +651,22 @@ export const KnowledgeManagerDraftedProposalSchema = z
     ownerScope: KnowledgeOwnerScopeSchema,
     baseRevision: z.string().min(1),
     candidateRevision: z.string().min(1),
-    knowledgePageId: KnowledgeProposalPageIdSchema,
-    canonicalPageBytes: KnowledgeProposalSafeTextSchema,
+    knowledgePageId: KnowledgeProposalPageIdSchema.optional(),
+    canonicalPageBytes: KnowledgeProposalSafeTextSchema.optional(),
+    changes: KnowledgeNotebookProposalChangesSchema.optional(),
     contentDigest: KnowledgeProposalContentDigestSchema,
-    sourceReferences: KnowledgeManagerDraftProposalRequestSchema.shape.sourceReferences,
+    sourceReferences: z.array(knowledgeProposalSourceReferenceSchema),
     rationale: KnowledgeProposalSafeTextSchema,
-    confidence: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1).optional(),
     producer: ActorRefSchema,
     status: z.literal('pending'),
     createdAt: TimestampSchema,
   })
-  .strict();
+  .strict()
+  .refine(
+    validKnowledgeProposalShape,
+    'Knowledge Proposal must contain exactly one complete candidate shape.'
+  );
 
 /** Deterministic validation result for one Knowledge Manager proposal draft. */
 export const KnowledgeManagerProposalValidationSchema = z

@@ -19,6 +19,13 @@ export const KnowledgeContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{6
 export const KnowledgeNotebookAuthoritySchema = z.union([
   z.object({ kind: z.literal('direct'), instructionReference: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('proposal'), proposalId: z.string().min(1) }).strict(),
+  z
+    .object({
+      kind: z.literal('delegated'),
+      settingReference: z.string().min(1),
+      settingDigest: KnowledgeContentDigestSchema,
+    })
+    .strict(),
 ]);
 
 /** Complete service-serialized commit message for the initial explicit human editing path. */
