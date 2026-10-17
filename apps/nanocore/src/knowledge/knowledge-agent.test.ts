@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
@@ -11,15 +11,20 @@ import {
   listWorkspaceUsageRecords,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -29,13 +34,15 @@ import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-
 import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
+import { publishScopedNotebook } from './scoped-notebook-publication.js';
 
 type TransportRequest = Parameters<LLMGatewayProviderDispatcher['createResponses']>[1];
 type Transport = Parameters<LLMGatewayProviderDispatcher['createResponses']>[2];
 type ProviderResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>;
 
 /** Only the external Responses transport is replaced; Core, publication and the retrieval Kernel are real. */
-async function fixture() {
+async function fixture(withServerKnowledge = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-query-proof-'));
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Knowledge query proof');
@@ -121,8 +128,67 @@ async function fixture() {
   // A valid shared publication does not retain disclosure authority after its Source becomes private.
   Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: userId });
   const revision = notebook.publishedRevision();
-  const page = notebook.readRevision(revision, ['launch-evidence.md']).files['launch-evidence.md']!;
+  const workspaceFiles = notebook.readRevision(revision, ['launch-evidence.md', 'index.md']).files;
+  const page = workspaceFiles['launch-evidence.md']!;
+  const overviewDigest = `sha256:${createHash('sha256').update(workspaceFiles['index.md']!).digest('hex')}`;
   const contentDigest = `sha256:${createHash('sha256').update(page).digest('hex')}`;
+  let server:
+    | { revision: string; contentDigest: string; overviewDigest: string; repositoryPath: string }
+    | undefined;
+  const serverActor = { kind: 'local' as const, userId };
+  if (withServerKnowledge) {
+    const context = { coreDb, actor: serverActor, target: { kind: 'server' as const } };
+    const initial = initializeScopedNotebook({
+      ...context,
+      initialization: {
+        requestId: randomUUID(),
+        instructionReference: 'fixture:shared-server-knowledge',
+      },
+    });
+    const repositoryPath = join(resolveScopedNotebookOwner(context).notebookRoot, 'notebook.git');
+    const serverNotebook = new KnowledgeNotebook({ repositoryPath });
+    const timestamp = new Date().toISOString();
+    const content = serializeUserAuthoredKnowledgePage(
+      {
+        id: 'launch-evidence',
+        kind: 'project-context',
+        title: 'Heliotrope launch policy',
+        content: 'The heliotrope launch requires cobalt approval from the Server owner.',
+        sourceReferences: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'server' }
+    );
+    const publication = await publishScopedNotebook(
+      {
+        ...context,
+        store,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot,
+          initialSnapshot: publicationConfig,
+        }),
+        inflightCommands: new WeakMap(),
+      },
+      {
+        requestId: randomUUID(),
+        baseRevision: initial,
+        changes: [{ path: 'launch-evidence.md', content }],
+        summary: 'Record shared launch policy',
+      }
+    );
+    const serverFiles = serverNotebook.readRevision(publication.notebookRevision, [
+      'launch-evidence.md',
+      'index.md',
+    ]).files;
+    const exact = serverFiles['launch-evidence.md']!;
+    server = {
+      revision: publication.notebookRevision,
+      contentDigest: `sha256:${createHash('sha256').update(exact).digest('hex')}`,
+      overviewDigest: `sha256:${createHash('sha256').update(serverFiles['index.md']!).digest('hex')}`,
+      repositoryPath,
+    };
+  }
   const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
   const providerRegistry = new ProviderRegistry([
     {
@@ -229,7 +295,14 @@ async function fixture() {
     providerRef: null,
     redactionClass: 'metadata-only',
   });
-  const access = { store, coreDb, actor, outputThreadId: thread.id, outputTurnId: turn.id };
+  const access: KnowledgeRetrievalAccess = {
+    store,
+    coreDb,
+    actor,
+    outputThreadId: thread.id,
+    outputTurnId: turn.id,
+    ...(withServerKnowledge ? { serverKnowledgeActor: serverActor } : {}),
+  };
   const ask = () =>
     askKnowledgeAgent(dependencies, {
       workspaceId: workspace.id,
@@ -253,8 +326,11 @@ async function fixture() {
     access,
     revision,
     contentDigest,
+    overviewDigest,
     page,
     sourceReference,
+    sourceId: source.id,
+    server,
     sourceThread,
     createResponses,
     dependencies,
@@ -263,14 +339,14 @@ async function fixture() {
 }
 
 /** Emits a Provider Tool request without implementing or intercepting the actual Tool. */
-function call(name: string, args: Record<string, unknown>) {
+function call(name: string, args: Record<string, unknown>, callId = `call-${name}`) {
   return {
     id: randomUUID(),
     object: 'response' as const,
     output: [
       {
         type: 'function_call' as const,
-        call_id: `call-${name}`,
+        call_id: callId,
         name: operationToolName(name),
         arguments: JSON.stringify(args),
       },
@@ -302,41 +378,129 @@ function message(
 }
 
 /** Reads the Provider-visible result of a real Tool, rather than inferring execution from Tool declarations. */
-function toolOutput(request: TransportRequest, name: string): string {
+function toolOutput(request: TransportRequest, name: string, callId = `call-${name}`): string {
   const outputs = request.input as Array<{ type?: string; call_id?: string; output?: string }>;
   const result = outputs.find(
-    (item) => item.type === 'function_call_output' && item.call_id === `call-${name}`
+    (item) => item.type === 'function_call_output' && item.call_id === callId
   );
   expect(result, `Missing actual ${name} result`).toBeDefined();
   return result!.output!;
 }
 
-it('searches and reads real published evidence with the configured model, exact citations and isolated work usage', async () => {
-  const f = await fixture();
+// Two real Git notebooks, Kernel selections and exact Source revalidation use the same allowance as bounded maintenance integration.
+it('keeps real Workspace and Server selections distinct while reading exact pages and Source bytes with isolated work usage', async () => {
+  const f = await fixture(true);
+  const workspacePageId = `page/workspace/${f.workspace.id}/launch-evidence`;
+  const serverPageId = 'page/server/launch-evidence';
   let step = 0;
-  f.createResponses.mockImplementation(async (_provider, request, context) => {
-    expect(request.model).toBe('knowledge-model');
+  f.createResponses.mockImplementation(async (_provider, _request, context) => {
     context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
     if (++step === 1) {
-      expect((request.tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual(
-        expect.arrayContaining(['knowledge_retrieval', 'knowledge_page_read'])
-      );
       return call('knowledge.retrieval', { query: 'heliotrope cobalt', limit: 5 });
     }
     if (step === 2) {
-      expect(toolOutput(request, 'knowledge.retrieval')).toContain(f.contentDigest);
-      expect(toolOutput(request, 'knowledge.retrieval')).toContain(f.revision);
-      return call('knowledge.page.read', { pageId: 'launch-evidence' });
+      return call('knowledge.page.read', { pageId: workspacePageId });
     }
-    expect(toolOutput(request, 'knowledge.page.read')).toContain(
-      'heliotrope launch uses the cobalt gate'
-    );
-    return message('Use the cobalt gate.', ['launch-evidence']);
+    if (step === 3)
+      return call('knowledge.source.read', { pageId: workspacePageId, sourceId: f.sourceId });
+    if (step === 4) return call('knowledge.page.read', { pageId: serverPageId }, 'server-page');
+    return message('Use the cobalt gate and obtain Server approval.', [
+      workspacePageId,
+      serverPageId,
+    ]);
   });
   const answer = await f.ask();
-  expect(f.createResponses).toHaveBeenCalledTimes(3);
+  expect(f.createResponses).toHaveBeenCalledTimes(5);
+  expect(
+    f.createResponses.mock.calls.every(([, request]) => request.model === 'knowledge-model')
+  ).toBe(true);
+  expect(
+    (f.createResponses.mock.calls[0]![1].tools as Array<{ name: string }>).map((tool) => tool.name)
+  ).toEqual(
+    expect.arrayContaining(['knowledge_retrieval', 'knowledge_page_read', 'knowledge_source_read'])
+  );
+  const initialMessages = f.createResponses.mock.calls[0]![1].input as Array<{
+    role?: string;
+    content?: Array<{ text?: string }>;
+  }>;
+  const initial = JSON.parse(
+    initialMessages.find((item) => item.role === 'user')!.content![0]!.text!
+  );
+  expect(initial.unavailableSources).toEqual([]);
+  expect(initial.overviews).toMatchObject([
+    {
+      source: 'workspace',
+      pageId: `page/workspace/${f.workspace.id}/index`,
+      notebookRevision: f.revision,
+      contentDigest: f.overviewDigest,
+      readTool: 'knowledge.page.read',
+      truncated: false,
+      nextOffset: null,
+    },
+    {
+      source: 'server',
+      pageId: 'page/server/index',
+      notebookRevision: f.server!.revision,
+      contentDigest: f.server!.overviewDigest,
+      readTool: 'knowledge.page.read',
+      truncated: false,
+      nextOffset: null,
+    },
+  ]);
+  for (const overview of initial.overviews) {
+    expect(overview.contentDigest).toBe(
+      `sha256:${createHash('sha256').update(overview.content).digest('hex')}`
+    );
+    expect(overview.deliveredDigest).toBe(overview.contentDigest);
+  }
+  const search = JSON.parse(toolOutput(f.createResponses.mock.calls[1]![1], 'knowledge.retrieval'));
+  expect(search.unavailableSources).toEqual([]);
+  expect(search.sources).toMatchObject([
+    {
+      source: 'workspace',
+      sourceScope: `page/workspace/${f.workspace.id}`,
+      notebookRevision: f.revision,
+      selected: [
+        {
+          pageId: workspacePageId,
+          reference: { objectId: 'launch-evidence' },
+          contentDigest: f.contentDigest,
+        },
+      ],
+    },
+    {
+      source: 'server',
+      sourceScope: 'page/server',
+      notebookRevision: f.server!.revision,
+      selected: [
+        {
+          pageId: serverPageId,
+          reference: { objectId: 'launch-evidence' },
+          contentDigest: f.server!.contentDigest,
+        },
+      ],
+    },
+  ]);
+  const workspacePage = JSON.parse(
+    toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.page.read')
+  );
+  expect(workspacePage).toMatchObject({ pageId: workspacePageId, contentDigest: f.contentDigest });
+  expect(workspacePage.content).toContain('heliotrope launch uses the cobalt gate');
+  const source = JSON.parse(
+    toolOutput(f.createResponses.mock.calls[3]![1], 'knowledge.source.read')
+  );
+  expect(source).toMatchObject({ pageId: workspacePageId, reference: f.sourceReference });
+  expect(source.content).toContain('heliotrope launch uses the cobalt gate');
+  const serverPage = JSON.parse(
+    toolOutput(f.createResponses.mock.calls[4]![1], 'knowledge.page.read', 'server-page')
+  );
+  expect(serverPage).toMatchObject({
+    pageId: serverPageId,
+    contentDigest: f.server!.contentDigest,
+  });
+  expect(serverPage.content).toContain('requires cobalt approval from the Server owner');
   expect(answer).toMatchObject({
-    answer: 'Use the cobalt gate.',
+    answer: 'Use the cobalt gate and obtain Server approval.',
     uncertainty: 'No launch date is documented.',
     citations: [
       {
@@ -344,6 +508,12 @@ it('searches and reads real published evidence with the configured model, exact 
         revision: f.revision,
         contentDigest: f.contentDigest,
         sourceReferences: [f.sourceReference],
+      },
+      {
+        reference: `${serverPageId}@${f.server!.revision}`,
+        revision: f.server!.revision,
+        contentDigest: f.server!.contentDigest,
+        sourceReferences: [],
       },
     ],
   });
@@ -369,6 +539,8 @@ it('searches and reads real published evidence with the configured model, exact 
   expect(work.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)).toEqual([
     'knowledge.retrieval',
     'knowledge.page.read',
+    'knowledge.source.read',
+    'knowledge.page.read',
   ]);
   expect(f.store.getTurnById(f.turn.id).items).toEqual([]);
   const usage = listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id);
@@ -381,19 +553,23 @@ it('searches and reads real published evidence with the configured model, exact 
   const modelCalls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id).filter(
     (call) => call.agentId === 'knowledge-manager'
   );
-  expect(modelCalls).toHaveLength(3);
+  expect(modelCalls).toHaveLength(5);
   expect(modelCalls.every((call) => call.turnId === answer.turnId)).toBe(true);
   const root = join(f.dataRoot, 'workspaces', f.workspace.id);
   const traces = readTurnRetrievalTraces(root, f.workspace.id, f.thread.id, f.turn.id);
-  expect(traces).toHaveLength(1);
-  expect(traces[0]!.trace.queryContext).toMatchObject({
-    workspaceId: f.workspace.id,
-    actor: f.actor,
-    threadId: f.thread.id,
-    turnId: f.turn.id,
-  });
+  expect(traces).toHaveLength(2);
+  expect(
+    traces.map(({ trace }) => ('sourceScope' in trace ? trace.sourceScope : null)).sort()
+  ).toEqual(['page/server', `page/workspace/${f.workspace.id}`].sort());
+  for (const { trace } of traces)
+    expect(trace.queryContext).toMatchObject({
+      workspaceId: f.workspace.id,
+      actor: f.actor,
+      threadId: f.thread.id,
+      turnId: f.turn.id,
+    });
   expect(readTurnRetrievalTraces(root, f.workspace.id, answer.threadId, answer.turnId)).toEqual([]);
-});
+}, 120_000);
 
 it('binds Worker dispatch to its package Workspace and shared audience, refusing private-source reads with visible uncertainty', async () => {
   const f = await fixture();
@@ -437,7 +613,9 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
       const search = toolOutput(request, 'knowledge.retrieval');
       expect(search).not.toContain('launch-evidence');
       expect(search).not.toContain('cobalt gate');
-      return call('knowledge.page.read', { pageId: 'launch-evidence' });
+      return call('knowledge.page.read', {
+        pageId: `page/workspace/${f.workspace.id}/launch-evidence`,
+      });
     }
     expect(toolOutput(request, 'knowledge.page.read')).toContain(
       'The Tool failed without a safe result.'
@@ -523,7 +701,9 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
 
 it('rejects an unread citation and retains a failed Knowledge Manager Turn instead of a completed answer', async () => {
   const f = await fixture();
-  f.createResponses.mockResolvedValue(message('Invented citation.', ['launch-evidence'], null));
+  f.createResponses.mockResolvedValue(
+    message('Invented citation.', [`page/workspace/${f.workspace.id}/launch-evidence`], null)
+  );
   await expect(f.ask()).rejects.toThrow(
     'Knowledge answer lacks cited evidence or stated uncertainty.'
   );
@@ -534,3 +714,31 @@ it('rejects an unread citation and retains a failed Knowledge Manager Turn inste
   expect(work).toMatchObject({ status: 'failed' });
   expect(f.store.getTurnById(f.turn.id).status).toBe('running');
 });
+
+it('requires stated uncertainty when admitted Server Knowledge is unavailable despite a valid Workspace citation', async () => {
+  const f = await fixture(true);
+  renameSync(f.server!.repositoryPath, `${f.server!.repositoryPath}.unavailable`);
+  const pageId = `page/workspace/${f.workspace.id}/launch-evidence`;
+  let step = 0;
+  f.createResponses.mockImplementation(async () => {
+    if (++step === 1) return call('knowledge.retrieval', { query: 'heliotrope cobalt', limit: 5 });
+    if (step === 2) return call('knowledge.page.read', { pageId });
+    return message('Use the cobalt gate.', [pageId], null);
+  });
+  await expect(f.ask()).rejects.toThrow(
+    'Knowledge answer lacks cited evidence or stated uncertainty.'
+  );
+  expect(f.createResponses).toHaveBeenCalledTimes(3);
+  const messages = f.createResponses.mock.calls[0]![1].input as Array<{
+    role?: string;
+    content?: Array<{ text?: string }>;
+  }>;
+  const initial = JSON.parse(messages.find((item) => item.role === 'user')!.content![0]!.text!);
+  expect(initial.unavailableSources).toEqual(['server']);
+  const search = JSON.parse(toolOutput(f.createResponses.mock.calls[1]![1], 'knowledge.retrieval'));
+  expect(search.unavailableSources).toEqual(['server']);
+  expect(search.sources).toMatchObject([{ source: 'workspace' }]);
+  const read = JSON.parse(toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.page.read'));
+  expect(read).toMatchObject({ pageId, contentDigest: f.contentDigest });
+  expect(read.content).toContain('heliotrope launch uses the cobalt gate');
+}, 120_000);
