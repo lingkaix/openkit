@@ -1,9 +1,5 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-import {
-  DEMO_THREAD_ID,
-  DEMO_WORKSPACE_ID,
-} from '../../../apps/nanocore/src/test-support/demo-store.js';
-import { testEntityId } from '../../../apps/nanocore/src/test-support/entity-ids.js';
 import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
@@ -94,28 +90,27 @@ it('derives Artifact model views with bound identity omitted and content and fee
 
 describe('automation, scheduler and recovery definitions', () => {
   it('uses strict complete inputs and preserves model-view validation and mutation posture', () => {
+    const workspaceId = allocateEntityId('ws');
+    const threadId = allocateEntityId('th');
+    const automationId = allocateEntityId('auto');
     const cases = [
       ['automation.list', {}, false],
       [
         'automation.create',
         {
-          workspaceId: DEMO_WORKSPACE_ID,
-          threadId: DEMO_THREAD_ID,
+          workspaceId,
+          threadId,
           name: 'Morning',
           intervalSeconds: 60,
           prompt: 'Work',
         },
         true,
       ],
-      [
-        'automation.update',
-        { automationId: testEntityId('auto', 'auto_one'), expectedRevision: 1, status: 'paused' },
-        true,
-      ],
-      ['automation.delete', { automationId: testEntityId('auto', 'auto_one') }, true],
-      ['scheduler.list', { workspaceId: DEMO_WORKSPACE_ID }, false],
-      ['scheduler.retry', { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_one' }, true],
-      ['scheduler.cancel', { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: 'queue_one' }, true],
+      ['automation.update', { automationId, expectedRevision: 1, status: 'paused' }, true],
+      ['automation.delete', { automationId }, true],
+      ['scheduler.list', { workspaceId }, false],
+      ['scheduler.retry', { workspaceId, queueEntryId: 'queue_one' }, true],
+      ['scheduler.cancel', { workspaceId, queueEntryId: 'queue_one' }, true],
       ['recovery.worker-list', {}, false],
       [
         'recovery.checkpoint-retry',

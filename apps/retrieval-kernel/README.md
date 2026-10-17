@@ -117,7 +117,7 @@ A crash before pointer publication leaves the old tuple authoritative. A crash a
 | Kernel operation / inventory wall time | 60 seconds, checked per bounded read/chunk |
 | Executable foreground CPU | 65 seconds above used process CPU per stdio request |
 
-Bounds preserve canonical bytes. Cooperative stops yield partial or resource-limited coverage; malformed declared UTF-8 fails without replacement characters or a fabricated sidecar. OS exhaustion can terminate this separate executable. R2 must supervise it, bound the total store volume and whole RPC wall time, and inspect uncertain publication. These ceilings are implementation limits, not a deployment minimum. Fixture qualification is not a hostile-filesystem, power-loss, or maximum-upload certification.
+Bounds preserve canonical bytes. Cooperative stops yield partial or resource-limited coverage; malformed declared UTF-8 fails without replacement characters or a fabricated sidecar. The executable ignores SIGXFSZ so the file-growth ceiling returns EFBIG instead of terminating it with a core dump. EFBIG, ENOSPC and EDQUOT publication failures return resource-limited and preserve the last committed generation. Other OS exhaustion can terminate this separate executable. R2 must supervise it, bound the total store volume and whole RPC wall time, and inspect uncertain publication. These ceilings are implementation limits, not a deployment minimum. Fixture qualification is not a hostile-filesystem, power-loss, or maximum-upload certification.
 
 ## Verification and remaining qualification
 
