@@ -10,6 +10,30 @@ describe('Authored scoped notebook maintenance settings', () => {
     expect(
       UserConfigSchema.parse({ schemaVersion: 1, knowledgeMaintenance: selected })
         .knowledgeMaintenance
+    ).toEqual({ ...selected, schedule: { enabled: false } });
+    expect(
+      WorkspaceConfigSchema.parse({ workspace: { name: 'Work', knowledgeMaintenance: selected } })
+        .workspace.knowledgeMaintenance
+    ).toEqual({ ...selected, schedule: { enabled: false } });
+    expect(
+      OpenKitConfigSchema.parse({ knowledgeMaintenance: selected }).knowledgeMaintenance
+    ).toEqual({ ...selected, schedule: { enabled: false } });
+    expect(UserConfigSchema.parse({ schemaVersion: 1 }).knowledgeMaintenance).toBeUndefined();
+    expect(
+      WorkspaceConfigSchema.parse({ workspace: { name: 'Work' } }).workspace.knowledgeMaintenance
+    ).toBeUndefined();
+    expect(OpenKitConfigSchema.parse({}).knowledgeMaintenance).toBeUndefined();
+  });
+
+  it('enables the daily schedule separately from publication delegation in each scope', () => {
+    const selected = {
+      enabled: false,
+      reviewRequiredPageIds: [],
+      schedule: { enabled: true },
+    };
+    expect(
+      UserConfigSchema.parse({ schemaVersion: 1, knowledgeMaintenance: selected })
+        .knowledgeMaintenance
     ).toEqual(selected);
     expect(
       WorkspaceConfigSchema.parse({ workspace: { name: 'Work', knowledgeMaintenance: selected } })
@@ -18,11 +42,12 @@ describe('Authored scoped notebook maintenance settings', () => {
     expect(
       OpenKitConfigSchema.parse({ knowledgeMaintenance: selected }).knowledgeMaintenance
     ).toEqual(selected);
-    expect(UserConfigSchema.parse({ schemaVersion: 1 }).knowledgeMaintenance).toBeUndefined();
+    expect(KnowledgeMaintenanceSchema.parse({ ...selected, schedule: {} }).schedule.enabled).toBe(
+      false
+    );
     expect(
-      WorkspaceConfigSchema.parse({ workspace: { name: 'Work' } }).workspace.knowledgeMaintenance
-    ).toBeUndefined();
-    expect(OpenKitConfigSchema.parse({}).knowledgeMaintenance).toBeUndefined();
+      KnowledgeMaintenanceSchema.safeParse({ ...selected, schedule: { enabled: 'yes' } }).success
+    ).toBe(false);
   });
 
   it.each([
@@ -46,6 +71,10 @@ describe('Authored scoped notebook maintenance settings', () => {
         reviewRequiredPageIds: ['protected'],
         note: 'Future description',
       })
-    ).toEqual({ enabled: true, reviewRequiredPageIds: ['protected'] });
+    ).toEqual({
+      enabled: true,
+      reviewRequiredPageIds: ['protected'],
+      schedule: { enabled: false },
+    });
   });
 });
