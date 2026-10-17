@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseRecordEnvelope } from '@openkit/config-schema';
@@ -22,6 +30,7 @@ import {
   saveMemoryPage,
 } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { registerUserKnowledgeSource } from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
 
@@ -65,7 +74,8 @@ function fixture() {
   const request = (
     base = baseRevision,
     pageId = 'preferences',
-    body = 'Exact private text.\r\n'
+    body = 'Exact private text.\r\n',
+    sourceReferences: string[] = []
   ) => ({
     requestId: randomUUID(),
     baseRevision: base,
@@ -76,7 +86,7 @@ function fixture() {
         kind: 'preference',
         title: 'Private title',
         content: body,
-        sourceReferences: [],
+        sourceReferences,
         createdAt: '2026-10-17T00:00:00.000Z',
         updatedAt: '2026-10-17T00:00:00.000Z',
       },
@@ -88,6 +98,127 @@ function fixture() {
 }
 
 describe('explicit native self Memory', () => {
+  it('saves, lists, reads and edits exact User-authored bytes with current self literal Source citations', async () => {
+    const f = fixture();
+    const source = await registerUserKnowledgeSource(f.input, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Personal evidence',
+      content: 'Exact retained evidence.\r\n',
+    });
+    const reference = `source:${source.id}@${source.contentDigest}`;
+    const request = f.request(
+      f.baseRevision,
+      'preferences',
+      'Personally authored interpretation.\r\n',
+      [reference]
+    );
+    const saved = await saveMemoryPage(f.input, request);
+    expect(readMemoryPage(f.input, 'preferences')?.content).toBe(request.content);
+    expect(listMemoryPages(f.input).pages.map(({ id }) => id)).toEqual(['preferences']);
+    expect(f.notebook.readRevision(saved.notebookRevision).metadata.sourceReferences).toEqual([
+      reference,
+    ]);
+    const change = f.request(
+      saved.notebookRevision,
+      'preferences',
+      'My changed interpretation.\n',
+      [`source:${source.id}`]
+    );
+    const edited = await editMemoryPage(f.input, change);
+    expect(readMemoryPage(f.input, 'preferences')?.content).toBe(change.content);
+    expect(await saveMemoryPage(f.input, request)).toEqual(saved);
+    expect(f.notebook.publishedRevision()).toBe(edited.notebookRevision);
+  });
+
+  it('refuses foreign, missing and wrong-digest Source references before publication', async () => {
+    const f = fixture();
+    const source = await registerUserKnowledgeSource(f.input, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Self evidence',
+      content: 'My evidence.',
+    });
+    const bobDb = openUserDb(f.input.coreDb.dataRoot, bob);
+    applyScopedMigrations(bobDb);
+    onTestFinished(() => bobDb.sqlite.close());
+    const foreign = await registerUserKnowledgeSource(
+      { ...f.input, userDb: bobDb, actor: { kind: 'session', userId: bob } },
+      {
+        requestId: randomUUID(),
+        kind: 'document',
+        title: 'Foreign evidence',
+        content: 'Other evidence.',
+      }
+    );
+    for (const reference of [
+      `source:${foreign.id}@${foreign.contentDigest}`,
+      `source:ks_${randomUUID()}@${source.contentDigest}`,
+      `source:${source.id}@sha256:${'0'.repeat(64)}`,
+    ]) {
+      await expect(
+        saveMemoryPage(
+          f.input,
+          f.request(f.baseRevision, 'preferences', 'Do not publish.', [reference])
+        )
+      ).rejects.toMatchObject({ code: 'invalid_request' });
+      expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+    }
+    expect(listMemoryPages(f.input).pages).toEqual([]);
+  });
+
+  it('refuses corrupt Source bytes at read, list, edit and the final publication check without repairing them', async () => {
+    const f = fixture();
+    const source = await registerUserKnowledgeSource(f.input, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Self evidence',
+      content: 'Exact evidence.',
+    });
+    const refs = [`source:${source.id}@${source.contentDigest}`];
+    const saved = await saveMemoryPage(
+      f.input,
+      f.request(f.baseRevision, 'preferences', 'My interpretation.', refs)
+    );
+    const material = join(
+      f.input.coreDb.dataRoot,
+      'users',
+      alice,
+      'sources',
+      'materials',
+      source.id,
+      'content.txt'
+    );
+    const prepare = KnowledgeNotebook.prototype.prepare;
+    vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementationOnce(function (
+      this: KnowledgeNotebook,
+      input
+    ) {
+      const candidate = prepare.call(this, input);
+      writeFileSync(material, 'Corrupt evidence.');
+      return candidate;
+    });
+    await expect(
+      editMemoryPage(
+        f.input,
+        f.request(saved.notebookRevision, 'preferences', 'Changed interpretation.', refs)
+      )
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(f.notebook.publishedRevision()).toBe(saved.notebookRevision);
+    expect(() => readMemoryPage(f.input, 'preferences')).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(() => listMemoryPages(f.input)).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(readFileSync(material, 'utf8')).toBe('Corrupt evidence.');
+    rmSync(join(f.input.coreDb.dataRoot, 'users', alice, 'sources'), { recursive: true });
+    expect(() => readMemoryPage(f.input, 'preferences')).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(existsSync(join(f.input.coreDb.dataRoot, 'users', alice, 'sources'))).toBe(false);
+  });
+
   it('saves, lists and reads exact authored bytes, edits one fixed base and replays the original receipt', async () => {
     const f = fixture();
     const request = f.request();
@@ -138,7 +269,7 @@ describe('explicit native self Memory', () => {
     ).rejects.toThrow('Scoped notebook access denied.');
   });
 
-  it('refuses Source-bearing content and unsafe identities before effects', async () => {
+  it('refuses malformed Source references and unsafe identities before effects', async () => {
     const f = fixture();
     const request = f.request();
     await expect(
@@ -191,7 +322,7 @@ describe('explicit native self Memory', () => {
     ).rejects.toThrow('Scoped notebook access denied.');
   });
 
-  it('does not disclose retained Source-bearing metadata or bodies through the source-free self reader', async () => {
+  it('does not disclose retained unjoined Source metadata or bodies through the self reader', async () => {
     const f = fixture();
     const request = f.request();
     const saved = await saveMemoryPage(f.input, request);

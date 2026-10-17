@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -13,6 +13,7 @@ import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js'
 import { installPendingRequestAdmission } from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import { type CoreDb, openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
+import { userDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
@@ -24,8 +25,14 @@ import {
   prepareMemoryForget,
   prepareMemoryForgetCommand,
 } from './memory-forget.js';
+import { diffMemoryHistory, readMemoryHistory, restoreMemoryHistory } from './memory-history.js';
 import { editMemoryPage, readMemoryPage, saveMemoryPage } from './memory-lifecycle.js';
+import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
+import {
+  readUserKnowledgeSource,
+  registerUserKnowledgeSource,
+} from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
 
 /** Issues an actual test administrator credential without changing Memory ownership or its private audience. */
@@ -47,7 +54,7 @@ function administrativeReviewer(coreDb: CoreDb): Actor {
 }
 
 /** Composes actual self admission, canonical pending rows and Items, public decisions and Git publication. */
-async function fixture() {
+async function fixture(sourceBacked = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-forget-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -68,6 +75,17 @@ async function fixture() {
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
     inflightCommands: new WeakMap(),
   };
+  const source = sourceBacked
+    ? await registerUserKnowledgeSource(writer, {
+        requestId: randomUUID(),
+        kind: 'document',
+        title: 'Personal evidence',
+        content: 'Independent retained Source bytes.\r\n',
+      })
+    : null;
+  const references = source
+    ? [`source:${source.id}`, `source:${source.id}@${source.contentDigest}`]
+    : [];
   const base = initializeScopedNotebook({
     ...writer,
     target: { kind: 'user' },
@@ -80,7 +98,7 @@ async function fixture() {
         kind: 'preference',
         title: 'Personal preference',
         content: body,
-        sourceReferences: [],
+        sourceReferences: references,
         createdAt: '2026-10-17T00:00:00.000Z',
         updatedAt: '2026-10-17T00:00:00.000Z',
       },
@@ -155,14 +173,211 @@ async function fixture() {
   onTestFinished(() => {
     vi.restoreAllMocks();
     writer.workspaceDb.sqlite.close();
-    writer.userDb.sqlite.close();
+    if (writer.userDb.sqlite.open) writer.userDb.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { writer, request, apply, decide, content, saved, notebook, turn, thread };
+  return { writer, request, apply, decide, content, saved, notebook, turn, thread, source };
 }
 
 describe('Item-confirmed self Memory forget', () => {
+  it('binds actual Source retention to the human grant and retains only source-version fingerprints after exact forgetting', async () => {
+    const f = await fixture(true);
+    const source = f.source!;
+    const prepared = prepareMemoryForget(f.writer, f.request);
+    const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
+    const preview = projectApprovalEffect({
+      record,
+      store: f.writer.store,
+      coreDb: f.writer.coreDb,
+      actor: f.writer.actor,
+    });
+    expect(preview.status).toBe('available');
+    if (preview.status !== 'available') throw new Error('Source retention disclosure unavailable.');
+    expect(preview.detail).toContain(`source:${source.id}@${source.contentDigest}`);
+    expect(preview.detail).toContain(
+      'Registered Source versions and captured bytes remain independently retained'
+    );
+    expect(preview.detail).not.toContain('This source-free page');
+    await f.decide(prepared.pendingRequestId);
+    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
+    expect(readMemoryPage(f.writer, 'preference')?.content).toContain(
+      'Private exact forgotten text.'
+    );
+    const removed = await f.apply(prepared.pendingRequestId);
+    expect(readMemoryPage(f.writer, 'preference')).toBeNull();
+    const root = join(f.writer.coreDb.dataRoot, 'users', f.writer.actor.userId, 'memory');
+    const rows = readMemorySuppressions(root, f.writer.actor.userId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload.sourceFingerprints).toEqual([
+      `source:${source.id}@${source.contentDigest}`,
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('Private exact forgotten text.');
+    expect(readUserKnowledgeSource(f.writer, source.id)?.content).toBe(
+      'Independent retained Source bytes.\r\n'
+    );
+    expect(
+      projectApprovalEffect({
+        record: readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!,
+        store: f.writer.store,
+        coreDb: f.writer.coreDb,
+        actor: f.writer.actor,
+      }).status
+    ).toBe('unavailable');
+    expect(
+      readMemoryHistory(f.writer, {}).revisions.find(
+        ({ revision }) => revision === f.saved.notebookRevision
+      )?.availability
+    ).toBe('unavailable');
+    const selection = {
+      baseRevision: removed.notebookRevision,
+      fromRevision: f.saved.notebookRevision,
+      pageIds: ['preference'],
+    };
+    expect(() => diffMemoryHistory(f.writer, selection)).toThrow('Memory page unavailable.');
+    await expect(
+      restoreMemoryHistory(f.writer, {
+        ...selection,
+        requestId: randomUUID(),
+        summary: 'Do not revive',
+      })
+    ).rejects.toThrow('Memory page unavailable.');
+    f.writer.store.updateTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const later = await saveMemoryPage(f.writer, {
+      requestId: randomUUID(),
+      baseRevision: removed.notebookRevision,
+      pageId: 'new-preference',
+      content: f.content('new-preference', 'Explicit new human interpretation.'),
+      summary: 'Save under a new identity',
+    });
+    expect(await f.apply(prepared.pendingRequestId)).toEqual(removed);
+    expect(f.notebook.publishedRevision()).toBe(later.notebookRevision);
+  });
+
+  it.each([
+    'grant',
+    'apply',
+  ] as const)('rechecks actual Source bytes before %s and withholds the captured preview without repair', async (stage) => {
+    const f = await fixture(true);
+    const prepared = prepareMemoryForget(f.writer, f.request);
+    if (stage === 'apply') await f.decide(prepared.pendingRequestId);
+    const material = join(
+      f.writer.coreDb.dataRoot,
+      'users',
+      f.writer.actor.userId,
+      'sources',
+      'materials',
+      f.source!.id,
+      'content.txt'
+    );
+    writeFileSync(material, 'Corrupt retained Source.');
+    const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
+    expect(
+      projectApprovalEffect({
+        record,
+        store: f.writer.store,
+        coreDb: f.writer.coreDb,
+        actor: f.writer.actor,
+      }).status
+    ).toBe('unavailable');
+    if (stage === 'grant')
+      await expect(f.decide(prepared.pendingRequestId)).rejects.toMatchObject({
+        code: 'approval_preview_unavailable',
+      });
+    else
+      await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
+        code: 'grant_conflict',
+      });
+    if (stage === 'grant') {
+      expect(() =>
+        checkMemoryForgetIntent(
+          f.writer.workspaceDb.sqlite,
+          record,
+          f.writer.actor,
+          f.writer.coreDb,
+          f.writer.store
+        )
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      expect(() => prepareMemoryForget(f.writer, f.request)).toThrowError(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+    }
+    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
+    expect(readFileSync(material, 'utf8')).toBe('Corrupt retained Source.');
+    expect(
+      readMemorySuppressions(
+        join(f.writer.coreDb.dataRoot, 'users', f.writer.actor.userId, 'memory'),
+        f.writer.actor.userId
+      )
+    ).toEqual([]);
+  });
+
+  it('refuses corrupt Sources before preparation and never opens a replacement User database for a retained preview', async () => {
+    const f = await fixture(true);
+    const material = join(
+      f.writer.coreDb.dataRoot,
+      'users',
+      f.writer.actor.userId,
+      'sources',
+      'materials',
+      f.source!.id,
+      'content.txt'
+    );
+    const original = readFileSync(material);
+    writeFileSync(material, 'Corrupt Source.');
+    expect(() => prepareMemoryForget(f.writer, f.request)).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(readPendingRequest(f.writer.workspaceDb.sqlite, f.request.requestId)).toBeNull();
+    writeFileSync(material, original);
+    const prepared = prepareMemoryForget(f.writer, f.request);
+    const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
+    f.writer.userDb.sqlite.close();
+    const database = userDbPath(f.writer.coreDb.dataRoot, f.writer.actor.userId);
+    rmSync(database);
+    expect(
+      projectApprovalEffect({
+        record,
+        store: f.writer.store,
+        coreDb: f.writer.coreDb,
+        actor: f.writer.actor,
+      }).status
+    ).toBe('unavailable');
+    expect(existsSync(database)).toBe(false);
+    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
+  });
+
+  it('keeps Source inspection unjoined for a non-self administrator confirmation', async () => {
+    const f = await fixture(true);
+    const prepared = prepareMemoryForget(f.writer, f.request);
+    const administrator = administrativeReviewer(f.writer.coreDb);
+    const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
+    expect(
+      projectApprovalEffect({
+        record,
+        store: f.writer.store,
+        coreDb: f.writer.coreDb,
+        actor: administrator,
+      }).status
+    ).toBe('unavailable');
+    await expect(
+      f.decide(prepared.pendingRequestId, 'granted', administrator)
+    ).rejects.toMatchObject({ code: 'approval_preview_unavailable' });
+    expect(() =>
+      checkMemoryForgetIntent(
+        f.writer.workspaceDb.sqlite,
+        record,
+        administrator,
+        f.writer.coreDb,
+        f.writer.store
+      )
+    ).toThrowError(expect.objectContaining({ code: 'workspace_access_denied' }));
+    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
+  });
+
   it('prepares an idle user command on one truthful local Turn and reuses its canonical lineage on replay', async () => {
     const f = await fixture();
     f.writer.store.updateTurn(f.turn.id, {
