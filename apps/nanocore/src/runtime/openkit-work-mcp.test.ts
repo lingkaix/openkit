@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,8 @@ import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js
 import * as packageOwner from '../context/worker-context-package.js';
 import * as visionProcessor from '../context/vision-view.js';
 import { FsStore } from '../lib/store.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -807,7 +809,7 @@ it('dispatches bounded source reads and refuses a path outside the accepted Turn
 });
 
 /** Captures an actual Artifact, processes and publishes its real snapshot bytes, and supplies only S39's independently verified trace result. Current scheduler, actor, source and receiving-audience checks stay real. */
-async function sourceToolFixture(bytes: Buffer, mediaType: string) {
+async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge = false) {
   const fixture = submissionFixture();
   ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({
@@ -830,6 +832,27 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string) {
       expect(selected).toEqual(fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId));
     },
   });
+  const notebook = new KnowledgeNotebook({ repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git') });
+  const knowledgeContent = serializeUserAuthoredKnowledgePage({
+    id: 'selected', kind: 'project-context', title: 'Pinned source',
+    content: 'Exact selected Notebook body.\n'.repeat(5000), sourceReferences: [],
+    createdAt: '2026-10-17T00:00:00.000Z', updatedAt: '2026-10-17T00:00:00.000Z',
+  }, { kind: 'workspace', workspaceId: fixture.turn.workspaceId });
+  /** Publishes test-owned bytes through the real commit owner; this fixture does not claim native command admission. */
+  const publishKnowledge = (content: string) => {
+    const baseRevision = notebook.publishedRevision();
+    const candidateRevision = notebook.prepare({ baseRevision, changes: { 'selected.md': content }, metadata: {
+      summary: 'Pinned read fixture', producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      authority: { kind: 'direct', instructionReference: 'test:worker-selected-notebook' },
+      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${createHash('sha256').update(content).digest('hex')}` },
+      sourceReferences: [],
+    } });
+    notebook.publish({ baseRevision, candidateRevision });
+    return candidateRevision;
+  };
+  const notebookRevision = withKnowledge ? publishKnowledge(knowledgeContent) : undefined;
+  const knowledgeDigest = `sha256:${createHash('sha256').update(knowledgeContent).digest('hex')}`;
+  const deliveredContent = knowledgeContent.slice(0, 2048);
   const requestItemId = allocateEntityId('it');
   const files = packageOwner.createWorkerContextPackageFiles({
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -841,6 +864,14 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string) {
     contextBudgetTokens: 4096,
     materialSelections: [],
     sourceFiles,
+    knowledgeSelections: notebookRevision ? [{
+      knowledgePageId: 'selected', notebookRevision, content: knowledgeContent,
+      contentDigest: knowledgeDigest, sourceRefs: [], deliveredContent,
+      projection: { kind: 'excerpt', sourceRevision: notebookRevision, representationId: 'original-utf8',
+        representationDigest: knowledgeDigest, representationByteLength: Buffer.byteLength(knowledgeContent),
+        deliveredDigest: `sha256:${createHash('sha256').update(deliveredContent).digest('hex')}`,
+        ranges: [{ start: 0, end: 2048 }], byteLength: 2048, truncated: true, availability: 'incomplete' },
+    }] : [],
   });
   await packageOwner.writeWorkerContextPackageFiles(workspaceRoot, files, {
     admission: fixture.fileAdmission,
@@ -874,9 +905,11 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string) {
     agentSessionId: scope.agentSessionId,
     packageSnapshotId: fixture.environmentPackage.snapshotId,
     sourceFiles: [source],
+    knowledgeSelections: files.knowledgeSelections,
   } as packageOwner.WorkerContextPackageTrace);
   onTestFinished(() => proof.mockRestore());
-  return { ...fixture, artifactId, source, packagePath: source.packagePath, proof };
+  return { ...fixture, artifactId, source, packagePath: source.packagePath, proof,
+    knowledge: files.knowledgeSelections[0], knowledgeContent, notebookRevision, publishKnowledge };
 }
 
 it('returns an actual cropped selected image through standard MCP carriage and withholds it after post-process revocation', async () => {
@@ -964,6 +997,39 @@ it('reads retained bytes through the real dispatcher and withholds them after cu
   expect(JSON.stringify(denied)).not.toContain(artifactId);
   expect(JSON.stringify(denied)).not.toContain('Finished report');
   expect(proof).toHaveBeenCalledTimes(2);
+});
+
+it('continues selected Knowledge at its actual commit after later publication and refuses revoked access', async () => {
+  const f = await sourceToolFixture(Buffer.from('Artifact fixture'), 'text/plain', true);
+  const path = f.knowledge!.packagePath;
+  const processor = vi.spyOn(visionProcessor, 'processVisionView');
+  onTestFinished(() => processor.mockRestore());
+  const viewed = await dispatchOpenkitWorkTool(f.input, 'work_view_source', { path });
+  expect(viewed.structuredContent).toEqual({ status: 'unavailable', reason: 'unsupported' });
+  expect(viewed.content.some((block) => block.type === 'image')).toBe(false);
+  expect(processor).not.toHaveBeenCalled();
+  const searched = await dispatchOpenkitWorkTool(f.input, 'work_search_source', { path, query: 'Exact' });
+  expect(searched.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  const preview = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path });
+  const page = preview.structuredContent as { status: string; text: string; cursor: unknown; identity: { revision: string } };
+  expect(page.status).toBe('ready');
+  expect(page.identity.revision).toBe(f.notebookRevision);
+  expect(f.knowledgeContent.startsWith(page.text)).toBe(true);
+  expect(page.cursor).toBeTruthy();
+  f.publishKnowledge(f.knowledgeContent.replace('Exact selected Notebook body.', 'Later current Notebook body.'));
+  const continued = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path, mode: 'read', cursor: page.cursor });
+  expect(continued.structuredContent).toMatchObject({ status: 'ready', identity: { revision: f.notebookRevision } });
+  expect(JSON.stringify(continued)).toContain('Exact selected Notebook body.');
+  expect(JSON.stringify(continued)).not.toContain('Later current Notebook body.');
+  const unselected = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path: 'knowledge/pages/not-selected.md' });
+  expect(unselected.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  f.coreDb.sqlite.transaction(() => {
+    disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
+  })();
+  const denied = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path, mode: 'read', cursor: page.cursor });
+  expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(JSON.stringify(denied)).not.toContain(f.notebookRevision);
+  expect(JSON.stringify(denied)).not.toContain('Exact selected');
 });
 
 it(
