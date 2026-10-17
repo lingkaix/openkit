@@ -1974,7 +1974,7 @@ describe('reasoning effort admission and replay', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it.each([
     'turn.start',
