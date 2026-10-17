@@ -314,6 +314,7 @@ export type CommandRequestName =
  */
 export type CommandRequestResponseKind =
   | 'light_app_definition'
+  | 'light_app_catalog'
   | 'skill_version'
   | 'skill_catalog'
   | 'skill_candidate'
