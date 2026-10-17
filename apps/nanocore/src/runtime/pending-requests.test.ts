@@ -32,6 +32,7 @@ import {
   installPendingRequestAdmission,
   raiseRecordedPendingRequest,
   recoverPendingRequestsAtBoot,
+  resolveCommandIntentApproval,
 } from './pending-request-flow.js';
 import {
   answerPendingRequest,
@@ -50,6 +51,79 @@ import {
 import { createDefaultWorkerMcpGateway, type WorkerMcpGateway } from './worker-mcp-gateway.js';
 
 const NOW = '2026-09-30T00:00:00.000Z';
+
+it('permits denial of a person command intent whose exact detail is unavailable', () => {
+  const { store, coreDb, dataRoot } = openPendingApp();
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
+  const actor = { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' };
+  const turn = store.createTurn(workspaceId, threadId, 'Exact destructive effect', {
+    kind: 'user',
+    id: actor.userId,
+  });
+  const db = openWorkspaceDb(dataRoot, workspaceId);
+  applyScopedMigrations(db);
+  try {
+    const requestId = '00000000-0000-4000-8000-000000000938';
+    const title = 'Confirm exact effect';
+    const description = 'Complete detail is required to grant.';
+    const record = raiseRecordedPendingRequest(store, db.sqlite, {
+      requestId,
+      workspaceId,
+      threadId,
+      raisingTurnId: turn.id,
+      requestItemId: pendingRequestItemId(requestId, 'request'),
+      kind: 'approval',
+      requesterKind: 'person',
+      responsibleUserId: actor.userId,
+      governedIntent: { operation: 'fixture', content: 'x'.repeat(APPROVAL_DETAIL_BYTES) },
+      approval: { kind: 'destructive-action', title, description },
+      now: NOW,
+    });
+    store.createItem({
+      id: record.requestItemId,
+      workspaceId,
+      threadId,
+      turnId: turn.id,
+      type: 'approval-request',
+      approvalRequestId: requestId,
+      kind: 'destructive-action',
+      title,
+      description,
+      status: 'completed',
+      createdAt: NOW,
+      completedAt: NOW,
+    });
+    expect(projectApprovalEffect({ record, store, coreDb, actor }).status).toBe('unavailable');
+    expect(() =>
+      resolveCommandIntentApproval({
+        store,
+        sqlite: db.sqlite,
+        record,
+        decision: 'granted',
+        actor,
+        coreDb,
+      })
+    ).toThrow('Exact effect unavailable; approval disabled');
+    expect(
+      resolveCommandIntentApproval({
+        store,
+        sqlite: db.sqlite,
+        record,
+        decision: 'denied',
+        actor,
+        coreDb,
+      })
+    ).toMatchObject({
+      resolution: 'denied',
+      claim: 'unclaimed',
+      executionCallId: null,
+    });
+  } finally {
+    db.sqlite.close();
+    coreDb.sqlite.close();
+  }
+});
 
 /**
  * Opens one local Core app whose workspace database can hold pending requests.
