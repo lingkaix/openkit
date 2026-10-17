@@ -12,6 +12,7 @@ import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -21,6 +22,7 @@ import {
   prepareKnowledgeMaintenance,
 } from './knowledge-agent-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { updateOkfFrontmatter } from './okf.js';
 
 /** Actual owners and virtual Tools surround a fake role runner; no provider or retrieval process is needed. */
 function fixture(enabled = true, protectedPages: string[] = []) {
@@ -182,6 +184,80 @@ function fixture(enabled = true, protectedPages: string[] = []) {
 }
 
 describe('Workspace Knowledge Manager maintenance admission', () => {
+  it('narrows the editable snapshot and human diffs to explicitly selected archived pages plus the overview', async () => {
+    const f = fixture();
+    const page = (id: string) =>
+      serializeUserAuthoredKnowledgePage(
+        {
+          id,
+          kind: 'project-context',
+          title: id,
+          content: `${id} exact content.`,
+          createdAt: '2026-10-17T00:00:00.000Z',
+          updatedAt: '2026-10-17T00:00:00.000Z',
+        },
+        { kind: 'workspace', workspaceId: f.workspace.id }
+      );
+    const baseRevision = f.notebook.publishedRevision();
+    const archived = updateOkfFrontmatter({
+      path: 'archive.md',
+      content: page('archive'),
+      updates: { openkit_status: 'archived' },
+    });
+    const changes = { 'archive.md': archived, 'omitted.md': page('omitted') };
+    const candidateRevision = f.notebook.prepare({
+      baseRevision,
+      changes,
+      metadata: {
+        summary: 'Human authored pages',
+        producer: f.input.actor,
+        changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(changes) },
+        authority: { kind: 'direct', instructionReference: 'Human authored pages' },
+        sourceReferences: [],
+      },
+    });
+    f.notebook.publish({ baseRevision, candidateRevision });
+    f.run.mockImplementationOnce(async (run) => {
+      const payload = JSON.parse(
+        run.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join(
+          ''
+        )
+      );
+      expect(payload.files).toEqual(['archive.md', 'index.md']);
+      expect(payload.selectedPageIds).toEqual(['archive']);
+      expect(
+        payload.humanEdits.changes.some(({ path }: { path: string }) => path === 'archive.md')
+      ).toBe(true);
+      expect(
+        payload.humanEdits.changes.some(({ path }: { path: string }) => path === 'omitted.md')
+      ).toBe(false);
+      const result = await run.tools
+        .find((tool) => tool.name === 'knowledge.notebook-workspace.update')!
+        .execute(
+          { script: 'cat archive.md' },
+          { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
+        );
+      expect(JSON.stringify(result)).toContain('archive exact content.');
+      await run.tools
+        .find((tool) => tool.name === 'knowledge.notebook.update')!
+        .execute(
+          { summary: 'No changes required.' },
+          { callId: randomUUID(), toolOccurrence: 2, signal: run.signal }
+        );
+      run.validateResult('No changes required.');
+      f.store.updateTurn(run.turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      return { turnId: run.turn.id, text: 'No changes required.' };
+    });
+    const result = await maintainKnowledgeAgent(f.dependencies, {
+      ...f.input,
+      pageIds: ['archive'],
+    });
+    expect(result.outcome).toBe('no-change');
+    expect(f.notebook.publishedRevision()).toBe(candidateRevision);
+  });
   it('publishes through the existing owner with exact human edits and selected ordinary expressions as inputs', async () => {
     const f = fixture();
     const own = f.store.createTurn(
