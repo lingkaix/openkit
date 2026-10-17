@@ -19,7 +19,7 @@ At 11:07Z on 2026-10-17, the engineer corrected the coordinator's description of
 
 Continue at the current pace. One correction: the Server level is not Memory. It is a Knowledge base, like Workspace Knowledge. Only User-scope personal information is Memory. Its main use is sharing information across Workspaces within the Server scope.
 
-## Trace Portability Refinement
+### Trace Portability Refinement
 
 On 2026-10-17, the coordinator approved retaining the original query Server for User and Server selections under the engineer's 11:07Z ruling, with independent Consultant agreement. A trace records evidence about the Server actually queried. Changing that identity would misstate history, while blanket refusal based on Workspace import provenance would block a new authorized query to the current Server. Existing query context distinguishes these acts without a new field. Retained external history can cross later imports under existing importedFrom provenance; current scope, audience, Source and exact-byte checks remain required. Workspace selections and fresh source acts retain the immediate-manifest binding.
 
