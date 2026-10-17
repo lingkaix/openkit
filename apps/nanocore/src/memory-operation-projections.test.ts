@@ -41,10 +41,10 @@ function fixture() {
         : { text: await response.text() },
     };
   };
-  const content = (body: string) =>
+  const content = (body: string, id = 'preferences') =>
     serializeUserAuthoredKnowledgePage(
       {
-        id: 'preferences',
+        id,
         kind: 'preference',
         title: 'My preference',
         content: body,
@@ -60,12 +60,10 @@ function fixture() {
 describe('public explicit self Memory', () => {
   it('publishes exact personally authored bytes through self-only operations and refuses a stale edit', async () => {
     const f = fixture();
-    const initialized = await f.call('memory.notebook.initialize', { requestId: randomUUID() });
-    expect(initialized.status).toBe(200);
     const content = f.content('Keep this exact personal preference.\r\n');
     const saved = await f.call('memory.create', {
       requestId: randomUUID(),
-      baseRevision: initialized.body.notebookRevision,
+      baseRevision: null,
       pageId: 'preferences',
       content,
       summary: 'Save my preference',
@@ -90,7 +88,7 @@ describe('public explicit self Memory', () => {
       content,
       summary: 'Stale edit',
     });
-    expect(stale).toMatchObject({ status: 409, body: { error: { code: 'conflict' } } });
+    expect(stale).toMatchObject({ status: 409, body: { code: 'conflict' } });
     expect((await f.call('memory.read', { pageId: 'preferences' })).body.page.content).toBe(
       f.content('My changed preference.\n')
     );
@@ -98,9 +96,15 @@ describe('public explicit self Memory', () => {
 
   it('rejects caller-selected owners and unsupported source-bearing content without publication', async () => {
     const f = fixture();
-    const initialized = await f.call('memory.notebook.initialize', { requestId: randomUUID() });
+    const initialized = await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'starter',
+      content: f.content('Retain this page.', 'starter'),
+      summary: 'First explicit save',
+    });
     expect(initialized.status).toBe(200);
-    expect((await f.call('memory.list', { userId: f.userId })).status).toBe(400);
+    expect((await f.call('memory.list', { userId: f.userId })).status).toBe(403);
     const refused = await f.call('memory.create', {
       requestId: randomUUID(),
       baseRevision: initialized.body.notebookRevision,
@@ -111,6 +115,8 @@ describe('public explicit self Memory', () => {
       summary: 'Unsupported source save',
     });
     expect(refused.status).toBe(400);
-    expect((await f.call('memory.list')).body.pages).toEqual([]);
+    expect((await f.call('memory.list')).body.pages.map((page: { id: string }) => page.id)).toEqual(
+      ['starter']
+    );
   });
 });
