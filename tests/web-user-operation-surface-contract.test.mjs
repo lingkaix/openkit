@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 267;
+const EXPECTED_CATALOG_SIZE = 268;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 207;
+const EXPECTED_INCLUDED_SIZE = 208;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -30,6 +30,7 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['memory.notebook.history', 'R069'],
   ['memory.notebook.restore', 'R069'],
   ['memory.read', 'R069'],
+  ['memory.search', 'R069'],
   ['memory.source.list', 'R069'],
   ['memory.source.read', 'R069'],
   ['memory.source.register', 'R069'],
@@ -200,6 +201,7 @@ const WEB_OPERATION_GROUPS = {
     'memory.notebook.history': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.notebook.restore': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.read': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.search': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.source.list': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.source.read': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.source.register': { disposition: 'roadmap', roadmap: 'R069' },
