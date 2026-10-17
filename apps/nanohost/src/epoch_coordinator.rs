@@ -65,6 +65,10 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Fresh roots through complete readiness share the transport specification's hard bound.
 pub const STARTUP_READINESS_HARD_LIMIT: Duration = Duration::from_secs(120);
 
+/// Definite import failure after the exact Sandbox and its accepted effects are absent.
+pub(crate) const REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE: &str =
+    "reference.import failed after proved Sandbox cleanup";
+
 /// Last successful readiness observation, used only by private forensic reports.
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -2641,6 +2645,18 @@ impl EpochCoordinator {
         Ok(evidence)
     }
 
+    /// Classifies import failure only after the exact Sandbox cleanup has settled.
+    fn cleanup_failed_reference_import(&mut self, sandbox_name: &str) -> &'static str {
+        if self
+            .delete_sandbox(sandbox_name, Duration::from_secs(120))
+            .is_ok()
+        {
+            REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE
+        } else {
+            "reference.import failed or unknown"
+        }
+    }
+
     /// Imports one verified file or declared directory into the current ready sandbox.
     ///
     /// # Errors
@@ -2689,8 +2705,7 @@ impl EpochCoordinator {
                 match read_import_staging(file, &request) {
                     Ok(source) => Some(source),
                     Err(_) => {
-                        let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
-                        return Err("reference.import failed or unknown");
+                        return Err(self.cleanup_failed_reference_import(&sandbox.name));
                     }
                 }
             }
@@ -2704,8 +2719,7 @@ impl EpochCoordinator {
         let command = match request.helper_command() {
             Ok(command) => command,
             Err(_) => {
-                let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
-                return Err("reference.import failed or unknown");
+                return Err(self.cleanup_failed_reference_import(&sandbox.name));
             }
         };
         let expected = if kind == FileEffectKind::ImportDirectory {
@@ -2736,20 +2750,13 @@ impl EpochCoordinator {
                     ),
                     request.byte_length,
                 );
-                if carriage.is_err() {
-                    let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
-                }
-                carriage
+                carriage.map_err(|_| self.cleanup_failed_reference_import(&sandbox.name))
             }
             Ok(_) => {
                 eprintln!("stage=reference-import outcome=stdout-acknowledgement");
-                let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
-                Err("reference.import failed or unknown")
+                Err(self.cleanup_failed_reference_import(&sandbox.name))
             }
-            Err(_) => {
-                let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
-                Err("reference.import failed or unknown")
-            }
+            Err(_) => Err(self.cleanup_failed_reference_import(&sandbox.name)),
         }
     }
 
@@ -6408,10 +6415,27 @@ mod tests {
         assert_eq!(import.matches("eprintln!(").count(), 1);
         assert!(!import.contains("std::io::stderr"));
         assert_eq!(
-            import.matches("delete_sandbox(").count(),
-            import.matches("delete_sandbox(&sandbox.name").count(),
+            import.matches("cleanup_failed_reference_import(").count(),
+            5
+        );
+        assert_eq!(
+            import
+                .matches("cleanup_failed_reference_import(&sandbox.name)")
+                .count(),
+            5,
             "every import failure must clean up by public sandbox name"
         );
+        let import_cleanup = source
+            .split_once("fn cleanup_failed_reference_import(")
+            .expect("import cleanup certainty owner")
+            .1
+            .split_once("/// Imports one verified file or declared directory")
+            .unwrap()
+            .0;
+        assert!(import_cleanup.contains(".delete_sandbox(sandbox_name, Duration::from_secs(120))"));
+        assert!(import_cleanup.contains(".is_ok()"));
+        assert!(import_cleanup.contains("REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE"));
+        assert!(import_cleanup.contains("\"reference.import failed or unknown\""));
         let export = source
             .split_once("pub fn export_file(")
             .expect("file export owner")
