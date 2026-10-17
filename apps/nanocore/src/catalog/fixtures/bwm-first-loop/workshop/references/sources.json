@@ -1,0 +1,37 @@
+[
+  {
+    "id": "synthetic-inventory-1",
+    "purpose": "inventory",
+    "facts": [
+      {
+        "kind": "inventory",
+        "equipmentId": "projector",
+        "capacity": 2
+      }
+    ],
+    "synthetic": true,
+    "audience": "workspace",
+    "observedAt": "2026-10-16T08:00:00Z",
+    "validUntil": "2026-10-16T12:00:00Z",
+    "contentDigest": "sha256:2cae9401c07986b69e6474c74347beec4c6f1eac274235a5f7f34d03b5eef905"
+  },
+  {
+    "id": "synthetic-reservations-1",
+    "purpose": "reservations",
+    "facts": [
+      {
+        "kind": "reservation",
+        "id": "r1",
+        "equipmentId": "projector",
+        "quantity": 1,
+        "start": "2026-10-16T10:00:00Z",
+        "end": "2026-10-16T11:00:00Z"
+      }
+    ],
+    "synthetic": true,
+    "audience": "workspace",
+    "observedAt": "2026-10-16T08:00:00Z",
+    "validUntil": "2026-10-16T12:00:00Z",
+    "contentDigest": "sha256:81443151bc48131bfbb177946f5db0169e25fae394b9d550f78abc3420d7f85d"
+  }
+]

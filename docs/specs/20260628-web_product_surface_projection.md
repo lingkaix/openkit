@@ -230,6 +230,10 @@ Web projects the [Composer-owned effort control](20260831-unified_conversation_c
 
 Gateway settings acceptance requires the three sections over existing owners, guided subscription setup with honest partial failures, key entry without readback, always-enabled use-independent Remove/Log out with affected logical-model disclosure, no route rewrite or promotion, preserved account-observation semantics, and distinct reload versus restart-required activation. Existing deployment-admin authority, redaction, and release-readiness gates remain required. Acceptance also requires the supported subscription inventory and complete existing account lifecycle to remain reachable, including retained unbound slots and display-name updates, with authored Provider and server-default JSONC workflows preserved.
 
+### Versioned Skill Catalog projection
+
+The Catalog groups retained Skill version list/read, exact file read/download, inventory diff and source update checks in the selected Skill's history inspector. These reads do not change current selection. Removal blocks future selection and retains history; permanent deletion names the exact version and requires an explicit confirmation before the existing Core retention admission. Candidate submitters can withdraw their own proposed updates. All mutations use the current observed catalog revision, and pin/default/decision commands also bind the observed pointer digest. Failed reads, denied or stale writes and disconnected controls remain visible; changing Workspace, Skill or version cannot display another selection's response.
+
 ### Observable acceptance
 
 Acceptance of this completeness contract requires all of the following:

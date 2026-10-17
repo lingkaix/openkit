@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 241;
+const EXPECTED_CATALOG_SIZE = 249;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 181;
+const EXPECTED_INCLUDED_SIZE = 189;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -96,6 +96,14 @@ const WEB_OPERATION_GROUPS = {
     'catalog.mcp-list': { disposition: 'live', surface: 'Catalog' },
     'catalog.plugin-list': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-version-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-update-check': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-version-read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-content-read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-diff': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-remove': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-purge': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-candidate-withdraw': { disposition: 'live', surface: 'Catalog' },
     'catalog.mcp-select': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-select': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-pin': { disposition: 'live', surface: 'Catalog' },

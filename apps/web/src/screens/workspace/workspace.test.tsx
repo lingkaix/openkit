@@ -2285,6 +2285,104 @@ describe('Catalog', () => {
     });
   });
 
+  it('binds Skill pointer changes to the exact observed pin and current version', async () => {
+    const user = userEvent.setup();
+    const currentDigest = `sha256:${'a'.repeat(64)}`;
+    const pinDigest = `sha256:${'b'.repeat(64)}`;
+    const candidateId = 'cand_00000000-0000-74db-8fec-97e4e6509f7b';
+    const pin = vi.fn().mockResolvedValue({});
+    const select = vi.fn().mockResolvedValue({});
+    const decide = vi.fn().mockResolvedValue({});
+    const withdraw = vi.fn().mockResolvedValue({});
+    const catalog = {
+      revision: 7,
+      skills: [
+        {
+          availability: 'available',
+          currentDigest,
+          pinDigest,
+          description: null,
+          displayName: 'Observed Skill',
+          id: 'observed-skill',
+          versions: [
+            { createdAt: TIMESTAMP_NEW, digest: currentDigest },
+            { createdAt: TIMESTAMP_NEW, digest: pinDigest },
+          ],
+        },
+      ],
+      candidates: [
+        {
+          id: candidateId,
+          entryId: 'observed-skill',
+          baseDigest: currentDigest,
+          candidateDigest: pinDigest,
+          summary: 'Observed candidate',
+          createdAt: TIMESTAMP_NEW,
+          disposition: 'proposed',
+        },
+      ],
+      mcp: [],
+      plugins: [],
+    };
+    renderApp(
+      '/catalog',
+      makeClient({
+        operations: {
+          'catalog.read': vi.fn().mockResolvedValue(catalog),
+          'catalog.skill-pin': pin,
+          'catalog.skill-select': select,
+          'catalog.skill-candidate-decide': decide,
+          'catalog.skill-candidate-withdraw': withdraw,
+        },
+      })
+    );
+    await user.click(await screen.findByRole('button', { name: 'Unpin' }));
+    await waitFor(() =>
+      expect(pin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WORKSPACE_A.id,
+          skillId: 'observed-skill',
+          digest: null,
+          expectedRevision: 7,
+          expectedPinDigest: pinDigest,
+        })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /^Use / }));
+    await waitFor(() =>
+      expect(select).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WORKSPACE_A.id,
+          skillId: 'observed-skill',
+          digest: pinDigest,
+          expectedRevision: 7,
+          expectedCurrentDigest: currentDigest,
+        })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: 'Withdraw my proposal' }));
+    await waitFor(() =>
+      expect(withdraw).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_A.id,
+        candidateId,
+        expectedRevision: 7,
+        requestId: expect.any(String),
+      })
+    );
+    await user.click(screen.getByRole('button', { name: 'Promote' }));
+    await waitFor(() =>
+      expect(decide).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WORKSPACE_A.id,
+          candidateId,
+          decision: 'promoted',
+          expectedRevision: 7,
+          expectedCurrentDigest: currentDigest,
+        })
+      )
+    );
+  });
+
   it('submits a Skill candidate from an existing catalog entry', async () => {
     const user = userEvent.setup();
     const digest = `sha256:${'a'.repeat(64)}`;
