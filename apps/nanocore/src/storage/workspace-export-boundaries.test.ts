@@ -606,15 +606,18 @@ describe('workspace export route boundaries', () => {
     expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
     const { notebookRevision } = await notebookResponse.json();
     const created = await sourceApp.request(
-      ...operationRequest('knowledge.create', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        baseRevision: notebookRevision,
-        knowledgePageId: pagePath.slice('knowledge/pages/'.length, -3),
-        requestId: '00000000-0000-4000-8000-000000000991',
-        kind: 'project-context',
-        title: 'Unicode archive',
-        content: 'Portable.',
-      })
+      ...operationRequest(
+        'knowledge.create',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          baseRevision: notebookRevision,
+          knowledgePageId: pagePath.slice('knowledge/pages/'.length, -3),
+          kind: 'project-context',
+          title: 'Unicode archive',
+          content: 'Portable.',
+        },
+        { headers: { 'x-openkit-request-id': '00000000-0000-4000-8000-000000000991' } }
+      )
     );
     expect(created.status, await created.clone().text()).toBe(200);
     // Create the handle through its native owner so the fixture includes real persisted creator attribution.
