@@ -1,13 +1,22 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { setImmediate as yieldToIo } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
   KnowledgeProposalPageIdSchema,
@@ -18,18 +27,21 @@ import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   type ActorRef,
   AgentSessionIdSchema,
+  ArtifactReferenceSchema,
   ItemIdSchema,
   MaterialIdSchema,
+  MaterialReferenceSchema,
   MaterialRevisionIdSchema,
+  parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
   ThreadIdSchema,
   TurnIdSchema,
+  TurnInputReferenceSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
-
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
 import {
   STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
@@ -37,11 +49,16 @@ import {
 } from '../internal-agents/delegation.js';
 import { conversationTaskThreadId, conversationTaskTurnId } from '../runtime/idempotent-command.js';
 import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-requests.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
+  measureCanonicalFileDescriptor,
+  readCanonicalFile,
   readCanonicalTextFile,
+  syncCanonicalDirectory,
 } from '../storage/workspace-file-records.js';
+import { PDF_TEXT_LAYER_LIMITS, PdfTextLayerEvidenceSchema } from './pdf-text-layer.js';
 
 /** Stable policy version for the first accepted worker Context Package trace. */
 export const WORKER_CONTEXT_PACKAGE_POLICY_VERSION = 'worker-context-v1' as const;
@@ -94,7 +111,68 @@ const FileInventoryEntrySchema = z.strictObject({
   contentDigest: Sha256Schema,
   path: IdSchema,
 });
+/** Bounded delivered text proof; source and complete representation bytes remain distinct. */
+export const WorkerContextPackageProjectionSchema = z.object({
+  kind: z.enum(['body', 'excerpt', 'descriptor']),
+  sourceRevision: IdSchema.max(1024),
+  representationId: IdSchema.max(1024),
+  representationDigest: Sha256Schema,
+  representationByteLength: z.number().int().nonnegative().safe(),
+  deliveredDigest: Sha256Schema,
+  ranges: z
+    .array(
+      z.strictObject({
+        start: z.number().int().nonnegative().safe(),
+        end: z.number().int().nonnegative().safe(),
+      })
+    )
+    .max(2000),
+  byteLength: z.number().int().nonnegative().max(51_200),
+  truncated: z.boolean(),
+  availability: z.enum(['available', 'incomplete', 'unavailable']),
+  originalSnapshotPath: IdSchema.optional(),
+  representationSnapshotPath: IdSchema.optional(),
+  pdfTextLayer: PdfTextLayerEvidenceSchema.optional(),
+});
+/** Exact text projection admitted by the existing package owner. */
+export type WorkerContextPackageProjection = z.infer<typeof WorkerContextPackageProjectionSchema>;
+const SourceIdentitySchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('artifact'),
+    reference: ArtifactReferenceSchema,
+    artifactVersion: z.number().int().positive().safe(),
+  }),
+  z.strictObject({
+    kind: z.literal('material'),
+    reference: MaterialReferenceSchema,
+    revisionId: IdSchema,
+  }),
+  z.strictObject({ kind: z.literal('turn-input'), reference: TurnInputReferenceSchema }),
+]);
+const SourceFileSchema = z.object({
+  source: SourceIdentitySchema,
+  originalDigest: Sha256Schema,
+  byteLength: z.number().int().nonnegative().safe(),
+  mediaType: IdSchema.max(255),
+  originalSnapshotPath: IdSchema,
+  packagePath: IdSchema,
+  projection: WorkerContextPackageProjectionSchema,
+});
+/** Additive source inventory under the existing WIS and package materialization proof. */
+export type WorkerContextPackageSourceFile = z.infer<typeof SourceFileSchema>;
+/** Private pinned source supplier; callbacks and host paths never enter retained metadata. */
+export interface WorkerContextPackageSourceFileInput extends WorkerContextPackageSourceFile {
+  /** Bounded worker-visible UTF-8 bytes. */
+  readonly deliveredBytes: Uint8Array;
+  /** Reads the complete retained derived representation in at most 64 KiB chunks, when selected. */
+  readonly openRepresentation?: ((signal: AbortSignal) => AsyncIterable<Uint8Array>) | undefined;
+  /** Reads the held immutable original in chunks no larger than 64 KiB. */
+  readonly open: (signal: AbortSignal) => AsyncIterable<Uint8Array>;
+  /** Proves that the pinned original has not changed. */
+  readonly assertUnchanged: (signal?: AbortSignal) => void | Promise<void>;
+}
 const MaterialSelectionSchema = z.object({
+  projection: WorkerContextPackageProjectionSchema.optional(),
   bindingMutationRequestId: IdSchema.nullable(),
   contentDigest: Sha256Schema,
   inclusionReason: z.enum(['thread_binding', 'goal_steering']),
@@ -122,6 +200,7 @@ const KnowledgeSelectionInputSchema = z.object({
 });
 const KnowledgeSelectionSchema = z.object({
   notebookRevision: IdSchema.optional(),
+  projection: WorkerContextPackageProjectionSchema.optional(),
   contentDigest: Sha256Schema,
   knowledgePageId: IdSchema,
   packagePath: IdSchema,
@@ -137,6 +216,7 @@ export const WorkerContextPackageManifestSchema = z.object({
   contextBudgetTokens: z.number().int().positive().safe(),
   contextPackageId: IdSchema,
   fileInventory: z.array(FileInventoryEntrySchema),
+  sourceFiles: z.array(SourceFileSchema).max(100_000).optional(),
   includedItemIds: z.array(ItemIdSchema).min(1),
   knowledgeSelections: z.array(KnowledgeSelectionSchema),
   materialSelections: z.array(MaterialSelectionSchema),
@@ -169,7 +249,7 @@ const WorkerContextPackageTraceSchema = WorkerContextPackageManifestSchema.omit(
 export interface WorkerContextPackageFileInventoryEntry {
   /** Package-relative POSIX path. */
   readonly path: string;
-  /** Exact UTF-8 byte length. */
+  /** Exact byte length, including binary originals. */
   readonly byteLength: number;
   /** SHA-256 digest of the exact bytes. */
   readonly contentDigest: string;
@@ -177,6 +257,8 @@ export interface WorkerContextPackageFileInventoryEntry {
 
 /** Material revision accepted into the worker-visible package. */
 export interface WorkerContextPackageMaterialSelection {
+  /** Exact bounded delivery proof; absent only for retained whole-body selections. */
+  readonly projection?: WorkerContextPackageProjection | undefined;
   /** Workspace Material identity. */
   readonly materialId: string;
   /** Exact immutable revision identity. */
@@ -201,6 +283,10 @@ export interface WorkerContextPackageMaterialSelection {
 
 /** Material selection input carrying private bytes only while the package is built. */
 export interface WorkerContextPackageMaterialSelectionInput {
+  /** Explicit bounded text delivery, distinct from canonical content. */
+  readonly deliveredContent?: string;
+  /** Required when deliveredContent differs from the original. */
+  readonly projection?: WorkerContextPackageProjection | undefined;
   /** Workspace Material identity. */
   readonly materialId: string;
   /** Exact immutable revision identity. */
@@ -241,6 +327,10 @@ export interface WorkerContextPackageMaterialExclusion {
 export interface WorkerContextPackageKnowledgeSelectionInput {
   /** Exact immutable Notebook commit supplied by the Knowledge owner. */
   readonly notebookRevision?: string | undefined;
+  /** Explicit bounded text delivery, distinct from canonical content. */
+  readonly deliveredContent?: string;
+  /** Required when deliveredContent differs from the original. */
+  readonly projection?: WorkerContextPackageProjection | undefined;
   /** Workspace Knowledge page identity. */
   readonly knowledgePageId: string;
   /** Digest of the exact canonical UTF-8 page bytes. */
@@ -255,9 +345,11 @@ export interface WorkerContextPackageKnowledgeSelectionInput {
 export interface WorkerContextPackageKnowledgeSelection {
   /** Exact immutable Notebook commit supplied by the Knowledge owner. */
   readonly notebookRevision?: string | undefined;
+  /** Exact bounded delivery proof; absent only for retained whole-body selections. */
+  readonly projection?: WorkerContextPackageProjection | undefined;
   /** Workspace Knowledge page identity. */
   readonly knowledgePageId: string;
-  /** Digest of the exact delivered bytes. */
+  /** Digest of the exact original canonical page bytes. */
   readonly contentDigest: string;
   /** Complete duplicate-free source references in bytewise order. */
   readonly sourceRefs: readonly string[];
@@ -291,6 +383,10 @@ export interface WorkerContextPackageFile {
 
 /** Deterministic package files prepared before AEP resolution. */
 export interface WorkerContextPackageFiles {
+  /** Private stream suppliers retained only until publication; never serialized. */
+  readonly sourceFileInputs?: readonly WorkerContextPackageSourceFileInput[];
+  /** Qualified exact original sources, separate from delivered representation files. */
+  readonly sourceFiles?: readonly WorkerContextPackageSourceFile[] | undefined;
   /** Stable package id derived from the Turn. */
   readonly contextPackageId: string;
   /** Owning Workspace. */
@@ -309,7 +405,7 @@ export interface WorkerContextPackageFiles {
   readonly knowledgeSelections: readonly WorkerContextPackageKnowledgeSelection[];
   /** Included Material metadata without duplicate content bytes. */
   readonly materialSelections: readonly WorkerContextPackageMaterialSelection[];
-  /** Complete sorted worker-visible file set. */
+  /** Sorted inline deliveries and manifest; original streams use sourceFileInputs. */
   readonly files: readonly WorkerContextPackageFile[];
   /** Complete sorted inventory including package.json. */
   readonly fileInventory: readonly WorkerContextPackageFileInventoryEntry[];
@@ -319,6 +415,8 @@ export interface WorkerContextPackageFiles {
 
 /** Immutable accepted worker Context Package delivery trace. */
 export interface WorkerContextPackageTrace {
+  /** Qualified exact original sources, separate from delivered representation files. */
+  readonly sourceFiles?: readonly WorkerContextPackageSourceFile[] | undefined;
   /** Trace schema version. */
   readonly schemaVersion: 1;
   /** Stable package id derived from the Turn. */
@@ -374,6 +472,13 @@ export interface WorkerContextPackageTrace {
 
 /** Minimal durable authorities consumed by the shared trace verifier. */
 export interface WorkerContextPackageAuthorityReader {
+  /** Checks a fresh pinned original against its existing canonical owner; historical package bytes remain independent. */
+  readonly readSourceFile?: (source: WorkerContextPackageSourceFile) => {
+    readonly originalDigest: string;
+    readonly byteLength: number;
+    readonly mediaType: string;
+  } | null;
+
   /** Reads the existing confirmed Assistant source proof; absence never grants a null-selection exception. */
   readonly readAssistantTaskHandoffSource?: (input: {
     readonly workspaceId: string;
@@ -489,6 +594,10 @@ export interface WorkerContextPackageAuthorityReader {
 
 /** Input for creating deterministic package files. */
 export interface CreateWorkerContextPackageFilesInput {
+  /** Caller-admitted serialized manifest ceiling, including JSON escapes; at most the 16 MiB metadata reader ceiling. */
+  readonly maxMetadataBytes?: number;
+  /** Currently authorized pinned originals selected by the existing input owner. */
+  readonly sourceFiles?: readonly WorkerContextPackageSourceFileInput[] | undefined;
   /** Owning Workspace. */
   readonly workspaceId: string;
   /** Owning Thread. */
@@ -578,6 +687,13 @@ export function isChatSubordinateTaskTurn(input: {
 export function createWorkerContextPackageFiles(
   input: CreateWorkerContextPackageFilesInput
 ): WorkerContextPackageFiles {
+  const maxMetadataBytes = input.maxMetadataBytes ?? 16_777_216;
+  if (
+    !Number.isSafeInteger(maxMetadataBytes) ||
+    maxMetadataBytes <= 0 ||
+    maxMetadataBytes > 16_777_216
+  )
+    throw new Error('Worker Context Package metadata budget is invalid.');
   assertSafeWorkspacePathSegment(input.workspaceId, 'Workspace id');
   assertSafeWorkspacePathSegment(input.threadId, 'Thread id');
   assertSafeWorkspacePathSegment(input.turnId, 'Turn id');
@@ -611,16 +727,20 @@ export function createWorkerContextPackageFiles(
     if (sourceRefs.some((sourceRef) => sourceRef.length === 0)) {
       throw new Error(`Knowledge page source reference is invalid: ${selection.knowledgePageId}.`);
     }
-    const bytes = Buffer.from(selection.content, 'utf8');
-    if (sha256(bytes) !== selection.contentDigest) {
+    const originalBytes = Buffer.from(selection.content, 'utf8');
+    const bytes = deliveredSelectionBytes(selection);
+    if (sha256(originalBytes) !== selection.contentDigest) {
       throw new Error(`Knowledge page digest mismatch: ${selection.knowledgePageId}.`);
     }
+    if (selection.projection && selection.projection.sourceRevision !== selection.notebookRevision)
+      throw new Error('Worker Context Package Knowledge notebook revision mismatch.');
     const packagePath = `knowledge/pages/${selection.knowledgePageId}.md`;
     ordinaryFiles.push({ path: packagePath, bytes });
     knowledgeSelections.push({
       contentDigest: selection.contentDigest,
       knowledgePageId: selection.knowledgePageId,
       ...(selection.notebookRevision ? { notebookRevision: selection.notebookRevision } : {}),
+      ...(selection.projection ? { projection: selection.projection } : {}),
       packagePath,
       sourceRefs,
     });
@@ -631,10 +751,13 @@ export function createWorkerContextPackageFiles(
     if (selection.sensitivity === 'restricted') {
       throw new Error('Restricted Material cannot enter worker Context Package bytes.');
     }
-    const bytes = Buffer.from(selection.content, 'utf8');
-    if (sha256(bytes) !== selection.contentDigest) {
+    const originalBytes = Buffer.from(selection.content, 'utf8');
+    const bytes = deliveredSelectionBytes(selection);
+    if (sha256(originalBytes) !== selection.contentDigest) {
       throw new Error(`Material revision digest mismatch: ${selection.materialId}.`);
     }
+    if (selection.projection && selection.projection.sourceRevision !== selection.revisionId)
+      throw new Error('Worker Context Package Material source revision mismatch.');
     const extension = selection.mediaType === 'text/markdown' ? 'md' : 'txt';
     const packagePath = `workspace/materials/${selection.materialId}/${selection.revisionId}.${extension}`;
     ordinaryFiles.push({ path: packagePath, bytes });
@@ -646,14 +769,91 @@ export function createWorkerContextPackageFiles(
       mediaType: selection.mediaType,
       packagePath,
       parentRevisionId: selection.parentRevisionId,
+      ...(selection.projection ? { projection: selection.projection } : {}),
       revisionId: selection.revisionId,
       sensitivity: selection.sensitivity,
       sensitivityDecision: 'included',
     });
   }
 
+  if ((input.sourceFiles?.length ?? 0) > 100_000)
+    throw new Error('Worker Context Package source inventory exceeds its entry bound.');
+  const sourceFileInputs: WorkerContextPackageSourceFileInput[] = [];
+  const sourceFiles = [...(input.sourceFiles ?? [])]
+    .sort((a, b) => a.originalSnapshotPath.localeCompare(b.originalSnapshotPath))
+    .map((entry) => {
+      const metadata = SourceFileSchema.parse(entry);
+      assertSourceFile(metadata, input.workspaceId, materialSelections);
+      assertProjection(metadata.projection, entry.deliveredBytes);
+      const bytes = Buffer.from(entry.deliveredBytes);
+      const existing = ordinaryFiles.find((file) => file.path === metadata.packagePath);
+      if (metadata.packagePath.startsWith('workspace/materials/')) {
+        if (!existing || !Buffer.from(existing.bytes).equals(bytes))
+          throw new Error('Worker Context Package shared Material bytes mismatch.');
+        const selected = materialInputs.find(
+          (selection) =>
+            metadata.source.kind === 'material' &&
+            selection.materialId === metadata.source.reference.objectId &&
+            selection.revisionId === metadata.source.revisionId
+        );
+        if (!selected || Buffer.byteLength(selected.content, 'utf8') !== metadata.byteLength)
+          throw new Error('Worker Context Package shared Material original size mismatch.');
+      } else {
+        if (existing) throw new Error('Worker Context Package duplicate delivered source path.');
+        ordinaryFiles.push({ path: metadata.packagePath, bytes });
+      }
+      if (
+        Boolean(metadata.projection.representationSnapshotPath) !==
+        Boolean(entry.openRepresentation)
+      )
+        throw new Error('Worker Context Package representation supplier mismatch.');
+      sourceFileInputs.push({
+        ...metadata,
+        deliveredBytes: bytes,
+        open: entry.open.bind(entry),
+        ...(entry.openRepresentation
+          ? { openRepresentation: entry.openRepresentation.bind(entry) }
+          : {}),
+        assertUnchanged: entry.assertUnchanged.bind(entry),
+      });
+      return metadata;
+    });
+  assertUnique(
+    sourceFiles.map((entry) => canonicalJson(entry.source)),
+    'original source identity'
+  );
+  assertUnique(
+    [
+      ...ordinaryFiles.map((file) => file.path),
+      ...sourceFiles.map((entry) => entry.originalSnapshotPath),
+      ...sourceFiles.flatMap((entry) =>
+        entry.projection.representationSnapshotPath
+          ? [entry.projection.representationSnapshotPath]
+          : []
+      ),
+    ],
+    'package path'
+  );
   ordinaryFiles.sort((left, right) => left.path.localeCompare(right.path));
-  const ordinaryInventory = ordinaryFiles.map(inventoryEntry);
+  const ordinaryInventory = [
+    ...ordinaryFiles.map(inventoryEntry),
+    ...sourceFiles.map((entry) => ({
+      path: entry.originalSnapshotPath,
+      byteLength: entry.byteLength,
+      contentDigest: entry.originalDigest,
+    })),
+    ...sourceFiles.flatMap((entry) =>
+      entry.projection.representationSnapshotPath
+        ? [
+            {
+              path: entry.projection.representationSnapshotPath,
+              byteLength: entry.projection.representationByteLength,
+              contentDigest: entry.projection.representationDigest,
+            },
+          ]
+        : []
+    ),
+  ].sort((a, b) => a.path.localeCompare(b.path));
   const contextPackageId = `ctxpkg_${input.turnId}`;
   const manifest = {
     contextBudgetTokens: input.contextBudgetTokens,
@@ -662,6 +862,7 @@ export function createWorkerContextPackageFiles(
     includedItemIds: [...input.includedItemIds],
     knowledgeSelections,
     materialSelections,
+    ...(sourceFiles.length ? { sourceFiles } : {}),
     policyVersion: WORKER_CONTEXT_PACKAGE_POLICY_VERSION,
     schemaVersion: 1,
     threadId: input.threadId,
@@ -674,10 +875,14 @@ export function createWorkerContextPackageFiles(
     path: 'package.json',
     bytes: Buffer.from(canonicalJson(manifest), 'utf8'),
   };
+  if (packageFile.bytes.byteLength > maxMetadataBytes)
+    throw new Error('Worker Context Package metadata exceeds its byte bound.');
   const files = [...ordinaryFiles, packageFile].sort((left, right) =>
     left.path.localeCompare(right.path)
   );
-  const fileInventory = files.map(inventoryEntry);
+  const fileInventory = [...ordinaryInventory, inventoryEntry(packageFile)].sort((a, b) =>
+    a.path.localeCompare(b.path)
+  );
   return {
     contextPackageId,
     fileInventory,
@@ -685,6 +890,7 @@ export function createWorkerContextPackageFiles(
     includedItemIds: [...input.includedItemIds],
     knowledgeSelections,
     materialSelections,
+    ...(sourceFiles.length ? { sourceFiles, sourceFileInputs } : {}),
     packageRootDigest: sha256(Buffer.from(canonicalJson(fileInventory), 'utf8')),
     threadId: input.threadId,
     turnId: input.turnId,
@@ -694,24 +900,243 @@ export function createWorkerContextPackageFiles(
   };
 }
 
-/** Writes prepared package files under their canonical immutable Workspace directory. */
-export function writeWorkerContextPackageFiles(
+/** Writes exact inline projections and streamed originals through the shared capacity owner. */
+export async function writeWorkerContextPackageFiles(
   workspaceRoot: string,
-  packageFiles: WorkerContextPackageFiles
-): void {
-  const packageRoot = workerContextPackageRoot(
-    workspaceRoot,
+  packageFiles: WorkerContextPackageFiles,
+  options: { readonly admission: FileStorageAdmission; readonly signal?: AbortSignal }
+): Promise<void> {
+  options.signal?.throwIfAborted();
+  assertCanonicalDirectory(workspaceRoot);
+  const rootParts = [
+    'threads',
     packageFiles.threadId,
+    'turns',
     packageFiles.turnId,
-    true
-  );
-  for (const file of packageFiles.files) {
-    const segments = safeRelativePathSegments(file.path);
-    const path = join(
-      canonicalWorkspaceDirectory(packageRoot, segments.slice(0, -1), true),
-      segments.at(-1) as string
+    'context-package',
+  ];
+  for (const value of rootParts) assertSafeWorkspacePathSegment(value, 'Context Package directory');
+  const tracePath = join(workspaceRoot, ...rootParts.slice(0, -1), 'context-package.json');
+  if (existsSync(tracePath)) {
+    // A retained trace fences every historical byte: verify it, never rebuild it from current inputs.
+    workerContextPackageRoot(workspaceRoot, packageFiles.threadId, packageFiles.turnId);
+    const trace = parseWorkerContextPackageTrace(JSON.parse(readCanonicalTextFile(tracePath)));
+    if (
+      trace.workspaceId !== packageFiles.workspaceId ||
+      trace.threadId !== packageFiles.threadId ||
+      trace.turnId !== packageFiles.turnId ||
+      !isDeepStrictEqual(trace.fileInventory, packageFiles.fileInventory) ||
+      verifyPackageFiles(workspaceRoot, trace) !== packageFiles.packageRootDigest
+    )
+      throw new Error('Worker Context Package retained publication conflict.');
+    return;
+  }
+  const directories = new Set<string>();
+  for (const entry of packageFiles.fileInventory) {
+    const parts = [...rootParts, ...safeRelativePathSegments(entry.path).slice(0, -1)];
+    for (let index = 1; index <= parts.length; index++)
+      directories.add(join(workspaceRoot, ...parts.slice(0, index)));
+  }
+  const missingDirectories: string[] = [];
+  for (const directory of directories) {
+    if (lstatSync(directory, { throwIfNoEntry: false })) assertCanonicalDirectory(directory);
+    else missingDirectories.push(directory);
+  }
+  // Reserve directory overhead before any mkdir; replay with no new directory needs no directory capacity.
+  const directoryReservation = missingDirectories.length
+    ? options.admission.reserve({
+        stagingBytes: 0n,
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: BigInt(missingDirectories.length) * 65_536n,
+      })
+    : undefined;
+  try {
+    directoryReservation?.assertAvailable();
+    const root = workerContextPackageRoot(
+      workspaceRoot,
+      packageFiles.threadId,
+      packageFiles.turnId,
+      true
     );
-    writeImmutableFile(path, file.bytes, 'Worker Context Package file conflict.');
+    const pathFor = (relative: string): string => {
+      const parts = safeRelativePathSegments(relative);
+      return join(canonicalWorkspaceDirectory(root, parts.slice(0, -1), true), parts.at(-1)!);
+    };
+    // Originals are complete before the manifest can announce readiness. Exact replay never opens a source.
+    for (const source of packageFiles.sourceFileInputs ?? []) {
+      await writeOriginal(pathFor(source.originalSnapshotPath), source, options);
+      if (source.projection.representationSnapshotPath) {
+        await writeOriginal(
+          pathFor(source.projection.representationSnapshotPath),
+          {
+            ...source,
+            originalSnapshotPath: source.projection.representationSnapshotPath,
+            originalDigest: source.projection.representationDigest,
+            byteLength: source.projection.representationByteLength,
+            open: source.openRepresentation!,
+          },
+          options
+        );
+      }
+    }
+    for (const file of [...packageFiles.files].sort(
+      (a, b) => Number(a.path === 'package.json') - Number(b.path === 'package.json')
+    )) {
+      options.signal?.throwIfAborted();
+      const path = pathFor(file.path);
+      if (existsSync(path)) {
+        assertFileProof(path, inventoryEntry(file));
+        continue;
+      }
+      const reservation = options.admission.reserve({
+        stagingBytes: 0n,
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: BigInt(file.bytes.byteLength) + 65_536n,
+      });
+      let descriptor: number | undefined;
+      let created = false;
+      let safeToRelease = true;
+      try {
+        reservation.assertAvailable();
+        descriptor = openSync(
+          path,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+          0o600
+        );
+        created = true;
+        safeToRelease = false;
+        let written = 0;
+        while (written < file.bytes.byteLength) {
+          const count = writeSync(
+            descriptor,
+            file.bytes,
+            written,
+            Math.min(65_536, file.bytes.byteLength - written)
+          );
+          if (!count) throw new Error('Worker Context Package file write made no progress.');
+          written += count;
+          reservation.recordWritten(count);
+        }
+        fsyncSync(descriptor);
+        closeSync(descriptor);
+        descriptor = undefined;
+        assertFileProof(path, inventoryEntry(file));
+        syncCanonicalDirectory(dirname(path));
+        safeToRelease = true;
+      } catch (error) {
+        if (descriptor !== undefined) {
+          closeSync(descriptor);
+          descriptor = undefined;
+        }
+        if (created) {
+          unlinkSync(path);
+          syncCanonicalDirectory(dirname(path));
+          safeToRelease = true;
+        }
+        throw error;
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+        if (safeToRelease) reservation.release();
+      }
+      await yieldToIo(undefined, { signal: options.signal });
+    }
+    for (const directory of missingDirectories) syncCanonicalDirectory(dirname(directory));
+  } finally {
+    // This forecast has no private staged bytes; created directories remain occupied in filesystem capacity.
+    directoryReservation?.release();
+  }
+}
+
+/** Publishes one pinned original without a whole-body buffer or a second publication copy. */
+async function writeOriginal(
+  path: string,
+  source: WorkerContextPackageSourceFileInput,
+  options: { readonly admission: FileStorageAdmission; readonly signal?: AbortSignal }
+): Promise<void> {
+  const proof = {
+    path: source.originalSnapshotPath,
+    byteLength: source.byteLength,
+    contentDigest: source.originalDigest,
+  };
+  if (existsSync(path)) {
+    assertFileProof(path, proof);
+    return;
+  }
+  options.signal?.throwIfAborted();
+  const signal = options.signal ?? new AbortController().signal;
+  const reservation = options.admission.reserve({
+    stagingBytes: BigInt(source.byteLength) + 65_536n,
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 0n,
+  });
+  const stage = `${path}.stage-${randomUUID()}`;
+  let descriptor: number | undefined;
+  let clean = false;
+  let created = false;
+  try {
+    await source.assertUnchanged(signal);
+    signal.throwIfAborted();
+    descriptor = openSync(
+      stage,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o400
+    );
+    created = true;
+    const hash = createHash('sha256');
+    let length = 0;
+    for await (const chunk of source.open(signal)) {
+      signal.throwIfAborted();
+      if (
+        !(chunk instanceof Uint8Array) ||
+        chunk.byteLength > 65_536 ||
+        chunk.byteLength > source.byteLength - length
+      )
+        throw new Error(
+          'Worker Context Package original stream exceeds its admitted size or chunk bound.'
+        );
+      reservation.assertAvailable();
+      let written = 0;
+      while (written < chunk.byteLength) {
+        const count = writeSync(descriptor, chunk, written, chunk.byteLength - written);
+        if (!count) throw new Error('Worker Context Package original write made no progress.');
+        written += count;
+        reservation.recordWritten(count);
+      }
+      length += chunk.byteLength;
+      hash.update(chunk);
+      await yieldToIo(undefined, { signal });
+    }
+    if (length !== source.byteLength || `sha256:${hash.digest('hex')}` !== source.originalDigest)
+      throw new Error('Worker Context Package original digest mismatch.');
+    await source.assertUnchanged(signal);
+    signal.throwIfAborted();
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    reservation.assertAvailable();
+    // Exclusive hard-link publication cannot overwrite a racing immutable original; remove the private stage before verification.
+    try {
+      linkSync(stage, path);
+    } catch (error) {
+      if (!existsSync(path)) throw error;
+      assertFileProof(path, proof);
+    }
+    unlinkSync(stage);
+    created = false;
+    syncCanonicalDirectory(dirname(path));
+    assertFileProof(path, proof);
+    clean = true;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (created) {
+      unlinkSync(stage);
+      syncCanonicalDirectory(dirname(stage));
+      clean = true;
+    } else if (!existsSync(stage)) clean = true;
+    if (clean) reservation.release();
   }
 }
 
@@ -791,6 +1216,7 @@ export function createWorkerContextPackageTrace(
     knowledgeSelections: [...packageFiles.knowledgeSelections],
     materialExclusions: [...(input.materialExclusions ?? [])].sort(compareMaterialIdentity),
     materialSelections: [...packageFiles.materialSelections],
+    ...(packageFiles.sourceFiles?.length ? { sourceFiles: [...packageFiles.sourceFiles] } : {}),
     packageSnapshotId: input.packageSnapshotId,
     policyVersion: WORKER_CONTEXT_PACKAGE_POLICY_VERSION,
     requestId: input.requestId,
@@ -838,6 +1264,18 @@ export function writeWorkerContextPackageTrace(input: {
 }): WorkerContextPackageTrace {
   const trace = verifyWorkerContextPackageTrace(input);
   const path = workerContextPackageTracePath(input.workspaceRoot, trace.threadId, trace.turnId);
+  if (!existsSync(path)) {
+    for (const source of trace.sourceFiles ?? []) {
+      const owner = input.authorities.readSourceFile?.(source);
+      if (
+        !owner ||
+        owner.originalDigest !== source.originalDigest ||
+        owner.byteLength !== source.byteLength ||
+        owner.mediaType !== source.mediaType
+      )
+        throw new Error('Worker Context Package original source authority mismatch.');
+    }
+  }
   writeImmutableFile(
     path,
     Buffer.from(serializeWorkerContextPackageTrace(trace), 'utf8'),
@@ -950,13 +1388,17 @@ export function serializeWorkerContextPackageTrace(trace: WorkerContextPackageTr
  * Projects the bounded selection inputs shared by accepted worker request families.
  *
  * @param text Exact worker request JSON retained by the request Item.
- * @returns Context budget and explicitly requested prior Item ids.
+ * @returns Context budget and explicitly requested prior Item ids and Artifact selectors.
  * @throws Error when the request is not a supported closed worker request.
  */
 export function projectWorkerContextRequest(text: string): {
   readonly contextBudgetTokens: number;
   readonly requestKind: 'artifact-review' | 'structured-delegation' | 'pending-outcomes';
   readonly requestedItemIds: readonly string[];
+  readonly requestedArtifactRefs: readonly {
+    readonly artifactId: string;
+    readonly artifactVersion?: number;
+  }[];
 } {
   const value = JSON.parse(text) as unknown;
   if (PendingOutcomeInputSchema.safeParse(value).success) {
@@ -964,6 +1406,7 @@ export function projectWorkerContextRequest(text: string): {
       contextBudgetTokens: STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
       requestKind: 'pending-outcomes',
       requestedItemIds: [],
+      requestedArtifactRefs: [],
     };
   }
   const structured = StructuredWorkerDelegationRequestSchema.safeParse(value);
@@ -974,13 +1417,24 @@ export function projectWorkerContextRequest(text: string): {
       requestedItemIds: structured.data.contextRefs
         .filter((reference) => reference.kind === 'item')
         .map((reference) => reference.id),
+      requestedArtifactRefs: structured.data.contextRefs
+        .filter((reference) => reference.kind === 'artifact')
+        .map((reference) => ({
+          artifactId: reference.id,
+          ...(reference.artifactVersion === undefined
+            ? {}
+            : { artifactVersion: reference.artifactVersion }),
+        })),
     };
   }
-  ArtifactReviewFollowUpRequestSchema.parse(value);
+  const review = ArtifactReviewFollowUpRequestSchema.parse(value);
   return {
     contextBudgetTokens: STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
     requestKind: 'artifact-review',
     requestedItemIds: [],
+    requestedArtifactRefs: [
+      { artifactId: review.artifactId, artifactVersion: review.artifactVersion },
+    ],
   };
 }
 
@@ -1360,6 +1814,19 @@ function verifyWorkerContextPackagePortableOwners(
     ) {
       throw new Error(`Worker Context Package Material mismatch: ${selection.materialId}.`);
     }
+    if (selection.projection?.representationId === 'original-utf8') {
+      const root = workerContextPackageRoot(input.workspaceRoot, trace.threadId, trace.turnId);
+      deliveredSelectionBytes({
+        content: revision.content,
+        contentDigest: revision.contentDigest,
+        deliveredContent: readCanonicalPackageFile(
+          root,
+          selection.packagePath,
+          selection.projection.byteLength
+        ).toString('utf8'),
+        projection: selection.projection,
+      });
+    }
   }
   for (const exclusion of trace.materialExclusions) {
     const revision = authorities.readMaterialRevision(
@@ -1398,12 +1865,43 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
     throw new Error('Worker Context Package file inventory mismatch.');
   }
   for (const entry of trace.fileInventory) {
-    const bytes = readCanonicalPackageFile(packageRoot, entry.path);
-    if (bytes.byteLength !== entry.byteLength || sha256(bytes) !== entry.contentDigest) {
-      throw new Error(`Worker Context Package file digest mismatch: ${entry.path}.`);
-    }
+    assertFileProof(join(packageRoot, ...safeRelativePathSegments(entry.path)), entry);
   }
-  const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json');
+  for (const entry of [
+    ...trace.materialSelections,
+    ...trace.knowledgeSelections,
+    ...(trace.sourceFiles ?? []),
+  ]) {
+    if (entry.projection)
+      assertProjection(
+        entry.projection,
+        readCanonicalPackageFile(packageRoot, entry.packagePath, entry.projection.byteLength)
+      );
+  }
+  for (const source of trace.sourceFiles ?? []) {
+    const projection = source.projection;
+    if (!projection.representationSnapshotPath) continue;
+    const representation = readCanonicalPackageFile(
+      packageRoot,
+      projection.representationSnapshotPath,
+      projection.representationByteLength
+    );
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(representation);
+    const delivered = readCanonicalPackageFile(
+      packageRoot,
+      source.packagePath,
+      projection.byteLength
+    );
+    if (
+      !Buffer.concat(
+        projection.ranges.map((range) => representation.subarray(range.start, range.end))
+      ).equals(delivered)
+    )
+      throw new Error(
+        'Worker Context Package preview differs from its retained representation ranges.'
+      );
+  }
+  const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json', 16_777_216);
   const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
   const parsedManifest = WorkerContextPackageManifestSchema.safeParse(originalManifest);
   if (
@@ -1423,6 +1921,7 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
     !isDeepStrictEqual(manifest.includedItemIds, trace.includedItemIds) ||
     !isDeepStrictEqual(manifest.knowledgeSelections, trace.knowledgeSelections) ||
     !isDeepStrictEqual(manifest.materialSelections, trace.materialSelections) ||
+    !isDeepStrictEqual(manifest.sourceFiles, trace.sourceFiles) ||
     !isDeepStrictEqual(
       manifest.fileInventory,
       trace.fileInventory.filter((entry) => entry.path !== 'package.json')
@@ -1531,7 +2030,8 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
     if (
       selection.packagePath !== expectedPath ||
       !inventoryEntry ||
-      inventoryEntry.contentDigest !== selection.contentDigest
+      inventoryEntry.contentDigest !==
+        (selection.projection?.deliveredDigest ?? selection.contentDigest)
     ) {
       throw new Error(
         `Worker Context Package Knowledge path mismatch: ${selection.knowledgePageId}.`
@@ -1581,7 +2081,8 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
     if (
       selection.packagePath !== expectedPath ||
       !inventoryEntry ||
-      inventoryEntry.contentDigest !== selection.contentDigest
+      inventoryEntry.contentDigest !==
+        (selection.projection?.deliveredDigest ?? selection.contentDigest)
     ) {
       throw new Error(`Worker Context Package Material path mismatch: ${selection.materialId}.`);
     }
@@ -1594,8 +2095,78 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
     }
   }
 
+  for (const selection of [...trace.knowledgeSelections, ...trace.materialSelections]) {
+    if (selection.projection) {
+      assertProjection(selection.projection);
+      const revision =
+        'revisionId' in selection ? selection.revisionId : selection.notebookRevision;
+      if (selection.projection.originalSnapshotPath) {
+        const original = trace.sourceFiles?.find(
+          (entry) => entry.originalSnapshotPath === selection.projection!.originalSnapshotPath
+        );
+        if (!original || original.originalDigest !== selection.contentDigest)
+          throw new Error('Worker Context Package selected original inventory mismatch.');
+        if (
+          'materialId' in selection &&
+          (original.source.kind !== 'material' ||
+            original.source.reference.objectId !== selection.materialId ||
+            original.source.revisionId !== selection.revisionId)
+        )
+          throw new Error('Worker Context Package selected Material original identity mismatch.');
+      }
+      if (!revision || selection.projection.sourceRevision !== revision)
+        throw new Error('Worker Context Package selection source revision mismatch.');
+    }
+  }
+  assertStrictlySorted(
+    trace.sourceFiles ?? [],
+    (a, b) => a.originalSnapshotPath.localeCompare(b.originalSnapshotPath),
+    'original source inventory'
+  );
+  assertUnique(
+    (trace.sourceFiles ?? []).map((entry) => canonicalJson(entry.source)),
+    'original source identity'
+  );
+  const sourcePaths = new Set<string>();
+  for (const source of trace.sourceFiles ?? []) {
+    assertSourceFile(source, trace.workspaceId, trace.materialSelections);
+    if (sourcePaths.has(source.originalSnapshotPath) || sourcePaths.has(source.packagePath))
+      throw new Error('Worker Context Package duplicate source path.');
+    sourcePaths.add(source.originalSnapshotPath);
+    sourcePaths.add(source.packagePath);
+    const representationPath = source.projection.representationSnapshotPath;
+    if (representationPath) {
+      if (sourcePaths.has(representationPath))
+        throw new Error('Worker Context Package duplicate representation path.');
+      sourcePaths.add(representationPath);
+      const representation = trace.fileInventory.find((entry) => entry.path === representationPath);
+      if (
+        representation?.contentDigest !== source.projection.representationDigest ||
+        representation.byteLength !== source.projection.representationByteLength
+      )
+        throw new Error('Worker Context Package representation inventory mismatch.');
+    }
+    const original = trace.fileInventory.find(
+      (entry) => entry.path === source.originalSnapshotPath
+    );
+    const delivered = trace.fileInventory.find((entry) => entry.path === source.packagePath);
+    if (
+      original?.contentDigest !== source.originalDigest ||
+      original.byteLength !== source.byteLength ||
+      delivered?.contentDigest !== source.projection.deliveredDigest ||
+      delivered.byteLength !== source.projection.byteLength
+    )
+      throw new Error('Worker Context Package source inventory mismatch.');
+  }
   for (const entry of trace.fileInventory) {
     safeRelativePathSegments(entry.path);
+    if (
+      (entry.path.startsWith('originals/') ||
+        entry.path.startsWith('sources/') ||
+        entry.path.startsWith('representations/')) &&
+      !sourcePaths.has(entry.path)
+    )
+      throw new Error('Worker Context Package contains an unselected source file.');
   }
   assertStrictlySorted(
     trace.fileInventory,
@@ -1671,10 +2242,17 @@ function canonicalWorkspaceDirectory(
   return current;
 }
 
-/** Reads one package-relative UTF-8 file through canonical directory and no-link checks. */
-function readCanonicalPackageFile(packageRoot: string, relativePath: string): Buffer {
+/** Reads exact package bytes through canonical directory and no-link checks, with an independent metadata ceiling. */
+function readCanonicalPackageFile(
+  packageRoot: string,
+  relativePath: string,
+  maxByteLength?: number
+): Buffer {
   const segments = safeRelativePathSegments(relativePath);
-  return Buffer.from(readCanonicalTextFile(join(packageRoot, ...segments)), 'utf8');
+  const path = join(packageRoot, ...segments);
+  if (maxByteLength !== undefined && lstatSync(path).size > maxByteLength)
+    throw new Error('Worker Context Package metadata exceeds its byte bound.');
+  return readCanonicalFile(path);
 }
 
 /** Lists the exact regular-file inventory while rejecting links and unexpected directories. */
@@ -1708,6 +2286,218 @@ function listPackageFilePaths(packageRoot: string, expectedPaths: readonly strin
   };
   visit(packageRoot, '');
   return files.sort((left, right) => left.localeCompare(right));
+}
+
+/** Verifies exact binary bytes through one held no-follow regular descriptor in bounded memory. */
+function assertFileProof(
+  path: string,
+  expected: { byteLength: number; contentDigest: string }
+): void {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n)
+      throw new Error('Worker Context Package file is not a unique regular file.');
+    const proof = measureCanonicalFileDescriptor(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      after.nlink !== 1n ||
+      proof.byteLength !== expected.byteLength ||
+      proof.contentDigest !== expected.contentDigest
+    )
+      throw new Error('Worker Context Package file digest mismatch.');
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/** Checks independent text, range and identity bounds before delivery. */
+function assertProjection(value: WorkerContextPackageProjection, bytes?: Uint8Array): void {
+  const projection = WorkerContextPackageProjectionSchema.parse(value);
+  let previousEnd = 0;
+  let total = 0;
+  for (const range of projection.ranges) {
+    if (
+      range.start < previousEnd ||
+      range.end < range.start ||
+      range.end > projection.representationByteLength
+    )
+      throw new Error('Worker Context Package representation ranges are invalid.');
+    previousEnd = range.end;
+    total += range.end - range.start;
+  }
+  if (projection.originalSnapshotPath) safeRelativePathSegments(projection.originalSnapshotPath);
+  if (projection.representationSnapshotPath) {
+    safeRelativePathSegments(projection.representationSnapshotPath);
+    if (
+      !projection.representationSnapshotPath.startsWith('representations/') ||
+      projection.kind === 'descriptor' ||
+      projection.representationByteLength > PDF_TEXT_LAYER_LIMITS.maxOutputBytes
+    )
+      throw new Error('Worker Context Package representation snapshot path is invalid.');
+  }
+  if (projection.pdfTextLayer) {
+    const { processor, pages, coverage } = projection.pdfTextLayer;
+    if (
+      !projection.representationSnapshotPath ||
+      projection.kind === 'descriptor' ||
+      projection.representationId !==
+        `pdf-text-layer-v1:${sha256(Buffer.from(JSON.stringify(processor)))}` ||
+      coverage.processedPages !== pages.length ||
+      coverage.processedPages > coverage.totalPages ||
+      pages.length > processor.configuration.maxPages ||
+      projection.representationByteLength > processor.configuration.maxOutputBytes ||
+      coverage.complete !==
+        (pages.length === coverage.totalPages && pages.every((page) => page.hasText)) ||
+      !isDeepStrictEqual(
+        coverage.pagesWithoutText,
+        pages.filter((page) => !page.hasText).map((page) => page.page)
+      ) ||
+      coverage.reason !==
+        (pages.length < coverage.totalPages
+          ? 'page-limit'
+          : coverage.pagesWithoutText.length
+            ? 'pages-without-text'
+            : 'all-text-layer-pages')
+    )
+      throw new Error('Worker Context Package PDF coverage or processor identity mismatch.');
+    let previousEnd = 0;
+    for (const [index, page] of pages.entries()) {
+      if (
+        page.page !== index + 1 ||
+        page.startByte < previousEnd ||
+        page.endByte < page.startByte ||
+        page.endByte > projection.representationByteLength
+      )
+        throw new Error('Worker Context Package PDF page locator mismatch.');
+      previousEnd = page.endByte;
+    }
+  }
+  if (projection.kind === 'descriptor') {
+    if (
+      projection.ranges.length ||
+      projection.availability !== 'unavailable' ||
+      !projection.truncated
+    )
+      throw new Error('Worker Context Package descriptor cannot claim body coverage.');
+  } else {
+    if (
+      total !== projection.byteLength ||
+      projection.truncated !== (total !== projection.representationByteLength) ||
+      projection.availability !==
+        (projection.truncated || projection.pdfTextLayer?.coverage.complete === false
+          ? 'incomplete'
+          : 'available')
+    )
+      throw new Error('Worker Context Package representation coverage mismatch.');
+    if (projection.kind === 'body' && projection.truncated)
+      throw new Error('Worker Context Package body cannot be truncated.');
+    if (!projection.truncated && projection.representationDigest !== projection.deliveredDigest)
+      throw new Error('Worker Context Package complete representation digest mismatch.');
+  }
+  if (bytes) {
+    if (bytes.byteLength !== projection.byteLength)
+      throw new Error('Worker Context Package delivered text exceeds its byte bound.');
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    const lines = text.length === 0 ? 0 : text.split('\n').length - Number(text.endsWith('\n'));
+    if (
+      bytes.byteLength !== projection.byteLength ||
+      sha256(bytes) !== projection.deliveredDigest ||
+      lines > 2000
+    )
+      throw new Error('Worker Context Package delivered text exceeds its bounds or digest.');
+  }
+}
+
+/** Returns exact admitted text; retained whole-body callers retain their original bytes. */
+function deliveredSelectionBytes(selection: {
+  content: string;
+  contentDigest: string;
+  deliveredContent?: string;
+  projection?: WorkerContextPackageProjection | undefined;
+}): Buffer {
+  const bytes = Buffer.from(selection.deliveredContent ?? selection.content, 'utf8');
+  if (bytes.byteLength > 51_200)
+    throw new Error('Worker Context Package delivery exceeds its byte or line bound.');
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  const lines = text.length === 0 ? 0 : text.split('\n').length - Number(text.endsWith('\n'));
+  if (bytes.byteLength > 51_200 || lines > 2000)
+    throw new Error('Worker Context Package delivery exceeds its byte or line bound.');
+  if (selection.projection) {
+    assertProjection(selection.projection, bytes);
+    if (selection.projection.representationId === 'original-utf8') {
+      const original = Buffer.from(selection.content, 'utf8');
+      if (
+        selection.projection.representationDigest !== selection.contentDigest ||
+        selection.projection.representationByteLength !== original.byteLength
+      )
+        throw new Error('Worker Context Package original representation mismatch.');
+      const pieces = selection.projection.ranges.map((range) =>
+        original.subarray(range.start, range.end)
+      );
+      if (selection.projection.kind !== 'descriptor' && !Buffer.concat(pieces).equals(bytes))
+        throw new Error('Worker Context Package excerpt does not match the exact original ranges.');
+    }
+  } else if (selection.deliveredContent !== undefined)
+    throw new Error('Worker Context Package changed delivery lacks a projection proof.');
+  return bytes;
+}
+
+/** Validates qualified original ownership without a new source registry. */
+function assertSourceFile(
+  entry: WorkerContextPackageSourceFile,
+  workspaceId: string,
+  selections: readonly WorkerContextPackageMaterialSelection[]
+): void {
+  SourceFileSchema.parse(entry);
+  const scope = parseReferenceScope(entry.source.reference.scopeId);
+  if (!scope || !('workspaceId' in scope) || scope.workspaceId !== workspaceId)
+    throw new Error('Worker Context Package source belongs to another Workspace.');
+  safeRelativePathSegments(entry.originalSnapshotPath);
+  safeRelativePathSegments(entry.packagePath);
+  const selected = selections.find(
+    (selection) =>
+      entry.source.kind === 'material' &&
+      selection.materialId === entry.source.reference.objectId &&
+      selection.revisionId === entry.source.revisionId
+  );
+  const sharedMaterial = selected !== undefined && entry.packagePath === selected.packagePath;
+  if (
+    sharedMaterial &&
+    (!selected.projection ||
+      entry.originalDigest !== selected.contentDigest ||
+      entry.mediaType !== selected.mediaType ||
+      !isDeepStrictEqual(
+        WorkerContextPackageProjectionSchema.parse(selected.projection),
+        entry.projection
+      ))
+  )
+    throw new Error('Worker Context Package shared Material metadata mismatch.');
+  if (
+    !entry.originalSnapshotPath.startsWith('originals/') ||
+    (!entry.packagePath.startsWith('sources/') && !sharedMaterial) ||
+    entry.projection.originalSnapshotPath !== entry.originalSnapshotPath
+  )
+    throw new Error('Worker Context Package source snapshot path is invalid.');
+  const revision =
+    entry.source.kind === 'artifact'
+      ? String(entry.source.artifactVersion)
+      : entry.source.kind === 'material'
+        ? entry.source.revisionId
+        : entry.source.reference.objectId;
+  if (revision !== entry.projection.sourceRevision)
+    throw new Error('Worker Context Package source revision mismatch.');
+  if (
+    entry.projection.pdfTextLayer &&
+    (entry.source.kind !== 'artifact' || entry.mediaType !== 'application/pdf')
+  )
+    throw new Error('Worker Context Package PDF source identity mismatch.');
+  assertProjection(entry.projection);
 }
 
 /** Writes one immutable file or accepts an exact identical replay. */

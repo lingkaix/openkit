@@ -59,6 +59,7 @@ import { createSchedulerAdmissionOperationImplementations } from './runtime/sche
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
+import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createWorkspaceTransferOperationImplementations } from './storage/workspace-transfer-operations.js';
@@ -75,6 +76,8 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
+  /** App-owned capacity admission, shared by Artifact, ZIP and Workspace file transfers. */
+  readonly fileAdmission?: FileStorageAdmission;
   /** Bounded Knowledge Manager role supplied by application assembly. */
   readonly knowledgeAgent?:
     | {
@@ -163,8 +166,6 @@ export interface OperationInvocationDependencies {
     Partial<OpenKitNanoHostConfig>;
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
-  /** Shared canonical capacity owner used by disposable ZIP extraction. */
-  readonly fileAdmission?: import('./storage/artifacts/file-admission.js').FileStorageAdmission;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
 }
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
