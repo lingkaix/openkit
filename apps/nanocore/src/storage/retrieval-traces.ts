@@ -1,14 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type ConversationRetrievalTrace,
   type KnowledgeRetrievalTrace,
@@ -23,7 +14,12 @@ import {
   RetrievalTraceReferenceSchema,
 } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
-import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
+import {
+  assertCanonicalDirectory,
+  ensureCanonicalDirectory,
+  readCanonicalTextFile,
+  writeFileAtomic,
+} from './workspace-file-records.js';
 
 /** Resolves a validated query-owned trace reference within its Workspace only. */
 export function retrievalTraceRelativePath(reference: RetrievalTraceReference): string {
@@ -55,7 +51,7 @@ export function assertRetrievalTraceIdentity(
     throw new Error('Knowledge retrieval trace lineage is contradictory.');
 }
 
-/** Publishes one immutable query-owned file; this is the sole live trace writer. */
+/** Durably publishes one immutable query-owned file; this is the sole live trace writer. */
 export function publishRetrievalTrace(
   workspaceRoot: string,
   reference: RetrievalTraceReference,
@@ -69,8 +65,7 @@ export function publishRetrievalTrace(
   assertCanonicalDirectory(parent);
   for (const segment of relative.split('/').slice(0, -1)) {
     parent = join(parent, segment);
-    if (!existsSync(parent)) mkdirSync(parent);
-    assertCanonicalDirectory(parent);
+    ensureCanonicalDirectory(parent);
   }
   const path = join(workspaceRoot, relative);
   if (lstatSync(path, { throwIfNoEntry: false }))
@@ -79,14 +74,8 @@ export function publishRetrievalTrace(
       'Knowledge retrieval trace already exists.',
       409
     );
-  const temporary = join(dirname(path), `.${reference.objectId}.${randomUUID()}.tmp`);
-  try {
-    writeFileSync(temporary, JSON.stringify(trace), { flag: 'wx', mode: 0o600 });
-    // The publisher is one synchronous writer. No await separates its existence check and rename.
-    renameSync(temporary, path);
-  } finally {
-    if (existsSync(temporary)) unlinkSync(temporary);
-  }
+  // The publisher is one synchronous writer. No await separates its existence check and rename.
+  writeFileAtomic(path, JSON.stringify(trace));
 }
 
 /** Allocates through the existing retrieval-trace identifier owner. */
