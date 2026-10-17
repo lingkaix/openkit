@@ -6,6 +6,19 @@ import type { Canvas } from '@napi-rs/canvas';
 import type { VisionCrop, VisionViewLimits } from './vision-view.js';
 
 type Dimensions = { width: number; height: number };
+/** Fixed page-render options are also reported by the parent as output-changing processor configuration. */
+export const VISION_PDF_OPTIONS = Object.freeze({
+  verbosity: 0,
+  isEvalSupported: false,
+  disableFontFace: true,
+  useSystemFonts: false,
+  useWorkerFetch: false,
+  useWasm: false,
+  enableXfa: false,
+  stopAtErrors: true,
+  isOffscreenCanvasSupported: false,
+  isImageDecoderSupported: false,
+} as const);
 /** Status only; no parser text or source-selected data is written to the result channel on failure. */
 class ViewFailure extends Error {
   readonly code: 2 | 3 | 4 | 5;
@@ -173,8 +186,7 @@ async function render(): Promise<void> {
     try { pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs'); } catch { throw new ViewFailure(5); }
     const packageRoot = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
     const loading = pdfjs.getDocument({
-      data: new Uint8Array(bytes), verbosity: 0, isEvalSupported: false, disableFontFace: true,
-      useSystemFonts: false, useWorkerFetch: false, useWasm: false, enableXfa: false, stopAtErrors: true,
+      data: new Uint8Array(bytes), ...VISION_PDF_OPTIONS,
       maxImageSize: Math.min(limits.maxPixels, Math.floor(limits.maxDecodedBytes / 4)),
       canvasMaxAreaInBytes: limits.maxDecodedBytes,
       CanvasFactory: BoundedCanvasFactory,

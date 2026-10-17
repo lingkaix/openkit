@@ -10,6 +10,7 @@ import {
   validMediaSource,
   withStagedMediaSource,
 } from './media-process.js';
+import { VISION_PDF_OPTIONS } from './vision-view-child.js';
 
 /** Integer coordinates in original image pixels or the selected page's rotated 72-dpi raster. */
 export interface VisionCrop { left: number; top: number; width: number; height: number }
@@ -61,7 +62,7 @@ export type VisionViewResult = VisionViewFailure | {
     canvasVersion: string;
     pdfjsVersion: string;
     resourceProfileDigest: string;
-    configuration: VisionViewLimits & { quality: 80; background: 'white'; upscale: false; heapScope: 'v8-old-generation' };
+    configuration: VisionViewLimits & { quality: 80; background: 'white'; upscale: false; heapScope: 'v8-old-generation'; pdfOptions: typeof VISION_PDF_OPTIONS };
   };
   delivered: { digest: string; byteLength: number; mediaType: 'image/jpeg'; width: number; height: number };
   bytes: Buffer;
@@ -108,7 +109,7 @@ export async function processVisionView(input: ProcessVisionViewInput): Promise<
     const pdfjsVersion: unknown = require('pdfjs-dist/package.json').version;
     if (typeof canvasVersion !== 'string' || typeof pdfjsVersion !== 'string') return fail('unavailable');
     const view = await withStagedMediaSource(input.source, input.temporaryRoot, input.reserveTemporaryBytes, signal, 'vision-view-', async (sourcePath): Promise<Extract<VisionViewResult, { status: 'available' }>> => {
-      const configuration = { ...limits, quality: 80 as const, background: 'white' as const, upscale: false as const, heapScope: 'v8-old-generation' as const };
+      const configuration = { ...limits, quality: 80 as const, background: 'white' as const, upscale: false as const, heapScope: 'v8-old-generation' as const, pdfOptions: VISION_PDF_OPTIONS };
       const processor = {
         id: 'node-canvas-vision-v1' as const,
         nodeVersion: process.versions.node,

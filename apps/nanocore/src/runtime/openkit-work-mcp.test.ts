@@ -917,7 +917,10 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   const revoke = vi.spyOn(visionProcessor, 'processVisionView').mockImplementation(async (input) => {
     const view = await processActual(input);
     expect(view.status).toBe('available');
-    disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
+    const revoked = f.coreDb.sqlite.transaction(() =>
+      disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+    )();
+    expect(revoked?.changed).toBe(true);
     return view;
   });
   onTestFinished(() => revoke.mockRestore());
