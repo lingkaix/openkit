@@ -10,6 +10,7 @@ import {
 } from 'react-aria-components';
 import { useCoreClient } from '../../app/core-client';
 import { Button, ErrorBanner, Select, Skeleton, StatusChip, TextField } from '../../primitives';
+import { ArtifactJudgements } from './ArtifactJudgements';
 import {
   type ArtifactVersionCommitInput,
   artifactVersionCommitErrorMessage,
@@ -49,6 +50,9 @@ export function ArtifactVersionHistory(props: {
   const metadata = history.isSuccess
     ? history.data.find((version) => version.artifactVersion === selectedVersion)
     : undefined;
+  const retainedMetadata = history.data?.find(
+    (version) => version.artifactVersion === selectedVersion
+  );
   const selected =
     selectedVersion === current.version ? current : exact.isSuccess ? exact.data.artifact : null;
   const content = metadata && selected?.contentDigest === metadata.contentDigest ? selected : null;
@@ -200,6 +204,17 @@ export function ArtifactVersionHistory(props: {
           )}
         </>
       )}
+      {retainedMetadata ? (
+        <ArtifactJudgements
+          key={`${current.workspaceId}:${current.id}:${selectedVersion}`}
+          workspaceId={current.workspaceId}
+          artifactId={current.id}
+          artifactVersion={selectedVersion}
+          contentDigest={retainedMetadata.contentDigest}
+          disabled={props.disabled || !readable}
+          unavailable={!readable}
+        />
+      ) : null}
       {createdVersion ? (
         <p className="text-sm text-fg" role="status">
           Version {createdVersion} saved. Select it to inspect the new version.

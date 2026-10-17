@@ -46,7 +46,10 @@ export function ArtifactCandidateSets(props: {
   } | null>(null);
   const selectedId = inspection?.workspaceId === workspaceId ? inspection.candidateSetId : null;
   const detail = useCandidateSet(workspaceId, selectedId);
-  const visibleSet = list.isSuccess && detail.isSuccess ? detail.data : undefined;
+  const visibleSet =
+    list.isSuccess && list.data.some((set) => set.candidateSetId === selectedId) && detail.isSuccess
+      ? detail.data
+      : undefined;
   const originals = useCandidateVersions(workspaceId, visibleSet);
   const threads = useThreads(workspaceId);
   const create = useCreateCandidateSet();
@@ -497,7 +500,11 @@ export function ArtifactCandidateSets(props: {
                   </p>
                 </>
               )
-            ) : null
+            ) : (
+              <p className="text-sm text-fg-muted" role="status">
+                This comparison is not in the current authorized list.
+              </p>
+            )
           ) : null}
         </>
       )}

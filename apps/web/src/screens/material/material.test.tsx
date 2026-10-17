@@ -1021,6 +1021,7 @@ function proposalFixture(
       baseContentDigest: REVISION_2.contentDigest,
     },
     candidateSelections: [],
+    judgements: [],
     rangeFeedback: null,
     decision: null,
     decisionActorId: null,
