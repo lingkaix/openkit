@@ -1380,7 +1380,8 @@ class DelayedTurnExecutor extends FakeTurnExecutor {
    * Waits until the delayed executor has accepted the turn.
    */
   public async waitForStart(): Promise<void> {
-    await vi.waitFor(() => expect(this.starts).toBe(1), { timeout: 1_000 });
+    // Allow durable admission and fixture I/O on the shared test worker before checking one start.
+    await vi.waitFor(() => expect(this.starts).toBe(1), { timeout: 10_000 });
   }
 
   /**
