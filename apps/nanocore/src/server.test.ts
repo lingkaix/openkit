@@ -8114,6 +8114,7 @@ describe('nanocore server', () => {
         }
       )
     );
+    const deletedRevision = fixtureNotebook(store).publishedRevision();
     const knowledgeDeleteSecond = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.delete',
@@ -8142,10 +8143,11 @@ describe('nanocore server', () => {
 
     expect(knowledgeDeleteFirst.status).toBe(200);
     expect(knowledgeDeleteSecond.status).toBe(200);
-    expect(knowledgeDeleteNewRequest.status).toBe(403);
-    await expect(knowledgeDeleteNewRequest.json()).resolves.toMatchObject({
-      code: 'workspace_access_denied',
-    });
+    expect(await knowledgeDeleteSecond.json()).toEqual(await knowledgeDeleteFirst.json());
+    expect(knowledgeDeleteNewRequest.status).toBe(409);
+    await expect(knowledgeDeleteNewRequest.json()).resolves.toMatchObject({ code: 'conflict' });
+    expect(fixtureNotebook(store).publishedRevision()).toBe(deletedRevision);
+    expect(fixtureKnowledgeBytes(store, knowledge.id)).toBeUndefined();
 
     const threadBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000505',
@@ -10452,7 +10454,7 @@ describe('nanocore server', () => {
       );
       expect(changedDecision.status, await changedDecision.clone().text()).toBe(200);
       const changedReview = (await changedDecision.json()) as { review: { reviewId: string } };
-      const changedBytes = `${changed.canonicalPageBytes}Intervening edit.\n`;
+      const changedBytes = `${changed.canonicalPageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
       const editResponse = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.notebook.update',
@@ -10469,8 +10471,7 @@ describe('nanocore server', () => {
       );
       expect(editResponse.status, await editResponse.clone().text()).toBe(200);
       const publishedChangedBytes = fixtureKnowledgeBytes(store, changed.knowledgePageId);
-      expect(publishedChangedBytes).toContain('Intervening edit.');
-      expect(publishedChangedBytes).not.toBe(changed.canonicalPageBytes);
+      expect(publishedChangedBytes).toBe(changedBytes);
       const changedReversal = await submitKnowledgeProposalReversal(app, changed.proposalId, {
         requestId: knowledgeProposalRequestId('reversal-changed'),
         reviewId: changedReview.review.reviewId,
