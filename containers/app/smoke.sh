@@ -40,7 +40,7 @@ mkdirSync(sources);
 const binary = '/usr/local/bin/retrieval-kernel';
 assert.equal(readFileSync(binary).readUInt16LE(18), process.arch === 'arm64' ? 183 : 62);
 function run(args, frames = []) {
-  const result = spawnSync(binary, args, { cwd: sources, input: frames.map(frame => JSON.stringify(frame)).join('\n') + '\n', encoding: 'utf8', timeout: 60000, maxBuffer: 8 * 1024 * 1024 });
+  const result = spawnSync(binary, args, { cwd: sources, input: frames.length > 0 ? frames.map(frame => JSON.stringify(frame)).join('\n') + '\n' : undefined, encoding: 'utf8', timeout: 60000, maxBuffer: 8 * 1024 * 1024 });
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim().split('\n').map(line => JSON.parse(line));
