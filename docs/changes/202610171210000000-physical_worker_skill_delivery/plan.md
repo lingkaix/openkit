@@ -19,3 +19,7 @@ Core command to HTTP to Rust to fixed helper carries closed file/directory kind;
 ## Verification and landing
 
 Start with the lowest sufficient missing-directory/executable and changed-installed-tree regressions. Use existing bounded FileStage and shared tree codec, then run complete affected modules and a local native Worker probe whose output depends on supplied supporting content and executable behavior. Preserve current permission checks before effects and prove corrupt selected supply causes no eviction/image/Sandbox/import effect. Run focused checks through run-slot, independent Sol review, exact local gate and express landing after main health permits. Record exact evidence in the lane checkpoint. No a1/a2, service, security-profile, release or credential action.
+
+## Source-backed scope correction
+
+Early admission previews already verify complete selected Skills through the existing retained snapshot reader and full-set catalog recheck. Their Context declaration is a placeholder because Context bytes are prepared after admission. The initial plan wording requiring complete Context before early retirement exceeded the approved Skill delivery scope. The corrected owner preserves that existing staged lifecycle: complete Skill verification before retirement, then complete captured AEP/Skill/prepared Context imports before materialization effects, followed by a final Skill eligibility check. No admission redesign or early Context authority is introduced.
