@@ -1,5 +1,6 @@
 ---
-status: In Progress
+type: change-plan
+status: in-progress
 ---
 # Private Memory Search
 
