@@ -6,6 +6,7 @@ import {
   type OperationInput,
 } from '@openkit/app-api-schemas';
 import { z } from 'zod';
+import { authorizeWorkspace } from './auth/operation-authorizer.js';
 import { applyMemoryForget, prepareMemoryForgetCommand } from './knowledge/memory-forget.js';
 import {
   diffMemoryHistory,
@@ -196,6 +197,13 @@ export function createMemoryOperationImplementations(
     self(context, async (writer) => {
       if (!dependencies.repositoryWorkspaceDb)
         throw new OperationError('recovery_required', 'Confirmation storage is unavailable.', 503);
+      if (
+        !authorizeWorkspace(writer.coreDb, writer.actor!, workspaceId, {
+          policyOperation: 'workspace.write',
+          mutating: true,
+        })
+      )
+        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
       const workspaceDb = dependencies.repositoryWorkspaceDb(workspaceId);
       try {
         return await run({ ...writer, workspaceDb });

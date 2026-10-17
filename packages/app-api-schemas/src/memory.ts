@@ -156,6 +156,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
   },
   'memory.forget.prepare': {
     ...self,
+    mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
     description:
       'Request exact human confirmation of Memory removal, suppression and retained evidence.',
     inputSchema: PrepareMemoryForgetRequestSchema,
@@ -174,6 +175,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
   },
   'memory.forget': {
     ...self,
+    mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
     description:
       'Consume an exact human Memory forget grant and retain its original outcome on replay.',
     inputSchema: z
