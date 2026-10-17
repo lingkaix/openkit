@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -60,6 +60,7 @@ import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import type {
   LLMGatewayDispatchContext,
@@ -8394,21 +8395,51 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge');
-    const knowledge = fixture.store.createKnowledgeEntry(
-      'ws_00000000-0000-7000-8000-000000000001',
-      {
-        content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
-        kind: 'project-context',
-        title: 'Zygomorphic worker guidance',
-      }
+    const app = createApp({
+      coreDb: fixture.coreDb,
+      dataRoot: fixture.coreDb.dataRoot,
+      mode: 'local',
+      store: fixture.store,
+    });
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        fixture.coreDb.dataRoot,
+        'workspaces',
+        fixture.turn.workspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    /** Publishes the exact evidence through current native authority and its fixed-base command. */
+    async function createKnowledge(id: string, title: string, content: string) {
+      const response = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.create',
+          { workspaceId: fixture.turn.workspaceId },
+          {
+            body: JSON.stringify({
+              requestId: randomUUID(),
+              baseRevision: notebook.publishedRevision(),
+              knowledgePageId: id,
+              content,
+              kind: 'project-context',
+              title,
+            }),
+          }
+        )
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      return (await response.json()) as { id: string };
+    }
+    const knowledge = await createKnowledge(
+      'worker-guidance',
+      'Zygomorphic worker guidance',
+      'Zygomorphic worker guidance belongs in the existing Context Package.'
     );
-    const oversizedKnowledge = fixture.store.createKnowledgeEntry(
-      'ws_00000000-0000-7000-8000-000000000001',
-      {
-        content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(50_000)}`,
-        kind: 'project-context',
-        title: 'Oversized zygomorphic worker guidance',
-      }
+    const oversizedKnowledge = await createKnowledge(
+      'oversized-worker-guidance',
+      'Oversized zygomorphic worker guidance',
+      `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(50_000)}`
     );
     const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
     const retrievalTraceRef = {
@@ -8431,20 +8462,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       traceId: retrievalTraceId,
       workspaceId: fixture.turn.workspaceId,
     });
-    const knowledgePagesRoot = join(
-      fixture.coreDb.dataRoot,
-      'workspaces',
-      fixture.turn.workspaceId,
-      'knowledge',
-      'pages'
-    );
-    const knowledgePagePath = join(knowledgePagesRoot, `${knowledge.id}.md`);
-    const knowledgePageBytes = readFileSync(knowledgePagePath, 'utf8');
+    const publishedPages = notebook.readRevision(notebook.publishedRevision()).files;
+    const knowledgePageBytes = publishedPages[`${knowledge.id}.md`]!;
     const knowledgePageDigest = turnRuntimeSha256(Buffer.from(knowledgePageBytes, 'utf8'));
-    const oversizedKnowledgePageBytes = readFileSync(
-      join(knowledgePagesRoot, `${oversizedKnowledge.id}.md`),
-      'utf8'
-    );
+    const oversizedKnowledgePageBytes = publishedPages[`${oversizedKnowledge.id}.md`]!;
     const oversizedKnowledgePageDigest = turnRuntimeSha256(
       Buffer.from(oversizedKnowledgePageBytes, 'utf8')
     );
@@ -8589,10 +8610,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Direct Task lesson"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'schema_version: "openkit-scope-knowledge-schema-v4"',
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: fixture.turn.workspaceId })}`,
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'openkit_entry_id: "direct-task-lesson"',
         'openkit_entry_kind: "project-context"',
         `source_refs: ${JSON.stringify(sourceReferences)}`,
@@ -8605,9 +8627,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         'The retained direct Task supports this reusable lesson.',
         '',
       ].join('\n');
-      const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
       const draftRequest = {
         requestId: '00000000-0000-4000-8000-000000000639',
+        baseRevision: notebook.publishedRevision(),
         knowledgePageId: 'direct-task-lesson',
         canonicalPageBytes: candidatePageBytes,
         contentDigest: turnRuntimeSha256(Buffer.from(candidatePageBytes, 'utf8')),
@@ -8651,6 +8673,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000640',
+              baseRevision: draftRequest.baseRevision,
               knowledgePageId: 'direct-task-lesson',
               canonicalPageBytes: invalidCandidatePageBytes,
               contentDigest: turnRuntimeSha256(Buffer.from(invalidCandidatePageBytes, 'utf8')),
@@ -8668,6 +8691,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ).toHaveLength(1);
 
       const decisionRequestId = '00000000-0000-4000-8000-000000000641';
+      const decisionInput = {
+        requestId: decisionRequestId,
+        decision: 'accepted',
+        baseRevision: drafted.proposal.baseRevision,
+        candidateRevision: drafted.proposal.candidateRevision,
+        proposalDigest: turnRuntimeSha256(
+          readFileSync(
+            join(
+              fixture.coreDb.dataRoot,
+              'workspaces',
+              fixture.turn.workspaceId,
+              'knowledge',
+              'proposals',
+              `${drafted.proposal.id}.md`
+            )
+          )
+        ),
+      };
       const acceptedDecision = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.proposal.decide',
@@ -8678,7 +8719,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
+            body: JSON.stringify(decisionInput),
           }
         )
       );
@@ -8714,16 +8755,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
           sourceReferences,
         }),
       ]);
-      const pagePath = join(
-        fixture.coreDb.dataRoot,
-        'workspaces',
-        'ws_00000000-0000-7000-8000-000000000001',
-        'knowledge',
-        'pages',
-        'direct-task-lesson.md'
+      const changedPageBytes = `${candidatePageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
+      const editedResponse = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.notebook.update',
+          { workspaceId: fixture.turn.workspaceId },
+          {
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000642',
+              baseRevision: notebook.publishedRevision(),
+              changes: [{ path: 'direct-task-lesson.md', content: changedPageBytes }],
+              summary: 'Intervening human edit',
+            }),
+          }
+        )
       );
-      const changedPageBytes = `${candidatePageBytes}Intervening edit.\n`;
-      writeFileSync(pagePath, changedPageBytes, 'utf8');
+      expect(editedResponse.status, await editedResponse.clone().text()).toBe(200);
 
       const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
       workspaceDb.sqlite
@@ -8772,7 +8819,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
+            body: JSON.stringify(decisionInput),
           }
         )
       );
@@ -8780,7 +8827,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await expect(conflictingResume.json()).resolves.toMatchObject({
         code: 'recovery_required',
       });
-      expect(readFileSync(pagePath, 'utf8')).toBe(changedPageBytes);
+      expect(
+        notebook.readRevision(notebook.publishedRevision()).files['direct-task-lesson.md']
+      ).toBe(changedPageBytes);
     } finally {
       launchSpy.mockRestore();
       fixture.coreDb.sqlite.close();
