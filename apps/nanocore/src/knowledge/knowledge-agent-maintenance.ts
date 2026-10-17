@@ -591,7 +591,11 @@ export function prepareKnowledgeMaintenance(
         }
       },
     });
-    const nativeAuthority = { actorRef: input.actor, assertCurrent, requestActor: input.requestActor };
+    const nativeAuthority = {
+      actorRef: input.actor,
+      assertCurrent,
+      requestActor: input.requestActor,
+    };
     const history = createAssistantHistory({
       store,
       coreDb: dependencies.coreDb,

@@ -674,7 +674,9 @@ const NON_KNOWLEDGE_PROPOSAL_DECOY = {
 async function inspectKnowledgeProposal(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'Inspect changes' }));
   await user.click(await screen.findByRole('button', { name: 'Read writing/weekly-updates.md' }));
-  await user.click(await screen.findByRole('button', { name: 'Mark writing/weekly-updates.md inspected' }));
+  await user.click(
+    await screen.findByRole('button', { name: 'Mark writing/weekly-updates.md inspected' })
+  );
   await waitFor(() => expect(screen.getByRole('button', { name: 'Accept' })).toBeEnabled());
 }
 
@@ -767,13 +769,24 @@ function makeClient(
       'knowledge.list': vi
         .fn()
         .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [] }),
-      'knowledge.proposal.read': vi.fn().mockImplementation(async ({ proposalId, path }: { proposalId: string; path?: string }) => {
-        const source = proposalId === KNOWLEDGE_PROPOSAL_ROW_B.source.knowledgeProposalId
-          ? KNOWLEDGE_PROPOSAL_ROW_B.source : KNOWLEDGE_PROPOSAL_ROW.source;
-        return { proposalId, proposalDigest: source.proposalDigest, baseRevision: source.baseRevision,
-          candidateRevision: source.candidateRevision, paths: ['writing/weekly-updates.md'],
-          ...(path ? { path, before: 'Earlier note.', after: 'Reviewed note.', nextOffset: null } : {}) };
-      }),
+      'knowledge.proposal.read': vi
+        .fn()
+        .mockImplementation(async ({ proposalId, path }: { proposalId: string; path?: string }) => {
+          const source =
+            proposalId === KNOWLEDGE_PROPOSAL_ROW_B.source.knowledgeProposalId
+              ? KNOWLEDGE_PROPOSAL_ROW_B.source
+              : KNOWLEDGE_PROPOSAL_ROW.source;
+          return {
+            proposalId,
+            proposalDigest: source.proposalDigest,
+            baseRevision: source.baseRevision,
+            candidateRevision: source.candidateRevision,
+            paths: ['writing/weekly-updates.md'],
+            ...(path
+              ? { path, before: 'Earlier note.', after: 'Reviewed note.', nextOffset: null }
+              : {}),
+          };
+        }),
       'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
       'knowledge.update': vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
       'knowledge.delete': vi.fn().mockResolvedValue(undefined),

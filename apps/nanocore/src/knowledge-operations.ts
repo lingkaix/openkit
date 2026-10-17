@@ -722,7 +722,9 @@ export function createKnowledgeOperationImplementations(
               500
             );
           const id = citation.reference.slice(prefix.length, -(citation.revision.length + 1));
-          const page = (server ? readAuthorizedServerNotebookPages : readAuthorizedWorkspaceNotebookPages)({
+          const page = (
+            server ? readAuthorizedServerNotebookPages : readAuthorizedWorkspaceNotebookPages
+          )({
             dataRoot,
             workspaceId: input.workspaceId,
             access,

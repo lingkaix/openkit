@@ -44,10 +44,13 @@ export function readWorkspaceNotebookAdmission(
   input.currentAuthority?.();
   if (
     input.workspaceMutationAdmission.isClosed(workspaceId) ||
-    (input.requestActor ? input.actor.id !== input.requestActor.userId || !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
-      mutating: true,
-      policyOperation: 'knowledge.write',
-    }) : !input.currentAuthority)
+    (input.requestActor
+      ? input.actor.id !== input.requestActor.userId ||
+        !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
+          mutating: true,
+          policyOperation: 'knowledge.write',
+        })
+      : !input.currentAuthority)
   )
     throw new OperationError('workspace_access_denied', 'Notebook publication access denied.', 403);
   const workspace = input.store.getWorkspace(workspaceId);

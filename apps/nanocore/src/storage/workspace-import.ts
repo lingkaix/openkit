@@ -4045,8 +4045,10 @@ function readRetrievalTraceImportState(
       queryContext: {
         ...sourceTrace.queryContext,
         // User and Server selections keep their originating authority; import cannot turn them into local grants.
-        serverId: userSelection || sourceTrace.sourceScope === 'page/server'
-          ? sourceTrace.queryContext.serverId : context.targetServerId,
+        serverId:
+          userSelection || sourceTrace.sourceScope === 'page/server'
+            ? sourceTrace.queryContext.serverId
+            : context.targetServerId,
         workspaceId: context.targetWorkspaceId,
         threadId: targetThreadId,
         ...(targetTurnId ? { turnId: targetTurnId } : { turnId: undefined }),

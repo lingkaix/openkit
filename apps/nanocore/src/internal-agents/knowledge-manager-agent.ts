@@ -1,5 +1,9 @@
 import type { ActorRef, Item } from '@openkit/protocol';
-import { allocateEntityId, isSealedTurnTerminal, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  isSealedTurnTerminal,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
@@ -56,27 +60,48 @@ export function pinKnowledgeManagerExecution(
   const workspaceConfig = findWorkspaceConfig(snapshot, turn.workspaceId)?.config;
   const pinned = turn.internalExecution;
   const selection = resolveInternalRoleProfile({
-    roleId: 'knowledge-manager', workspaceId: turn.workspaceId,
-    gatewayConfig: snapshot.gatewayConfig, profilesConfig: snapshot.internalRoleProfiles,
+    roleId: 'knowledge-manager',
+    workspaceId: turn.workspaceId,
+    gatewayConfig: snapshot.gatewayConfig,
+    profilesConfig: snapshot.internalRoleProfiles,
     providerRegistry: snapshot.providerRegistry,
     providerSubscriptionAccountManager: dependencies.providerSubscriptionAccountManager,
     providerCredentialConfigured: dependencies.providerCredentialConfigured,
     ...(pinned ? { requestedLogicalModelId: pinned.logicalModelId } : {}),
-    ...(userConfig ? { userConfig } : {}), ...(workspaceConfig ? { workspaceConfig } : {}),
+    ...(userConfig ? { userConfig } : {}),
+    ...(workspaceConfig ? { workspaceConfig } : {}),
   });
-  if (!selection || !selection.logicalModel.capabilities.includes('responses') ||
-      !selection.logicalModel.capabilities.includes('tool-calling'))
+  if (
+    !selection ||
+    !selection.logicalModel.capabilities.includes('responses') ||
+    !selection.logicalModel.capabilities.includes('tool-calling')
+  )
     throw new Error('Knowledge Manager logical model is unavailable.');
   const threshold = pinned?.threshold ?? selection.logicalModel.contextManagement.compactThreshold;
-  if (pinned && (pinned.contextStrategy !== 'compaction' || JSON.stringify(pinned.knowledge) !== JSON.stringify(input.inputs)))
+  if (
+    pinned &&
+    (pinned.contextStrategy !== 'compaction' ||
+      JSON.stringify(pinned.knowledge) !== JSON.stringify(input.inputs))
+  )
     throw new Error('Knowledge Manager admitted inputs changed.');
-  dependencies.store.updateTurn(turn.id, { internalExecution: {
-    roleId: 'knowledge-manager', logicalModelId: selection.logicalModel.id,
-    contextStrategy: 'compaction', threshold, knowledge: input.inputs,
-  } });
-  return { selection, threshold, limits: selection.profile?.limits ?? {
-    maxModelTurns: 8, maxToolCalls: 24, deadlineMs: 120_000,
-  } };
+  dependencies.store.updateTurn(turn.id, {
+    internalExecution: {
+      roleId: 'knowledge-manager',
+      logicalModelId: selection.logicalModel.id,
+      contextStrategy: 'compaction',
+      threshold,
+      knowledge: input.inputs,
+    },
+  });
+  return {
+    selection,
+    threshold,
+    limits: selection.profile?.limits ?? {
+      maxModelTurns: 8,
+      maxToolCalls: 24,
+      deadlineMs: 120_000,
+    },
+  };
 }
 
 /**
@@ -99,60 +124,101 @@ export async function runKnowledgeManagerAgent(
     const logicalModel = selection.logicalModel;
     const systemPrompt = assembleBuiltInSystemPrompt('knowledge-manager');
     const commitMessages = createKnowledgeManagerTranscript(store, turn, turn.triggerActor);
-    const result = await withTurnModelCapture({
-      store, turn, workspaceDb: input.workspaceDb,
-      environment: { systemPrompt, tools: input.tools },
-    }, async (capture) => {
-      const ordinary = createInternalAgentGatewayProvider({
-        capture, logicalModel,
-        resolveLogicalModel: (id) => {
-          const current = dependencies.runtimeConfig();
-          return resolveLogicalModel(current.gatewayConfig, current.providerRegistry, id,
-            dependencies.providerSubscriptionAccountManager, dependencies.providerCredentialConfigured);
-        },
-        dispatcher: dependencies.dispatcher,
-        resolveGatewayProvider: dependencies.resolveGatewayProvider,
-        ...(dependencies.providerSubscriptionAccountManager
-          ? { providerSubscriptionAccountManager: dependencies.providerSubscriptionAccountManager } : {}),
-        promptCacheScope: { sessionId: turn.threadId, workspaceId: turn.workspaceId },
-        usageEndpoint: 'responses',
-        callContext: {
-          authorityActor: turn.triggerActor, agentId: 'knowledge-manager', workspaceId: turn.workspaceId,
-          family: 'llm', operation: 'knowledge.run', capabilityId: 'inference.local.knowledge-manager',
-          providerRef: null, requestId: null, serviceRef: 'llm-gateway',
-          redactionClass: 'metadata-only', summary: 'Knowledge Manager bounded Turn.',
-        },
-      });
-      const provider = createCompactingInternalAgentProvider({
-        store, turn, compactThreshold: threshold, limits,
-        assertCurrent: input.assertCurrent, readEvidence: input.readEvidence,
-        commitMessages, callProvider: ordinary,
-      });
-      const exit = await runInternalAgentLoop({
-        systemPrompt, messages: input.messages, tools: input.tools,
-        model: { logicalModelId: logicalModel.id, capabilities: logicalModel.capabilities,
-          modelFamilyId: logicalModel.modelFamilyId },
-        limits, signal: input.signal,
-      }, provider);
-      commitMessages(exit.messages);
-      input.assertCurrent();
-      if (exit.kind !== 'quiescent')
-        throw new Error(`Knowledge Manager run ended: ${exit.kind}${'code' in exit ? ` (${exit.code})` : ''}.`);
-      const last = exit.messages.at(-1);
-      const text = last?.role === 'assistant'
-        ? last.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('') : '';
-      if (!text.trim()) throw new Error('Knowledge Manager returned no answer.');
-      input.validateResult(text);
-      return text;
-    });
+    const result = await withTurnModelCapture(
+      {
+        store,
+        turn,
+        workspaceDb: input.workspaceDb,
+        environment: { systemPrompt, tools: input.tools },
+      },
+      async (capture) => {
+        const ordinary = createInternalAgentGatewayProvider({
+          capture,
+          logicalModel,
+          resolveLogicalModel: (id) => {
+            const current = dependencies.runtimeConfig();
+            return resolveLogicalModel(
+              current.gatewayConfig,
+              current.providerRegistry,
+              id,
+              dependencies.providerSubscriptionAccountManager,
+              dependencies.providerCredentialConfigured
+            );
+          },
+          dispatcher: dependencies.dispatcher,
+          resolveGatewayProvider: dependencies.resolveGatewayProvider,
+          ...(dependencies.providerSubscriptionAccountManager
+            ? {
+                providerSubscriptionAccountManager: dependencies.providerSubscriptionAccountManager,
+              }
+            : {}),
+          promptCacheScope: { sessionId: turn.threadId, workspaceId: turn.workspaceId },
+          usageEndpoint: 'responses',
+          callContext: {
+            authorityActor: turn.triggerActor,
+            agentId: 'knowledge-manager',
+            workspaceId: turn.workspaceId,
+            family: 'llm',
+            operation: 'knowledge.run',
+            capabilityId: 'inference.local.knowledge-manager',
+            providerRef: null,
+            requestId: null,
+            serviceRef: 'llm-gateway',
+            redactionClass: 'metadata-only',
+            summary: 'Knowledge Manager bounded Turn.',
+          },
+        });
+        const provider = createCompactingInternalAgentProvider({
+          store,
+          turn,
+          compactThreshold: threshold,
+          limits,
+          assertCurrent: input.assertCurrent,
+          readEvidence: input.readEvidence,
+          commitMessages,
+          callProvider: ordinary,
+        });
+        const exit = await runInternalAgentLoop(
+          {
+            systemPrompt,
+            messages: input.messages,
+            tools: input.tools,
+            model: {
+              logicalModelId: logicalModel.id,
+              capabilities: logicalModel.capabilities,
+              modelFamilyId: logicalModel.modelFamilyId,
+            },
+            limits,
+            signal: input.signal,
+          },
+          provider
+        );
+        commitMessages(exit.messages);
+        input.assertCurrent();
+        if (exit.kind !== 'quiescent')
+          throw new Error(
+            `Knowledge Manager run ended: ${exit.kind}${'code' in exit ? ` (${exit.code})` : ''}.`
+          );
+        const last = exit.messages.at(-1);
+        const text =
+          last?.role === 'assistant'
+            ? last.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
+            : '';
+        if (!text.trim()) throw new Error('Knowledge Manager returned no answer.');
+        input.validateResult(text);
+        return text;
+      }
+    );
     store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
     return { turnId: turn.id, text: result };
   } catch (error) {
     if (!isSealedTurnTerminal(store.getTurnById(turn.id).status))
       store.updateTurn(turn.id, {
-        status: input.signal.aborted ? 'cancelled' : 'failed', completedAt: new Date().toISOString(),
+        status: input.signal.aborted ? 'cancelled' : 'failed',
+        completedAt: new Date().toISOString(),
         error: internalContextFailure(error) ?? {
-          code: 'knowledge_manager_failed', message: 'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
+          code: 'knowledge_manager_failed',
+          message: 'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
         },
       });
     throw error;
@@ -165,52 +231,92 @@ export async function runKnowledgeManagerAgent(
  * Model call IDs correlate retained calls but select no effect. The full ordered source inventory is returned for compaction; summaries are never copied into that inventory.
  */
 export function createKnowledgeManagerTranscript(
-  store: FsStore, turn: Turn, actor: ActorRef
+  store: FsStore,
+  turn: Turn,
+  actor: ActorRef
 ): (messages: readonly AgentMessage[]) => readonly Item[] {
   const committed = new Map<string, Item>();
   return (messages) => {
     const items: Item[] = [];
     for (const [index, message] of messages.entries()) {
       if (message.role === 'tool') continue;
-      const text = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+      const text = message.content
+        .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        .join('');
       if (text) {
         const key = `message:${index}`;
         if (!committed.has(key)) {
           const timestamp = new Date().toISOString();
-          const base = { id: allocateEntityId('it'), workspaceId: turn.workspaceId,
-            threadId: turn.threadId, turnId: turn.id, status: 'completed' as const,
-            createdAt: timestamp, completedAt: timestamp, text };
-          committed.set(key, store.createItem(message.role === 'user'
-            ? { ...base, type: 'user-message', actor } : { ...base, type: 'assistant-message' }));
+          const base = {
+            id: allocateEntityId('it'),
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            status: 'completed' as const,
+            createdAt: timestamp,
+            completedAt: timestamp,
+            text,
+          };
+          committed.set(
+            key,
+            store.createItem(
+              message.role === 'user'
+                ? { ...base, type: 'user-message', actor }
+                : { ...base, type: 'assistant-message' }
+            )
+          );
         }
         items.push(committed.get(key)!);
       }
       if (message.role !== 'assistant') continue;
       for (const part of message.content) {
         if (part.type !== 'toolCall') continue;
-        const result = messages.find((candidate) => candidate.role === 'tool' && candidate.callId === part.callId);
+        const result = messages.find(
+          (candidate) => candidate.role === 'tool' && candidate.callId === part.callId
+        );
         // A cancelled run can end with an unsettled call. It has no accepted result to summarize.
         if (!result || result.role !== 'tool') continue;
         const key = `call:${part.callId}`;
         if (!committed.has(key)) {
           const timestamp = new Date().toISOString();
-          committed.set(key, store.createItem({
-            id: allocateEntityId('it'), workspaceId: turn.workspaceId, threadId: turn.threadId,
-            turnId: turn.id, type: 'tool-call', causationId: part.callId,
-            status: result.isError ? 'failed' : 'completed', tool: part.name, server: null,
-            arguments: typeof part.arguments === 'object' && part.arguments !== null && !Array.isArray(part.arguments)
-              ? part.arguments as Record<string, unknown> : null,
-            result: JSON.stringify(result.content), error: result.isError ? 'Tool failed.' : null,
-            durationMs: null, createdAt: timestamp, completedAt: timestamp,
-          }));
+          committed.set(
+            key,
+            store.createItem({
+              id: allocateEntityId('it'),
+              workspaceId: turn.workspaceId,
+              threadId: turn.threadId,
+              turnId: turn.id,
+              type: 'tool-call',
+              causationId: part.callId,
+              status: result.isError ? 'failed' : 'completed',
+              tool: part.name,
+              server: null,
+              arguments:
+                typeof part.arguments === 'object' &&
+                part.arguments !== null &&
+                !Array.isArray(part.arguments)
+                  ? (part.arguments as Record<string, unknown>)
+                  : null,
+              result: JSON.stringify(result.content),
+              error: result.isError ? 'Tool failed.' : null,
+              durationMs: null,
+              createdAt: timestamp,
+              completedAt: timestamp,
+            })
+          );
         }
         items.push(committed.get(key)!);
       }
     }
     // Native publication outcomes can be committed between a call and its loop result.
     // Include that accepted canonical prefix so exact history ranges and summary source counts agree.
-    return store.getTurnById(turn.id).items.filter((item) =>
-      item.type !== 'context-summary' && item.type !== 'reasoning' &&
-      ['completed', 'failed'].includes(item.status));
+    return store
+      .getTurnById(turn.id)
+      .items.filter(
+        (item) =>
+          item.type !== 'context-summary' &&
+          item.type !== 'reasoning' &&
+          ['completed', 'failed'].includes(item.status)
+      );
   };
 }

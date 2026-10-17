@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
-import { publishScopedNotebook } from './knowledge/scoped-notebook-publication.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
+import { publishScopedNotebook } from './knowledge/scoped-notebook-publication.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -28,9 +28,15 @@ it('projects an admitted Server citation through the existing answer operation w
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Shared Knowledge reader');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  initializeScopedNotebook({ coreDb, actor, target: { kind: 'server' },
-    initialization: { requestId: randomUUID(), instructionReference: 'Create shared Knowledge.' } });
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(dataRoot, 'server', 'knowledge', 'notebook.git') });
+  initializeScopedNotebook({
+    coreDb,
+    actor,
+    target: { kind: 'server' },
+    initialization: { requestId: randomUUID(), instructionReference: 'Create shared Knowledge.' },
+  });
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(dataRoot, 'server', 'knowledge', 'notebook.git'),
+  });
   const content = `---
 type: KnowledgePage
 title: Shared release rule
@@ -48,14 +54,40 @@ updated_at: "2026-10-17T00:00:00.000Z"
 ---
 Release after the shared gate passes.
 `;
-  const published = await publishScopedNotebook({ coreDb, actor, store, target: { kind: 'server' },
-    runtimeConfigManager: createRuntimeConfigManager({ dataRoot }), inflightCommands: new WeakMap(),
-  }, { requestId: randomUUID(), baseRevision: notebook.publishedRevision(),
-    summary: 'Save shared release rule', changes: [{ path: 'release-rule.md', content }] });
-  const thread = store.createThread(workspace.id, 'Knowledge answer', undefined, 'knowledge-manager');
-  const turn = store.createTurn(workspace.id, thread.id, 'Release rule', { kind: 'user', id: userId }, null,
-    { agentId: 'knowledge-manager', executorKind: 'assistant' });
-  const invoke = createOperationInvocation({ coreDb, store, inflightCommands: new WeakMap(),
+  const published = await publishScopedNotebook(
+    {
+      coreDb,
+      actor,
+      store,
+      target: { kind: 'server' },
+      runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
+      inflightCommands: new WeakMap(),
+    },
+    {
+      requestId: randomUUID(),
+      baseRevision: notebook.publishedRevision(),
+      summary: 'Save shared release rule',
+      changes: [{ path: 'release-rule.md', content }],
+    }
+  );
+  const thread = store.createThread(
+    workspace.id,
+    'Knowledge answer',
+    undefined,
+    'knowledge-manager'
+  );
+  const turn = store.createTurn(
+    workspace.id,
+    thread.id,
+    'Release rule',
+    { kind: 'user', id: userId },
+    null,
+    { agentId: 'knowledge-manager', executorKind: 'assistant' }
+  );
+  const invoke = createOperationInvocation({
+    coreDb,
+    store,
+    inflightCommands: new WeakMap(),
     workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     repositoryWorkspaceDb: (workspaceId) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
@@ -63,14 +95,39 @@ Release after the shared gate passes.
       return db;
     },
     knowledgeAgent: {
-      ask: async () => ({ threadId: thread.id, turnId: turn.id, answer: 'Wait for the shared gate.', uncertainty: null,
-        citations: [{ reference: `page/server/release-rule@${published.notebookRevision}`, revision: published.notebookRevision,
-          contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`, sourceReferences: [] }] }),
-      maintain: async () => { throw new Error('This read has no maintenance effect.'); },
+      ask: async () => ({
+        threadId: thread.id,
+        turnId: turn.id,
+        answer: 'Wait for the shared gate.',
+        uncertainty: null,
+        citations: [
+          {
+            reference: `page/server/release-rule@${published.notebookRevision}`,
+            revision: published.notebookRevision,
+            contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+            sourceReferences: [],
+          },
+        ],
+      }),
+      maintain: async () => {
+        throw new Error('This read has no maintenance effect.');
+      },
     },
   });
-  const result = await invoke('knowledge.answer', { workspaceId: workspace.id, query: 'When can we release?' }, { kind: 'public', actor });
-  expect(result).toMatchObject({ outcome: 'answered', answer: 'Wait for the shared gate.',
-    citations: [{ reference: { scopeId: 'page/server', objectId: 'release-rule' }, title: 'Shared release rule',
-      excerpt: 'Release after the shared gate passes.' }] });
+  const result = await invoke(
+    'knowledge.answer',
+    { workspaceId: workspace.id, query: 'When can we release?' },
+    { kind: 'public', actor }
+  );
+  expect(result).toMatchObject({
+    outcome: 'answered',
+    answer: 'Wait for the shared gate.',
+    citations: [
+      {
+        reference: { scopeId: 'page/server', objectId: 'release-rule' },
+        title: 'Shared release rule',
+        excerpt: 'Release after the shared gate passes.',
+      },
+    ],
+  });
 });

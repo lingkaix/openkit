@@ -67,7 +67,14 @@ function requireAudience(input: AssistantHistoryContext): void {
   const userId = responsibleUserIdForActor(actorRef);
   if (!userId) throw unavailable();
   if (
-    !currentWorkspaceAuthority(coreDb, workspaceId, actorRef, 'thread.read', true, actor ?? input.nativeAuthority?.requestActor) ||
+    !currentWorkspaceAuthority(
+      coreDb,
+      workspaceId,
+      actorRef,
+      'thread.read',
+      true,
+      actor ?? input.nativeAuthority?.requestActor
+    ) ||
     (actor &&
       !isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
         mutating: false,

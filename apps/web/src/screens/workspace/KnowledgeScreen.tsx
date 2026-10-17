@@ -22,7 +22,6 @@ import {
 } from '../../primitives';
 import {
   type AnswerKnowledgeManagerCommand,
-  type AttentionRow,
   type CheckKnowledgeHealthCommand,
   type CreateKnowledgeCommand,
   type DeleteKnowledgeCommand,
@@ -65,8 +64,8 @@ import {
   useUpdateKnowledge,
   workspaceKeys,
 } from './data';
-import { NotebookHistoryPanel } from './NotebookHistoryPanel';
 import { KnowledgeProposalRow } from './KnowledgeProposalRow';
+import { NotebookHistoryPanel } from './NotebookHistoryPanel';
 
 const KIND_LABEL: Record<KnowledgeItem['kind'], string> = {
   preference: 'Preferences',
@@ -788,7 +787,11 @@ export function KnowledgeScreen() {
               <fieldset disabled={proposalWriteBlocked} className="contents">
                 <ErrorBanner
                   message="Couldn't submit that proposal decision."
-                  onRetry={failedProposalDecision.decision === 'accepted' ? undefined : () => submitProposalDecision(failedProposalDecision)}
+                  onRetry={
+                    failedProposalDecision.decision === 'accepted'
+                      ? undefined
+                      : () => submitProposalDecision(failedProposalDecision)
+                  }
                 />
               </fieldset>
             ) : null}
