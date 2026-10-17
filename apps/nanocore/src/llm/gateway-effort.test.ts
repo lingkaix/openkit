@@ -644,9 +644,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['chat/completions', undefined, undefined, undefined],
   ] as const)('uses native %s effort before recorded Turn, then default: turn=%s request=%s effective=%s', async (endpoint, turnEffort, requested, expected) => {
     const f = fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
-    const before = structuredClone(
-      f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)
-    );
+    const before = structuredClone(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id));
     const response = await f.post(endpoint, requested, false, true);
     expect(response.status, await response.text()).toBe(200);
     expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
