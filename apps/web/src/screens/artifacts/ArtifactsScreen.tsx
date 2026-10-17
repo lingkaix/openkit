@@ -1,13 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  Link as AriaLink,
-  TextField as AriaTextField,
-  FileTrigger,
-  Label,
-  TextArea,
-} from 'react-aria-components';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { TextField as AriaTextField, FileTrigger, Label, TextArea } from 'react-aria-components';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { useConnection, useCoreClient } from '../../app/core-client';
+import { useConnection } from '../../app/core-client';
 import {
   ArtifactRow,
   Button,
@@ -23,6 +17,7 @@ import {
   TextField,
 } from '../../primitives';
 import { artifactInventoryPath } from '../operations/data';
+import { ArtifactVersionHistory } from './ArtifactVersionHistory';
 import {
   type ArtifactImportInput,
   type ArtifactIntroduceInput,
@@ -47,7 +42,6 @@ import {
   useThreads,
   useWorkspaces,
 } from './data';
-import { ZipFolderPanel } from './ZipFolderPanel';
 
 /** User-facing output kinds, independent of review lifecycle and content format. */
 const ARTIFACT_KIND_LABEL: Record<ArtifactListItem['kind'], string> = {
@@ -115,7 +109,6 @@ function ImportContentField(props: {
 
 /** Live selected-Workspace Artifact inventory, exact read, import, and introduction. */
 export function ArtifactsScreen() {
-  const client = useCoreClient();
   const workspaces = useWorkspaces();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -141,6 +134,20 @@ export function ArtifactsScreen() {
   const [content, setContent] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [threadId, setThreadId] = useState('');
+  const [inspectedVersion, setInspectedVersion] = useState<{
+    workspaceId: string;
+    artifactId: string;
+    version: number;
+    readable: boolean;
+  } | null>(null);
+  const onInspectedVersionChange = useCallback(
+    (version: number, readable: boolean) => {
+      if (workspaceId && requestedArtifactId) {
+        setInspectedVersion({ workspaceId, artifactId: requestedArtifactId, version, readable });
+      }
+    },
+    [workspaceId, requestedArtifactId]
+  );
   const [listDeniedUntilSettled, setListDeniedUntilSettled] = useState(false);
   const listDenied = isWorkspaceAccessDenied(artifacts.error);
   const hideCachedArtifacts = !artifacts.isSuccess && (listDenied || listDeniedUntilSettled);
@@ -353,16 +360,11 @@ export function ArtifactsScreen() {
 
   const items = artifacts.data;
   const listedItem = selectedId ? (items.find((item) => item.id === selectedId) ?? null) : null;
-  const previewBody =
-    listedItem && selected.data && selected.data.version === listedItem.version && !selected.isError
-      ? selected.data.content.format === 'file'
-        ? undefined
-        : selected.data.content.body
-      : undefined;
   const importBound = importArtifact.variables?.workspaceId === workspaceId;
   const introduceBound =
     introduceArtifact.variables?.workspaceId === workspaceId &&
-    introduceArtifact.variables?.artifactId === selectedId;
+    introduceArtifact.variables?.artifactId === selectedId &&
+    introduceArtifact.variables?.expectedArtifactVersion === inspectedVersion?.version;
   const introduced =
     introduceBound &&
     introduceArtifact.isSuccess &&
@@ -384,8 +386,22 @@ export function ArtifactsScreen() {
     listedItem && !selected.isError && selected.data?.version === listedItem.version
       ? selected.data
       : null;
+  // Keep the inspection's local selection and pending draft mounted while head projections settle.
+  // Failed or mismatched current reads hide protected content through the unavailable state.
+  const historyArtifact =
+    selected.data?.id === selectedId && selected.data.workspaceId === workspaceId
+      ? selected.data
+      : null;
+  const historicalSelection =
+    inspectedVersion?.workspaceId === workspaceId &&
+    inspectedVersion.artifactId === selectedId &&
+    inspectedVersion.version !== listedItem?.version;
   const canIntroduce = Boolean(
-    listedItem &&
+    !historicalSelection &&
+      inspectedVersion?.workspaceId === workspaceId &&
+      inspectedVersion.artifactId === selectedId &&
+      inspectedVersion.readable &&
+      listedItem &&
       threadId &&
       threads.isSuccess &&
       threads.data.length &&
@@ -542,46 +558,21 @@ export function ArtifactsScreen() {
             />
           ) : listedItem && selected.isLoading && selected.data === undefined ? (
             <Skeleton lines={4} />
-          ) : previewBody ? (
-            <pre className="whitespace-pre-wrap text-sm text-fg">{previewBody}</pre>
           ) : null}
-          {detail?.content.format === 'file' ? (
-            <dl className="text-sm text-fg-muted">
-              <dt>Media type</dt>
-              <dd>{detail.content.mediaType}</dd>
-              <dt>Size</dt>
-              <dd>{detail.content.byteLength.toLocaleString()} bytes</dd>
-              <dt>SHA-256</dt>
-              <dd className="break-all">{detail.contentDigest}</dd>
-              <dt>Source</dt>
-              <dd>{detail.origin.kind === 'imported' ? 'Imported file' : 'Worker output'}</dd>
-            </dl>
-          ) : null}
-          {detail?.content.format === 'file' &&
-          (detail.content.mediaType === 'application/zip' ||
-            detail.title.toLowerCase().endsWith('.zip')) ? (
-            <ZipFolderPanel
-              key={`${detail.workspaceId}:${detail.id}:${detail.version}:${detail.contentDigest}`}
-              source={{
-                workspaceId: detail.workspaceId,
-                artifactId: detail.id,
-                artifactVersion: detail.version,
-                originalDigest: detail.contentDigest,
-              }}
+          {historyArtifact ? (
+            <ArtifactVersionHistory
+              key={`${workspaceId}:${selectedId}`}
+              currentArtifact={historyArtifact}
               disabled={writeBlocked}
+              unavailable={!detail || selected.isFetching}
+              onVersionChange={onInspectedVersionChange}
             />
           ) : null}
-          {detail ? (
-            <AriaLink
-              className="text-accent underline"
-              href={client.artifactFiles.browserDownloadUrl({
-                workspaceId: detail.workspaceId,
-                artifactId: detail.id,
-                artifactVersion: detail.version,
-              })}
-            >
-              Download original
-            </AriaLink>
+          {historicalSelection ? (
+            <p className="text-sm text-fg-muted">
+              Historical versions are available for inspection and download. Select the current head
+              to add it to a conversation.
+            </p>
           ) : null}
           {detail ? (
             <p className="text-sm text-fg-muted">

@@ -1,10 +1,10 @@
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
 import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useThreads, useWorkspaces } from '../chat/data';
-import { useArtifact } from '../goal/data';
+import { goalKeys, useArtifact } from '../goal/data';
 import { sha256ArtifactFile } from './file-digest';
 
 /** Product-safe Artifact list fields; list payloads never carry preview bytes. */
@@ -43,9 +43,130 @@ export interface ArtifactIntroduceSettlement {
   input: ArtifactIntroduceInput;
 }
 
+/** Frozen user command retained across an unknown version publication result. */
+export type ArtifactVersionCommitInput =
+  | { kind: 'inline'; input: Parameters<CoreClient['operations']['artifact.version-commit']>[0] }
+  | {
+      kind: 'file';
+      input: Omit<
+        Parameters<CoreClient['artifactFiles']['commitVersion']>[0],
+        'byteLength' | 'contentDigest'
+      >;
+      file: Blob;
+    };
+
+/** Publishes one next version and refreshes only its owning Artifact projections. */
+export function useCommitArtifactVersion() {
+  const client = useCoreClient();
+  const cache = useQueryClient();
+  const preparations = useRef(new WeakMap<ArtifactVersionCommitInput, Promise<string>>());
+  return useMutation({
+    mutationFn: async (command: ArtifactVersionCommitInput) => {
+      const input = command.input;
+      let result: Awaited<ReturnType<CoreClient['operations']['artifact.version-commit']>>;
+      if (command.kind === 'inline') {
+        result = await client.operations['artifact.version-commit'](command.input);
+      } else {
+        if (command.file.size > MAX_ARTIFACT_FILE_BYTES) {
+          throw new ApiCallError(413, 'The file admission byte limit was exceeded.', {
+            code: 'file_too_large',
+          });
+        }
+        let preparation = preparations.current.get(command);
+        if (!preparation) {
+          preparation = sha256ArtifactFile(command.file);
+          preparations.current.set(command, preparation);
+        }
+        let contentDigest: string;
+        try {
+          contentDigest = await preparation;
+        } catch (error) {
+          preparations.current.delete(command);
+          throw error;
+        }
+        result = await client.artifactFiles.commitVersion(
+          { ...command.input, byteLength: command.file.size, contentDigest },
+          command.file
+        );
+      }
+      if (
+        result.artifact.workspaceId !== input.workspaceId ||
+        result.artifact.id !== input.artifactId ||
+        result.artifact.version !== input.expectedArtifactVersion + 1 ||
+        result.version.workspaceId !== input.workspaceId ||
+        result.version.artifactId !== input.artifactId ||
+        result.version.artifactVersion !== input.expectedArtifactVersion + 1 ||
+        result.version.parentVersion !== input.expectedArtifactVersion ||
+        result.version.requestId !== input.requestId ||
+        result.version.threadId !== input.threadId ||
+        result.version.contentDigest !== result.artifact.contentDigest
+      )
+        throw new ApiCallError(409, 'Artifact version publication settlement is contradictory.', {
+          code: 'recovery_required',
+        });
+      return result;
+    },
+    onSuccess: (_result, command) => {
+      const { workspaceId, artifactId } = command.input;
+      void cache.invalidateQueries({ queryKey: artifactKeys.list(workspaceId) });
+      void cache.invalidateQueries({ queryKey: artifactKeys.versions(workspaceId, artifactId) });
+      void cache.invalidateQueries({ queryKey: goalKeys.artifact(workspaceId, artifactId) });
+    },
+    retry: false,
+  });
+}
+
+/** Maps version publication failures to public outcomes without exposing private server text. */
+export function artifactVersionCommitErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiCallError))
+    return 'The result is unknown. Retry the same version request to check it.';
+  switch (error.code) {
+    case 'workspace_access_denied':
+      return 'Access denied. Refresh the current version before trying again.';
+    case 'stale':
+    case 'conflict':
+      return 'The artifact changed. Refresh and select its current version before saving again.';
+    case 'thread_busy':
+      return 'That conversation is busy. Retry the same version request when it is idle.';
+    case 'idempotency_key_conflict':
+      return 'Request conflict. Refresh the current version before making a new request.';
+    case 'recovery_required':
+      return 'Recovery required. Inspect the current version before trying again.';
+    case 'file_too_large':
+      return 'That file exceeds the upload limit.';
+    case 'invalid_request':
+    case 'source_digest_mismatch':
+      return 'The version was not saved. Check the draft and current version before trying again.';
+    default:
+      return 'The result is unknown. Retry the same version request to check it.';
+  }
+}
+
+/** Only unknown results and the no-effect busy refusal can replay a frozen version request. */
+export function isRetryableArtifactVersionCommit(error: unknown): boolean {
+  if (!(error instanceof ApiCallError)) return true;
+  switch (error.code) {
+    case 'workspace_access_denied':
+    case 'stale':
+    case 'conflict':
+    case 'idempotency_key_conflict':
+    case 'recovery_required':
+    case 'invalid_request':
+    case 'source_digest_mismatch':
+    case 'file_too_large':
+      return false;
+    default:
+      return true;
+  }
+}
+
 /** Stable TanStack Query keys for the selected-Workspace Artifact list. */
 export const artifactKeys = {
   list: (workspaceId: string) => ['artifacts', workspaceId] as const,
+  versions: (workspaceId: string, artifactId: string) =>
+    ['artifact-versions', workspaceId, artifactId] as const,
+  version: (workspaceId: string, artifactId: string, artifactVersion: number) =>
+    ['artifact-version', workspaceId, artifactId, artifactVersion] as const,
 };
 
 /** Re-export selected-Workspace discovery, Thread list, and the existing exact Artifact read. */
@@ -270,6 +391,68 @@ export function useArtifacts(workspaceId: string | null) {
       }));
     },
     enabled: Boolean(workspaceId),
+    retry: false,
+  });
+}
+
+/** Reads retained immutable lineage for one selected Artifact without fetching its bytes. */
+export function useArtifactVersions(
+  workspaceId: string,
+  artifactId: string,
+  currentVersion: number
+) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: [...artifactKeys.versions(workspaceId, artifactId), currentVersion],
+    queryFn: async () => {
+      const result = await client.operations['artifact.version-list']({ workspaceId, artifactId });
+      if (
+        result.items.some(
+          (version) => version.workspaceId !== workspaceId || version.artifactId !== artifactId
+        )
+      ) {
+        throw new ApiCallError(409, 'Artifact version lineage does not match its selected owner.', {
+          code: 'recovery_required',
+        });
+      }
+      return result.items;
+    },
+    retry: false,
+  });
+}
+
+/** Reads one exact retained version; a current-head or foreign response cannot replace it. */
+export function useArtifactVersion(
+  workspaceId: string,
+  artifactId: string,
+  artifactVersion: number,
+  enabled: boolean
+) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: artifactKeys.version(workspaceId, artifactId, artifactVersion),
+    queryFn: async () => {
+      const result = await client.operations['artifact.version-read']({
+        workspaceId,
+        artifactId,
+        artifactVersion,
+      });
+      if (
+        result.artifact.workspaceId !== workspaceId ||
+        result.artifact.id !== artifactId ||
+        result.artifact.version !== artifactVersion ||
+        result.version.workspaceId !== workspaceId ||
+        result.version.artifactId !== artifactId ||
+        result.version.artifactVersion !== artifactVersion ||
+        result.artifact.contentDigest !== result.version.contentDigest
+      ) {
+        throw new ApiCallError(409, 'Artifact version content does not match its selected owner.', {
+          code: 'recovery_required',
+        });
+      }
+      return result;
+    },
+    enabled,
     retry: false,
   });
 }
