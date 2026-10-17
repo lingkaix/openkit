@@ -1,7 +1,8 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-10-17"
 decider: Engineer
+superseded-by: docs/decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md
 ---
 # Knowledge Manager Agent And OpenKit Compaction
 
@@ -9,9 +10,9 @@ decider: Engineer
 
 The Knowledge Manager is an internal agent role. Working agents receive a bounded notebook overview and ask it for source-cited answers. It writes, integrates and organizes Memory and Knowledge through the existing notebook publisher. Users supply intent, information and approval; simple authorized direct edits remain available. Facts grant no authority.
 
-Each notebook scope has one nonresident maintenance Thread as its record and approval place, and one writer maintains the notebook. Daily scheduling or an explicit request starts a fresh bounded Turn. The 09:55Z ruling refines the earlier option B choice: the notebook and commit history provide cross-run memory, not a continuing model conversation. Users inspect and approve there. Queries run independently and in parallel under each asker's query context and audience. Thread, Turn, Item, capability call and notebook publication owners retain their existing authority; no new store, registry, scheduler, ledger or status family is admitted.
+Option B is selected: each notebook scope has one persistent maintenance Thread, requests arrive as Turns, and one writer maintains the notebook. Users inspect and approve there. Queries run independently and in parallel under each asker's query context and audience. Thread, Turn, Item, capability call and notebook publication owners retain their existing authority; no new store, registry, scheduler, ledger or status family is admitted.
 
-The Knowledge Manager uses OpenKit compaction only inside a bounded run near the selected logical model's threshold. Both compaction and rolling context retain the existing context-summary Item, with its covered Item range, strategy and producing model. Reconstruction uses the latest valid summary plus later Items. Each execution records its pinned strategy beside role, model and threshold; no per-call window record ships in v0.1.0. This is an exception to [Private Assistant Timeline And Durable Rolling Context](20261015-private_assistant_timeline_and_rolling_context.md), which selected rolling context for all internal roles. Assistant and Goal Coordinator retain rolling context. A future admitted Evaluator would use compaction. Restart reconstructs from current durable owners; it never replays the model run or Tool effects.
+The Knowledge Manager uses OpenKit compaction with a summary checkpoint near the selected logical model's threshold. This is an exception to [Private Assistant Timeline And Durable Rolling Context](20261015-private_assistant_timeline_and_rolling_context.md), which selected rolling context for all internal roles. Other internal roles retain rolling context. Restart reconstructs from current durable owners; it never replays the model run or Tool effects.
 
 Every internal role uses the existing configurable execution-profile resolver. The Knowledge Manager should use a knowledgeable model with low hallucination and a large context window. Grok 4.7 is the engineer's current deployment choice because only the xAI login is available; it is not a hard-coded model requirement.
 
@@ -21,7 +22,7 @@ OKF keeps a closed core and open front-matter extensions. No page-level origin o
 
 ## Reason
 
-The engineer wants agent-native retrieval and curation, not a deterministic retrieval coordinator with an agent label. A dedicated Knowledge Manager can search, read, combine evidence and explain uncertainty. The maintenance Thread preserves user-visible work and approval without a resident agent or context carried between runs. Independent query runs keep audiences isolated. The engineer chose traditional compaction for its long-context maintenance work rather than applying the Assistant's rolling-window choice to every role.
+The engineer wants agent-native retrieval and curation, not a deterministic retrieval coordinator with an agent label. A dedicated Knowledge Manager can search, read, combine evidence and explain uncertainty. A persistent maintenance conversation preserves user-visible intent and approval. Independent query runs keep audiences isolated. The engineer chose traditional compaction for its long-context maintenance work rather than applying the Assistant's rolling-window choice to every role.
 
 Source: coordinator's recorded engineer rulings of 2026-10-17, approximately 05:29Z and 05:38Z, and the accepted option B in the Knowledge and Memory rethink, Revision 2. The original wording follows verbatim at the engineer's request. The English translations preserve its meaning.
 
@@ -43,43 +44,11 @@ For Knowledge and Memory, your design and reasoning omit an essential part: a se
 
 First, use your recommended option B. Second, the model should be configurable in a configuration file. In fact, every internal role in every Workspace should be configurable. At present, because we have only one xAI login, use Grok 4.7 as our current model.
 
-### Bounded Maintenance And Shared Summary Storage
-
-The engineer's approximately 09:47Z, 09:55Z and 09:59Z inputs refine the earlier maintenance and storage choices. Scheduled consolidation and learning from recent authorized scope Threads ship in v0.1.0. Each Server, User and Workspace scope has one daily enablement setting, default off; it is enabled only for acceptance, testing and evaluation. Explicit requests remain available. The existing recurring-trigger owner admits the closed Knowledge Manager target through its existing scan; it adds no independent scheduler or record family.
-
-Each run retains its notebook base revision, processed source range since the prior run, trigger and instructions. It starts from the overview, run inputs and needed Thread records. Candidate commits use the fixed base; current maintenance delegation permits publication, otherwise the exact proposal needs approval. The diff is the review surface. Human edits are inputs and cannot be overwritten; source access and stale-base checks remain in force. Knowledge Manager's own run records never become later learning inputs. Failed and skipped scheduled runs have visible outcomes. AI assessment and usage aging remain deferred.
-
-The two context strategies serve different task boundaries without claiming either is universally better. Their shared Item representation preserves history and lets evaluation group executions by the pinned strategy. Compaction checkpoints are durable existing Items, not another store. No tool name changes in this refinement; the naming discussion is separate.
-
-### Approximately 09:47Z: Verbatim
-
-> 关于 Knowledge Manager 的设计，我大体上同意你的设计，不过我认为有几点需要注意和讨论。第一是接口的命名, 不论是我们通过 MCP Gateway 向 Worker 提供的接口名称，还是 NanoCore 内部的工具名称，还是我们通过 Server 的 MCP 向外部的 Agent 暴露的接口的名称都应该有一个统一的命名规则(从 first principle 出发，我认为这些之所以明明是统一的，是因为他们就是同一套我们系统提供的机制和工具)。我不清楚现行的状况如何，你可以派出一个 Grok worker 来盘点一下。不过，从 common sense 出发，我认为是否可以命名为 [namesoace(only onw word)]_(or ':'?)[action_name], 我们来讨论。 第二点是关于 context window 管理的问题。这里事实上我们相当于实现了两种 agent loop。第一种是 rolling context window，第二种是传统的上下文预算压缩, 之所以使用两种，也是之前我们的理念，我们并不假设一种方式就比另一种更好。这部分的理论和实践还在发展当中，我们都放到我们的系统里来进行评估。其次就是从 First principle出发，我认为像 assistant 这种不能区分单次对话边界的长期存在的 agent，包括 coordinator 也是一个半长期的，像这样的 agent，我认为 rolling context window。 会更加的自然，而像 Knowledge Manager，还有将来，比如说 Performance Evaluator，这样它的单次任务边界和 Task Model 当中的 Worker 类似，是有非常清晰的对话边界的，我认为用传统的上下文压缩的方式会更好。你认为呢？另外，这两种上下文压缩模式的工作信息存储格式(也就是我们的 thread turn items 模型)，我们是否能够统一起来呢？
-
-### English Translation
-
-I generally agree with the Knowledge Manager design, but two points need discussion. First, tools exposed through Worker MCP, NanoCore and Server MCP should have one naming rule, because they expose the same system mechanisms. Consider a single-word namespace and an action name; the naming choice remains separate. Second, rolling context and traditional budget compaction are two agent-loop strategies. We do not assume one is better and want to evaluate both. Rolling context seems natural for the long-lived Assistant and partly long-lived Coordinator. Traditional compaction seems better for bounded Knowledge Manager tasks and a future Evaluator. Can their Thread, Turn and Item storage format be unified?
-
-### Approximately 09:55Z: Verbatim
-
-> 我认为那个维护的 thread 不应该算作是常驻的，只是它会被我们的定时机制拉起来。你可以查一下 Claude Code 当中的 dreaming 机制。你可以让 Grok 去社区查询相关的讨论。 我希望两种管理上下文的方式的存储格式是统一的。不过，如果格式是统一的，我们在评估的时候又怎样区分他们在使用哪一种方式呢？
-
-### English Translation
-
-The maintenance Thread should not be considered resident; our scheduling mechanism starts it. Check Claude Code dreaming and community discussion. I want both context-management strategies to share a storage format. If the format is shared, how can evaluation distinguish which strategy each execution used?
-
-### Approximately 09:59Z: Verbatim
-
-> 定时触发放进0.1，就像你讲的，工作量不大，但是允许用户配置开启还是关闭(server、User和Workspace scope分别有各自的配置), 默认是关闭的，只有我们在验收, 测试与评估的时候，把它打开。
-
-### English Translation
-
-Put scheduled triggering in v0.1.0. Allow a separate on/off setting for Server, User and Workspace scopes. Default it to off and enable it only during acceptance, testing and evaluation.
-
 ## Rejected Alternatives
 
 - A deterministic-first retrieval coordinator omits the agent's search, synthesis and curation work that the engineer requires.
 - Rolling context for the Knowledge Manager conflicts with the engineer's chosen long-context compaction policy.
-- A resident maintenance conversation carries model context across unrelated runs. The later ruling selects fresh bounded runs while retaining one Thread for records and approval; it does not discard that review place as the earlier option A did.
+- Option A, per-request maintenance rebuilt only from the notebook and Git history, omits the persistent maintenance conversation selected for user inspection and approval.
 - A new Knowledge Manager runtime, store, scheduler or ledger duplicates owners that already hold conversation, evidence and publication.
 - A fixed provider or hard-coded model prevents the per-Workspace configuration that the engineer requires.
 - Charging queries to the caller hides the Knowledge Manager's own work and usage.
@@ -100,4 +69,3 @@ Revisit if the engineer changes maintenance continuity, query isolation or the K
 - [Worker MCP Tool Supply](../specs/20260704-worker_mcp_tool_supply.md)
 - [Personal Memory And Knowledge Learning](../specs/20260909-personal_memory_and_knowledge_learning.md)
 - [Knowledge Notebook Editing And Publication](../specs/20260909-knowledge_notebook_editing.md)
-- [Recurring Triggers](../specs/20260711-scheduler_recurring_event_triggers.md)

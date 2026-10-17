@@ -60,7 +60,7 @@ The Knowledge Store remains the durable content authority. The shared internal A
 
 ## Decision
 
-Knowledge Manager is the existing Internal Core Role listed in [Core Architecture](../core/architecture.md#internal-core-roles). It uses the shared internal Agent runtime for semantic retrieval, synthesis, integration and organization. Deterministic search, validation and publication remain Tools, not a replacement coordinator. The [Knowledge Manager agent decision](../decisions/20261017-knowledge_manager_agent_and_compaction.md) records the accepted role and context boundary.
+Knowledge Manager is the existing Internal Core Role listed in [Core Architecture](../core/architecture.md#internal-core-roles). It uses the shared internal Agent runtime for semantic retrieval, synthesis, integration and organization. Deterministic search, validation and publication remain Tools, not a replacement coordinator. The [Knowledge Manager agent decision](../decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md) records the accepted role and context boundary.
 
 - Knowledge Manager only queries and manages its admitted notebook scope. It has no network Tools, external effects or Tools for other work. Ordinary Provider transport remains with the shared runtime.
 - Queries are bounded per-request runs bound to the asker's trusted query context. They may run in parallel without sharing context across audiences.

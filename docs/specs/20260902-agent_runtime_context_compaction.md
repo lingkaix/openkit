@@ -13,7 +13,7 @@ This specification owns the Server-scoped active-context policy for logical mode
 
 ## Applicability
 
-Core Assistant and Goal/Workflow Coordinator default to [rolling context](#internal-durable-rolling-context). Knowledge Manager uses [bounded-run compaction](#knowledge-manager-compaction) under the [engineer's decision](../decisions/20261017-knowledge_manager_agent_and_compaction.md). A future Evaluator defaults to compaction only after its role is admitted. Both strategies use the existing [source-bound summary Item](#source-bound-summary-items). Worker-native compaction, physical model limits and Gateway routing retain their existing owners. The Responses control below is a Gateway wire contract. The existing context-summary Item owns canonical internal summaries; rolling context has no Gateway-compactor prerequisite.
+Core Assistant and Goal/Workflow Coordinator default to [rolling context](#internal-durable-rolling-context). Knowledge Manager uses [bounded-run compaction](#knowledge-manager-compaction) under the [engineer's decision](../decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md). A future Evaluator defaults to compaction only after its role is admitted. Both strategies use the existing [source-bound summary Item](#source-bound-summary-items). Worker-native compaction, physical model limits and Gateway routing retain their existing owners. The Responses control below is a Gateway wire contract. The existing context-summary Item owns canonical internal summaries; rolling context has no Gateway-compactor prerequisite.
 
 ## Does Not Own
 
@@ -245,7 +245,7 @@ Acceptance requires bounded fresh-context admission, compaction only inside a ru
 
 ## Internal Durable Rolling Context
 
-Core Assistant, including its bounded management entry, and Goal/Workflow Coordinator default to the shared durable rolling-context mechanism. A deterministic Workflow Coordinator performs no model call. Knowledge Manager uses bounded-run compaction above. Strategy changes context assembly, not the shared Internal Agent Loop or durable summary format. The [rolling-context decision](../decisions/20261015-private_assistant_timeline_and_rolling_context.md) and [Knowledge Manager decision](../decisions/20261017-knowledge_manager_agent_and_compaction.md) record these defaults.
+Core Assistant, including its bounded management entry, and Goal/Workflow Coordinator default to the shared durable rolling-context mechanism. A deterministic Workflow Coordinator performs no model call. Knowledge Manager uses bounded-run compaction above. Strategy changes context assembly, not the shared Internal Agent Loop or durable summary format. The [rolling-context decision](../decisions/20261015-private_assistant_timeline_and_rolling_context.md) and [Knowledge Manager decision](../decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md) record these defaults.
 
 The context belongs to its existing role/conversation owner. Its window continues across bounded runs and process restart. It is not a per-user process, a Worker AgentSession, reusable Memory, or a second canonical conversation log. Canonical Thread Items, accepted commands, source revisions, and effect records remain authoritative. The shared Internal Agent Loop receives the owner's admitted ordered messages and retains no independent durable truth.
 
