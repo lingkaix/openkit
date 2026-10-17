@@ -3,15 +3,16 @@ import { describe, it } from 'node:test';
 import {
   GOAL_OPERATION_DEFINITIONS,
   KERNEL_OPERATION_DEFINITIONS,
+  MEMORY_OPERATION_DEFINITIONS,
   SYNC_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 247;
+const EXPECTED_CATALOG_SIZE = 259;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 187;
+const EXPECTED_INCLUDED_SIZE = 199;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -22,6 +23,18 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.archive-import', 'R008'],
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
+  ['memory.source.register', 'R069'],
+  ['memory.source.list', 'R069'],
+  ['memory.source.read', 'R069'],
+  ['memory.list', 'R069'],
+  ['memory.read', 'R069'],
+  ['memory.create', 'R069'],
+  ['memory.update', 'R069'],
+  ['memory.notebook.history', 'R069'],
+  ['memory.notebook.diff', 'R069'],
+  ['memory.notebook.restore', 'R069'],
+  ['memory.forget.prepare', 'R069'],
+  ['memory.forget', 'R069'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -163,6 +176,12 @@ const WEB_OPERATION_GROUPS = {
     'knowledge.retrieval': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.repair.suggest': { disposition: 'live', surface: 'Knowledge' },
   },
+  Memory: Object.fromEntries(
+    Object.keys(MEMORY_OPERATION_DEFINITIONS).map((id) => [
+      id,
+      { disposition: 'roadmap', roadmap: 'R069' },
+    ])
+  ),
   Materials: {
     'material.bind': { disposition: 'live', surface: 'Material' },
     'material.create': { disposition: 'live', surface: 'Material' },
@@ -380,6 +399,11 @@ function flattenInventory(groups) {
 function assertDisposition(operationKey, disposition) {
   if (disposition.disposition === 'live' || disposition.disposition === 'workflow') {
     assert.equal(
+      NON_RELEASE_READY_ROADMAP.has(operationKey),
+      false,
+      `${operationKey} must remain unpublished under its Roadmap owner`
+    );
+    assert.equal(
       typeof disposition.surface,
       'string',
       `${operationKey} live/workflow disposition requires a Web surface`
@@ -418,6 +442,17 @@ function assertDisposition(operationKey, disposition) {
 }
 
 describe('Web user operation surface contract', () => {
+  it('rejects false live or workflow Chat claims for unpublished personal Memory operations', () => {
+    for (const operationKey of Object.keys(MEMORY_OPERATION_DEFINITIONS)) {
+      for (const disposition of ['live', 'workflow']) {
+        assert.throws(
+          () => assertDisposition(operationKey, { disposition, surface: 'Chat' }),
+          /must remain unpublished under its Roadmap owner/
+        );
+      }
+    }
+  });
+
   it('accounts for every included catalog operation and excludes server and Gateway-actor operations', () => {
     const catalog = partitionCatalog(PUBLIC_OPERATION_ACCESS);
     const inventory = flattenInventory(WEB_OPERATION_GROUPS);
