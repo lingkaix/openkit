@@ -433,7 +433,8 @@ impl Kernel {
                 Ok(())
             })();
             if let Err(e) = process {
-                if e.code == "conflict" {
+                // A failed derived write cannot be committed as incomplete per-document coverage.
+                if e.code == "conflict" || e.message == FILESYSTEM_GROWTH_REFUSED {
                     return Err(e);
                 }
                 record.status = match e.code.as_str() {
