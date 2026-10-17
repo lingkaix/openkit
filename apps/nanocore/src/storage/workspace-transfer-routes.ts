@@ -717,6 +717,8 @@ function importWorkspaceDatabaseRows({
           .values(
             snapshot.artifactReviews.map(({ materialProposal, ...review }) => ({
               ...review,
+              rangeFeedback: review.rangeFeedback ?? null,
+              candidateSelections: review.candidateSelections,
               proposalMaterialId: materialProposal?.materialId ?? null,
               proposalBaseRevisionId: materialProposal?.baseRevisionId ?? null,
               proposalBaseContentDigest: materialProposal?.baseContentDigest ?? null,

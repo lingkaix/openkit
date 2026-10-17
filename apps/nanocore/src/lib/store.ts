@@ -294,6 +294,7 @@ export type CommandRequestName =
   | 'artifact.introduce'
   | 'artifact.submit'
   | 'artifact.review.decide'
+  | 'artifact.review.select'
   | 'material.create'
   | 'material.save'
   | 'material.bind'
@@ -3676,6 +3677,14 @@ export class FsStore {
     return artifact;
   }
 
+  /** Resolves this Workspace's existing single Git content owner. */
+  private proposalNotebook(workspaceId: string): KnowledgeNotebook {
+    if (!this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
+    return new KnowledgeNotebook({
+      repositoryPath: join(this.workspaceRootPath(workspaceId), 'knowledge', 'notebook.git'),
+    });
+  }
+
   /** Verifies the exact original without materializing a file body or substituting another version. */
   public assertArtifactContent(artifact: Artifact): void {
     if (artifact.content.format === 'file') {
@@ -3705,14 +3714,6 @@ export class FsStore {
         'Artifact content integrity is invalid.'
       );
     }
-  }
-
-  /** Resolves this Workspace's existing single Git content owner. */
-  private proposalNotebook(workspaceId: string): KnowledgeNotebook {
-    if (!this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
-    return new KnowledgeNotebook({
-      repositoryPath: join(this.workspaceRootPath(workspaceId), 'knowledge', 'notebook.git'),
-    });
   }
 
   /**
