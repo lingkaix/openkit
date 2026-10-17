@@ -1,9 +1,0 @@
-pre-commit:
-  commands:
-    staged-checks:
-      run: pnpm run lint:staged
-
-commit-msg:
-  commands:
-    conventional-commits:
-      run: pnpm run commitmsg:check -- {1}

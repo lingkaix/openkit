@@ -1,7 +1,0 @@
-[workspace]
-members = ["apps/retrieval-kernel"]
-exclude = ["apps/nanohost"]
-resolver = "3"
-
-[profile.release]
-strip = true

@@ -1,1 +1,0 @@
-export { MaterialScreen } from './MaterialScreen';

@@ -1,7 +1,0 @@
-{
-  "schemaVersion": 1,
-  "mode": "local",
-  "defaults": {
-    "defaultAgentId": "agent_codex_host"
-  }
-}
