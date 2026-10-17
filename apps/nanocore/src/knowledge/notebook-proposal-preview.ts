@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import {
   KNOWLEDGE_PROPOSAL_PREVIEW_CHUNK_UNITS,
   KNOWLEDGE_PROPOSAL_PREVIEW_RESPONSE_BYTES,
+  type ReadKnowledgeProposalRequest,
   type ReadKnowledgeProposalResponse,
   ReadKnowledgeProposalResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -105,44 +106,7 @@ export function createKnowledgeProposalPreviewOperationImplementations(
           candidateRevision: saved.candidateRevision,
           paths,
         };
-        if (input.path === undefined) return ReadKnowledgeProposalResponseSchema.parse(tuple);
-        if (!paths.includes(input.path))
-          throw new OperationError('invalid_request', 'Path is not in the saved Proposal.', 400);
-        // The shared cursor counts Unicode code points, so shifted surrogate pairs cannot prevent progress.
-        const oldText = before[input.path] === undefined ? null : Array.from(before[input.path]!);
-        const newText = after[input.path] === undefined ? null : Array.from(after[input.path]!);
-        const offset = input.offset;
-        const maximum = Math.max(oldText?.length ?? 0, newText?.length ?? 0);
-        if (offset > maximum)
-          throw new OperationError(
-            'invalid_request',
-            'Proposal offset exceeds both versions.',
-            400
-          );
-        // At most two UTF-16 units per code point keeps each version within the public chunk bound.
-        let end = offset + Math.min(KNOWLEDGE_PROPOSAL_PREVIEW_CHUNK_UNITS / 2, maximum - offset);
-        let response: ReadKnowledgeProposalResponse;
-        do {
-          response = {
-            ...tuple,
-            path: input.path,
-            before: oldText === null ? null : oldText.slice(offset, end).join(''),
-            after: newText === null ? null : newText.slice(offset, end).join(''),
-            nextOffset: end < maximum ? end : null,
-          };
-          if (
-            Buffer.byteLength(JSON.stringify(response)) < KNOWLEDGE_PROPOSAL_PREVIEW_RESPONSE_BYTES
-          )
-            break;
-          end = offset + Math.floor((end - offset) / 2);
-          if (end === offset)
-            throw new OperationError(
-              'invalid_request',
-              'Proposal inventory exceeds the preview response bound.',
-              400
-            );
-        } while (end > offset);
-        return ReadKnowledgeProposalResponseSchema.parse(response);
+        return projectKnowledgeProposalPreview(tuple, before, after, input);
       } catch (error) {
         if (error instanceof OperationError) throw error;
         if (error instanceof NotebookError && error.code === 'invalid_request')
@@ -161,4 +125,49 @@ export function createKnowledgeProposalPreviewOperationImplementations(
       }
     },
   };
+}
+
+/** Shared exact candidate inventory/chunks; current owner admission runs before this inert projection. */
+export function projectKnowledgeProposalPreview(
+  tuple: Pick<
+    ReadKnowledgeProposalResponse,
+    'proposalId' | 'proposalDigest' | 'baseRevision' | 'candidateRevision' | 'paths'
+  >,
+  before: Readonly<Record<string, string>>,
+  after: Readonly<Record<string, string>>,
+  input: Pick<ReadKnowledgeProposalRequest, 'path' | 'offset'>
+): ReadKnowledgeProposalResponse {
+  const paths = tuple.paths;
+  if (input.path === undefined) return ReadKnowledgeProposalResponseSchema.parse(tuple);
+  if (!paths.includes(input.path))
+    throw new OperationError('invalid_request', 'Path is not in the saved Proposal.', 400);
+  // The shared cursor counts Unicode code points, so shifted surrogate pairs cannot prevent progress.
+  const oldText = before[input.path] === undefined ? null : Array.from(before[input.path]!);
+  const newText = after[input.path] === undefined ? null : Array.from(after[input.path]!);
+  const offset = input.offset;
+  const maximum = Math.max(oldText?.length ?? 0, newText?.length ?? 0);
+  if (offset > maximum)
+    throw new OperationError('invalid_request', 'Proposal offset exceeds both versions.', 400);
+  // At most two UTF-16 units per code point keeps each version within the public chunk bound.
+  let end = offset + Math.min(KNOWLEDGE_PROPOSAL_PREVIEW_CHUNK_UNITS / 2, maximum - offset);
+  let response: ReadKnowledgeProposalResponse;
+  do {
+    response = {
+      ...tuple,
+      path: input.path,
+      before: oldText === null ? null : oldText.slice(offset, end).join(''),
+      after: newText === null ? null : newText.slice(offset, end).join(''),
+      nextOffset: end < maximum ? end : null,
+    };
+    if (Buffer.byteLength(JSON.stringify(response)) < KNOWLEDGE_PROPOSAL_PREVIEW_RESPONSE_BYTES)
+      break;
+    end = offset + Math.floor((end - offset) / 2);
+    if (end === offset)
+      throw new OperationError(
+        'invalid_request',
+        'Proposal inventory exceeds the preview response bound.',
+        400
+      );
+  } while (end > offset);
+  return ReadKnowledgeProposalResponseSchema.parse(response);
 }
