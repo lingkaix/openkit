@@ -123,7 +123,6 @@ import {
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
-  publishArtifactFileRecord,
   publishCanonicalPath,
   readCanonicalTextFile,
   readWorkspaceKnowledgeEntries,
@@ -1267,80 +1266,20 @@ export class FsStore {
       for (const session of records.agentSessions) {
         this.agentSessions.set(session.id, session);
       }
+      const artifactTurns = new Map(records.turns.map((turn) => [turn.id, turn]));
       for (const artifact of records.artifacts) {
         this.artifacts.set(artifact.id, artifact);
-        try {
-          const versionRoot = dirname(
-            dirname(
-              artifactVersionRecordPath(
-                this.workspaceRootPath(artifact.workspaceId),
-                artifact.id,
-                1
-              )
-            )
-          );
-          if (
-            readdirSync(versionRoot).some(
-              (name) =>
-                /^\d+$/.test(name) &&
-                (String(Number(name)) !== name || Number(name) > artifact.version)
-            )
+        this.artifactVersions.set(
+          artifact.id,
+          this.loadArtifactVersions(
+            this.workspaceRootPath(artifact.workspaceId),
+            artifact,
+            artifactTurns,
+            records.itemRevisions
           )
-            throw new Error('The Artifact has an unacknowledged or contradictory version.');
-          const versions = Array.from({ length: artifact.version }, (_, index) =>
-            readArtifactVersionRecord(
-              this.workspaceRootPath(artifact.workspaceId),
-              artifact.id,
-              index + 1
-            )
-          );
-          for (const record of versions) {
-            if (
-              record.artifact.workspaceId !== artifact.workspaceId ||
-              !isDeepStrictEqual(record.artifact.origin, artifact.origin)
-            )
-              throw new Error('Artifact version origin is contradictory.');
-            this.assertArtifactContent(record.artifact);
-            const lineage = record.version;
-            if (lineage.turnId !== null) {
-              const producingTurn = this.turns.get(lineage.turnId);
-              if (
-                !producingTurn ||
-                producingTurn.workspaceId !== artifact.workspaceId ||
-                producingTurn.threadId !== lineage.threadId ||
-                !isDeepStrictEqual(producingTurn.triggerActor, lineage.actor) ||
-                !this.itemRevisions.some(
-                  (item) =>
-                    item.type === 'artifact-reference' &&
-                    item.workspaceId === artifact.workspaceId &&
-                    item.threadId === lineage.threadId &&
-                    item.turnId === lineage.turnId &&
-                    item.artifactId === artifact.id &&
-                    item.artifactVersion === lineage.artifactVersion &&
-                    item.lastMutationRequestId === lineage.requestId &&
-                    item.title === lineage.title &&
-                    item.summary === lineage.summary
-                )
-              )
-                throw new Error('The retained Artifact version lacks its exact producing Item.');
-            }
-          }
-          const retained = versions.at(-1)!.artifact;
-          if (
-            !isDeepStrictEqual(
-              { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
-              artifact
-            )
-          )
-            throw new Error('The Artifact current-head projection is contradictory.');
-          this.artifactVersions.set(artifact.id, versions);
-        } catch {
-          throw new ArtifactAuthorityError(
-            'recovery_required',
-            'The retained Artifact version history is unavailable.'
-          );
-        }
+        );
       }
+
       for (const proposal of records.knowledgeProposals) {
         this.knowledgeProposals.set(proposal.id, proposal);
       }
@@ -1473,17 +1412,87 @@ export class FsStore {
     return record;
   }
 
+  /** Loads exact retained history with the same lineage and Item proof before restart or import admission. */
+  private loadArtifactVersions(
+    workspaceRoot: string,
+    artifact: Artifact,
+    turns: ReadonlyMap<string, Turn>,
+    itemRevisions: readonly Item[]
+  ): ArtifactVersionRecord[] {
+    try {
+      const versionRoot = dirname(
+        dirname(artifactVersionRecordPath(workspaceRoot, artifact.id, 1))
+      );
+      if (
+        readdirSync(versionRoot).some(
+          (name) =>
+            /^\d+$/.test(name) && (String(Number(name)) !== name || Number(name) > artifact.version)
+        )
+      )
+        throw new Error('The Artifact has an unacknowledged or contradictory version.');
+      const versions = Array.from({ length: artifact.version }, (_, index) =>
+        readArtifactVersionRecord(workspaceRoot, artifact.id, index + 1)
+      );
+      for (const record of versions) {
+        if (
+          record.artifact.workspaceId !== artifact.workspaceId ||
+          !isDeepStrictEqual(record.artifact.origin, artifact.origin)
+        )
+          throw new Error('Artifact version origin is contradictory.');
+        const lineage = record.version;
+        if (lineage.turnId !== null) {
+          const producingTurn = turns.get(lineage.turnId);
+          if (
+            !producingTurn ||
+            producingTurn.workspaceId !== artifact.workspaceId ||
+            producingTurn.threadId !== lineage.threadId ||
+            !isDeepStrictEqual(producingTurn.triggerActor, lineage.actor) ||
+            !itemRevisions.some(
+              (item) =>
+                item.type === 'artifact-reference' &&
+                item.workspaceId === artifact.workspaceId &&
+                item.threadId === lineage.threadId &&
+                item.turnId === lineage.turnId &&
+                item.artifactId === artifact.id &&
+                item.artifactVersion === lineage.artifactVersion &&
+                item.lastMutationRequestId === lineage.requestId &&
+                item.title === lineage.title &&
+                item.summary === lineage.summary
+            )
+          )
+            throw new Error('The retained Artifact version lacks its exact producing Item.');
+        }
+      }
+      const retained = versions.at(-1)!.artifact;
+      if (
+        !isDeepStrictEqual(
+          { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+          artifact
+        )
+      )
+        throw new Error('The Artifact current-head projection is contradictory.');
+      return versions;
+    } catch {
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The retained Artifact version history is unavailable.'
+      );
+    }
+  }
+
   /**
    * Projects one workspace's in-memory state into its canonical file records.
    *
    * @param workspaceId Workspace to persist.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
+   * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
    */
   private persist(
     workspaceId: string,
     updateWorkspaceConfigName = false,
-    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>,
+    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1494,7 +1503,8 @@ export class FsStore {
       workspaceId,
       workspaceRoot,
       updateWorkspaceConfigName,
-      turnFilePayloads
+      turnFilePayloads,
+      initialArtifact
     );
   }
 
@@ -1587,12 +1597,14 @@ export class FsStore {
    * @param workspaceRoot Resolved workspace root.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
+   * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
     updateWorkspaceConfigName = false,
-    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>,
+    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
   ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
@@ -1630,7 +1642,8 @@ export class FsStore {
           [...this.turnCaptureCoverage.entries()].filter(([turnId]) => turnIds.has(turnId))
         ),
       },
-      updateWorkspaceConfigName
+      updateWorkspaceConfigName,
+      initialArtifact
     );
   }
 
@@ -2336,6 +2349,7 @@ export class FsStore {
       streamEvents: history.turnEvents,
     };
 
+    const importedArtifactVersions = new Map<string, ArtifactVersionRecord[]>();
     this.persistNewWorkspaceAtomically(
       records,
       (stage) => {
@@ -2345,6 +2359,13 @@ export class FsStore {
           history.knowledgeSources
         );
         input.stageWorkspace?.(stage);
+        const turns = new Map(history.turns.map((turn) => [turn.id, turn]));
+        for (const artifact of history.artifacts) {
+          importedArtifactVersions.set(
+            artifact.id,
+            this.loadArtifactVersions(stage.workspaceRoot, artifact, turns, history.itemRevisions)
+          );
+        }
       },
       input.notebookInitialization,
       input.initialNotebookFiles,
@@ -2367,6 +2388,8 @@ export class FsStore {
     this.itemRevisions.push(...history.itemRevisions);
     for (const artifact of history.artifacts) {
       this.artifacts.set(artifact.id, artifact);
+      const versions = importedArtifactVersions.get(artifact.id);
+      if (versions) this.artifactVersions.set(artifact.id, versions);
     }
     for (const session of history.agentSessions) {
       this.agentSessions.set(session.id, session);
@@ -3689,19 +3712,10 @@ export class FsStore {
     this.artifacts.set(artifact.id, artifact);
     this.refreshWorkspaceCounts(artifact.workspaceId);
     try {
-      if (artifact.content.format === 'file' && filePayload) {
-        publishArtifactFileRecord({
-          workspaceRoot: this.workspaceRootPath(artifact.workspaceId),
-          artifact,
-          payloadPath: filePayload.path,
-        });
-      }
-      this.persist(artifact.workspaceId);
-      if (this.dataRoot)
-        publishArtifactVersionRecord({
-          workspaceRoot: this.workspaceRootPath(artifact.workspaceId),
-          record: versionRecord,
-        });
+      this.persist(artifact.workspaceId, false, undefined, {
+        record: versionRecord,
+        ...(filePayload ? { payloadPath: filePayload.path } : {}),
+      });
       this.artifactVersions.set(artifact.id, [versionRecord]);
     } catch (error) {
       this.artifacts.delete(artifact.id);
