@@ -1,7 +1,9 @@
 import {
   ArtifactIdSchema,
+  ArtifactMediaTypeSchema,
   ArtifactReviewIdSchema,
   ItemIdSchema,
+  MAX_ARTIFACT_FILE_BYTES,
   MaterialIdSchema,
   MaterialRevisionIdSchema,
   ThreadIdSchema,
@@ -218,26 +220,12 @@ export const ListArtifactReviewsResponseSchema = z
 export const ImportWorkspaceArtifactRequestSchema = z
   .object({
     requestId: requestIdSchema,
-    title: z.string().min(1),
-    mediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
+    title: z.string().min(1).max(1024),
+    mediaType: ArtifactMediaTypeSchema,
     contentDigest: contentDigestSchema,
-    content: z.string().min(1),
+    byteLength: z.number().int().min(0).max(MAX_ARTIFACT_FILE_BYTES),
   })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.mediaType !== 'application/json') {
-      return;
-    }
-    try {
-      JSON.parse(value.content);
-    } catch {
-      context.addIssue({
-        code: 'custom',
-        message: 'application/json content must be syntactically valid JSON',
-        path: ['content'],
-      });
-    }
-  });
+  .strict();
 
 /** Response payload after importing one immutable Workspace Artifact version. */
 export const ImportWorkspaceArtifactResponseSchema = z
@@ -491,3 +479,45 @@ export type ExcludeThreadMaterialResponse = z.infer<typeof ExcludeThreadMaterial
 export type RestoreThreadMaterialRequest = z.infer<typeof RestoreThreadMaterialRequestSchema>;
 /** Response payload after restoring one bound Material to worker context. */
 export type RestoreThreadMaterialResponse = z.infer<typeof RestoreThreadMaterialResponseSchema>;
+
+/** One paged, validated file member of a disposable exact-source ZIP snapshot. */
+export const ArtifactFolderEntrySchema = z
+  .object({
+    relativePath: z.string().min(1).max(4096),
+    byteLength: z.number().int().nonnegative().max(4_000_000_000),
+    contentDigest: contentDigestSchema,
+  })
+  .strict();
+
+/** Truthful cache availability; the original Artifact remains its sole durable source. */
+export const ArtifactFolderSnapshotResponseSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ready'),
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      processor: z.literal('openkit.zip.v1'),
+      representationDigest: contentDigestSchema,
+      expandedBytes: z.number().int().nonnegative().max(4_000_000_000),
+      fileCount: z.number().int().nonnegative().max(100_000),
+      directoryCount: z.number().int().nonnegative().max(131_072),
+      entries: z.array(ArtifactFolderEntrySchema).max(100),
+      nextOffset: z.number().int().nonnegative().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('unavailable'),
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+      originalDigest: contentDigestSchema,
+      originalRetained: z.literal(true),
+      reason: z.enum(['not_extracted', 'extraction_failed']),
+    })
+    .strict(),
+]);
+
+/** Bounded source-bound folder projection used by API and Web consumers. */
+export type ArtifactFolderSnapshotResponse = z.infer<typeof ArtifactFolderSnapshotResponseSchema>;

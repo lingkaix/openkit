@@ -1870,21 +1870,21 @@ describe('quick chat app API', () => {
       expect(knowledge.status, await knowledge.clone().text()).toBe(200);
       const content = '# Maintenance report acceptance\n\nartifact-roundtrip-c7f46a19; 62 passed.';
       const imported = await app.request(
-        ...operationRequest(
-          'artifact.import',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: 'artifact-source-import',
-              title: 'Maintenance report acceptance',
-              mediaType: 'text/markdown',
-              contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-              content,
-            }),
-          }
-        )
+        `/api/app/operations/artifact.import?${new URLSearchParams({
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          title: 'Maintenance report acceptance',
+          mediaType: 'text/markdown',
+          byteLength: String(Buffer.byteLength(content)),
+          contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+        })}`,
+        {
+          method: 'POST',
+          headers: {
+            'x-openkit-request-id': 'artifact-source-import',
+            'content-type': 'text/markdown',
+          },
+          body: Buffer.from(content),
+        }
       );
       expect(imported.status, await imported.clone().text()).toBe(201);
       const artifact = await imported.json();

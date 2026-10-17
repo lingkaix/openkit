@@ -53,6 +53,10 @@ import {
   subscriptionInferenceHandle,
 } from './provider-subscription-accounts.js';
 import {
+  createRawProviderOutputObserver,
+  RawOutputObservationUnavailableError,
+} from './raw-provider-output.js';
+import {
   gatewayReasoningAttribution,
   type ReasoningAttribution,
   type ReasoningMember,
@@ -260,7 +264,8 @@ function prepareSubscriptionInference(
   options: StreamOptions & Record<string, unknown>,
   signal?: AbortSignal,
   absoluteDeadline?: number,
-  onProviderHandoff?: () => void
+  onProviderHandoff?: () => void,
+  rawOutput?: LLMGatewayTransportContext['rawOutput']
 ) {
   const handle = subscriptionInferenceHandle(models);
   let presented: SubscriptionInferenceAuth | undefined;
@@ -269,50 +274,65 @@ function prepareSubscriptionInference(
     stream(context: Context, streamOptions = options) {
       const simple = usesSimpleEffort(model, streamOptions);
       const { model: entryModel, options: entryOptions } = stockEffortRequest(model, streamOptions);
+      const sourceSettled = rawOutput?.sourceStarted();
+      const track = (events: ReturnType<Models['stream']>) => {
+        if (sourceSettled) void events.result().then(sourceSettled, sourceSettled);
+        return events;
+      };
       if (!handle) {
-        onProviderHandoff?.();
-        return simple
-          ? models.streamSimple(entryModel, context, entryOptions)
-          : models.stream(entryModel, context, entryOptions);
+        try {
+          onProviderHandoff?.();
+          return track(
+            simple
+              ? models.streamSimple(entryModel, context, entryOptions)
+              : models.stream(entryModel, context, entryOptions)
+          );
+        } catch (error) {
+          sourceSettled?.();
+          throw error;
+        }
       }
       const transcript = normalizeContext(context);
       onProviderHandoff?.();
-      return lazyStream(entryModel, async () => {
-        const resolved = await handle.resolveInferenceAuth(streamOptions.signal);
-        if (!resolved)
-          throw new ModelsError('auth', `Provider is not configured: ${model.provider}`);
-        presented = resolved.presented;
-        const auth = resolved.auth;
-        // Preserve stock per-field precedence and case-insensitive header replacement.
-        let headers: ProviderHeaders | undefined;
-        for (const source of [auth.headers, model.headers, streamOptions.headers]) {
-          if (!source) continue;
-          headers ??= {};
-          for (const [name, value] of Object.entries(source)) {
-            for (const existing of Object.keys(headers))
-              if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
-            headers[name] = value;
+      return track(
+        lazyStream(entryModel, async () => {
+          const resolved = await handle.resolveInferenceAuth(streamOptions.signal);
+          if (!resolved)
+            throw new ModelsError('auth', `Provider is not configured: ${model.provider}`);
+          presented = resolved.presented;
+          const auth = resolved.auth;
+          // Preserve stock per-field precedence and case-insensitive header replacement.
+          let headers: ProviderHeaders | undefined;
+          for (const source of [auth.headers, model.headers, streamOptions.headers]) {
+            if (!source) continue;
+            headers ??= {};
+            for (const [name, value] of Object.entries(source)) {
+              for (const existing of Object.keys(headers))
+                if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+              headers[name] = value;
+            }
           }
-        }
-        const { transformHeaders, ...providerOptions } = entryOptions;
-        if (typeof transformHeaders === 'function') headers = await transformHeaders(headers ?? {});
-        const provider = models.getProvider(model.provider);
-        if (!provider) throw new ModelsError('provider', `Unknown provider: ${model.provider}`);
-        const apiKey = streamOptions.apiKey ?? auth.apiKey;
-        const requestOptions = {
-          ...providerOptions,
-          ...(apiKey === undefined ? {} : { apiKey }),
-          ...(headers === undefined ? {} : { headers }),
-          ...(resolved.env || streamOptions.env
-            ? { env: { ...resolved.env, ...streamOptions.env } }
-            : {}),
-        };
-        return provider[simple ? 'streamSimple' : 'stream'](
-          auth.baseUrl ? { ...entryModel, baseUrl: auth.baseUrl } : entryModel,
-          transcript,
-          requestOptions
-        );
-      });
+          const { transformHeaders, ...providerOptions } = entryOptions;
+          if (typeof transformHeaders === 'function')
+            headers = await transformHeaders(headers ?? {});
+          const provider = models.getProvider(model.provider);
+          if (!provider) throw new ModelsError('provider', `Unknown provider: ${model.provider}`);
+          const apiKey = streamOptions.apiKey ?? auth.apiKey;
+          const requestOptions = {
+            ...providerOptions,
+            ...(apiKey === undefined ? {} : { apiKey }),
+            ...(headers === undefined ? {} : { headers }),
+            ...(resolved.env || streamOptions.env
+              ? { env: { ...resolved.env, ...streamOptions.env } }
+              : {}),
+          };
+          return provider[simple ? 'streamSimple' : 'stream'](
+            auth.baseUrl ? { ...entryModel, baseUrl: auth.baseUrl } : entryModel,
+            transcript,
+            requestOptions
+          );
+        })
+      );
     },
     /** Consumes the existing adapter classification at the account owner without changing routing policy. */
     async observe(failure?: Error): Promise<void> {
@@ -416,7 +436,8 @@ async function completeObservedModel(
     options,
     transport.signal,
     transport.deadline,
-    transport.onProviderHandoff
+    transport.onProviderHandoff,
+    transport.rawOutput
   );
   if (!transport.onModelEvent && !validateEvent) {
     let response: AssistantMessage;
@@ -427,9 +448,14 @@ async function completeObservedModel(
         const simple = usesSimpleEffort(model, options);
         const { model: entryModel, options: entryOptions } = stockEffortRequest(model, options);
         transport.onProviderHandoff?.();
-        response = simple
-          ? await models.completeSimple(entryModel, context, entryOptions)
-          : await models.complete(entryModel, context, entryOptions);
+        const sourceSettled = transport.rawOutput?.sourceStarted();
+        try {
+          response = simple
+            ? await models.completeSimple(entryModel, context, entryOptions)
+            : await models.complete(entryModel, context, entryOptions);
+        } finally {
+          sourceSettled?.();
+        }
       }
     } catch (error) {
       const failure = attachPiAiFailure(error) as Error;
@@ -631,7 +657,8 @@ export class PiAiGatewayClient {
       this.toStreamOptions(provider, request, { ...transport, signal }, model),
       signal,
       transport.deadline,
-      transport.onProviderHandoff
+      transport.onProviderHandoff,
+      transport.rawOutput
     );
     const context = this.toContext(request, model);
     const declaredTools = new Set(context.tools?.map((tool) => tool.name));
@@ -806,7 +833,8 @@ export class PiAiGatewayClient {
       ),
       signal,
       transport.deadline,
-      transport.onProviderHandoff
+      transport.onProviderHandoff,
+      transport.rawOutput
     );
     const events = inference.stream(
       toPiResponsesContext(
@@ -1156,6 +1184,7 @@ export class PiAiGatewayClient {
       options.samplingParams = { parallel_tool_calls: request.parallel_tool_calls };
     this.applyRequestPayloadOverlay(options, model, maxTokens, request.parallel_tool_calls);
     applyProviderTransport(options, model, transport);
+    this.bindRawOutput(options, model, transport);
     return options;
   }
 
@@ -1319,7 +1348,42 @@ export class PiAiGatewayClient {
         envelope.output = envelope.output.toSorted((left, right) => left.index - right.index);
       };
     applyProviderTransport(options, selectedModel, transport);
+    this.bindRawOutput(options, selectedModel, transport);
     return options;
+  }
+
+  /** Composes the strong raw observer before existing native validation and stock normalization. This observes the selected native transport without changing stream selection. */
+  private bindRawOutput(
+    options: StreamOptions,
+    model: Model<string>,
+    transport: LLMGatewayTransportContext
+  ): void {
+    const boundary = transport.rawOutput;
+    if (!boundary) return;
+    let observe: (event: unknown) => void;
+    try {
+      observe = createRawProviderOutputObserver(model.api, boundary.observe);
+    } catch {
+      throw new GatewayUnsupportedFeatureError('Worker raw output observation');
+    }
+    const previous = options.onProviderStreamEvent;
+    options.onProviderStreamEvent = async (event, selected) => {
+      try {
+        observe(event);
+        boundary.sourceEvent();
+      } catch (error) {
+        boundary.fail(
+          error instanceof RawOutputObservationUnavailableError
+            ? new GatewayUnsupportedFeatureError('Worker raw output observation')
+            : error instanceof Error
+              ? error
+              : new Error('Worker raw output observation failed.')
+        );
+      }
+      await previous?.(event, selected);
+      // Accounting commits synchronously before yielding; queued native deltas cannot starve liveness.
+      await scheduler.yield();
+    };
   }
 
   /**

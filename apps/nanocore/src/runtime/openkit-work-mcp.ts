@@ -3,8 +3,10 @@ import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
+  ArtifactMediaTypeSchema,
   deriveEntityId,
   isSealedTurnTerminal,
+  MAX_ARTIFACT_FILE_BYTES,
   MaterialIdSchema,
   ProductTurnSchema,
   RequestIdSchema,
@@ -24,6 +26,15 @@ import {
 } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
+import {
+  FileAdmissionError,
+  type FileStorageAdmission,
+} from '../storage/artifacts/file-admission.js';
+import {
+  ArtifactPayloadCleanupError,
+  stageArtifactPayload,
+} from '../storage/artifacts/file-payload.js';
+import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './pending-request-flow.js';
@@ -33,11 +44,14 @@ import {
   preflightPendingRequest,
   type RaisePendingRequestInput,
 } from './pending-requests.js';
+import { assertWorkerArtifactDigestProof } from './worker-artifact-credential-scan.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
-import { requireWorkerCredentialCheckValues } from './worker-credential-guard.js';
 import {
-  MAX_WORKER_ARTIFACT_BYTES,
+  createWorkerArtifactLiteralCheck,
+  requireWorkerCredentialCheckValues,
+} from './worker-credential-guard.js';
+import {
   validateWorkerArtifactPath,
   type WorkerArtifactCapture,
 } from './worker-governance-backend.js';
@@ -68,7 +82,7 @@ const WorkSubmitArtifactArgsSchema = z
     path: z.string().min(1).max(4096),
     kind: z.enum(['report', 'diff', 'file', 'summary']),
     title: z.string().min(1),
-    mediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
+    mediaType: ArtifactMediaTypeSchema,
     materialProposal: z
       .object({
         materialId: MaterialIdSchema,
@@ -129,7 +143,7 @@ export const OPENKIT_WORK_TOOLS = [
   {
     name: 'work_submit_artifact',
     description:
-      'Submit one finished file from an eligible output root. Finish writing first. Success returns the durable Artifact id; correction or a new file version uses a new requestId. Read the eligible roots in this package guidance. Admitted media: text/markdown, text/plain, application/json.',
+      'Submit one finished file from an eligible output root. Finish writing first. Success returns the durable Artifact id; correction or a new file version uses a new requestId. Read the eligible roots in this package guidance. Any file media type and exact binary bytes are admitted up to 1,000,000,000 bytes per file. Material proposals separately require their supported UTF-8 text format.',
     inputSchema: mcpInputSchema(WorkSubmitArtifactArgsSchema),
   },
 ] as const;
@@ -176,6 +190,7 @@ export async function dispatchOpenkitWorkTool(
     readonly store: FsStore;
     readonly workspaceDb: WorkspaceDb;
     readonly captureArtifact?: WorkerArtifactCapture;
+    readonly fileAdmission?: FileStorageAdmission;
     readonly signal?: AbortSignal;
     readonly requireAdmission?: () => void;
   },
@@ -475,25 +490,20 @@ async function submitArtifact(
         existing.threadId !== scope.threadId ||
         existing.origin.turnId !== scope.turnId ||
         existing.origin.threadId !== scope.threadId ||
-        existing.content.format !==
-          (metadata.mediaType === 'text/markdown'
-            ? 'markdown'
-            : metadata.mediaType === 'text/plain'
-              ? 'text'
-              : 'json') ||
+        existing.content.format !== 'file' ||
+        existing.content.mediaType !== metadata.mediaType ||
         existing.updatedAt !== existing.createdAt ||
         existing.kind !== metadata.kind ||
         existing.version !== 1 ||
         existing.lastMutationRequestId !== metadata.requestId ||
-        existing.createdAt !== receipt.createdAt ||
-        existing.contentDigest !==
-          `sha256:${createHash('sha256').update(existing.content.body, 'utf8').digest('hex')}`
+        existing.createdAt !== receipt.createdAt
       )
         throw new OperationError(
           'recovery_required',
           'Artifact receipt and authority disagree.',
           409
         );
+      store.assertArtifactContent(existing);
       preflightArtifactTuple(store, workspaceDb, existing, {
         artifactId,
         artifactVersion: 1,
@@ -548,115 +558,157 @@ async function submitArtifact(
         409
       );
   };
-  const published = () =>
-    store
-      .listArtifacts(scope.workspaceId)
-      .filter((a) => a.origin.kind === 'turn-output' && a.turnId === scope.turnId)
-      .reduce((n, a) => n + Buffer.byteLength(a.content.body, 'utf8'), 0);
   admit();
-  if (!input.captureArtifact)
+  if (!input.captureArtifact || !input.fileAdmission)
     throw new OperationError('recovery_required', 'Artifact capture is unavailable.', 503);
   const recordedAt = new Date().toISOString();
-  const captured = await input.captureArtifact({
-    packageSnapshotId: environmentPackage.snapshotId,
-    requestId: metadata.requestId,
-    path: metadata.path,
-    maxByteLength: Math.max(0, MAX_WORKER_ARTIFACT_BYTES - published()) + 1,
-    ...(input.signal ? { signal: input.signal } : {}),
+  // Reserve the future Artifact stage before capture; transport separately reserves its source
+  // against this same owner, so the peak includes both copies without reserving either twice.
+  const reservation = input.fileAdmission.reserve({
+    stagingBytes: BigInt(MAX_ARTIFACT_FILE_BYTES),
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 65_536n,
   });
-  admit();
-  if (captured.bytes.length + published() > MAX_WORKER_ARTIFACT_BYTES)
-    throw new OperationError(
-      'invalid_request',
-      'The file exceeds remaining published Artifact capacity.',
-      400
-    );
-  const contextPackageTrace = metadata.materialProposal
-    ? readWorkerContextPackageTrace({
-        authorities: createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb }),
-        workspaceId: scope.workspaceId,
-        threadId: scope.threadId,
-        turnId: scope.turnId,
-        workspaceRoot: resolveDataRootPath(workspaceDb.dataRoot, 'workspaces', scope.workspaceId),
-      })
-    : undefined;
-  const prepared = prepareWorkerArtifact({
-    store,
-    workspaceDb,
-    environmentPackage,
-    artifactId,
-    requestId: metadata.requestId,
-    recordedAt,
-    metadata,
-    bytes: captured.bytes,
-    checkValues: requireWorkerCredentialCheckValues(captured.credentialCheckValues),
-    ...(contextPackageTrace ? { contextPackageTrace } : {}),
-  });
-  // Another caller may have completed while capture awaited. Never roll back that caller's tuple.
-  const completedDuringCapture = replay();
-  if (completedDuringCapture) return completedDuringCapture;
-  // No await in the final admission/publication segment: a terminalizer or another publisher cannot interleave.
-  admit();
-  if (captured.bytes.length + published() > MAX_WORKER_ARTIFACT_BYTES)
-    throw new OperationError(
-      'invalid_request',
-      'The file exceeds remaining published Artifact capacity.',
-      400
-    );
+  let captured: Awaited<ReturnType<WorkerArtifactCapture>> | undefined;
+  let staged: Awaited<ReturnType<typeof stageArtifactPayload>> | undefined;
+  let cleanupUnproved = false;
+  const failures: unknown[] = [];
+  let response: ReturnType<typeof artifactResult> | undefined;
   try {
-    store.createArtifact(prepared.artifact);
-    workspaceDb.sqlite.transaction(() => {
-      createArtifactReview(workspaceDb, prepared.reviewInput);
-      store.recordCommandRequest(
-        {
-          command: 'artifact.submit',
+    captured = await input.captureArtifact({
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: metadata.requestId,
+      path: metadata.path,
+      maxByteLength: MAX_ARTIFACT_FILE_BYTES + 1,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    admit();
+    if (captured.byteLength > MAX_ARTIFACT_FILE_BYTES)
+      throw new FileAdmissionError('file_too_large');
+    reservation.reduceTo(BigInt(captured.byteLength) + 65_536n);
+    const checkValues = requireWorkerCredentialCheckValues(captured.credentialCheckValues);
+    staged = await stageArtifactPayload({
+      workspaceRoot: resolveDataRootPath(workspaceDb.dataRoot, 'workspaces', scope.workspaceId),
+      source: captured.source,
+      expectedByteLength: captured.byteLength,
+      expectedDigest: captured.contentDigest,
+      reservation,
+      inspectChunk: createWorkerArtifactLiteralCheck(checkValues),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    await assertWorkerArtifactDigestProof({
+      dataRoot: workspaceDb.dataRoot,
+      ownerRoot: resolveDataRootPath(workspaceDb.dataRoot, 'workspaces', scope.workspaceId),
+      payload: staged,
+      evidence: checkValues,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    const contextPackageTrace = metadata.materialProposal
+      ? readWorkerContextPackageTrace({
+          authorities: createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb }),
+          workspaceId: scope.workspaceId,
+          threadId: scope.threadId,
+          turnId: scope.turnId,
+          workspaceRoot: resolveDataRootPath(workspaceDb.dataRoot, 'workspaces', scope.workspaceId),
+        })
+      : undefined;
+    const prepared = prepareWorkerArtifact({
+      store,
+      workspaceDb,
+      environmentPackage,
+      artifactId,
+      requestId: metadata.requestId,
+      recordedAt,
+      metadata,
+      payload: staged,
+      checkValues,
+      ...(contextPackageTrace ? { contextPackageTrace } : {}),
+    });
+    // Another caller may have completed while capture awaited. Never roll back that caller's tuple.
+    const completedDuringCapture = replay();
+    if (completedDuringCapture) response = completedDuringCapture;
+    else {
+      // No await in the final admission/publication segment: a terminalizer or another publisher cannot interleave.
+      admit();
+      reservation.assertAvailable();
+      withCanonicalFileWriteAdmission(input.fileAdmission, () => {
+        try {
+          store.createArtifact(prepared.artifact, staged);
+          workspaceDb.sqlite.transaction(() => {
+            createArtifactReview(workspaceDb, prepared.reviewInput);
+            store.recordCommandRequest(
+              {
+                command: 'artifact.submit',
+                requestId: metadata.requestId,
+                scope: commandScope,
+                inputHash,
+                response: { kind: 'artifact', id: artifactId },
+                createdAt: recordedAt,
+              },
+              workspaceDb
+            );
+          })();
+        } catch (error) {
+          store.rollbackArtifactCreation(artifactId);
+          throw error;
+        }
+        // Project only already committed authority; a listener may seal the Turn during delivery.
+        const reference = store
+          .listThreadItems(scope.workspaceId, scope.threadId)
+          .find((item) => item.type === 'artifact-reference' && item.artifactId === artifactId)!;
+        const eventScope = {
           requestId: metadata.requestId,
-          scope: commandScope,
-          inputHash,
-          response: { kind: 'artifact', id: artifactId },
-          createdAt: recordedAt,
-        },
-        workspaceDb
-      );
-    })();
+          threadId: scope.threadId,
+          turnId: scope.turnId,
+          workspaceId: scope.workspaceId,
+        };
+        store.emitTurnEvent(
+          scope.turnId,
+          { ...eventScope, event: 'item.created', data: { type: 'item-created', item: reference } },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+        store.emitTurnEvent(
+          scope.turnId,
+          {
+            ...eventScope,
+            event: 'item.completed',
+            data: { type: 'item-completed', item: reference, itemId: reference.id },
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+        store.emitTurnEvent(
+          scope.turnId,
+          {
+            ...eventScope,
+            event: 'artifact.created',
+            data: { type: 'artifact-created', artifact: prepared.artifact },
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+        response = artifactResult(artifactId);
+      });
+    }
   } catch (error) {
-    store.rollbackArtifactCreation(artifactId);
-    throw error;
+    cleanupUnproved = error instanceof ArtifactPayloadCleanupError;
+    failures.push(error);
   }
-  // Project only already committed authority; a listener may seal the Turn during delivery.
-  const reference = store
-    .listThreadItems(scope.workspaceId, scope.threadId)
-    .find((item) => item.type === 'artifact-reference' && item.artifactId === artifactId)!;
-  const eventScope = {
-    requestId: metadata.requestId,
-    threadId: scope.threadId,
-    turnId: scope.turnId,
-    workspaceId: scope.workspaceId,
-  };
-  store.emitTurnEvent(
-    scope.turnId,
-    { ...eventScope, event: 'item.created', data: { type: 'item-created', item: reference } },
-    ALREADY_DECIDED_PUBLICATION_ADMISSION
-  );
-  store.emitTurnEvent(
-    scope.turnId,
-    {
-      ...eventScope,
-      event: 'item.completed',
-      data: { type: 'item-completed', item: reference, itemId: reference.id },
-    },
-    ALREADY_DECIDED_PUBLICATION_ADMISSION
-  );
-  store.emitTurnEvent(
-    scope.turnId,
-    {
-      ...eventScope,
-      event: 'artifact.created',
-      data: { type: 'artifact-created', artifact: prepared.artifact },
-    },
-    ALREADY_DECIDED_PUBLICATION_ADMISSION
-  );
-  return artifactResult(artifactId);
+  // Attempt both cleanups even if one fails. Preserve the original failure and keep capacity
+  // when any private stage remains unproved; accepted Artifact authority is never rolled back here.
+  for (const source of [staged, captured]) {
+    try {
+      await source?.remove();
+    } catch (error) {
+      cleanupUnproved = true;
+      failures.push(error);
+    }
+  }
+  if (!cleanupUnproved) reservation.release();
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new ArtifactPayloadCleanupError(failures);
+  if (!response)
+    throw new OperationError('recovery_required', 'Artifact acknowledgement is unavailable.', 503);
+  return response;
 }
 
 /** Formats the already committed identity for native MCP clients. @param artifactId Canonical id. @returns Successful MCP result. */

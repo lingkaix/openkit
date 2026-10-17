@@ -49,6 +49,8 @@ The important call is to stop organizing persistence by feature module. Storage 
 
 ## Related Docs
 
+- [Retained Format Register](20261017-retained_format_register.md) — current retained-family inventory, marker evidence, readers and fixture gaps; persistence rules remain with Core Storage.
+
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/specs/20260921-work_data_retention_format.md` — owns the semantics and content model of retained work data whose physical placement this spec owns.
 
@@ -450,6 +452,8 @@ The existing Artifact record owns each arbitrary-byte original by Artifact id an
 Conversation file inputs remain owned by the receiving Turn at `threads/<threadId>/turns/<turnId>/inputs/<ordinal>/payload`. The zero-based ordinal follows the admitted ordered input inventory, whose metadata binds name, media type, size, and original digest. This is Turn-owned data, not a separate upload record. Publish verified inputs through existing Turn acceptance before model access; failed or uncertain acceptance follows the existing command recovery owner. Client drafts never enter this tree.
 
 Stage streams privately in the same ownership domain. Measure actual size/digest, verify and fsync payload bytes, and atomically place the immutable file before exposing its version reference. The existing Artifact/Item/Review and receipt owner still governs acknowledgement and fail-closed partial publication. Orphan staging never proves acceptance. A referenced missing/corrupt payload returns unavailable or `recovery_required`, never reconstructed text or another version. Retry does not recapture an uncertain effect.
+
+ZIP folder derivatives use `artifacts/<artifactId>/versions/<version>/derived/zip-v1/` within the original Artifact scope. This disposable cache contains `inventory.json` and a separate `tree/`. The inventory binds the original digest, Artifact version and `openkit.zip.v1` processor, with exact relative member paths, sizes and digests. The original `payload` remains unchanged. Request-private staging under the existing staging owner precedes atomic publication of the complete cache directory. Missing or corrupt caches can be rebuilt from the verified original; they never prove Artifact acceptance or repair original loss. Current source audience governs every cache read and publication. Portable export retains the original and omits this disposable tree. [ZIP Folder Snapshot](20260713-work_resource_interaction_model.md#zip-folder-snapshot) owns its lifecycle and observable criteria.
 
 The adapter-side sidecar cache retains PDF text-layer and explicit vision derivatives in its existing scoped cache location. Its identity binds original digest, processor version/configuration, representation digest, locators, and coverage. Derived files remain separate from originals and user-authored descriptions. Rebuild cannot mutate or replace originals. Deletion, retention, holds, backup, and export use the original owner's audience and reference rules. Current-access revocation precedes cache cleanup.
 

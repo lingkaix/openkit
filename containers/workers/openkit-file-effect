@@ -8,6 +8,7 @@ import { isAbsolute, join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const MAX_FILE_BYTES = 268_435_456;
+const MAX_SOURCE_FILE_BYTES = 1_000_000_000;
 const MAX_PATH_BYTES = 4096;
 const IO_CHUNK_BYTES = 65_536;
 const FAILURE_DIAGNOSTIC = 'File effect rejected.\n';
@@ -108,7 +109,7 @@ function parseCommand(argv, slotRoots) {
             : replace
               ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
               : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
-    const length = parseBoundedDecimal(argv[6]);
+    const length = parseBoundedDecimal(argv[6], ['artifact-input', 'turn-inputs', 'context'].includes(slot) ? MAX_SOURCE_FILE_BYTES : MAX_FILE_BYTES);
     const digest = argv[8];
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error('invalid digest');
@@ -129,10 +130,10 @@ function parseCommand(argv, slotRoots) {
     exportArgs[3] === '--path' &&
     exportArgs[5] === '--max-length'
   ) {
-    const maximum = parseBoundedDecimal(exportArgs[6]);
+    const maximum = parseBoundedDecimal(exportArgs[6], live ? MAX_SOURCE_FILE_BYTES + 1 : MAX_FILE_BYTES);
     if (
       live
-        ? !allowMissing || maximum < 1 || maximum > 16 * 1024 * 1024 + 1
+        ? !allowMissing || maximum < 1 || maximum > MAX_SOURCE_FILE_BYTES + 1
         : maximum !== MAX_FILE_BYTES
     )
       throw new Error('invalid export bound');
@@ -271,14 +272,15 @@ function parseRelativePath(value) {
  * Parses one canonical decimal byte count within the fixed file ceiling.
  *
  * @param {string} value Candidate decimal string.
+ * @param {number} maximum Operation-specific byte ceiling.
  * @returns {number} Parsed byte count.
  */
-function parseBoundedDecimal(value) {
+function parseBoundedDecimal(value, maximum = MAX_FILE_BYTES) {
   if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
     throw new Error('invalid length');
   }
   const length = Number(value);
-  if (!Number.isSafeInteger(length) || length > MAX_FILE_BYTES) {
+  if (!Number.isSafeInteger(length) || length > maximum) {
     throw new Error('invalid length');
   }
   return length;

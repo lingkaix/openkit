@@ -582,6 +582,9 @@ describe('Assistant semantic Task handoff', () => {
       ...f.proposed,
     });
     expect(request.responsibleUserId).toBe(LOCAL_USER_ID);
+    expect(request.prompt).toContain(
+      'Private files are not included. Attach files explicitly when you select a Worker.'
+    );
     expect(request.questions).toHaveLength(1);
     expect(request.questions[0]!.isSecret).toBe(false);
     expect(request.questions[0]!.options?.map((option) => option.label)).toContain(

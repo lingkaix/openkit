@@ -136,6 +136,33 @@ export function findWorkerCredentialMatches(
   return merged;
 }
 
+/** Literal-only streaming check. The separate generic digest scan covers hash-only proof before publication. */
+export function createWorkerArtifactLiteralCheck(
+  evidence: WorkerCredentialCheckValues
+): (chunk: Buffer) => void {
+  const values = requireWorkerCredentialCheckValues(evidence);
+  const literals = [...new Set(values.sensitiveValues.filter((value) => value.length > 0))].map(
+    (value) => Buffer.from(value, 'utf8')
+  );
+  const overlapBytes = literals.reduce(
+    (longest, value) => Math.max(longest, value.byteLength - 1),
+    0
+  );
+  let suffix = Buffer.alloc(0);
+  return (chunk) => {
+    const candidate = suffix.byteLength ? Buffer.concat([suffix, chunk]) : chunk;
+    if (literals.some((value) => candidate.indexOf(value) >= 0)) {
+      throw new ArtifactAuthorityError(
+        'invalid_request',
+        'Worker Artifact content contains injected credential material.'
+      );
+    }
+    suffix = overlapBytes
+      ? Buffer.from(candidate.subarray(Math.max(0, candidate.byteLength - overlapBytes)))
+      : Buffer.alloc(0);
+  };
+}
+
 /** Appends or extends an ordered range. @param matches Ranges collected so far. @param start First byte. @param end End-exclusive byte. */
 function appendMatch(matches: WorkerCredentialMatch[], start: number, end: number): void {
   const previous = matches.at(-1);

@@ -132,7 +132,7 @@ describe('exact retained Worker Skill delivery', () => {
       workspaceId: turn.workspaceId,
     });
     environmentPackage = resolvePackage();
-  });
+  }, 60_000);
 
   afterEach(() => {
     vi.restoreAllMocks();

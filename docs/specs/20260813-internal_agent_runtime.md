@@ -18,7 +18,7 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 - The loop does not own or know product records, role selection, durable state, scheduling, recovery, provider configuration, capability catalogs, authorization policy, budgets, credentials, output audiences, or external-effect settlement.
 - This specification does not redefine Worker Agent execution, Worker runtime continuity, Harnesses, Sandboxes, or worker capability supply.
 - This specification owns no Sandbox pin. Ordinary Sandbox selection stays with runtime scheduling.
-- [Context Management](20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context) owns the shared durable rolling context. Trusted callers assemble its admitted messages; this bounded loop owns no second durable transcript or Gateway compactor.
+- [Context Management](20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context) owns durable rolling context and the Knowledge Manager's OpenKit compaction exception. Trusted callers assemble the admitted messages; this bounded loop owns no second durable transcript or Gateway compactor.
 
 ## Core References
 
@@ -30,9 +30,9 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 
 ## Summary
 
-NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Quick Chat, Core Assistant, Workflow Coordinator, Knowledge Manager, and every later model-using internal role assemble different role inputs over this same loop; a short role call uses the same durable rolling context and never receives a separate direct Provider runtime.
+NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Core Assistant, Workflow Coordinator, Knowledge Manager and every later admitted model-using internal role assemble different role inputs over this same loop; each role uses its owned context policy and never receives a separate direct Provider runtime. The Knowledge Manager uses OpenKit compaction; other internal roles use durable rolling context.
 
-The caller assembles all role and product meaning before invocation, and the loop only performs model calls, consumes the admitted rolling-context window, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
+The caller assembles all role and product meaning before invocation, and the loop only performs model calls, consumes admitted context, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
 
 The loop is expressible without importing or understanding Thread, Turn, Goal, Workspace, Worker, AgentSession, or any other product concept. Internal roles remain Core-local assemblies over this mechanism, and every durable or consequential result remains controlled by its existing owner. OpenKit owns this implementation and continues using pi-ai behind the Gateway; it does not adopt Pi Agent Core as its runtime, session or harness owner. MCP, progressive Skills and native Kernel/UI use are caller assembly under `docs/specs/20260909-internal_agent_resource_integration.md`, not additional loop primitives.
 
@@ -60,9 +60,9 @@ interface InternalAgentLoopInput {
 }
 ```
 
-`systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the caller-visible logical-model contract already selected by the trusted caller, and `messages` comes from the shared durable rolling-context owner. This runtime does not own the Gateway catalog, Provider configuration, concrete Provider model, account slot, private route, threshold, compaction prompt, or compaction algorithm. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
+`systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the caller-visible logical-model contract already selected by the trusted caller, and `messages` comes from the existing context owner: durable rolling context, or OpenKit compaction for the Knowledge Manager. This runtime does not own the Gateway catalog, Provider configuration, concrete Provider model, account slot, private route, threshold, compaction prompt, or compaction algorithm. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
 
-`messages` is the complete assembled rolling window for this run. [Window Boundary And Persistence](20260902-agent_runtime_context_compaction.md#window-boundary-and-persistence) owns its canonical boundary, model-fit budget, reconstruction, and replacement timing. The loop appends bounded observations only within this run and returns them through its existing exit. It does not persist a window, select canonical history, read role storage, or reuse Provider-owned continuation as input authority. There is no `contextManagement` compaction field in this private input.
+`messages` is the complete assembled context for this run. The Knowledge Manager uses the [OpenKit compaction exception](20260902-agent_runtime_context_compaction.md#knowledge-manager-compaction); other internal roles use the rolling window below. [Window Boundary And Persistence](20260902-agent_runtime_context_compaction.md#window-boundary-and-persistence) owns its canonical boundary, model-fit budget, reconstruction, and replacement timing. The loop appends bounded observations only within this run and returns them through its existing exit. It does not persist a window, select canonical history, read role storage, or reuse Provider-owned continuation as input authority. There is no `contextManagement` compaction field in this private input.
 
 `maxModelTurns` and `maxToolCalls` MUST be positive integers; `maxModelTurns` counts provider round trips and `maxToolCalls` counts environment touches through supplied Tool closures. `deadlineMs` MUST be a positive integer millisecond duration that bounds wall-clock duration. These three values are the complete in-loop fuse vector.
 
@@ -120,7 +120,7 @@ The loop MUST perform these steps in order:
 
 1. Initialize an in-memory transcript from the accepted messages and check abort, deadlineMs, and positive fuse capacity.
 2. Call the selected logical model through the Gateway with the assembled system prompt, transcript, model-visible Tool definitions, and admitted context window.
-3. Append completed model output in order while preserving text/Tool interleaving and the admitted context bounds. The loop does not request or apply a Gateway compaction checkpoint.
+3. Append completed model output in order while preserving text/Tool interleaving and the admitted context bounds. Context assembly and the Gateway apply the caller's admitted context policy; the loop does not select a role-specific compactor.
 4. If the Provider failed or cancellation occurred, terminate with the exact typed outcome.
 5. If a truncated provider response contains any Tool call, execute none of its Tool calls; when another model round trip remains admissible, append bounded safe error results for correction, and otherwise terminate with the applicable fuse or failure.
 6. For each complete Tool call in provider order, resolve the exact supplied Tool, strictly validate its arguments against the input schema, check cancellation/deadline and remaining Tool capacity, invoke its server-bound closure, sanitize its result or error, and append the model-visible feedback. Validation does not coerce values, insert defaults, discard unknown fields or normalize nulls. Increment the environment-touch counter immediately before invoking a closure, including a closure that subsequently refuses the call.
@@ -140,7 +140,7 @@ The caller signal and loop deadline produce one cancellation signal passed to th
 
 ## Personal Assistant And Selected Resources
 
-Personal Assistant, management and Knowledge maintenance reuse this same bounded runtime without per-user processes or durable hidden Memory. Current Thread, scoped Memory/Knowledge and permission owners assemble continuity; changing provider or restarting does not erase those records. Selected Skills supply context and reviewed MCP adapters may implement exact Core-owned capabilities through trusted entry-path assembly. An MCP server never supplies arbitrary new model-visible Tools or a Worker harness. The accepted entry contract determines its exact Core Tool set, while selected bindings/versions determine only admitted implementations; current actor authority decides each call, not whether an otherwise reachable Tool disappears. Neither Plugin text nor the current message registers new internal Tools. Skill script execution is not part of this loop. Interaction-bounded Memory extraction uses these same fuses and typed outcomes; the runtime does not become a Dreaming scheduler.
+Personal Assistant, management and Knowledge maintenance reuse this same bounded runtime without per-user processes or durable hidden Memory. Current Thread, scoped Memory/Knowledge and permission owners assemble continuity; changing provider or restarting does not erase those records. Selected Skills supply context and reviewed MCP adapters may implement exact Core-owned capabilities through trusted entry-path assembly. An MCP server never supplies arbitrary new model-visible Tools or a Worker harness. The accepted entry contract determines its exact Core Tool set, while selected bindings/versions determine only admitted implementations; current actor authority decides each call, not whether an otherwise reachable Tool disappears. Neither Plugin text nor the current message registers new internal Tools. Skill script execution is not part of this loop. Automatic Memory extraction is deferred until after v0.1.0; the runtime does not become a learning scheduler.
 
 ## Minimal Tool Contract
 
@@ -247,7 +247,7 @@ Every internal-role base prompt contains exactly four semantic parts:
 
 The parts need not be separate paragraphs. Tool descriptions and schemas are the primary model-facing operational documentation, and the prompt MUST NOT duplicate complete schemas, lifecycle rules, authorization policy, budget tables, recovery algorithms, or NanoCore architecture.
 
-Trusted assembly proceeds conceptually in this deterministic order: role core, current facts from their exact owners, active Tool definitions, optional bounded cross-Tool guidance, optional progressively disclosed Skill index, bounded conversation or work messages, and provider serialization. The order does not require every layer to be concatenated into the system string, and optional layers MAY be absent.
+Trusted assembly proceeds conceptually in this deterministic order: role core, current facts from their exact owners, active Tool definitions, optional bounded cross-Tool guidance, optional progressively disclosed Skill index and applicable notebook scope overview, bounded conversation or work messages, and provider serialization. The order does not require every layer to be concatenated into the system string, and optional layers MAY be absent.
 
 Authored cross-Tool guidance is fixed text and counts toward the same limit. Selecting or interpolating that guidance at admission does not make its instructions dynamic data.
 
@@ -259,7 +259,7 @@ By default the assembler excludes ambient files, repository summaries, working d
 
 Prompt creation and update belong to trusted role assembly and configuration. A missing or invalid required role core fails before dispatch; stale facts are refreshed from their owner for a new run; conflicting untrusted instructions remain delimited data; restart rebuilds and repins the request.
 
-Acceptance requires stable role behavior to reconstruct without hidden provider memory, selected resource bodies to remain absent until an admitted Tool reads them, with only the bounded Skill index and Tool schemas admitted at assembly, and prompt injection to fail to replace the role or executable policy.
+Acceptance requires stable role behavior to reconstruct without hidden provider memory, selected resource bodies to remain absent until an admitted Tool reads them, with only bounded Skill and applicable notebook scope indexes and Tool schemas admitted at assembly, and prompt injection to fail to replace the role or executable policy.
 
 ## Persistence And Restart
 
@@ -279,7 +279,7 @@ Each bounded run is pinned to its resolved logical-model ID, Gateway-derived eff
 
 Selection of another compatible logical model is permitted only before the run's first dispatch and only when the caller explicitly selects an admitted candidate satisfying every required capability. A started run never substitutes another logical model. Gateway-private retry and failover among route members of the pinned logical model follow [the Gateway commit and failure rules](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) independently for each call. Failure after public commit terminates with its exact typed outcome; retry of the terminated execution is a newly admitted execution reconstructed from current durable truth.
 
-`DATA_ROOT/config/internal-role-profiles.jsonc` is the sole Server projection of these profiles and contains one Server default logical-model preference for roles that do not select one. `workspace.jsonc` may bind a role to a profile, preferred logical model, and required capabilities, while `user.jsonc` may carry a lighter per-Workspace profile or logical-model preference. Persistent resolution uses User, then Workspace, then Server, while an explicit admitted request is more specific than those defaults. This composition creates no second role catalog and no worker Agent Manifest.
+Every internal role, including the Knowledge Manager, uses the existing execution-profile resolver. Each Workspace can configure each role through the same precedence. `DATA_ROOT/config/internal-role-profiles.jsonc` is the sole Server projection of these profiles and contains one Server default logical-model preference for roles that do not select one. `workspace.jsonc` may bind a role to a profile, preferred logical model, and required capabilities, while `user.jsonc` may carry a lighter per-Workspace profile or logical-model preference. Persistent model resolution uses the User's per-Workspace `internalRoles`, then Workspace `internalRoles`, then the selected Server role profile, then the Server and Gateway defaults. An explicit admitted request can select only a compatible model from that resolved contract; it cannot bypass required capabilities. This composition creates no second role catalog and no worker Agent Manifest.
 
 Every material role prompt, Tool schema, model policy, or default-model change MUST pass a fixed role-relevant evaluation set before becoming the default. The set covers normal behavior, denied authority, malformed Tool input, prompt injection, result redaction, budget and context boundaries, provider failure, restart reconstruction, and duplicate-effect prevention, plus role-specific success and false-completion cases.
 
@@ -313,7 +313,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 ## Acceptance Predicates
 
 - One role-agnostic loop runs distinct internal roles from assembled inputs without importing or branching on product concepts.
-- Quick Chat and every other model-using internal role use this loop, and a role remains on the same implementation regardless of conversation length.
+- Core Assistant and every other model-using internal role use this loop, and a role remains on the same implementation regardless of conversation length.
 - `InternalAgentLoopInput`, `AgentMessage`, `AgentTool`, `InternalAgentLoopExit`, and provider projection remain NanoCore-private and are absent from protocol, App API, config schema, AEP, worker-control, and NanoHost surfaces.
 - Exactly three fuses and four typed exits cover every local termination path, and none becomes product success.
 - Truncated or incomplete Tool calls execute zero environment operations, while complete calls execute sequentially after schema validation.
@@ -325,7 +325,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 - Prompt assembly follows the four-part contract, deterministic owner order, refresh and pinning rules, and default exclusions.
 - Restart reconstructs a new run from current trusted owners without durable loop or toolset state and without duplicate accepted effects.
 - One execution remains pinned to its resolved profile and logical-model contract, uses logical-model fallback only before its first dispatch, permits only Gateway-private pre-commit route replacement within that contract under its routing setting and failure rules, and changes defaults only after evaluation through bounded rollout and configuration rollback.
-- One run consumes the existing owner's durable rolling-context window and creates no second canonical transcript or Gateway compactor.
+- Every role uses the existing model resolver. One run consumes its owner's admitted context: OpenKit compaction for the Knowledge Manager, durable rolling context for other roles. Neither path creates a second canonical transcript.
 
 ## Related Docs
 
