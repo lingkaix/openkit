@@ -8,6 +8,7 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 
@@ -93,6 +94,63 @@ describe('public explicit self Source intake', () => {
       [first.body.source.id, second.body.source.id].sort()
     );
     expect(existsSync(userMemoryRoot(f.dataRoot, f.userId))).toBe(false);
+  });
+
+  it('publishes and inspects an explicitly authored page against the exact current self Source', async () => {
+    const f = fixture();
+    const captured = await f.call('memory.source.register', {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'My stated preference',
+      content: 'I explicitly prefer concise reports.',
+    });
+    expect(captured.status).toBe(200);
+    const sourceReference = `source:${captured.body.source.id}@${captured.body.source.contentDigest}`;
+    const page = (body: string) =>
+      serializeUserAuthoredKnowledgePage(
+        {
+          id: 'cited-preference',
+          kind: 'preference',
+          title: 'My cited preference',
+          content: body,
+          sourceReferences: [sourceReference],
+          createdAt: '2026-10-17T00:00:00.000Z',
+          updatedAt: '2026-10-17T00:00:00.000Z',
+        },
+        { kind: 'user', userId: f.userId }
+      );
+    const input = {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'cited-preference',
+      content: page('Keep my explicit preference.\n'),
+      summary: 'Save my cited preference',
+    };
+    const first = await f.call('memory.create', input);
+    expect(first.status).toBe(200);
+    expect(await f.call('memory.read', { pageId: input.pageId })).toMatchObject({
+      status: 200,
+      body: { page: { content: input.content } },
+    });
+    const updatedContent = page('Keep my corrected explicit preference.\n');
+    const updated = await f.call('memory.update', {
+      ...input,
+      requestId: randomUUID(),
+      baseRevision: first.body.notebookRevision,
+      content: updatedContent,
+    });
+    expect(updated.status).toBe(200);
+    expect(await f.call('memory.create', input)).toEqual(first);
+    expect((await f.call('memory.list')).body.pages.map((row: { id: string }) => row.id)).toEqual([
+      input.pageId,
+    ]);
+    expect((await f.call('memory.read', { pageId: input.pageId })).body.page.content).toBe(
+      updatedContent
+    );
+    expect(await f.call('memory.source.read', { sourceId: captured.body.source.id })).toMatchObject({
+      status: 200,
+      body: { source: { content: 'I explicitly prefer concise reports.' } },
+    });
   });
 
   it('refuses to replace a missing User database while established Source bytes remain', async () => {
