@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { recordWorkspaceAuditEvent } from './audit-events.js';
+import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath, readTurnFeedback } from './runtime/feedback.js';
@@ -379,6 +379,23 @@ describe('core Thread audience', () => {
         { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
         workspace.id
       );
+      const read = () =>
+        app.request(
+          ...operationRequest(
+            'audit.workspace-list',
+            { workspaceId: workspace.id },
+            { headers: stopper }
+          )
+        );
+      const beforeStop = await read();
+      expect(beforeStop.status).toBe(200);
+      const initialHistory = await beforeStop.json();
+      for (const event of initialHistory.auditEvents) {
+        expect(['knowledge.notebook.admit', 'knowledge.notebook.initialize']).toContain(
+          event.action
+        );
+        expect(event.threadId).toBeNull();
+      }
       const response = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
           headers: stopper,
@@ -391,18 +408,11 @@ describe('core Thread audience', () => {
         status: 'cancelled',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       });
-      const read = () =>
-        app.request(
-          ...operationRequest(
-            'audit.workspace-list',
-            { workspaceId: workspace.id },
-            { headers: stopper }
-          )
-        );
       const first = await read();
       expect(first.status).toBe(200);
       const history = await first.json();
       expect(history.auditEvents).toEqual([
+        ...initialHistory.auditEvents,
         expect.objectContaining({
           action: 'turn.interrupt',
           category: 'command',
@@ -444,6 +454,13 @@ describe('core Thread audience', () => {
     const fixture = createCoreAudienceFixture();
     try {
       const db = openWorkspaceDb(fixture.dataRoot, fixture.workspace.id);
+      const initialHistory = listWorkspaceAuditEvents(db, fixture.workspace.id);
+      for (const initialEvent of initialHistory) {
+        expect(['knowledge.notebook.admit', 'knowledge.notebook.initialize']).toContain(
+          initialEvent.action
+        );
+        expect(initialEvent.threadId).toBeNull();
+      }
       const event = recordWorkspaceAuditEvent({
         workspaceDb: db,
         workspaceId: fixture.workspace.id,
@@ -471,7 +488,10 @@ describe('core Thread audience', () => {
           )
         );
         expect(response.status).toBe(200);
-        expect((await response.json()).auditEvents).toEqual(visible ? [event] : []);
+        expect((await response.json()).auditEvents).toEqual([
+          ...initialHistory,
+          ...(visible ? [event] : []),
+        ]);
       }
     } finally {
       fixture.close();
