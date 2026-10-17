@@ -309,18 +309,18 @@ function pinnedSourcesReadable(
         if (!match) return false;
         const content = pinnedPage(input, match[1]!);
         if (content === null || (match[2] && digest(content) !== match[2])) return false;
-        const parsed = parseOkfDocument({ path: `knowledge/pages/${match[1]!}.md`, content });
-        const sensitivity = parsed.document
-          ? stringFrontmatterField(parsed.document, 'sensitivity')
-          : null;
-        if (
-          !parsed.ok ||
-          sensitivity === null ||
-          sensitivity === 'restricted' ||
-          sensitivity === 'confidential' ||
-          !pinnedPageReadable(input, match[1]!, content, visiting)
-        )
-          return false;
+        if (!pinnedKnowledgeSourceReadable(input, match[1]!, content, visiting)) return false;
+        // Exact history stays pinned; later source restrictions still govern its disclosure.
+        const currentRevision = input.notebook.publishedRevision();
+        if (currentRevision !== input.notebookRevision) {
+          const current = pinNotebook({ ...input, notebookRevision: currentRevision });
+          const currentContent = pinnedPage(current, match[1]!);
+          if (
+            currentContent !== null &&
+            !pinnedKnowledgeSourceReadable(current, match[1]!, currentContent, visiting)
+          )
+            return false;
+        }
       } else if (reference.startsWith('turn:')) {
         const turn = store.getTurnById(reference.slice(5));
         if (turn.workspaceId !== input.workspaceId || !threadReadable(input, turn.threadId))
@@ -336,6 +336,26 @@ function pinnedSourcesReadable(
   } finally {
     workspaceDb?.sqlite.close();
   }
+}
+
+/** Applies source sensitivity and recursive audience checks within one selected revision. */
+function pinnedKnowledgeSourceReadable(
+  input: PinnedNotebookTarget,
+  pageId: string,
+  content: string,
+  visiting: ReadonlySet<string>
+): boolean {
+  const parsed = parseOkfDocument({ path: `knowledge/pages/${pageId}.md`, content });
+  const sensitivity = parsed.document
+    ? stringFrontmatterField(parsed.document, 'sensitivity')
+    : null;
+  return (
+    parsed.ok &&
+    sensitivity !== null &&
+    sensitivity !== 'restricted' &&
+    sensitivity !== 'confidential' &&
+    pinnedPageReadable(input, pageId, content, visiting)
+  );
 }
 
 /** Verifies exact selected source bytes and current audience, including recursive pinned references. */
