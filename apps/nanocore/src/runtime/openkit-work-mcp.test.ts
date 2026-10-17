@@ -15,10 +15,29 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
-import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
+import {
+  dispatchOpenkitWorkTool,
+  OPENKIT_WORK_TOOL_DEFINITIONS,
+  OPENKIT_WORK_TOOLS,
+} from './openkit-work-mcp.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
 import { readWorkerRawOutput } from './worker-raw-output.js';
+
+it('advertises the four canonical Work Tool projections in their fixed order', () => {
+  expect(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
+    'work.input.request',
+    'work.peer.list',
+    'work.peer.read',
+    'work.artifact.submit',
+  ]);
+  expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toEqual([
+    'work_input_request',
+    'work_peer_list',
+    'work_peer_read',
+    'work_artifact_submit',
+  ]);
+});
 
 /** Creates real canonical owners; the capture double stands outside the Core publication seam. */
 function submissionFixture() {
@@ -113,7 +132,7 @@ function submissionFixture() {
     );
   };
   const submit = (requestId = 'req_file_1', overrides: Record<string, unknown> = {}) =>
-    dispatchOpenkitWorkTool(input, 'work_submit_artifact', {
+    dispatchOpenkitWorkTool(input, 'work_artifact_submit', {
       requestId,
       path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
       kind: 'report',
@@ -150,6 +169,18 @@ function submissionFixture() {
     credentialCheckValues,
   };
 }
+
+it('refuses old and unregistered Work spellings before an owner effect', async () => {
+  const fixture = submissionFixture();
+  const before = fixture.counts();
+  for (const name of ['work_submit_artifact', 'work_request_input', 'work.artifact.submit']) {
+    await expect(dispatchOpenkitWorkTool(fixture.input, name, {})).rejects.toMatchObject({
+      code: 'capability_denied',
+    });
+  }
+  expect(fixture.captureArtifact).not.toHaveBeenCalled();
+  expect(fixture.counts()).toEqual(before);
+});
 
 /** Extracts the acknowledged id without inferring successful publication from assistant text. */
 function acknowledgedArtifactId(
@@ -190,8 +221,8 @@ describe('synchronous Worker file submission', () => {
     expect(fixture.captureArtifact).toHaveBeenCalledOnce();
   });
 
-  it('advertises work_submit_artifact on the existing work supply', () => {
-    expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_submit_artifact');
+  it('advertises work_artifact_submit on the existing work supply', () => {
+    expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_artifact_submit');
   });
 
   it('returns an Artifact id only after Artifact, reference, Review and receipt are durable', async () => {
@@ -570,7 +601,7 @@ describe('submission authority and byte evidence', () => {
       return firstCapture(request);
     });
     const submit = (requestId: string) =>
-      dispatchOpenkitWorkTool({ ...fixture.input, fileAdmission }, 'work_submit_artifact', {
+      dispatchOpenkitWorkTool({ ...fixture.input, fileAdmission }, 'work_artifact_submit', {
         requestId,
         path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
         kind: 'report',
@@ -602,7 +633,7 @@ describe('submission authority and byte evidence', () => {
       return captured;
     });
     await expect(
-      dispatchOpenkitWorkTool({ ...fixture.input, signal: abort.signal }, 'work_submit_artifact', {
+      dispatchOpenkitWorkTool({ ...fixture.input, signal: abort.signal }, 'work_artifact_submit', {
         requestId: 'cancelled',
         path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
         kind: 'report',

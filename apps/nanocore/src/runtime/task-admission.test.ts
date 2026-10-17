@@ -334,6 +334,7 @@ it.each([
       coordinatorTurnId: coordinator.id,
       startWorker,
     });
+    expect(taskTool.name).toBe('goal.task.dispatch');
     const request = createStructuredWorkerDelegationRequest({
       objective: 'Review the schema',
       acceptanceCriteria: ['A review exists'],

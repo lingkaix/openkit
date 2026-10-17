@@ -677,9 +677,9 @@ function resolveOpenShellAgentEnvironmentPackage(
         ? {
             mode: 'enabled' as const,
             routes: [
-              'mcp.list_servers' as const,
-              'mcp.list_tools' as const,
-              'mcp.call_tool' as const,
+              'mcp.list-servers' as const,
+              'mcp.list-tools' as const,
+              'mcp.call-tool' as const,
             ],
           }
         : { mode: 'disabled' as const, routes: [] as const }),

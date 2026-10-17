@@ -1,6 +1,10 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
-import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
+import {
+  assertOperationNames,
+  ListThreadItemsResponseSchema,
+  operationToolName,
+} from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   ArtifactMediaTypeSchema,
@@ -120,33 +124,45 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
   return projection;
 }
 
-/** Fixed built-in work tools; their schemas ignore inert additive input members. */
-export const OPENKIT_WORK_TOOLS = [
+/** Canonical built-in Work contracts; their schemas ignore inert additive input members. */
+export const OPENKIT_WORK_TOOL_DEFINITIONS = [
   {
-    name: 'work_request_input',
+    name: 'work.input.request',
     description:
       'Ask the responsible user one or more non-secret questions. The answer arrives on a later Turn. Recording the question is the result of this call.',
     inputSchema: mcpInputSchema(WorkRequestInputArgsSchema),
   },
   {
-    name: 'work_list_peers',
+    name: 'work.peer.list',
     description:
       'List other AgentSessions currently in your Sandbox through opaque handles valid only within this Turn. Thread metadata requires current read access.',
     inputSchema: mcpInputSchema(WorkListPeersArgsSchema),
   },
   {
-    name: 'work_read_peer',
+    name: 'work.peer.read',
     description:
       'Read recent product Turns and Items for one current peer. Results are newest first; use nextCursor for older records. This does not control or change the peer.',
     inputSchema: mcpInputSchema(WorkReadPeerArgsSchema),
   },
   {
-    name: 'work_submit_artifact',
+    name: 'work.artifact.submit',
     description:
       'Submit one finished file from an eligible output root. Finish writing first. Success returns the durable Artifact id; correction or a new file version uses a new requestId. Read the eligible roots in this package guidance. Any file media type and exact binary bytes are admitted up to 1,000,000,000 bytes per file. Material proposals separately require their supported UTF-8 text format.',
     inputSchema: mcpInputSchema(WorkSubmitArtifactArgsSchema),
   },
 ] as const;
+
+assertOperationNames(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name));
+
+/** MCP names are one mechanical projection of the canonical Work contracts. */
+export const OPENKIT_WORK_TOOLS = OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => ({
+  ...tool,
+  name: operationToolName(tool.name),
+}));
+
+const workToolIdsByName = new Map(
+  OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => [operationToolName(tool.name), tool.name])
+);
 
 /** Digest binds selected supply to the exact built-in tool schema. */
 export const OPENKIT_WORK_CATALOG_DIGEST = `sha256:${createHash('sha256').update(JSON.stringify(OPENKIT_WORK_TOOLS)).digest('hex')}`;
@@ -197,6 +213,10 @@ export async function dispatchOpenkitWorkTool(
   toolName: string,
   args: Record<string, unknown>
 ) {
+  const toolId = workToolIdsByName.get(toolName);
+  if (!toolId) {
+    throw new WorkerControlGatewayError('capability_denied', 'Work Tool is unavailable.', 403);
+  }
   const { scope } = input.environmentPackage;
   const responsibleUserId = responsibleUserIdForActor(scope.triggerActor);
   const turn = input.store.getTurnById(scope.turnId);
@@ -208,7 +228,7 @@ export async function dispatchOpenkitWorkTool(
   ) {
     throw new WorkerControlGatewayError('turn_not_active', 'The Turn is not running.', 409);
   }
-  if (toolName === 'work_submit_artifact') {
+  if (toolId === 'work.artifact.submit') {
     try {
       return await submitArtifact(input, args);
     } catch (error) {
@@ -217,7 +237,7 @@ export async function dispatchOpenkitWorkTool(
       throw error;
     }
   }
-  if (toolName === 'work_list_peers' || toolName === 'work_read_peer') {
+  if (toolId === 'work.peer.list' || toolId === 'work.peer.read') {
     const peers = input.coreDb.sqlite
       .prepare(`
       SELECT peer.agent_session_runtime_binding_id AS bindingId,
@@ -266,7 +286,7 @@ export async function dispatchOpenkitWorkTool(
           )
       );
     let projection: Record<string, unknown>;
-    if (toolName === 'work_list_peers') {
+    if (toolId === 'work.peer.list') {
       projection = {
         peers: peers.map((peer) => ({
           handle: handleFor(peer.bindingId),
