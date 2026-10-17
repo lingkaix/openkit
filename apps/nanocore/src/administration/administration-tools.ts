@@ -6,7 +6,7 @@ export const ADMINISTRATION_TOOL_NAMES = [
   'administration.configuration.read',
   'administration.schema.read',
   'administration.configuration.propose',
-  'administration.configuration.apply',
+  'administration.configuration.dispatch',
   'worker-environment.list',
   'worker-environment.status',
   'worker-environment.prepare',

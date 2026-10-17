@@ -212,7 +212,7 @@ describe('administration conversation route', () => {
             {
               type: 'function_call',
               call_id: 'call_environment_list',
-              name: 'worker_environment_list',
+              name: 'worker-environment_list',
               arguments: JSON.stringify({ workspaceId }),
             },
           ],

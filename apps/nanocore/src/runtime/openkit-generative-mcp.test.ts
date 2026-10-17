@@ -246,7 +246,7 @@ describe('openkit-generative MCP', () => {
       },
     };
     try {
-      const published = await dispatchOpenkitGenerativeTool(context, 'generative_ui_publish', {
+      const published = await dispatchOpenkitGenerativeTool(context, 'generative-ui_publish', {
         title: 'Mapping view',
         fallbackText: 'Membership 1 maps to CRM 1.',
         messages: [
@@ -278,7 +278,7 @@ describe('openkit-generative MCP', () => {
       });
       expect(published.structuredContent).toMatchObject({ publication: 'published' });
       const publishTool = OPENKIT_GENERATIVE_TOOLS.find(
-        (tool) => tool.name === 'generative_ui_publish'
+        (tool) => tool.name === 'generative-ui_publish'
       );
       expect(JSON.stringify(publishTool?.inputSchema)).not.toContain('threadId');
       expect(JSON.stringify(publishTool?.inputSchema)).not.toContain('turnId');
@@ -294,7 +294,7 @@ describe('openkit-generative MCP', () => {
         ).n;
       expect(count()).toBe(1);
       await expect(
-        dispatchOpenkitGenerativeTool(context, 'generative_ui_publish', {
+        dispatchOpenkitGenerativeTool(context, 'generative-ui_publish', {
           threadId: 'foreign',
           turnId: turn.id,
         })

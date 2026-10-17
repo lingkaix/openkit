@@ -493,7 +493,7 @@ function projectInternalAgentRequest(
     name: canonicalToAlias.get(name)!,
     description,
     parameters: inputSchema,
-    // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as task_start's tuple prefixItems.
+    // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as goal.task.dispatch's tuple prefixItems.
     strict: false,
   }));
   return { canonicalToAlias, aliasToCanonical, providerInput, providerTools };

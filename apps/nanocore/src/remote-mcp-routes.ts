@@ -6,6 +6,7 @@ import {
   OPERATION_DEFINITIONS,
   type OperationId,
   operationMcpEligible,
+  operationToolName,
 } from '@openkit/app-api-schemas';
 import type { Hono } from 'hono';
 import { z } from 'zod';
@@ -123,28 +124,28 @@ export function registerRemoteMcpRoutes({
     server.setRequestHandler('tools/list', async () => ({
       tools: [
         {
-          name: 'openkit_search',
+          name: operationToolName('openkit.search'),
           description:
             'Search bounded operation metadata by semantic id and description; discovery is not permission.',
           inputSchema: mcpInputSchema(querySchema),
           annotations: { readOnlyHint: true, destructiveHint: false },
         },
         {
-          name: 'openkit_describe',
+          name: operationToolName('openkit.describe'),
           description:
             'Read one operation contract and its mutation annotations from the definition table.',
           inputSchema: mcpInputSchema(describeSchema),
           annotations: { readOnlyHint: true, destructiveHint: false },
         },
         {
-          name: 'openkit_guide',
+          name: operationToolName('openkit.guide'),
           description: 'Read product workflow, human-decision and recovery guidance.',
           inputSchema: mcpInputSchema(guideSchema),
           annotations: { readOnlyHint: true, destructiveHint: false },
         },
         // A multiplexed call can mutate; openkit_describe carries the exact selected operation's posture.
         {
-          name: 'openkit_call',
+          name: operationToolName('openkit.call'),
           description:
             'Invoke one described operation as the authenticated Token user. May mutate; use openkit_describe for the selected operation. Ask the user for every server-required human decision.',
           inputSchema: mcpInputSchema(callSchema),

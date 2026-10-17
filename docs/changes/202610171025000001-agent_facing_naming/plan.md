@@ -1,5 +1,5 @@
 ---
-kind: change-plan
+type: change-plan
 status: in-progress
 ---
 # Agent-Facing Naming Cutover

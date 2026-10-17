@@ -979,7 +979,7 @@ describe('internal Agent Gateway provider', () => {
     [`test.${'a'.repeat(36)}`],
     ['invalid/name'],
     ['openkit_unavailable_tool'],
-    ['openkit.unavailable-tool'],
+    ['openkit.unavailable.tool'],
   ])('rejects invalid or colliding Tool aliases before dispatch: %j', async (...names) => {
     const createResponses = vi.fn().mockResolvedValue({
       id: 'response',
@@ -1096,7 +1096,7 @@ describe('internal Agent Gateway provider', () => {
                 ? []
                 : [
                     {
-                      name: 'lookup',
+                      name: 'test.lookup',
                       description: 'Read status.',
                       inputSchema: {
                         type: 'object',
@@ -1118,7 +1118,9 @@ describe('internal Agent Gateway provider', () => {
       if (toolCount === 0) {
         expect(payloads[0]?.tools).toBeUndefined();
       } else {
-        expect(payloads[0]?.tools).toMatchObject([{ functionDeclarations: [{ name: 'lookup' }] }]);
+        expect(payloads[0]?.tools).toMatchObject([
+          { functionDeclarations: [{ name: 'test_lookup' }] },
+        ]);
         // Provider constrained generation is disabled; the internal loop retains schema admission.
         expect(payloads[0]?.toolConfig).toBeUndefined();
       }
