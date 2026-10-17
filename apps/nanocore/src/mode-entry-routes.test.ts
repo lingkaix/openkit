@@ -4471,7 +4471,7 @@ describe('#144 real Assistant command wiring', () => {
         'kernel_records_create',
         'kernel_records_update',
         'kernel_records_batch',
-        'generative_ui_publish',
+        'generative-ui_publish',
       ]);
       const requestId = uuidv5(
         JSON.stringify([

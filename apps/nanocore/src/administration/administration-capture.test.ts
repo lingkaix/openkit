@@ -181,7 +181,7 @@ it('binds the actual Administration prompt and ordered tools before model access
       'administration_configuration_read',
       'administration_schema_read',
       'administration_configuration_propose',
-      'administration_configuration_apply',
+      'administration_configuration_dispatch',
       'worker-environment_list',
       'worker-environment_status',
       'worker-environment_prepare',
