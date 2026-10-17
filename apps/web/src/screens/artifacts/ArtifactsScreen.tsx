@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { TextField as AriaTextField, Label, TextArea } from 'react-aria-components';
+import {
+  Link as AriaLink,
+  TextField as AriaTextField,
+  FileTrigger,
+  Label,
+  TextArea,
+} from 'react-aria-components';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { useConnection } from '../../app/core-client';
+import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   ArtifactRow,
   Button,
@@ -41,6 +47,7 @@ import {
   useThreads,
   useWorkspaces,
 } from './data';
+import { ZipFolderPanel } from './ZipFolderPanel';
 
 /** User-facing output kinds, independent of review lifecycle and content format. */
 const ARTIFACT_KIND_LABEL: Record<ArtifactListItem['kind'], string> = {
@@ -108,6 +115,7 @@ function ImportContentField(props: {
 
 /** Live selected-Workspace Artifact inventory, exact read, import, and introduction. */
 export function ArtifactsScreen() {
+  const client = useCoreClient();
   const workspaces = useWorkspaces();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -131,6 +139,7 @@ export function ArtifactsScreen() {
   const [title, setTitle] = useState('');
   const [mediaType, setMediaType] = useState('');
   const [content, setContent] = useState('');
+  const [file, setFile] = useState<File | null>(null);
   const [threadId, setThreadId] = useState('');
   const [listDeniedUntilSettled, setListDeniedUntilSettled] = useState(false);
   const listDenied = isWorkspaceAccessDenied(artifacts.error);
@@ -153,6 +162,7 @@ export function ArtifactsScreen() {
     setTitle('');
     setMediaType('');
     setContent('');
+    setFile(null);
     setThreadId('');
     setListDeniedUntilSettled(false);
     importArtifact.reset();
@@ -171,6 +181,7 @@ export function ArtifactsScreen() {
     setTitle('');
     setMediaType('');
     setContent('');
+    setFile(null);
     setThreadId('');
     importArtifact.reset();
     introduceArtifact.reset();
@@ -190,6 +201,7 @@ export function ArtifactsScreen() {
     setTitle('');
     setMediaType('');
     setContent('');
+    setFile(null);
     importArtifact.reset();
   }
 
@@ -209,12 +221,13 @@ export function ArtifactsScreen() {
   }
 
   function tryImport() {
-    if (!workspaceId || !isArtifactImportMediaType(mediaType) || !title || !content) return;
+    if (!workspaceId || !isArtifactImportMediaType(mediaType) || !title || (!file && !content))
+      return;
     submitImport({
       workspaceId,
       title,
       mediaType,
-      content,
+      content: file ?? content,
       requestId: createRequestId(),
     });
   }
@@ -342,7 +355,9 @@ export function ArtifactsScreen() {
   const listedItem = selectedId ? (items.find((item) => item.id === selectedId) ?? null) : null;
   const previewBody =
     listedItem && selected.data && selected.data.version === listedItem.version && !selected.isError
-      ? selected.data.content.body
+      ? selected.data.content.format === 'file'
+        ? undefined
+        : selected.data.content.body
       : undefined;
   const importBound = importArtifact.variables?.workspaceId === workspaceId;
   const introduceBound =
@@ -364,7 +379,11 @@ export function ArtifactsScreen() {
     artifacts.isFetching ||
     importArtifact.isPending ||
     introduceArtifact.isPending;
-  const canImport = isArtifactImportMediaType(mediaType) && Boolean(title && content);
+  const canImport = isArtifactImportMediaType(mediaType) && Boolean(title && (file || content));
+  const detail =
+    listedItem && !selected.isError && selected.data?.version === listedItem.version
+      ? selected.data
+      : null;
   const canIntroduce = Boolean(
     listedItem &&
       threadId &&
@@ -414,6 +433,28 @@ export function ArtifactsScreen() {
 
       {importing ? (
         <Card className="flex flex-col gap-3">
+          <FileTrigger
+            onSelect={(files) => {
+              const selectedFile = files?.item(0);
+              if (!selectedFile) return;
+              setFile(selectedFile);
+              setTitle(selectedFile.name);
+              setMediaType(
+                isArtifactImportMediaType(selectedFile.type)
+                  ? selectedFile.type
+                  : 'application/octet-stream'
+              );
+            }}
+          >
+            <Button variant="outline" isDisabled={importActionBlocked}>
+              Choose file
+            </Button>
+          </FileTrigger>
+          {file ? (
+            <p className="text-sm text-fg-muted">
+              {file.name} · {file.size.toLocaleString()} bytes
+            </p>
+          ) : null}
           <TextField
             label="Title"
             value={title}
@@ -427,11 +468,17 @@ export function ArtifactsScreen() {
             isDisabled={importActionBlocked}
             placeholder="text/markdown"
           />
-          <ImportContentField
-            value={content}
-            onChange={setContent}
-            isDisabled={importActionBlocked}
-          />
+          {!file ? (
+            <ImportContentField
+              value={content}
+              onChange={setContent}
+              isDisabled={importActionBlocked}
+            />
+          ) : (
+            <Button variant="quiet" isDisabled={importActionBlocked} onPress={() => setFile(null)}>
+              Remove selected file
+            </Button>
+          )}
           {importBound && importArtifact.isError ? (
             <fieldset disabled={disconnected} className="contents">
               <ErrorBanner
@@ -498,9 +545,47 @@ export function ArtifactsScreen() {
           ) : previewBody ? (
             <pre className="whitespace-pre-wrap text-sm text-fg">{previewBody}</pre>
           ) : null}
-          {previewBody !== undefined && selected.data ? (
+          {detail?.content.format === 'file' ? (
+            <dl className="text-sm text-fg-muted">
+              <dt>Media type</dt>
+              <dd>{detail.content.mediaType}</dd>
+              <dt>Size</dt>
+              <dd>{detail.content.byteLength.toLocaleString()} bytes</dd>
+              <dt>SHA-256</dt>
+              <dd className="break-all">{detail.contentDigest}</dd>
+              <dt>Source</dt>
+              <dd>{detail.origin.kind === 'imported' ? 'Imported file' : 'Worker output'}</dd>
+            </dl>
+          ) : null}
+          {detail?.content.format === 'file' &&
+          (detail.content.mediaType === 'application/zip' ||
+            detail.title.toLowerCase().endsWith('.zip')) ? (
+            <ZipFolderPanel
+              key={`${detail.workspaceId}:${detail.id}:${detail.version}:${detail.contentDigest}`}
+              source={{
+                workspaceId: detail.workspaceId,
+                artifactId: detail.id,
+                artifactVersion: detail.version,
+                originalDigest: detail.contentDigest,
+              }}
+              disabled={writeBlocked}
+            />
+          ) : null}
+          {detail ? (
+            <AriaLink
+              className="text-accent underline"
+              href={client.artifactFiles.browserDownloadUrl({
+                workspaceId: detail.workspaceId,
+                artifactId: detail.id,
+                artifactVersion: detail.version,
+              })}
+            >
+              Download original
+            </AriaLink>
+          ) : null}
+          {detail ? (
             <p className="text-sm text-fg-muted">
-              {selected.data.origin.kind === 'turn-output'
+              {detail.origin.kind === 'turn-output'
                 ? 'This output is already linked to its producing conversation. To ask an agent to use it, attach it in the conversation composer.'
                 : 'Add a reference to this imported file in the selected conversation. This does not send a message to an agent or start work.'}
             </p>

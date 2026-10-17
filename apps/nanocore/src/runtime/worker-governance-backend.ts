@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstat, readdir, readFile, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import type {
   MaterializedWorkspaceRoot,
@@ -18,6 +19,7 @@ import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker
 import { z } from 'zod';
 import { skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import type { CapturedWorkerFile } from '../storage/artifacts/worker-file-transfer.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
@@ -334,9 +336,6 @@ export interface NanoHostStagedExportResult {
   readonly stagingPath: string;
 }
 
-/** Worker Artifact aggregate bound retained by the existing canonical collection owner. */
-export const MAX_WORKER_ARTIFACT_BYTES = 16 * 1024 * 1024;
-
 /**
  * Prepares the canonical AEP, then declared worker-supply files, then Context Package imports.
  *
@@ -614,6 +613,81 @@ export async function consumeNanoHostStagedExport(value: unknown): Promise<Buffe
   }
 }
 
+/** Opens one exact export with bounded verification and descriptor-owned streaming. The caller disposes the private copy on success, refusal or fencing. */
+export async function openNanoHostStagedExport(
+  value: unknown,
+  signal?: AbortSignal
+): Promise<CapturedWorkerFile> {
+  if (
+    !isRecord(value) ||
+    typeof value.stagingPath !== 'string' ||
+    !Number.isSafeInteger(value.byteLength) ||
+    (value.byteLength as number) < 0 ||
+    (value.byteLength as number) > 1_000_000_001 ||
+    typeof value.sha256 !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.sha256)
+  ) {
+    throw new Error('NanoHost staged export identity is invalid.');
+  }
+  const path = value.stagingPath;
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    signal?.throwIfAborted();
+    const before = await file.stat({ bigint: true });
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      before.size !== BigInt(value.byteLength as number)
+    )
+      throw new Error('NanoHost staged export is not the exact regular file.');
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(65_536);
+    let position = 0;
+    while (position < (value.byteLength as number)) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await file.read(
+        buffer,
+        0,
+        Math.min(buffer.length, (value.byteLength as number) - position),
+        position
+      );
+      if (!bytesRead) throw new Error('NanoHost staged export is incomplete.');
+      digest.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    const after = await file.stat({ bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      after.nlink !== 1n ||
+      `sha256:${digest.digest('hex')}` !== value.sha256
+    )
+      throw new Error('NanoHost staged export digest or identity disagrees.');
+    const source = file.createReadStream({
+      start: 0,
+      highWaterMark: 65_536,
+      ...(signal ? { signal } : {}),
+    });
+    return {
+      byteLength: position,
+      contentDigest: value.sha256,
+      source,
+      remove: async () => {
+        source.destroy();
+        await file.close();
+        await removeNanoHostStagedExport(path);
+      },
+    };
+  } catch (error) {
+    await file.close();
+    await removeNanoHostStagedExport(path);
+    throw error;
+  }
+}
+
 /**
  * Re-verifies one dispatcher-owned staged export without consuming its canonical-import lifetime.
  *
@@ -631,6 +705,7 @@ export async function inspectNanoHostStagedExport(
   if (
     typeof result.stagingPath !== 'string' ||
     typeof result.byteLength !== 'number' ||
+    result.byteLength > 256 * 1024 * 1024 ||
     typeof result.sha256 !== 'string' ||
     !/^sha256:[0-9a-f]{64}$/.test(result.sha256)
   ) {
@@ -1305,10 +1380,11 @@ export type WorkerArtifactCapture = (input: {
   readonly path: string;
   readonly maxByteLength: number;
   readonly signal?: AbortSignal;
-}) => Promise<{
-  readonly bytes: Buffer;
-  readonly credentialCheckValues: import('./worker-credential-guard.js').WorkerCredentialCheckValues;
-}>;
+}) => Promise<
+  CapturedWorkerFile & {
+    readonly credentialCheckValues: import('./worker-credential-guard.js').WorkerCredentialCheckValues;
+  }
+>;
 
 /**
  * Creates one redacted fail-closed Artifact collection error.

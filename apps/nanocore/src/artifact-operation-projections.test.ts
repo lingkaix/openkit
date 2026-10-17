@@ -4,18 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
+import { registerArtifactFileRoutes } from './artifact-file-routes.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -125,7 +128,7 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
 }
 
 /** Executes actual HTTP, typed client and CLI catalog projections against the same owners. */
-async function projections(f: ReturnType<typeof fixture>, token?: string) {
+async function projections(f: ReturnType<typeof fixture>, token?: string, operationId?: string) {
   const headers = {
     'content-type': 'application/json',
     ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -139,17 +142,37 @@ async function projections(f: ReturnType<typeof fixture>, token?: string) {
   const { operationCatalog } = await import(
     new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
   );
+  const binary = operationId === 'artifact.import' || operationId === 'artifact.download';
   return {
     http: async (id: string, input: Record<string, unknown>) => {
       const { requestId, ...body } = input;
-      const response = await app.request(`/api/app/operations/${id}`, {
-        method: 'POST',
+      const streaming = id === 'artifact.import' || id === 'artifact.download';
+      const query = streaming
+        ? `?${new URLSearchParams(Object.entries(body).map(([key, value]) => [key, String(value)]))}`
+        : '';
+      const response = await app.request(`/api/app/operations/${id}${query}`, {
+        method: id === 'artifact.download' ? 'GET' : 'POST',
         headers: {
           ...headers,
+          'content-type':
+            id === 'artifact.import' ? 'application/octet-stream' : 'application/json',
           ...(requestId ? { 'x-openkit-request-id': String(requestId) } : {}),
         },
-        body: JSON.stringify(body),
+        ...(id === 'artifact.download'
+          ? {}
+          : { body: id === 'artifact.import' ? originalBytes : JSON.stringify(body) }),
       });
+      if (id === 'artifact.download' && response.ok) {
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        expect(response.headers.get('content-disposition')).toMatch(/^attachment;/);
+        return {
+          bytes: Buffer.from(await response.arrayBuffer()),
+          byteLength: Number(response.headers.get('content-length')),
+          contentDigest: response.headers.get('x-openkit-content-digest'),
+          mediaType: response.headers.get('content-type'),
+        };
+      }
       const text = await response.text();
       let result: unknown;
       try {
@@ -163,28 +186,58 @@ async function projections(f: ReturnType<typeof fixture>, token?: string) {
       );
       return result;
     },
-    client: (id: string, input: Record<string, unknown>) =>
-      (client.operations as unknown as Record<string, (args: unknown) => Promise<unknown>>)[id]!(
-        input
-      ),
-    cli: (id: string, input: Record<string, unknown>) => {
-      const entry = operationCatalog.find((operation: { id: string }) => operation.id === id);
-      expect(entry, id).toBeDefined();
-      return entry.handler({ client }, entry.inputSchema.parse(input));
+    client: async (id: string, input: Record<string, unknown>) => {
+      if (id === 'artifact.import')
+        return client.artifactFiles.import(
+          input as Parameters<typeof client.artifactFiles.import>[0],
+          originalBytes
+        );
+      if (id === 'artifact.download') {
+        const { body, ...metadata } = await client.artifactFiles.download(
+          input as Parameters<typeof client.artifactFiles.download>[0]
+        );
+        return { ...metadata, bytes: Buffer.from(await new Response(body).arrayBuffer()) };
+      }
+      return (client.operations as unknown as Record<string, (args: unknown) => Promise<unknown>>)[
+        id
+      ]!(input);
     },
+    ...(binary
+      ? {}
+      : {
+          cli: (id: string, input: Record<string, unknown>) => {
+            const entry = operationCatalog.find((operation: { id: string }) => operation.id === id);
+            expect(entry, id).toBeDefined();
+            return entry.handler({ client }, entry.inputSchema.parse(input));
+          },
+        }),
   };
 }
 
-const content = 'Imported exact bytes.\n';
+const originals = JSON.parse(
+  readFileSync(new URL('../../../tests/fixtures/large-context/cases.json', import.meta.url), 'utf8')
+).originals as Array<{
+  id: string;
+  patternHex: string;
+  repeats: number;
+  size: number;
+  sha256: string;
+}>;
+const original = originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
+const originalBytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
 const inputs = {
   'artifact.list': {},
   'artifact.read': { artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f' },
   'artifact.import': {
     title: 'Import',
-    mediaType: 'text/plain',
-    content,
-    contentDigest: digest(content),
+    mediaType: 'application/octet-stream',
+    byteLength: original.size,
+    contentDigest: original.sha256,
     requestId: 'import-projection',
+  },
+  'artifact.download': {
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    artifactVersion: 1,
   },
   'artifact.introduce': {
     artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
@@ -193,6 +246,13 @@ const inputs = {
     requestId: 'introduce-projection',
   },
   'artifact.review-list': { artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f' },
+  'artifact.review.select': {
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    artifactVersion: 1,
+    contentDigest: digest('Exact reviewed output.\n'),
+    requestId: 'select-projection',
+    reason: 'Prefer this candidate.',
+  },
   'artifact.review.decide': {
     artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
     artifactVersion: 1,
@@ -226,20 +286,224 @@ const oldRoutes = [
 ];
 
 describe('Artifact definition projections', () => {
-  it('declares exactly six Artifact operations without handwritten projection catalogs', () => {
+  it('records exact candidate choices without work or a final decision', async () => {
+    const f = fixture();
+    try {
+      const input = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+        artifactVersion: 1,
+        contentDigest: digest('Exact reviewed output.\n'),
+        requestId: 'choose-exact',
+        reason: 'Keep this candidate.',
+      };
+      const turns = f.store.listThreadTurns(
+        input.workspaceId,
+        f.store.getArtifact(input.workspaceId, input.artifactId).threadId!
+      );
+      const send = (body: Record<string, unknown>) =>
+        f.app.request('/api/app/operations/artifact.review.select', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-openkit-request-id': String(body.requestId),
+          },
+          body: JSON.stringify(body),
+        });
+      const response = await send(input);
+      expect(response.status).toBe(200);
+      const selected = await response.json();
+      expect(selected.review.decision).toBeNull();
+      expect(selected.review.candidateSelections).toEqual([
+        {
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          requestId: input.requestId,
+          reason: input.reason,
+          selectedAt: expect.any(String),
+        },
+      ]);
+      expect(await (await send(input)).json()).toEqual(selected);
+      const changed = await send({ ...input, reason: 'Changed reason.' });
+      expect(changed.status).toBe(409);
+      expect(await changed.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      const stale = await send({
+        ...input,
+        requestId: 'wrong-digest',
+        contentDigest: digest('different'),
+      });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: 'stale' });
+      expect(f.store.listThreadTurns(input.workspaceId, turns[0]!.threadId)).toEqual(turns);
+      const second = await send({ ...input, requestId: 'choose-again', reason: 'Another reason.' });
+      expect((await second.json()).review.candidateSelections).toHaveLength(2);
+      const decision = await f.app.request('/api/app/operations/artifact.review.decide', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': 'decided-choice' },
+        body: JSON.stringify({
+          workspaceId: input.workspaceId,
+          artifactId: input.artifactId,
+          artifactVersion: 1,
+          requestId: 'decided-choice',
+          decision: 'rejected',
+        }),
+      });
+      expect(decision.status).toBe(200);
+      const afterDecision = await send({ ...input, requestId: 'choose-decided' });
+      expect((await afterDecision.json()).review).toMatchObject({
+        decision: 'rejected',
+        candidateSelections: expect.any(Array),
+      });
+      expect(f.store.listThreadTurns(input.workspaceId, turns[0]!.threadId)).toEqual(turns);
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('persists exact original UTF-16 feedback or refuses changed base (%s)', async (changedBase) => {
+    const f = fixture();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const artifactId = 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f';
+    const db = openWorkspaceDb(f.dataRoot, workspaceId);
+    applyScopedMigrations(db);
+    try {
+      const content = 'A\r\n😀e\u0301 tail';
+      const material = createWorkspaceMaterial(db, {
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        acceptedAt: '2026-10-17T00:00:00.000Z',
+        requestId: 'range-base',
+        title: 'Base',
+        kind: 'text',
+        sensitivity: 'internal',
+      });
+      const revision = saveWorkspaceMaterialRevision(db, {
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        acceptedAt: '2026-10-17T00:00:00.000Z',
+        requestId: 'range-root',
+        materialId: material.materialId,
+        expectedRevisionId: null,
+        content,
+        contentDigest: digest(content),
+      });
+      db.sqlite
+        .prepare(
+          'UPDATE artifact_reviews SET proposal_material_id = ?, proposal_base_revision_id = ?, proposal_base_content_digest = ?'
+        )
+        .run(material.materialId, revision.revisionId, digest(content));
+      const rangeFeedback = {
+        materialId: material.materialId,
+        revisionId: revision.revisionId,
+        contentDigest: digest(content),
+        start: 3,
+        end: 7,
+        originalText: '😀e\u0301',
+      };
+      const send = (range: unknown, requestId = 'range-decision') =>
+        f.app.request('/api/app/operations/artifact.review.decide', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+          body: JSON.stringify({
+            workspaceId,
+            artifactId,
+            artifactVersion: 1,
+            decision: 'rejected',
+            feedback: 'Change this range.',
+            requestId,
+            rangeFeedback: range,
+          }),
+        });
+      for (const invalid of [
+        { ...rangeFeedback, start: 4 },
+        { ...rangeFeedback, originalText: '😀é' },
+        { ...rangeFeedback, contentDigest: digest('other') },
+      ]) {
+        const refused = await send(invalid);
+        expect(refused.status).toBe(400);
+        expect(await refused.json()).toMatchObject({ code: 'invalid_request' });
+        expect(getArtifactReview(db, artifactId, 1).decision).toBeNull();
+      }
+      if (changedBase) {
+        saveWorkspaceMaterialRevision(db, {
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          acceptedAt: '2026-10-17T00:01:00.000Z',
+          requestId: 'range-base-changed',
+          materialId: material.materialId,
+          expectedRevisionId: revision.revisionId,
+          content: 'New base.',
+          contentDigest: digest('New base.'),
+        });
+        const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').all();
+        const receipts = db.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+        const conflict = await send(rangeFeedback);
+        expect(conflict.status).toBe(409);
+        expect(await conflict.json()).toMatchObject({ code: 'conflict' });
+        expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').all()).toEqual(before);
+        expect(db.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(receipts);
+        return;
+      }
+      const response = await send(rangeFeedback);
+      expect(response.status).toBe(200);
+      expect(getArtifactReview(db, artifactId, 1)).toMatchObject({
+        rangeFeedback,
+        decision: 'rejected',
+      });
+      expect((await send(rangeFeedback)).status).toBe(200);
+      const changed = await send({ ...rangeFeedback, end: 5, originalText: '😀' });
+      expect(changed.status).toBe(409);
+      expect(await changed.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+    } finally {
+      db.sqlite.close();
+      f.close();
+    }
+  });
+
+  it('declares the ten Artifact operations without handwritten JSON projection catalogs', () => {
     const table = (schemas as unknown as Record<string, Record<string, unknown>>)
       .ARTIFACT_OPERATION_DEFINITIONS;
-    expect(Object.keys(table ?? {})).toEqual(Object.keys(inputs));
+    expect(Object.keys(table ?? {}).sort()).toEqual(
+      [...Object.keys(inputs), 'artifact.folder-read', 'artifact.folder-extract'].sort()
+    );
     for (const path of [
       'skills/openkit-operations.mjs',
       'apps/nanocore/src/openapi.ts',
       'apps/nanocore/src/auth/operation-access.ts',
     ]) {
       const source = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
-      for (const id of [...Object.keys(inputs), 'artifact.review-decide'])
+      for (const id of [
+        ...Object.keys(inputs).filter(
+          (id) => !['artifact.import', 'artifact.download'].includes(id)
+        ),
+        'artifact.review-decide',
+      ])
         expect(source, `${path}: ${id}`).not.toMatch(
           new RegExp(`['"\x60]${id.replaceAll('.', '\\.')}['"\x60]`)
         );
+    }
+  });
+
+  it('keeps binary bindings outside the JSON client and maps CLI transfers to artifactFiles', async () => {
+    const client = createCoreClient({ baseUrl: 'http://127.0.0.1' });
+    const { operationCatalog } = await import(
+      new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
+    );
+    for (const id of ['artifact.import', 'artifact.download'] as const) {
+      expect(schemas.OPERATION_DEFINITIONS[id].binding).toBe('streaming');
+      expect(Object.hasOwn(client.operations, id)).toBe(false);
+      expect(
+        operationCatalog.find((operation: { id: string }) => operation.id === id)?.clientMethod
+      ).toBe(id === 'artifact.import' ? 'artifactFiles.import' : 'artifactFiles.download');
+    }
+    for (const id of [
+      'artifact.list',
+      'artifact.read',
+      'artifact.introduce',
+      'artifact.review-list',
+      'artifact.review.decide',
+    ]) {
+      expect(Object.hasOwn(client.operations, id)).toBe(true);
+      expect(operationCatalog.map((operation: { id: string }) => operation.id)).toContain(id);
     }
   });
 
@@ -277,10 +541,9 @@ describe('Artifact definition projections', () => {
           authority === 'eligible administrator' ? [] : ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       }).secret;
-      const projectors = await projections(f, token);
       async function compare(id: string, input: Record<string, unknown>) {
         let expected: unknown;
-        for (const project of Object.values(projectors)) {
+        for (const project of Object.values(await projections(f, token, id))) {
           const result = await project(id, {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...input,
@@ -295,14 +558,24 @@ describe('Artifact definition projections', () => {
           itemId: string;
         };
       }
+      await compare('artifact.review.select', inputs['artifact.review.select']);
       const imported = await compare('artifact.import', inputs['artifact.import']);
       const read = await compare('artifact.read', { artifactId: imported.artifactId });
       expect(read).toEqual(
         f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId)
       );
       expect((read as unknown as { content: unknown }).content).toEqual({
-        format: 'text',
-        body: content,
+        format: 'file',
+        mediaType: 'application/octet-stream',
+        byteLength: original.size,
+      });
+      expect(
+        await compare('artifact.download', { artifactId: imported.artifactId, artifactVersion: 1 })
+      ).toEqual({
+        bytes: originalBytes,
+        byteLength: original.size,
+        mediaType: 'application/octet-stream',
+        contentDigest: original.sha256,
       });
       const list = await compare('artifact.list', {});
       expect(list).toEqual({
@@ -333,7 +606,7 @@ describe('Artifact definition projections', () => {
       } finally {
         db.sqlite.close();
       }
-      for (const project of Object.values(projectors))
+      for (const project of Object.values(await projections(f, token, 'artifact.import')))
         await expect(
           project('artifact.import', {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -342,6 +615,134 @@ describe('Artifact definition projections', () => {
           })
         ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
     } finally {
+      f.close();
+    }
+  });
+
+  it('rechecks the current source audience and exact version for binary downloads', async () => {
+    const f = fixture(true, true, true);
+    try {
+      const token = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }).secret;
+      for (const project of Object.values(await projections(f, token, 'artifact.download'))) {
+        await expect(
+          project('artifact.download', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+            artifactVersion: 1,
+          })
+        ).rejects.toMatchObject({ status: 404 });
+      }
+      const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }).secret;
+      for (const project of Object.values(await projections(f, admin, 'artifact.download'))) {
+        expect(
+          await project('artifact.download', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+            artifactVersion: 1,
+          })
+        ).toEqual({
+          bytes: Buffer.from('Exact reviewed output.\n'),
+          byteLength: 23,
+          mediaType: 'text/plain',
+          contentDigest: digest('Exact reviewed output.\n'),
+        });
+        await expect(
+          project('artifact.download', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+            artifactVersion: 2,
+          })
+        ).rejects.toMatchObject({ status: 404 });
+      }
+    } finally {
+      f.close();
+    }
+  });
+
+  it('replays an accepted import without reading a changed or unreadable retry body', async () => {
+    const f = fixture();
+    try {
+      const projectors = await projections(f, undefined, 'artifact.import');
+      const metadata = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        ...inputs['artifact.import'],
+      };
+      const accepted = await projectors.http('artifact.import', metadata);
+      let reads = 0;
+      const retry = new ReadableStream<Uint8Array>(
+        {
+          pull() {
+            reads += 1;
+            throw new Error('Retry source is no longer readable.');
+          },
+        },
+        { highWaterMark: 0 }
+      );
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        fetch: (input, init) => f.app.fetch(new Request(input, init)),
+      });
+      await expect(client.artifactFiles.import(metadata, retry)).resolves.toEqual(accepted);
+      expect(reads).toBe(0);
+      expect(
+        f.store
+          .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
+          .filter((artifact) => artifact.lastMutationRequestId === metadata.requestId)
+      ).toHaveLength(1);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('does not invent an import receipt after the original was published without acknowledgement', async () => {
+    const f = fixture();
+    try {
+      const record = vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('Fixture receipt write unavailable.');
+      });
+      const projectors = await projections(f, undefined, 'artifact.import');
+      await expect(
+        projectors.client('artifact.import', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          ...inputs['artifact.import'],
+        })
+      ).rejects.toMatchObject({ status: 500 });
+      record.mockRestore();
+      const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
+      const imported = artifacts.find(
+        (artifact) => artifact.lastMutationRequestId === inputs['artifact.import'].requestId
+      )!;
+      expect(imported).toBeDefined();
+      for (const project of Object.values(projectors)) {
+        await expect(
+          project('artifact.import', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            ...inputs['artifact.import'],
+          })
+        ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
+      }
+      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
+      for (const project of Object.values(await projections(f, undefined, 'artifact.download'))) {
+        expect(
+          await project('artifact.download', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: imported.id,
+            artifactVersion: 1,
+          })
+        ).toMatchObject({ bytes: originalBytes, contentDigest: original.sha256 });
+      }
+    } finally {
+      vi.restoreAllMocks();
       f.close();
     }
   });
@@ -374,7 +775,7 @@ describe('Artifact definition projections', () => {
         c.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
         await next();
       });
-      registerOperationJsonRoutes({
+      const dependencies = {
         app,
         coreDb: f.coreDb,
         store: f.store,
@@ -384,12 +785,27 @@ describe('Artifact definition projections', () => {
         repositoryWorkspaceDb: () => {
           throw new Error('Fixture database unavailable.');
         },
+      };
+      registerOperationJsonRoutes(dependencies);
+      registerArtifactFileRoutes({
+        ...dependencies,
+        dataRoot: f.dataRoot,
+        fileAdmission: new FileStorageAdmission(f.dataRoot, () => 0n),
       });
       const { requestId, ...body } = inputs[id];
-      const response = await app.request(`/api/app/operations/${id}`, {
+      const metadata = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...body };
+      const query =
+        id === 'artifact.import'
+          ? `?${new URLSearchParams(Object.entries(metadata).map(([key, value]) => [key, String(value)]))}`
+          : '';
+      const response = await app.request(`/api/app/operations/${id}${query}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-        body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...body }),
+        headers: {
+          'content-type':
+            id === 'artifact.import' ? 'application/octet-stream' : 'application/json',
+          'x-openkit-request-id': requestId,
+        },
+        body: id === 'artifact.import' ? originalBytes : JSON.stringify(metadata),
       });
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({
@@ -407,7 +823,7 @@ describe('Artifact definition projections', () => {
   )('preserves unauthorized Workspace refusal for %s across HTTP client and CLI', async (id, input) => {
     const f = fixture();
     try {
-      for (const project of Object.values(await projections(f)))
+      for (const project of Object.values(await projections(f, undefined, id)))
         await expect(
           project(id, { ...input, workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })
         ).rejects.toMatchObject({
@@ -436,6 +852,12 @@ describe('Artifact definition projections', () => {
       }).secret;
       for (const project of Object.values(await projections(f, token))) {
         await expect(
+          project('artifact.review.select', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            ...inputs['artifact.review.select'],
+          })
+        ).rejects.toMatchObject({ message: 'Artifact not found.', status: 404 });
+        await expect(
           project('artifact.read', {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
@@ -455,7 +877,12 @@ describe('Artifact definition projections', () => {
 
   it.each(
     Object.entries(inputs).filter(([id]) =>
-      ['artifact.import', 'artifact.introduce', 'artifact.review.decide'].includes(id)
+      [
+        'artifact.import',
+        'artifact.introduce',
+        'artifact.review.decide',
+        'artifact.review.select',
+      ].includes(id)
     )
   )('refuses read-only Token mutation for %s across HTTP client and CLI before effects', async (id, input) => {
     const f = fixture();
@@ -472,12 +899,12 @@ describe('Artifact definition projections', () => {
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001'
       );
-      if (id === 'artifact.review.decide')
+      if (id === 'artifact.review.decide' || id === 'artifact.review.select')
         reviewDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const review = reviewDb
         ? getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)
         : undefined;
-      for (const project of Object.values(await projections(f, token)))
+      for (const project of Object.values(await projections(f, token, id)))
         await expect(
           project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
         ).rejects.toMatchObject({
@@ -503,13 +930,18 @@ describe('Artifact definition projections', () => {
 
   it.each(
     Object.entries(inputs).filter(([id]) =>
-      ['artifact.import', 'artifact.introduce', 'artifact.review.decide'].includes(id)
+      [
+        'artifact.import',
+        'artifact.introduce',
+        'artifact.review.decide',
+        'artifact.review.select',
+      ].includes(id)
     )
   )('returns product_work_unavailable for %s while product admission is closed', async (id, input) => {
     const f = fixture(true, false);
     try {
       const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
-      for (const project of Object.values(await projections(f)))
+      for (const project of Object.values(await projections(f, undefined, id)))
         await expect(
           project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
         ).rejects.toMatchObject({

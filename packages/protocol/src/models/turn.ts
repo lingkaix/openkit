@@ -12,6 +12,7 @@ import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { GitFailureExplanationSchema } from '../errors/failure-explanation.js';
 import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
+import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from './artifact.js';
 import { ItemSchema } from './item.js';
 
 /**
@@ -72,6 +73,29 @@ export const TurnTriggerSourceSchema = z.object({
   summary: z.string().min(1).nullable(),
 });
 
+/** One exact Turn-owned original. Array position is its immutable ordinal; names are display data, never paths. */
+export const TurnFileInputSchema = z.object({
+  name: z.string().min(1).max(1024),
+  mediaType: ArtifactMediaTypeSchema,
+  sizeBytes: z.number().int().min(0).max(MAX_ARTIFACT_FILE_BYTES),
+  contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+
+/** Ordered input metadata has a bounded inventory and shares one decimal billion-byte submission allowance. */
+export const TurnFileInputsSchema = z
+  .array(TurnFileInputSchema)
+  .max(10_000)
+  .superRefine((inputs, context) => {
+    if (inputs.reduce((total, input) => total + input.sizeBytes, 0) > MAX_ARTIFACT_FILE_BYTES)
+      context.addIssue({
+        code: 'custom',
+        message: 'Conversation files exceed the combined byte limit.',
+      });
+  });
+
+/** Exact immutable file identity under the receiving Turn's audience and retention. */
+export type TurnFileInput = z.infer<typeof TurnFileInputSchema>;
+
 /**
  * Shared fields for every user-visible turn status variant.
  */
@@ -81,6 +105,8 @@ const TurnBaseSchema = z.object({
   threadId: ThreadIdSchema,
   triggerActor: ActorRefSchema,
   items: z.array(ItemSchema),
+  /** Optional retained absence is an empty inventory; original bytes stay outside this record. */
+  fileInputs: TurnFileInputsSchema.optional(),
   error: TurnErrorSchema.nullable(),
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
   agentId: AgentIdSchema.nullable().optional(),

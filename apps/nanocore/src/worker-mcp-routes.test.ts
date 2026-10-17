@@ -90,6 +90,7 @@ import {
 } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { lightAppDbPath } from './storage/app-db.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -241,7 +242,12 @@ describe('worker MCP routes', () => {
       admit(readNanoHostPhysicalConnectionContext(request)!);
       response.writeHead(204).end();
     });
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      sessionAuthority: authority,
+      fileAdmission,
+    });
     const admission = new WorkspaceMutationAdmission();
     const gateway = createDefaultWorkerMcpGateway(coreDb);
     const client = new Client({ name: 'capture-wait', version: '1.0.0' });
@@ -286,6 +292,7 @@ describe('worker MCP routes', () => {
         authenticatePackageToken: vi.fn(() => pkg),
       } as unknown as WorkerControlGateway,
       workerMcpGateway: gateway,
+      fileAdmission,
       captureArtifact: async (input) => {
         captureCount += 1;
         const result = dispatch.effect({ ...effectRequest, signal: input.signal });
@@ -2376,7 +2383,7 @@ describe('worker MCP routes', () => {
           if (request.input.purpose === 'artifact-submission') {
             expect(request.signal).toBeInstanceOf(AbortSignal);
             liveCaptureCount += 1;
-            expect(request.input.maxByteLength).toBeLessThanOrEqual(16 * 1024 * 1024 + 1);
+            expect(request.input.maxByteLength).toBe(1_000_000_001);
             const directory = mkdtempSync(join(exportRoot, 'live-'));
             const stagingPath = join(directory, 'body');
             expect(request.input.slot).toBe('turn-output');
@@ -2658,12 +2665,28 @@ describe('worker MCP routes', () => {
       expect(readback.status).toBe(200);
       expect(await readback.json()).toMatchObject({
         id: artifactId,
-        content: { body: readFileSync(liveFilePath, 'utf8') },
+        content: {
+          format: 'file',
+          mediaType: 'text/markdown',
+          byteLength: originalBytes.byteLength,
+        },
       });
-
-      expect(
-        store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId).content.body
-      ).toBe(readFileSync(liveFilePath, 'utf8'));
+      // The public descriptor is not a byte oracle; read the exact immutable original.
+      const downloadOriginal = async () => {
+        const downloaded = await app.request(
+          `/api/app/operations/artifact.download?${new URLSearchParams({
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId,
+            artifactVersion: '1',
+          })}`
+        );
+        expect(downloaded.status).toBe(200);
+        expect(downloaded.headers.get('x-openkit-content-digest')).toBe(
+          `sha256:${createHash('sha256').update(originalBytes).digest('hex')}`
+        );
+        return Buffer.from(await downloaded.arrayBuffer());
+      };
+      expect(await downloadOriginal()).toEqual(originalBytes);
       const publishedBytes = readFileSync(liveFilePath);
       writeFileSync(liveFilePath, 'A later edit cannot mutate the committed output.');
       expect(
@@ -2671,9 +2694,7 @@ describe('worker MCP routes', () => {
           .structuredContent!.artifactId
       ).toBe(artifactId);
       expect(liveCaptureCount).toBe(capturesBefore + 1);
-      expect(
-        store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId).content.body
-      ).toBe(publishedBytes.toString('utf8'));
+      expect(await downloadOriginal()).toEqual(publishedBytes);
       await work.close();
       const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
       await client.connect(

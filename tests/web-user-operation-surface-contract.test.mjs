@@ -69,6 +69,9 @@ const WEB_OPERATION_GROUPS = {
   },
   Artifacts: {
     'artifact.import': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.download': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },
     'artifact.introduce': { disposition: 'live', surface: 'Artifacts' },
   },
   recovery: {
@@ -191,6 +194,7 @@ const WEB_OPERATION_GROUPS = {
     'artifact.review-list': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.reverse': { disposition: 'roadmap', roadmap: 'R072' },
     'artifact.review.decide': { disposition: 'live', surface: 'Artifact review' },
+    'artifact.review.select': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.decide': { disposition: 'live', surface: 'Knowledge' },
   },
   Portability: {
