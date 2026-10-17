@@ -2620,7 +2620,7 @@ impl EpochCoordinator {
         Ok(evidence)
     }
 
-    /// Imports one private staged regular file into the current ready sandbox.
+    /// Imports one verified file or declared directory into the current ready sandbox.
     ///
     /// # Errors
     ///
@@ -2631,10 +2631,20 @@ impl EpochCoordinator {
         request_id: &str,
         slot: &str,
         relative_path: &Path,
-        sha256: &str,
-        byte_length: u64,
-        file_data: &crate::file_transfer::VerifiedFile,
+        entry: &crate::sandbox_bridge::ImportEntry,
     ) -> Result<EffectCarriage, &'static str> {
+        let (sha256, byte_length, kind) = match entry {
+            crate::sandbox_bridge::ImportEntry::File { executable, file } => (
+                file.digest(),
+                file.length(),
+                FileEffectKind::ImportReference {
+                    executable: *executable,
+                },
+            ),
+            crate::sandbox_bridge::ImportEntry::Directory => {
+                ("", 0, FileEffectKind::ImportDirectory)
+            }
+        };
         let sandbox = self
             .current_sandbox
             .clone()
@@ -2647,18 +2657,28 @@ impl EpochCoordinator {
             relative_path: relative_path.to_path_buf(),
             sha256: sha256.to_string(),
             byte_length,
-            kind: FileEffectKind::ImportReference,
+            kind,
             presence: FileEffectPresence::Required,
         };
         request
             .validate()
             .map_err(|_| "reference.import request rejected")?;
-        let mut source = match read_import_staging(file_data, &request) {
-            Ok(source) => source,
-            Err(_) => {
-                let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
-                return Err("reference.import failed or unknown");
+        let mut source = match entry {
+            crate::sandbox_bridge::ImportEntry::File { file, .. } => {
+                match read_import_staging(file, &request) {
+                    Ok(source) => Some(source),
+                    Err(_) => {
+                        let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
+                        return Err("reference.import failed or unknown");
+                    }
+                }
             }
+            crate::sandbox_bridge::ImportEntry::Directory => None,
+        };
+        let mut empty_source = std::io::empty();
+        let source: &mut dyn std::io::Read = match source.as_mut() {
+            Some(source) => source,
+            None => &mut empty_source,
         };
         let command = match request.helper_command() {
             Ok(command) => command,
@@ -2667,13 +2687,17 @@ impl EpochCoordinator {
                 return Err("reference.import failed or unknown");
             }
         };
-        let expected = format!("{} {}\n", request.sha256, request.byte_length);
+        let expected = if kind == FileEffectKind::ImportDirectory {
+            String::new()
+        } else {
+            format!("{} {}\n", request.sha256, request.byte_length)
+        };
         let mut acknowledgement = Vec::new();
         let result = tokio::task::block_in_place(|| {
             self.runtime.block_on(self.client.exec_sandbox_interactive(
                 &sandbox.id,
                 &command,
-                &mut source,
+                source,
                 byte_length as usize,
                 &mut acknowledgement,
                 expected.len(),
@@ -6200,7 +6224,7 @@ mod tests {
             .split_once("pub fn execute_image_build(")
             .expect("attempt-local image build owner")
             .1
-            .split_once("/// Imports one private staged regular file")
+            .split_once("/// Imports one verified file or declared directory")
             .expect("end of image build owner")
             .0;
         let context_ref = build
