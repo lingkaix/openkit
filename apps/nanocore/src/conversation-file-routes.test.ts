@@ -324,6 +324,7 @@ describe('Turn-owned conversation originals', () => {
     ).toBe(false);
   });
 
+  // Real 8 MB retained-record serialization and verification need a local 60-second runner limit.
   it('refuses a retained Thread rewrite that exceeds shared publication capacity before Assistant execution', async () => {
     const state = fixture(() => 7_000_000n);
     const threadPath = join(
@@ -365,7 +366,7 @@ describe('Turn-owned conversation originals', () => {
     expect(
       state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
     ).toBe(false);
-  });
+  }, 60_000);
 
   it('admits the submitted user-message append through the same shared file-capacity owner', async () => {
     let available = 2_000_000_000n;
