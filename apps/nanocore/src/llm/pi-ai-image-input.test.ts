@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 /** Uses the pinned stock Codex serializer with a test-owned HTTP endpoint and synthetic auth. */
-async function fixture(imageInput = true) {
+async function fixture(imageInput = true, contextWindowTokens = 131_072) {
   const bodies: Record<string, unknown>[] = [];
   const server = createServer((request, response) => {
     void (async () => {
@@ -64,7 +64,7 @@ async function fixture(imageInput = true) {
     modelMetadata: {
       [model.id]: {
         modalities: { input: imageInput ? ['text', 'image'] : ['text'] },
-        limit: { context: 131_072, output: 8_192 },
+        limit: { context: contextWindowTokens, output: 8_192 },
       },
     },
     requiresApiKey: true,
@@ -169,4 +169,31 @@ it('refuses the same images on a text-only selected model before HTTP or final h
   });
   expect(f.bodies).toEqual([]);
   expect(admission).not.toHaveBeenCalled();
+});
+
+it('refuses the approximate image allowance at the actual final callback before any stock HTTP effect', async () => {
+  // The two image allowances, fixed margin and actual reserve already exceed this physical capacity, before text metadata.
+  const capacity = 2 * 8_192 + 4_096 + 32 - 1;
+  const f = await fixture(true, capacity);
+  const input = request(f.model.id);
+  const before = structuredClone(input);
+  let admissionFailure: unknown;
+  const admission = vi.fn((final: Parameters<typeof admitModelRequest>[0] & { codexTurnState?: string | undefined }) => {
+    expect(final.contextWindowTokens).toBe(capacity);
+    expect(final.outputReserveTokens).toBe(32);
+    expect(final.payload).toMatchObject({ input: input.input, instructions: input.instructions });
+    try {
+      admitModelRequest({ ...final, continuity: final.codexTurnState });
+    } catch (error) {
+      admissionFailure = error;
+      throw error;
+    }
+  });
+  await expect(f.client.createResponses(f.provider, input, undefined, {
+    finalRequestAdmission: admission,
+  })).rejects.toThrow();
+  expect(admission).toHaveBeenCalledOnce();
+  expect(admissionFailure).toMatchObject({ code: 'internal_agent_context_exceeded' });
+  expect(f.bodies).toEqual([]);
+  expect(input).toEqual(before);
 });

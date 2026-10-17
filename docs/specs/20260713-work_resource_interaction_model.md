@@ -257,6 +257,8 @@ Explicit vision uses one short-lived, secret-free Node child with packaged PNG/J
 
 Scanned, encrypted, failed, and resource-limited PDFs report unsupported, unavailable, or incomplete text. They never prove complete body absence. Bound image pixels, frame count, decoded memory, and CPU/time before downscaling. Bound delivered image bytes and provider token cost independently. Saving or processing failure returns a bounded unavailable descriptor, never the full original as model fallback. Multimodal vectors remain before OCR in the later roadmap. This authorizes no media editor or mandatory extractor dependency.
 
+For currently admitted inline PNG/JPEG requests, the final physical-request estimate uses a separate approximate local allowance for each image. Its current default is 8,192 tokens per occurrence, added to text, metadata, continuity and actual output reserve. The counting projection omits only the admitted image data values; it preserves the actual Provider request. This ordinary local estimate does not prove complete media cost or a universal Provider bound. Selected-model image-input gating and every independent resource and authorization limit remain binding. [Bounded Model Projection](20260703-worker_context_package.md#bounded-model-projection) owns the exact request positions and estimate. The [image estimate decision](../decisions/20261017-image_request_local_estimate.md) records L-AW's fallback provenance.
+
 Acceptance must prove exact large-file download digests, bounded-memory capture, concurrent reserve admission, receipt replay without recapture, hostile ZIP rejection, and processor limits. It must also prove truthful PDF coverage and no private metadata disclosure through previews or search.
 
 ## Retrieval Representations
