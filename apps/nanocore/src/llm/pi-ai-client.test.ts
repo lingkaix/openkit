@@ -25,6 +25,7 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { gatewayCapabilitiesForProfile } from '../providers/registry.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
 import type { ResolvedLogicalModel } from './logical-models.js';
 import {
@@ -1220,6 +1221,208 @@ describe('PiAiGatewayClient', () => {
     await expect(
       client.createChatCompletion(config, request, undefined, {}, createModels())
     ).rejects.toThrow('does not expose model');
+  });
+
+  it.each([
+    false,
+    true,
+  ])('preserves the native xAI Worker Responses local-tool prefix through its authenticated pair; stream=%s', async (stream) => {
+    const stock = xaiProvider();
+    const credential: OAuthCredential = {
+      type: 'oauth',
+      access: 'work-pair-access',
+      refresh: 'work-pair-refresh',
+      expires: Date.now() + 3_600_000,
+    };
+    const read = vi.fn(async (providerId: string) =>
+      providerId === 'xai' ? credential : undefined
+    );
+    const credentials: CredentialStore = {
+      async list() {
+        return [{ providerId: 'xai', type: 'oauth' }];
+      },
+      read,
+      async modify() {
+        throw new Error('The unexpired test credential must not refresh.');
+      },
+      async delete() {},
+    };
+    const faux = fauxProvider({
+      api: 'openai-responses',
+      provider: 'xai',
+      models: [{ id: 'grok-4.3' }],
+    });
+    const pairModels = createModels({ credentials });
+    pairModels.setProvider({
+      ...faux.provider,
+      baseUrl: stock.baseUrl,
+      auth: { oauth: stock.auth.oauth! },
+    });
+    const additionalTools = {
+      role: 'developer',
+      tools: [
+        { type: 'custom', name: 'exec', description: 'Run a command.', format: { type: 'text' } },
+      ],
+      type: 'additional_tools',
+    } as const;
+    const userInput = {
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Check the working directory.' }],
+    } as const;
+    let seenContext: TranscriptContext | undefined;
+    let seenModel: Model<string> | undefined;
+    let seenOptions: StreamOptions | undefined;
+    let seenPayload: unknown;
+    faux.setResponses([
+      async (context, options, _state, model) => {
+        seenContext = context;
+        seenModel = model;
+        seenOptions = options;
+        seenPayload = await options?.onPayload?.({ input: [userInput], model: 'grok-4.3' }, model);
+        return fauxAssistantMessage(
+          [
+            fauxText('Checking the directory.'),
+            fauxToolCall('exec', { input: 'pwd' }, { id: 'call_xai_exec' }),
+          ],
+          { responseId: 'resp_xai_native', stopReason: 'toolUse' }
+        );
+      },
+    ]);
+    const profile = {
+      id: 'xai-work',
+      kind: 'oauth' as const,
+      vendor: 'xai',
+      models: ['xai/grok-4.3'],
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
+    };
+    const config = providerConfig({
+      accountSlotId: 'work',
+      adapterId: 'xai',
+      apiKey: null,
+      gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
+      id: profile.id,
+      models: profile.models,
+      requiresApiKey: false,
+      subscriptionProviderId: 'xai',
+    });
+    const request = {
+      input: [additionalTools, userInput],
+      model: 'xai/grok-4.3',
+      tools: [],
+      stream,
+    };
+    const client = new PiAiGatewayClient();
+    let response: Awaited<ReturnType<PiAiGatewayClient['createResponses']>>;
+    if (stream) {
+      const body = await new Response(
+        await client.createResponsesStream(config, request, undefined, {}, pairModels)
+      ).text();
+      const events = body
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)));
+      expect(events.at(-1)?.type).toBe('response.completed');
+      expect(events.filter((event) => event.type === 'response.completed')).toHaveLength(1);
+      response = events.at(-1).response;
+      expect(
+        events.filter((event) => event.type === 'response.output_item.done').map((event) => event.item)
+      ).toEqual(response.output);
+      for (const event of events) {
+        if (event.item) expect(event.item.id).toBe(response.output[event.output_index]?.id);
+        if (event.item_id) expect(event.item_id).toBe(response.output[event.output_index]?.id);
+      }
+    } else {
+      response = await client.createResponses(config, request, undefined, {}, pairModels);
+    }
+
+    expect(response).toMatchObject({
+      id: 'resp_xai_native',
+      model: 'xai/grok-4.3',
+      status: 'completed',
+      output: [
+        { type: 'message', content: [{ type: 'output_text', text: 'Checking the directory.' }] },
+        { type: 'custom_tool_call', call_id: 'call_xai_exec', name: 'exec', input: 'pwd' },
+      ],
+    });
+    expect(seenModel).toMatchObject({ api: 'openai-responses', id: 'grok-4.3', provider: 'xai' });
+    expect(seenOptions?.apiKey).toBe('work-pair-access');
+    expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toMatchObject([
+      { name: 'exec', parameters: { properties: { input: { type: 'string' } } } },
+    ]);
+    expect(seenPayload).toEqual({
+      input: [additionalTools, userInput],
+      model: 'grok-4.3',
+      tools: additionalTools.tools,
+    });
+    expect(faux.state.callCount).toBe(1);
+  });
+
+  it('refuses uncatalogued xAI Responses before authentication instead of guessing Chat admission', async () => {
+    const stock = xaiProvider();
+    const modelId = 'xai/grok-openkit-uncatalogued-test';
+    const credential: OAuthCredential = {
+      type: 'oauth',
+      access: 'work-pair-access',
+      refresh: 'work-pair-refresh',
+      expires: Date.now() + 3_600_000,
+    };
+    const read = vi.fn(async (providerId: string) =>
+      providerId === 'xai' ? credential : undefined
+    );
+    const credentials: CredentialStore = {
+      async list() {
+        return [{ providerId: 'xai', type: 'oauth' }];
+      },
+      read,
+      async modify() {
+        throw new Error('Refused Responses must not refresh credentials.');
+      },
+      async delete() {},
+    };
+    const faux = fauxProvider({
+      api: 'openai-responses',
+      provider: 'xai',
+      models: [{ id: 'grok-4.3' }],
+    });
+    faux.setResponses([fauxAssistantMessage('Grok response')]);
+    const pairModels = createModels({ credentials });
+    pairModels.setProvider({
+      ...faux.provider,
+      baseUrl: stock.baseUrl,
+      auth: { oauth: stock.auth.oauth! },
+    });
+    const profile = {
+      id: 'xai-work',
+      kind: 'oauth' as const,
+      vendor: 'xai',
+      models: [modelId],
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
+    };
+    const config = providerConfig({
+      accountSlotId: 'work',
+      adapterId: 'xai',
+      apiKey: null,
+      gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
+      id: profile.id,
+      models: profile.models,
+      modelMetadata: { [modelId]: { limit: { context: 360_000 } } },
+      requiresApiKey: false,
+      subscriptionProviderId: 'xai',
+    });
+
+    expect(pairModels.getModel('xai', 'grok-openkit-uncatalogued-test')).toBeUndefined();
+    const pending = new PiAiGatewayClient().createResponses(
+      config,
+      { model: modelId, input: 'Hello' },
+      undefined,
+      {},
+      pairModels
+    );
+    await expect(pending).rejects.toBeInstanceOf(GatewayUnsupportedFeatureError);
+    await expect(pending).rejects.toMatchObject({ code: 'unsupported_gateway_feature', status: 400 });
+    expect(read).not.toHaveBeenCalled();
+    expect(faux.state.callCount).toBe(0);
   });
 
   it('clones a subscription pair model without mutating nested pair objects', async () => {
