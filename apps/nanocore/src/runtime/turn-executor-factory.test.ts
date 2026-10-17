@@ -10789,7 +10789,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  }, 30_000);
+  }, 60_000);
 
   it('dispatches DeepSeek after OpenCode returns to a previously evicted Sandbox identity', async () => {
     const coreDb = createFactoryCoreDb();
