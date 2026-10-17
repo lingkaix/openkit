@@ -25,8 +25,9 @@ import {
 } from '../scripts/package-release-assets.mjs';
 import { parseNanoHostHostManifest } from '../scripts/release-preflight.mjs';
 
-test('release packager archives the complete Skill and writes its SHA-256', () => {
+test('release packager archives the complete Skill and writes its SHA-256', (t) => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-release-assets-'));
+  t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
   writeFileSync(join(repoRoot, 'LICENSE'), 'fixture license\n');
   mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'references'), { recursive: true });
   mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'scripts'), { recursive: true });
@@ -40,19 +41,25 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
   git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
   git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops', 'scripts/docker/app-update-helper.py']);
   git(repoRoot, ['commit', '-qm', 'fixture']);
+  const sourceCommit = git(repoRoot, ['rev-parse', 'HEAD^{commit}']);
+  git(repoRoot, ['tag', '-am', 'selected source', 'selected-source']);
+  writeFileSync(join(repoRoot, 'LICENSE'), 'newer committed license\n');
+  git(repoRoot, ['add', 'LICENSE']);
+  git(repoRoot, ['commit', '-qm', 'newer source']);
+  assert.notEqual(git(repoRoot, ['rev-parse', 'HEAD^{commit}']), sourceCommit);
   // Packaging must use reviewed Git bytes even if the fixture working tree later changes.
   writeFileSync(join(repoRoot, 'scripts', 'docker', 'app-update-helper.py'), 'unreviewed bytes');
 
   const outputDir = join(repoRoot, 'dist', 'release');
   const result = packageReleaseAssets({
     outputDir,
-    ref: 'HEAD',
+    ref: 'selected-source',
     repoRoot,
     tag: 'v0.1.0-rc.1',
   });
   const repeated = packageReleaseAssets({
     outputDir: join(repoRoot, 'dist', 'repeated'),
-    ref: 'HEAD',
+    ref: 'selected-source',
     repoRoot,
     tag: 'v0.1.0-rc.1',
   });
@@ -64,6 +71,7 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
   assert.deepEqual(listed.stdout.trim().split('\n').sort(), [
     'openkit-ops-skill-v0.1.0-rc.1/',
     'openkit-ops-skill-v0.1.0-rc.1/LICENSE',
+    'openkit-ops-skill-v0.1.0-rc.1/release-identity.json',
     'openkit-ops-skill-v0.1.0-rc.1/scripts/',
     'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/',
     'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/app-update-helper.py',
@@ -89,6 +97,12 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
     encoding: 'utf8',
   });
   assert.equal(extracted.status, 0, extracted.stderr);
+  const envelopePath = join(extractDir, 'openkit-ops-skill-v0.1.0-rc.1');
+  assert.deepEqual(JSON.parse(readFileSync(join(envelopePath, 'release-identity.json'), 'utf8')), {
+    sourceCommit,
+    releaseTag: 'v0.1.0-rc.1',
+  });
+  assert.equal(readFileSync(join(envelopePath, 'LICENSE'), 'utf8'), 'fixture license\n');
   assert.deepEqual(
     readFileSync(
       join(extractDir, 'openkit-ops-skill-v0.1.0-rc.1', 'scripts', 'docker', 'app-update-helper.py')
@@ -199,6 +213,7 @@ test('release packager archives the operations Skill with LICENSE and SHA-256', 
   assert.deepEqual(listed.stdout.trim().split('\n').sort(), [
     'openkit-ops-skill-v0.1.0-rc.1/',
     'openkit-ops-skill-v0.1.0-rc.1/LICENSE',
+    'openkit-ops-skill-v0.1.0-rc.1/release-identity.json',
     'openkit-ops-skill-v0.1.0-rc.1/scripts/',
     'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/',
     'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/app-update-helper.py',
@@ -1218,8 +1233,18 @@ function writeAppUpdateHelperFixture(repoRoot) {
   );
 }
 
-for (const mutation of ['missing', 'modified']) {
-  test(`operations archive refuses ${mutation} reviewed App-update helper`, () => {
+for (const [mutation, member, expected] of [
+  ['missing', 'reviewed App-update helper', /missing scripts\/docker\/app-update-helper\.py/],
+  [
+    'modified',
+    'reviewed App-update helper',
+    /App-update helper bytes do not match the reviewed checkout/,
+  ],
+  ['missing', 'release identity', /missing release-identity\.json/],
+  ['invalid', 'release identity', /release identity is invalid/],
+  ['mismatched', 'release tag', /release tag does not match its envelope/],
+]) {
+  test(`operations archive refuses ${mutation} ${member}`, () => {
     const root = candidateOperationsRepository();
     const extracted = mkdtempSync(join(tmpdir(), 'openkit-helper-negative-'));
     try {
@@ -1234,9 +1259,18 @@ for (const mutation of ['missing', 'modified']) {
         encoding: 'utf8',
       });
       assert.equal(unpack.status, 0, unpack.stderr);
-      const helper = join(extracted, envelope, 'scripts', 'docker', 'app-update-helper.py');
-      if (mutation === 'missing') rmSync(helper);
-      else writeFileSync(helper, '# unreviewed helper bytes\n');
+      const path =
+        member === 'reviewed App-update helper'
+          ? join(extracted, envelope, 'scripts', 'docker', 'app-update-helper.py')
+          : join(extracted, envelope, 'release-identity.json');
+      if (mutation === 'missing') rmSync(path);
+      else if (mutation === 'modified') writeFileSync(path, '# unreviewed helper bytes\n');
+      else {
+        const identity = JSON.parse(readFileSync(path, 'utf8'));
+        if (mutation === 'invalid') identity.sourceCommit = 'invalid';
+        else identity.releaseTag = 'v0.0.1-helper-negative';
+        writeFileSync(path, JSON.stringify(identity));
+      }
       const archive = join(root, 'negative.tar.gz');
       const packed = spawnSync('tar', ['-czf', archive, '-C', extracted, envelope], {
         encoding: 'utf8',
@@ -1244,9 +1278,7 @@ for (const mutation of ['missing', 'modified']) {
       assert.equal(packed.status, 0, packed.stderr);
       assert.throws(
         () => verifyOperationsSkillArchive({ archivePath: archive, destDir: join(root, 'verify') }),
-        mutation === 'missing'
-          ? /missing scripts\/docker\/app-update-helper\.py/
-          : /App-update helper bytes do not match the reviewed checkout/
+        expected
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
