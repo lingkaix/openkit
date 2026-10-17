@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: completed
 date: 2026-10-17
 ---
 # Exact Build Revision For Outcome Lineage
@@ -21,8 +21,16 @@ The Builder helpers own isolated capture and portable-archive seams and merge th
 
 ## Verification
 
-Use one lowest-sufficient real-capture regression for tagged, untagged and unknown identity; strengthen the existing reader and archive checks for the new accepted forms and exact selected-ref provenance. Run complete changed-module and package suites, generated OpenAPI/CLI checks and the normal local express gate. Focused verification passed with Node 24.18.0: the App image entrypoint suite passed 11 tests; the operations archive suite passed 27 tests; the NanoCore capture, Administration capture and release-identity suites passed 81 tests across three files. A disposable checkout probe of the existing image builder passed clean-source injection, dirty-source unknown and explicit source/tag injection. OpenAPI and operations CLI generation completed. The first local gate stopped in documentation metadata validation; the new decision record was missing its date and decider. Those fields were corrected without changing production code. The next gate passed repository checks, lint, typecheck, the retrieval build and all 110 root entrypoint/archive/publication-contract tests. It stopped on the existing client assertion that rejected an untagged source commit. That assertion and the matching generated OpenAPI assertion now admit the engineer-approved form while preserving tag-without-commit and malformed-identity refusals. Complete schema, OpenAPI, diagnostics and observation-consumer suites run on the corrected head. Retain the final gate and independent review receipts in the lane checkpoint and landing review. An independent Reviewer inspects the complete diff and actual deciding output. No source pass substitutes for live Worker or published-artifact acceptance.
+The real-capture regression covers tagged, untagged and unknown build identity before model access. Existing identity-reader, generated OpenAPI and archive tests admit the new form while retaining malformed-value and tag-without-commit refusals. Archive tests bind bytes to the selected commit, preserve additive-key tolerance and prove deterministic output. The image-writer regression executes the Dockerfile's actual writer. An offline invocation of the existing image script also passed clean-source, dirty-source and explicit-input cases.
 
-## Remaining Work
+With Node 24.18.0, the unchanged root entrypoint/archive/publication-contract suites reported `tests 110`, `pass 110`, `fail 0`. The focused capture, Administration and identity suites passed 81 cases. The later integrated diagnostics and observation-consumer run passed 140 of 141 cases; its sole failure was the unchanged base Knowledge fixture expecting 23 operations instead of 27. Main repaired that fixture; it was not skipped or weakened by this increment.
 
-Finish integrated checks, independent review and the express landing. Observe the containing main-push gate. No gate result or landing is claimed yet.
+After merging main and preserving the incoming Memory and xAI work, the complete App API schema suite reported `Test Files 30 passed (30)` and `Tests 366 passed (366)`. Complete LLM and OpenAPI suites reported `Test Files 29 passed (29)` and `Tests 1342 passed (1342)`. Repository checks, lint, typecheck and the retrieval build passed. The exact gate ended at 2026-10-17T06:54:18Z with `LOCAL-GATE PASS f2727005547f8ce8e94489f41a271bc28a8ffff5`. Later non-overlapping main changes and this record closeout retain those unchanged suites under Express item 8; final committed-head baseline checks and containing main CI are retained in the lane checkpoint and landing review.
+
+The independent Reviewer approved the complete merged source and regenerated output. All non-generated R080 patches remained identical to the earlier approval; OpenAPI and CLI changed only for the nullable build tag and required source digest. No source pass substitutes for live Worker or published-artifact acceptance.
+
+## Closeout
+
+Implementation and owner alignment are complete. Source and gate receipts remain in the lane checkpoint and independent landing review. The next release preparation must assess the changed App Dockerfile and portable-packaging inputs through the existing publication-path proof and scratch-rehearsal rules. No tag, release, deployment or stable publication is performed by this code increment.
+
+Complexity: 32 changed files, four owning specifications, four concerns (retained build label, image identity, diagnostics projection and portable provenance), and no new record family, registry or closed set.
