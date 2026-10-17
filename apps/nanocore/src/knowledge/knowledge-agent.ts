@@ -286,6 +286,12 @@ export async function askKnowledgeAgent(
                 text: JSON.stringify({
                   sources: sources.map((result) => ({
                     ...result,
+                    // Excluded identities and reasons explain coverage without exposing Source metadata.
+                    excluded: result.excluded.map((entry) => ({
+                      ...entry,
+                      contentDigest: null,
+                      sourceReferences: [],
+                    })),
                     selected: result.selected.map((candidate) => ({
                       ...candidate,
                       pageId: citationId(candidate),
@@ -458,6 +464,7 @@ export async function askKnowledgeAgent(
             nativeAuthority,
             items,
             strategy: 'compaction',
+            knowledgeProjection: 'selection',
             serverKnowledgeActor: access.serverKnowledgeActor ?? access.requestActor,
             ...(access.outputThreadId && access.outputTurnId
               ? {

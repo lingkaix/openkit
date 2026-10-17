@@ -1207,6 +1207,19 @@ function currentKnowledgeReferenceContent(
 export function assertKnowledgeRetrievalTraceReadable(
   input: KnowledgeTraceReadInput
 ): KnowledgeRetrievalTrace {
+  return assertKnowledgeTraceProjectionReadable(input, 'full');
+}
+
+/** Verifies the KM selection projection, whose exclusions contain no digest or Source metadata. */
+export function assertKnowledgeRetrievalSelectionReadable(input: KnowledgeTraceReadInput): void {
+  assertKnowledgeTraceProjectionReadable(input, 'selection');
+}
+
+/** Current admission follows the bytes exposed by the chosen projection; full reads stay strict. */
+function assertKnowledgeTraceProjectionReadable(
+  input: KnowledgeTraceReadInput,
+  projection: 'full' | 'selection'
+): KnowledgeRetrievalTrace {
   const trace = readAdmittedKnowledgeTrace(input);
   if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
   const target = {
@@ -1218,10 +1231,10 @@ export function assertKnowledgeRetrievalTraceReadable(
       outputTurnId: trace.queryContext.turnId,
     },
   };
+  const entries = projection === 'full' ? [...trace.selected, ...trace.excluded] : trace.selected;
   const references = [
-    ...trace.selected.map((entry) => entry.reference),
-    ...trace.excluded.map((entry) => entry.reference),
-    ...trace.retrievalParameters.pinnedReferences,
+    ...entries.map((entry) => entry.reference),
+    ...(projection === 'full' ? trace.retrievalParameters.pinnedReferences : []),
   ];
   for (const reference of references) {
     if (reference.scopeId !== trace.sourceScope) throw knowledgeTraceUnavailable();
@@ -1232,7 +1245,7 @@ export function assertKnowledgeRetrievalTraceReadable(
         503
       );
   }
-  for (const entry of [...trace.selected, ...trace.excluded]) {
+  for (const entry of entries) {
     if (
       trace.retrievalParameters.sourceScope === 'user' ||
       trace.retrievalParameters.sourceScope === 'server'

@@ -302,11 +302,15 @@ export function prepareKnowledgeMaintenance(
       )
         throw new NotebookError('invalid_request');
     };
+    const selectedPages = input.pageIds ? new Set([...input.pageIds, 'index']) : undefined;
     for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
+      const id = path.slice(0, -3);
+      if (selectedPages && !selectedPages.has(id)) continue;
       const content = notebook.readRevision(baseRevision, [path]).files[path]!;
       const parsed = parseOkfDocument({ path, content });
       if (!parsed.ok) throw new NotebookError('recovery_required');
       if (
+        !selectedPages &&
         path !== 'index.md' &&
         (parsed.document.reserved || parsed.document.frontmatter.openkit_status !== 'active')
       )
@@ -319,7 +323,7 @@ export function prepareKnowledgeMaintenance(
       for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
         admittedReferences.add(ref);
     }
-    // Selections guide the fresh run; the canonical reader above still owns each page's admission.
+    // Omitted base files stay immutable; an explicit selection may include non-active pages.
     for (const id of input.pageIds ?? []) {
       if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
     }
@@ -631,6 +635,7 @@ export function prepareKnowledgeMaintenance(
           ...Object.keys(revision.entries),
           ...Object.keys(parent?.entries ?? {}),
         ])) {
+          if (selectedPages && !selectedPages.has(path.slice(0, -3))) continue;
           if (revision.entries[path] === parent?.entries[path]) continue;
           const read = (notebookRevision: string | undefined, exists: boolean) => {
             if (!notebookRevision || !exists) return null;

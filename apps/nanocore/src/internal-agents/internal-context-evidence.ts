@@ -9,6 +9,7 @@ import type { Actor } from '../auth/identity.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  assertKnowledgeRetrievalSelectionReadable,
   assertKnowledgeRetrievalTraceReadable,
   resolveWorkspaceKnowledgeRetrievalPages,
 } from '../storage/index-rebuild.js';
@@ -36,6 +37,8 @@ export function readInternalContextEvidence(
     readonly threadId: string;
     readonly items: readonly Item[];
     readonly strategy?: 'rolling' | 'compaction';
+    /** KM queries alone verify their content-free-exclusion selection projection. */
+    readonly knowledgeProjection?: 'selection';
     /** Trusted retained asking lineage for a query; maintenance defaults to its source Turn. */
     readonly retrievalContext?: { readonly threadId: string; readonly turnId: string };
     /** Actual current Server credential from native query admission, never model input. */
@@ -102,7 +105,11 @@ export function readInternalContextEvidence(
             : input.threadId,
         outputTurnId: trace.queryContext.turnId,
       };
-      assertKnowledgeRetrievalTraceReadable({
+      const verifyKnowledge =
+        input.strategy === 'compaction' && input.knowledgeProjection === 'selection'
+          ? assertKnowledgeRetrievalSelectionReadable
+          : assertKnowledgeRetrievalTraceReadable;
+      verifyKnowledge({
         dataRoot,
         workspaceId: input.workspaceId,
         access,
