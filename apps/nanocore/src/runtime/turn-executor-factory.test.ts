@@ -3158,6 +3158,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   }, 60_000);
 
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     'missing-lease',
     'contradictory-route',
@@ -3211,7 +3212,7 @@ describe('createConfiguredTurnExecutor', () => {
       cleanup.mockRestore();
       fixture.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('exports accepted final status while retaining a running Harness without process absence claims', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-resident-export-'));
@@ -11127,6 +11128,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     null,
     'eviction-cleanup-required',
@@ -12121,7 +12123,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('honors explicit selected and fresh storage on a shared resident contributor', async () => {
     const coreDb = createFactoryCoreDb();
