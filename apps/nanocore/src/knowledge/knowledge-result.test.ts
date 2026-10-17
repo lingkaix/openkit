@@ -96,6 +96,7 @@ it('returns a typed HTTP refusal with the retained KM Turn after one failed repa
   }
 });
 
+// Real Git publication and the bounded role use the existing 120-second execution budget.
 it('repairs maintenance output without repeating the accepted notebook submission', async () => {
   const f = fixture();
   const notebook = new KnowledgeNotebook({
@@ -142,4 +143,4 @@ it('repairs maintenance output without repeating the accepted notebook submissio
   );
   expect(notebook.publishedRevision()).toBe(before);
   expect(f.createResponses).toHaveBeenCalledTimes(3);
-});
+}, 120_000);
