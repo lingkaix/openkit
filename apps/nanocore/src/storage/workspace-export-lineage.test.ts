@@ -777,7 +777,8 @@ function createWorkResourceLineageExportInput(
       id: knowledgePageId,
       kind: 'project-context',
       title: 'Retained portable Knowledge',
-      content: '# Retained portable knowledge\n\nUse the retained package bytes.\n' +
+      content:
+        '# Retained portable knowledge\n\nUse the retained package bytes.\n' +
         (knowledgeExcerpt ? 'Omitted canonical Knowledge body.\n'.repeat(3000) : ''),
       sourceReferences: knowledgeSourceRefs,
       createdAt: timestamp,
@@ -982,17 +983,23 @@ function createWorkResourceLineageExportInput(
         contentDigest: knowledgeContentDigest,
         knowledgePageId,
         notebookRevision,
-        ...(knowledgeExcerpt ? {
-          deliveredContent: knowledgeContent.slice(0, 2048),
-          projection: {
-            kind: 'excerpt' as const, sourceRevision: notebookRevision,
-            representationId: 'original-utf8', representationDigest: knowledgeContentDigest,
-            representationByteLength: Buffer.byteLength(knowledgeContent),
-            deliveredDigest: `sha256:${createHash('sha256').update(knowledgeContent.slice(0, 2048)).digest('hex')}`,
-            ranges: [{ start: 0, end: 2048 }], byteLength: 2048,
-            truncated: true, availability: 'incomplete' as const,
-          },
-        } : {}),
+        ...(knowledgeExcerpt
+          ? {
+              deliveredContent: knowledgeContent.slice(0, 2048),
+              projection: {
+                kind: 'excerpt' as const,
+                sourceRevision: notebookRevision,
+                representationId: 'original-utf8',
+                representationDigest: knowledgeContentDigest,
+                representationByteLength: Buffer.byteLength(knowledgeContent),
+                deliveredDigest: `sha256:${createHash('sha256').update(knowledgeContent.slice(0, 2048)).digest('hex')}`,
+                ranges: [{ start: 0, end: 2048 }],
+                byteLength: 2048,
+                truncated: true,
+                availability: 'incomplete' as const,
+              },
+            }
+          : {}),
         sourceRefs: knowledgeSourceRefs,
       },
     ],
@@ -2433,7 +2440,9 @@ describe('workspace auxiliary lineage reminting', () => {
           objectId: '0',
         },
       });
-      expect(material.originalSnapshotPath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
+      expect(material.originalSnapshotPath).not.toContain(
+        'mat_00000000-0000-7807-b767-6378f3fcdcf3'
+      );
       expect(material.packagePath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
       const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
       if (retainRepresentation) {
@@ -2646,10 +2655,13 @@ describe('workspace auxiliary lineage reminting', () => {
           knowledgePageId: 'knowledge_portable_source',
           notebookRevision: targetRevision,
           projection: expect.objectContaining({
-            kind: 'excerpt', sourceRevision: targetRevision,
+            kind: 'excerpt',
+            sourceRevision: targetRevision,
             representationDigest: `sha256:${createHash('sha256').update(targetKnowledgeContent).digest('hex')}`,
             representationByteLength: Buffer.byteLength(targetKnowledgeContent),
-            byteLength: 2048, ranges: [{ start: 0, end: 2048 }], truncated: true,
+            byteLength: 2048,
+            ranges: [{ start: 0, end: 2048 }],
+            truncated: true,
           }),
           packagePath: 'knowledge/pages/knowledge_portable_source.md',
           sourceRefs: [],
@@ -2770,12 +2782,23 @@ describe('workspace auxiliary lineage reminting', () => {
       repositoryPath: join(reimportedRoot, 'knowledge', 'notebook.git'),
     });
     const reimportedRevision = reimportedNotebook.initialize({
-      files: Object.fromEntries([...reimported.portableFileState.nativeKnowledgePages]
-        .map(([path, content]) => [path.slice('knowledge/pages/'.length), content])),
+      files: Object.fromEntries(
+        [...reimported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
+          path.slice('knowledge/pages/'.length),
+          content,
+        ])
+      ),
       metadata: {
-        summary: 'Reimported Notebook fixture', producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        summary: 'Reimported Notebook fixture',
+        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
         authority: { kind: 'direct', instructionReference: 'test:reimport-notebook-s39' },
-        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${createHash('sha256').update(JSON.stringify([...reimported.portableFileState.nativeKnowledgePages])).digest('hex')}` }, sourceReferences: [],
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256')
+            .update(JSON.stringify([...reimported.portableFileState.nativeKnowledgePages]))
+            .digest('hex')}`,
+        },
+        sourceReferences: [],
       },
     });
     reimported.finalizeNotebookKnowledge?.({

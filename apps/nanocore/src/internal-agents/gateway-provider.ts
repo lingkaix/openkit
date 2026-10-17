@@ -1,4 +1,3 @@
-import { Buffer } from 'node:buffer';
 import { operationToolName } from '@openkit/app-api-schemas';
 
 import {

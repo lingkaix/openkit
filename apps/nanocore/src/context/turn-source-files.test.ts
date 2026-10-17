@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { prepareTurnFileSourceInputs } from './turn-source-files.js';
 
 const roots: string[] = [];

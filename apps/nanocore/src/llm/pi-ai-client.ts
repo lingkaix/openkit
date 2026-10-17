@@ -1399,7 +1399,7 @@ export class PiAiGatewayClient {
                   outputCaps.length > 0
                     ? Math.max(...outputCaps)
                     : (options.maxTokens ?? model.maxTokens),
-                codexTurnState: options.headers?.['x-codex-turn-state'],
+                codexTurnState: options.headers?.['x-codex-turn-state'] ?? undefined,
               },
               options.signal
             )

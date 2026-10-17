@@ -200,7 +200,8 @@ describe('source-bound internal rolling context', () => {
     );
     expect(internalContextFailure(error)).toEqual({
       code: 'internal_agent_context_exceeded',
-      message: 'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
+      message:
+        'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
     });
   });
 

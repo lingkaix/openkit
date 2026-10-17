@@ -169,21 +169,36 @@ export function resolveCurrentWorkerSource(
     throw new Error('Current source package is unavailable.');
   const source = trace.sourceFiles?.find((entry) => entry.packagePath === inventoryPath);
   const knowledge = trace.knowledgeSelections.find((entry) => entry.packagePath === inventoryPath);
-  if ((!source && !knowledge) || (source && knowledge)) throw new Error('Selected source is unavailable.');
+  if ((!source && !knowledge) || (source && knowledge))
+    throw new Error('Selected source is unavailable.');
   const readKnowledge = () => {
     const admission = admit();
-    if (!knowledge?.notebookRevision || !knowledge.projection ||
+    if (
+      !knowledge?.notebookRevision ||
+      !knowledge.projection ||
       knowledge.projection.sourceRevision !== knowledge.notebookRevision ||
-      knowledge.projection.representationId !== 'original-utf8')
+      knowledge.projection.representationId !== 'original-utf8'
+    )
       throw new Error('Selected Knowledge is unavailable.');
     const selected = readAuthorizedWorkspaceNotebookPages({
-      dataRoot: input.workspaceDb.dataRoot, workspaceId: scope.workspaceId,
-      notebookRevision: knowledge.notebookRevision, pageIds: [knowledge.knowledgePageId],
-      access: { store: input.store, coreDb: input.coreDb, actor: admission.triggerActor,
-        outputThreadId: scope.threadId, outputTurnId: scope.turnId },
+      dataRoot: input.workspaceDb.dataRoot,
+      workspaceId: scope.workspaceId,
+      notebookRevision: knowledge.notebookRevision,
+      pageIds: [knowledge.knowledgePageId],
+      access: {
+        store: input.store,
+        coreDb: input.coreDb,
+        actor: admission.triggerActor,
+        outputThreadId: scope.threadId,
+        outputTurnId: scope.turnId,
+      },
     });
     const page = selected.pages[0];
-    if (selected.notebookRevision !== knowledge.notebookRevision || !page || page.contentDigest !== knowledge.contentDigest)
+    if (
+      selected.notebookRevision !== knowledge.notebookRevision ||
+      !page ||
+      page.contentDigest !== knowledge.contentDigest
+    )
       throw new Error('Selected Knowledge is unavailable.');
     return page.content;
   };
@@ -421,30 +436,65 @@ function unavailable(reason: SourceViewUnavailableReason): SourceViewUnavailable
  * @param input Exact accepted selection, pinned reader and current Worker admission.
  * @returns A bounded selected page or a content-free refusal.
  */
-async function readKnowledgeSelection(input: Parameters<typeof readWorkerSourceSnapshot>[0]): Promise<WorkerSourceReadResult> {
+async function readKnowledgeSelection(
+  input: Parameters<typeof readWorkerSourceSnapshot>[0]
+): Promise<WorkerSourceReadResult> {
   const selected = input.knowledge!;
   const projection = selected.projection;
-  if (!projection || !selected.notebookRevision || !input.workspaceId || !input.readKnowledge ||
-    projection.kind === 'descriptor' || projection.availability === 'unavailable')
+  if (
+    !projection ||
+    !selected.notebookRevision ||
+    !input.workspaceId ||
+    !input.readKnowledge ||
+    projection.kind === 'descriptor' ||
+    projection.availability === 'unavailable'
+  )
     return unavailable('unavailable');
   if (input.cursor && input.mode !== 'read') return unavailable('invalid_request');
   const bytes = Buffer.from(input.readKnowledge());
   const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  if (digest !== selected.contentDigest || projection.representationDigest !== digest ||
-    projection.representationByteLength !== bytes.length || projection.sourceRevision !== selected.notebookRevision)
+  if (
+    digest !== selected.contentDigest ||
+    projection.representationDigest !== digest ||
+    projection.representationByteLength !== bytes.length ||
+    projection.sourceRevision !== selected.notebookRevision
+  )
     return unavailable('corrupt');
-  const extra = { sourceByteLength: bytes.length, coverage: { kind: 'original-utf8' as const, complete: true as const } };
-  const view = await openBoundedSourceView({
-    identity: { sourceKey: `page/workspace/${input.workspaceId}/${selected.knowledgePageId}`,
-      revision: selected.notebookRevision, originalDigest: digest,
-      representationId: 'original-utf8', representationDigest: digest },
-    byteLength: bytes.length,
-    read: async (offset, maximum, signal) => { signal.throwIfAborted(); return bytes.subarray(offset, offset + maximum); },
-    assertUnchanged: (signal) => { signal.throwIfAborted(); input.assertCurrent(); },
-  }, { maxRepresentationBytes: 32 * 1024 * 1024, timeoutMs: 30_000,
-    maxEnvelopeBytes: 65_536 - Buffer.byteLength(JSON.stringify(extra)) }, input.signal);
+  const extra = {
+    sourceByteLength: bytes.length,
+    coverage: { kind: 'original-utf8' as const, complete: true as const },
+  };
+  const view = await openBoundedSourceView(
+    {
+      identity: {
+        sourceKey: `page/workspace/${input.workspaceId}/${selected.knowledgePageId}`,
+        revision: selected.notebookRevision,
+        originalDigest: digest,
+        representationId: 'original-utf8',
+        representationDigest: digest,
+      },
+      byteLength: bytes.length,
+      read: async (offset, maximum, signal) => {
+        signal.throwIfAborted();
+        return bytes.subarray(offset, offset + maximum);
+      },
+      assertUnchanged: (signal) => {
+        signal.throwIfAborted();
+        input.assertCurrent();
+      },
+    },
+    {
+      maxRepresentationBytes: 32 * 1024 * 1024,
+      timeoutMs: 30_000,
+      maxEnvelopeBytes: 65_536 - Buffer.byteLength(JSON.stringify(extra)),
+    },
+    input.signal
+  );
   if (view.status !== 'ready') return view;
-  const page = input.mode === 'read' ? await view.read(input.cursor, input.signal) : await view.preview(input.signal);
+  const page =
+    input.mode === 'read'
+      ? await view.read(input.cursor, input.signal)
+      : await view.preview(input.signal);
   // Re-open only the exact selected commit under fresh source and destination admission before disclosure.
   if (input.readKnowledge() !== bytes.toString('utf8')) return unavailable('stale');
   input.assertCurrent();

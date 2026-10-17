@@ -695,9 +695,11 @@ it('returns one actionable redacted context overflow after output begins', async
   const f = fixture();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockResolvedValue(
-    failedStream(Object.assign(new Error('private-context-canary'), {
-      failure: { kind: 'context_overflow', settled: true, status: 400 },
-    }))
+    failedStream(
+      Object.assign(new Error('private-context-canary'), {
+        failure: { kind: 'context_overflow', settled: true, status: 400 },
+      })
+    )
   );
 
   const response = await f.post(true);

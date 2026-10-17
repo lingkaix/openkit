@@ -88,13 +88,19 @@ async function extract(): Promise<void> {
     }
     process.stdout.write(JSON.stringify({ text, pages, totalPages: document.numPages }));
   } catch (error) {
-    process.exitCode = error instanceof RangeError ? 4 :
-      error instanceof Error && error.name === 'PasswordException' ? 3 : 2;
+    process.exitCode =
+      error instanceof RangeError
+        ? 4
+        : error instanceof Error && error.name === 'PasswordException'
+          ? 3
+          : 2;
   } finally {
     await loading.destroy();
   }
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  void extract().catch(() => { process.exitCode = 2; });
+  void extract().catch(() => {
+    process.exitCode = 2;
+  });
 }

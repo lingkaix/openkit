@@ -315,7 +315,10 @@ describe('S39 exact source owner map', () => {
       const reader = createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb });
       const artifact = sourceInventory({
         kind: 'artifact',
-        reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000001', objectId: 'ar_00000000-0000-7000-8000-0000000003eb' },
+        reference: {
+          scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: 'ar_00000000-0000-7000-8000-0000000003eb',
+        },
         artifactVersion: 1,
       });
       expect(reader.readSourceFile!(artifact)).toEqual({
@@ -333,7 +336,10 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'material',
-            reference: { scopeId: 'material/workspace/ws_00000000-0000-7000-8000-000000000001', objectId: material.materialId },
+            reference: {
+              scopeId: 'material/workspace/ws_00000000-0000-7000-8000-000000000001',
+              objectId: material.materialId,
+            },
             revisionId: revision.revisionId,
           })
         )
@@ -344,7 +350,11 @@ describe('S39 exact source owner map', () => {
       });
       const input = sourceInventory({
         kind: 'turn-input',
-        reference: { scopeId: 'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff', objectId: '0' },
+        reference: {
+          scopeId:
+            'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff',
+          objectId: '0',
+        },
       });
       expect(reader.readSourceFile!(input)).toEqual({
         originalDigest,
@@ -355,7 +365,11 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'turn-input',
-            reference: { scopeId: 'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff', objectId: '2' },
+            reference: {
+              scopeId:
+                'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff',
+              objectId: '2',
+            },
           })
         )
       ).toBeNull();
@@ -363,14 +377,22 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'artifact',
-            reference: { scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000402', objectId: 'ar_00000000-0000-7000-8000-0000000003eb' },
+            reference: {
+              scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000402',
+              objectId: 'ar_00000000-0000-7000-8000-0000000003eb',
+            },
             artifactVersion: 1,
           })
         )
       ).toBeNull();
       // An addressed proof scans only that ordinal. Whole-trace admission still checks every selected source.
       writeFileSync(
-        turnFilePayloadPath(join(dataRoot, 'workspaces/ws_00000000-0000-7000-8000-000000000001'), 'th_00000000-0000-7000-8000-000000000001', turn.id, 1),
+        turnFilePayloadPath(
+          join(dataRoot, 'workspaces/ws_00000000-0000-7000-8000-000000000001'),
+          'th_00000000-0000-7000-8000-000000000001',
+          turn.id,
+          1
+        ),
         Buffer.from([0, 254, 1])
       );
       expect(reader.readSourceFile!(input)).toEqual({
@@ -382,12 +404,21 @@ describe('S39 exact source owner map', () => {
         reader.readSourceFile!(
           sourceInventory({
             kind: 'turn-input',
-            reference: { scopeId: 'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff', objectId: '1' },
+            reference: {
+              scopeId:
+                'input/turn/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001/tu_00000000-0000-7000-8000-0000000003ff',
+              objectId: '1',
+            },
           })
         )
       ).toBeNull();
       writeFileSync(
-        turnFilePayloadPath(join(dataRoot, 'workspaces/ws_00000000-0000-7000-8000-000000000001'), 'th_00000000-0000-7000-8000-000000000001', turn.id, 0),
+        turnFilePayloadPath(
+          join(dataRoot, 'workspaces/ws_00000000-0000-7000-8000-000000000001'),
+          'th_00000000-0000-7000-8000-000000000001',
+          turn.id,
+          0
+        ),
         Buffer.from([0, 254, 1])
       );
       expect(reader.readSourceFile!(input)).toBeNull();

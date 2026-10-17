@@ -560,7 +560,10 @@ export interface ReadWorkspaceImportSnapshotInput {
 /** Importable record snapshot extracted from one workspace export. */
 export interface WorkspaceImportSnapshot {
   /** Request-local completion under the existing initialized staging root; never serialized or a read grant. */
-  finalizeNotebookKnowledge?: (binding: { notebookRevision: string; nativeKnowledgePages: ReadonlyMap<string, string> }) => void;
+  finalizeNotebookKnowledge?: (binding: {
+    notebookRevision: string;
+    nativeKnowledgePages: ReadonlyMap<string, string>;
+  }) => void;
   /** Target-relative immutable payload paths mapped to their verified private export sources. */
   artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Validated current Goal records and Task terminal facts; approval grants remain source-local. */
@@ -1110,33 +1113,36 @@ export function readWorkspaceImportSnapshot(
     );
   }
 
-  const projectEnvironmentPackages = () => workResources.agentEnvironmentPackageSnapshots.map(
-      (record) => {
-        const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
-        const snapshot = {
-          ...environmentPackage,
-          extensions: {
-            ...environmentPackage.extensions,
-            openkit: {
-              ...(environmentPackage.extensions.openkit as Record<string, unknown>),
-              sessionWorkspace: planSessionWorkspaceMaterialization({ environmentPackage }),
-            },
+  const projectEnvironmentPackages = () =>
+    workResources.agentEnvironmentPackageSnapshots.map((record) => {
+      const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
+      const snapshot = {
+        ...environmentPackage,
+        extensions: {
+          ...environmentPackage.extensions,
+          openkit: {
+            ...(environmentPackage.extensions.openkit as Record<string, unknown>),
+            sessionWorkspace: planSessionWorkspaceMaterialization({ environmentPackage }),
           },
-        };
-        return {
-          ...record,
-          contentDigest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),
-          snapshot,
-        };
-      }
-    );
+        },
+      };
+      return {
+        ...record,
+        contentDigest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),
+        snapshot,
+      };
+    });
   const agentEnvironmentPackageSnapshots = projectEnvironmentPackages();
 
   return {
     artifactPayloadFiles,
     finalizeNotebookKnowledge: (binding) => {
       workResources.finalizeNotebookKnowledge(binding);
-      agentEnvironmentPackageSnapshots.splice(0, agentEnvironmentPackageSnapshots.length, ...projectEnvironmentPackages());
+      agentEnvironmentPackageSnapshots.splice(
+        0,
+        agentEnvironmentPackageSnapshots.length,
+        ...projectEnvironmentPackages()
+      );
     },
     report,
     goalState: readCurrentGoalImportState(context),
@@ -2678,7 +2684,10 @@ function readWorkResourceImportState(
   const threadPreviewText = new Map<string, string>();
   const tracesBySourceTurn = new Map<string, WorkerContextPackageTrace>();
   const workerContextPackageFiles = new Map<string, string>();
-  const notebookFinalizers: ((binding: { notebookRevision: string; nativeKnowledgePages: ReadonlyMap<string, string> }) => void)[] = [];
+  const notebookFinalizers: ((binding: {
+    notebookRevision: string;
+    nativeKnowledgePages: ReadonlyMap<string, string>;
+  }) => void)[] = [];
   const artifactPayloadFiles = new Map<string, string>();
   const agentEnvironmentPackageSnapshots = [...canonical.agentEnvironmentPackageSnapshots];
   const workspaceInputSnapshots = [...workspaceSync.workspaceInputSnapshots];
@@ -2748,10 +2757,18 @@ function readWorkResourceImportState(
     }
     const knowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => ({
       ...selection,
-      content: requiredExportFile(context.files, `workspace-files/knowledge/pages/${selection.knowledgePageId}.md`),
-      ...(selection.projection ? {
-        deliveredContent: requiredExportFile(context.files, `${sourcePackageRoot}/${selection.packagePath}`),
-      } : {}),
+      content: requiredExportFile(
+        context.files,
+        `workspace-files/knowledge/pages/${selection.knowledgePageId}.md`
+      ),
+      ...(selection.projection
+        ? {
+            deliveredContent: requiredExportFile(
+              context.files,
+              `${sourcePackageRoot}/${selection.packagePath}`
+            ),
+          }
+        : {}),
     }));
     const targetKnowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => {
       const target = requiredMapValue(
@@ -2974,7 +2991,10 @@ function readWorkResourceImportState(
         );
     }
     tracesBySourceTurn.set(sourceTurnId, sourceTrace);
-    const finalizeTargetPackage = (binding?: { notebookRevision: string; nativeKnowledgePages: ReadonlyMap<string, string> }) => {
+    const finalizeTargetPackage = (binding?: {
+      notebookRevision: string;
+      nativeKnowledgePages: ReadonlyMap<string, string>;
+    }) => {
       const targetPackage = createWorkerContextPackageFiles({
         sourceFiles: targetSourceFiles,
         contextBudgetTokens: sourceManifest.contextBudgetTokens,
@@ -2984,10 +3004,21 @@ function readWorkResourceImportState(
         knowledgeSelections: targetKnowledgeSelections.map((target, index) => {
           const source = sourceTrace.knowledgeSelections[index]!;
           if (!source.projection) return target;
-          if (!binding || binding.nativeKnowledgePages.get(`knowledge/pages/${target.knowledgePageId}.md`) !== target.content)
-            throw new Error('Portable Knowledge history requires unavailable historical notebook closure.');
-          return remintKnowledgeDelivery(source, knowledgeSelections[index]!.content, target,
-            requiredExportFile(context.files, `${sourcePackageRoot}/${source.packagePath}`), binding.notebookRevision);
+          if (
+            !binding ||
+            binding.nativeKnowledgePages.get(`knowledge/pages/${target.knowledgePageId}.md`) !==
+              target.content
+          )
+            throw new Error(
+              'Portable Knowledge history requires unavailable historical notebook closure.'
+            );
+          return remintKnowledgeDelivery(
+            source,
+            knowledgeSelections[index]!.content,
+            target,
+            requiredExportFile(context.files, `${sourcePackageRoot}/${source.packagePath}`),
+            binding.notebookRevision
+          );
         }),
         materialSelections: sourceTrace.materialSelections.map((selection) => {
           const sourceRevision = requireMaterialRevision(
@@ -3008,7 +3039,11 @@ function readWorkResourceImportState(
               selection.revisionId
             ),
             parentRevisionId: selection.parentRevisionId
-              ? requiredMaterialRevisionId(context, selection.materialId, selection.parentRevisionId)
+              ? requiredMaterialRevisionId(
+                  context,
+                  selection.materialId,
+                  selection.parentRevisionId
+                )
               : null,
             bindingMutationRequestId: selection.bindingMutationRequestId
               ? importRequestLineage(context, selection.bindingMutationRequestId)
@@ -3089,7 +3124,11 @@ function readWorkResourceImportState(
         materialExclusions: sourceTrace.materialExclusions.map((exclusion) => ({
           ...exclusion,
           materialId: requiredMapValue(context.materialIds, exclusion.materialId, 'Material'),
-          revisionId: requiredMaterialRevisionId(context, exclusion.materialId, exclusion.revisionId),
+          revisionId: requiredMaterialRevisionId(
+            context,
+            exclusion.materialId,
+            exclusion.revisionId
+          ),
         })),
         packageFiles: targetPackage,
         packageSnapshotId: targetPackageSnapshotId,
@@ -3317,7 +3356,10 @@ function readWorkResourceImportState(
     turnEvents,
     turns,
     workerContextPackageFiles,
-    finalizeNotebookKnowledge: (binding: { notebookRevision: string; nativeKnowledgePages: ReadonlyMap<string, string> }) => {
+    finalizeNotebookKnowledge: (binding: {
+      notebookRevision: string;
+      nativeKnowledgePages: ReadonlyMap<string, string>;
+    }) => {
       for (const finalize of notebookFinalizers) finalize(binding);
     },
     workspaceInputSnapshots,
@@ -3340,22 +3382,35 @@ function readWorkResourceImportState(
 function remintKnowledgeDelivery(
   selection: WorkerContextPackageTrace['knowledgeSelections'][number],
   original: string,
-  target: { content: string; contentDigest: string; knowledgePageId: string; sourceRefs: readonly string[] },
+  target: {
+    content: string;
+    contentDigest: string;
+    knowledgePageId: string;
+    sourceRefs: readonly string[];
+  },
   delivered: string,
   notebookRevision: string
 ) {
-  const before = Buffer.from(original), after = Buffer.from(target.content);
+  const before = Buffer.from(original),
+    after = Buffer.from(target.content);
   let prefix = 0;
-  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix])
+    prefix++;
   while (prefix > 0 && ((before[prefix] ?? 0) & 0xc0) === 0x80) prefix--;
   let suffix = 0;
-  while (suffix < before.length - prefix && suffix < after.length - prefix &&
-    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  )
+    suffix++;
   while (suffix > 0 && ((before[before.length - suffix] ?? 0) & 0xc0) === 0x80) suffix--;
-  const oldEnd = before.length - suffix, newEnd = after.length - suffix;
+  const oldEnd = before.length - suffix,
+    newEnd = after.length - suffix;
   const ranges = selection.projection!.ranges.map((range) => {
     if (range.end <= prefix) return range;
-    if (range.start >= oldEnd) return { start: range.start + newEnd - oldEnd, end: range.end + newEnd - oldEnd };
+    if (range.start >= oldEnd)
+      return { start: range.start + newEnd - oldEnd, end: range.end + newEnd - oldEnd };
     if (range.start <= prefix && range.end >= oldEnd)
       return { start: range.start, end: range.end + newEnd - oldEnd };
     throw new Error('Portable Knowledge history requires unavailable historical notebook closure.');
@@ -3364,12 +3419,21 @@ function remintKnowledgeDelivery(
   if (original === target.content && !bytes.equals(Buffer.from(delivered)))
     throw new Error('Portable Knowledge excerpt bytes are contradictory.');
   return {
-    ...target, notebookRevision, deliveredContent: bytes.toString('utf8'),
-    projection: { ...selection.projection!, sourceRevision: notebookRevision,
-      representationDigest: target.contentDigest, representationByteLength: after.length,
+    ...target,
+    notebookRevision,
+    deliveredContent: bytes.toString('utf8'),
+    projection: {
+      ...selection.projection!,
+      sourceRevision: notebookRevision,
+      representationDigest: target.contentDigest,
+      representationByteLength: after.length,
       deliveredDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-      ranges, byteLength: bytes.length, truncated: bytes.length !== after.length,
-      availability: bytes.length !== after.length ? 'incomplete' as const : 'available' as const },
+      ranges,
+      byteLength: bytes.length,
+      truncated: bytes.length !== after.length,
+      availability:
+        bytes.length !== after.length ? ('incomplete' as const) : ('available' as const),
+    },
   };
 }
 

@@ -230,7 +230,11 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     'ws_00000000-0000-7000-8000-000000000001',
     attempt.inputRef!
   );
-  const restartedExecutor = new WorkerGovernanceTurnExecutor({ fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n), backend, coreDb });
+  const restartedExecutor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    backend,
+    coreDb,
+  });
   const restartedApp = createApp({
     coreDb,
     dataRoot,

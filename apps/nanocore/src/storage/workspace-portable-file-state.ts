@@ -21,8 +21,8 @@ import {
 import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
-import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
+import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
   appendCanonicalTextFile,
