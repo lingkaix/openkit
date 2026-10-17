@@ -2779,7 +2779,7 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
     // This bounded SQLite cohort exceeds the default case budget under full-suite contention.
-  }, 120_000);
+  }, 180_000);
 
   it('plans a new physical Sandbox identity when encoded-slash authority changes', async () => {
     const f = await admitIdleSupplyResident('encoding_identity');
@@ -3535,6 +3535,7 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
+  // Real baseline admission and canonical-state checks use this local runner limit; product deadlines stay unchanged.
   it('accepts a Sandbox-pinned Git baseline and closes with no host repository', async () => {
     const commit = 'a'.repeat(40);
     const tree = 'b'.repeat(40);
@@ -3619,7 +3620,7 @@ describe('createConfiguredTurnExecutor', () => {
       db.sqlite.close();
       f.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
   it.each([
     'turn-end',
     'release',
