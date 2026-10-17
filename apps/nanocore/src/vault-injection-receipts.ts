@@ -1,6 +1,7 @@
 import type { CoreDb } from './storage/db.js';
 import type { VaultInjectionReceiptRevocationStatus } from './storage/schema/index.js';
-import { getVaultInjectionPlan } from './vault-injection-plans.js';
+import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
+import { getVaultInjectionPlan, type VaultInjectionPlanRecord } from './vault-injection-plans.js';
 
 /** Durable non-secret injection receipt record. */
 export interface VaultInjectionReceiptRecord {
@@ -76,13 +77,13 @@ export function createVaultInjectionReceipt(
   coreDb: CoreDb,
   input: CreateVaultInjectionReceiptInput
 ): VaultInjectionReceiptRecord {
-  assertReceiptActor(input);
-
   const plan = getVaultInjectionPlan(coreDb, input.planId);
 
   if (!plan) {
     throw new Error(`Injection plan not found: ${input.planId}`);
   }
+
+  assertReceiptActor(coreDb, input, plan);
 
   if (plan.grantId !== input.grantId) {
     throw new Error('Injection receipt grant id must match the injection plan grant id.');
@@ -246,13 +247,39 @@ function requireVaultInjectionReceipt(
 /**
  * Validates receipt actor linkage fields.
  *
+ * @param coreDb Core Audit owner for an administrator preview delivery.
  * @param input Injection receipt creation input.
- * @throws Error when neither AgentSession nor capability call is present.
+ * @param plan Existing injection intent.
+ * @throws Error when neither Worker lineage nor exact human-preview delivery Audit is present.
  */
-function assertReceiptActor(input: CreateVaultInjectionReceiptInput): void {
-  if (!input.agentSessionId && !input.capabilityCallId) {
-    throw new Error('Injection receipts require agentSessionId or capabilityCallId.');
+function assertReceiptActor(
+  coreDb: CoreDb,
+  input: CreateVaultInjectionReceiptInput,
+  plan: VaultInjectionPlanRecord
+): void {
+  if (input.agentSessionId || input.capabilityCallId) return;
+  // Human tools/list has no Worker lineage. Its existing immutable Audit link must prove this exact delivery.
+  if (
+    input.auditEventId &&
+    plan.packageSnapshotId === null &&
+    plan.capabilityId === 'mcp.list_tools' &&
+    plan.injectionVisibility === 'gateway-only' &&
+    ['mcp-gateway:http', 'mcp-gateway:stdio'].includes(plan.backendCapabilityRequirement)
+  ) {
+    const event = coreDb.sqlite
+      .prepare(`SELECT actor_json FROM audit_events
+      WHERE audit_event_id = ? AND action = 'administration.mcp-discovery-preview.delivery'
+      AND outcome = 'succeeded' AND vault_grant_id = ? AND resource = ?
+      AND request_id IS NOT NULL`)
+      .get(input.auditEventId, input.grantId, `vault-injection-plan:${input.planId}`) as
+      | { actor_json: string }
+      | undefined;
+    if (event) {
+      const actor = ActorRefReaderSchema.safeParse(JSON.parse(event.actor_json));
+      if (actor.success && actor.data.kind === 'user') return;
+    }
   }
+  throw new Error('Injection receipts require agentSessionId or capabilityCallId.');
 }
 
 /**

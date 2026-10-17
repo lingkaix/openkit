@@ -7,9 +7,24 @@ import {
   operationMcpEligible,
   operationModelInput,
 } from './operation-definitions.js';
+import { SERVER_MCP_OPERATION_DEFINITIONS } from './server-mcp-operations.js';
 import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 
 describe('Agent, Worker and resource catalog definitions', () => {
+  it('rejects wrong-kind Server Vault identifiers at admission', () => {
+    const requestId = '00000000-0000-4000-8000-000000000001';
+    const referenceId = allocateEntityId('vault');
+    const grantId = allocateEntityId('grant');
+    const secret = SERVER_MCP_OPERATION_DEFINITIONS['vault.server-mcp-secret-revoke'].inputSchema;
+    const grant = SERVER_MCP_OPERATION_DEFINITIONS['vault.server-mcp-grant-revoke'].inputSchema;
+    const create = SERVER_MCP_OPERATION_DEFINITIONS['vault.server-mcp-grant-create'].inputSchema;
+    expect(secret.safeParse({ requestId, referenceId }).success).toBe(true);
+    expect(grant.safeParse({ requestId, grantId }).success).toBe(true);
+    expect(secret.safeParse({ requestId, referenceId: grantId }).success).toBe(false);
+    expect(create.safeParse({ requestId, referenceId: grantId }).success).toBe(false);
+    expect(grant.safeParse({ requestId, grantId: referenceId }).success).toBe(false);
+  });
+
   it('composes strict JSON operations with truthful MCP and mutation facts', () => {
     const definitions = {
       ...AGENT_OPERATION_DEFINITIONS,
@@ -68,7 +83,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
         displayName: 'Proof MCP',
         expectedRevision: 1,
         allowedTools: ['proof'],
-        declaration: { kind: 'http', url: 'https://example.com/mcp' },
+        declaration: { kind: 'http', endpoint: 'https://example.com/mcp' },
       },
       'catalog.mcp-select': { mcpId: 'proof', digest, expectedRevision: 1 },
       'catalog.mcp-binding': {

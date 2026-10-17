@@ -140,10 +140,9 @@ import {
   importVaultInjectionReceipts,
   listExportableVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
-import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
+import { assertWorkspaceDeletionRecoveryExportAuthority } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 import type { FileStorageAdmission } from './artifacts/file-admission.js';
 import { verifyArtifactFilePayload } from './artifacts/file-records.js';
 import {
@@ -375,7 +374,7 @@ export function canReadWorkspaceExport(
  * Checks whether an archive may cross the target deployment trust boundary.
  *
  * Foreign archives use the authenticated importer as target authority. Current or predecessor
- * archives still require the active source owner and workspace.export authority.
+ * archives still require current source Workspace eligibility and workspace.export authority.
  *
  * @param dataRoot Canonical target data root.
  * @param store Current user Store.
@@ -1084,36 +1083,6 @@ export function workspaceDeletionRecoveryExportId(requestId: string): string {
   return deriveEntityId('wsexp', ['delete', requestId]);
 }
 
-/** Proves the narrow durable authority for one deletion recovery export. */
-function assertDeletionRecoveryExportAuthority(input: {
-  readonly authorityUserId: string;
-  readonly coreDb: CoreDb | undefined;
-  readonly dataRoot: string;
-  readonly exportId: string;
-  readonly requestId: string;
-  readonly workspaceId: string;
-}): true {
-  if (!input.coreDb) {
-    throw new Error('Workspace deletion recovery export requires durable authority.');
-  }
-  const request = readWorkspaceDeletionRequest(input.dataRoot, input.workspaceId, input.requestId);
-  const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
-  if (
-    request.phase !== 'deleting' ||
-    request.workspaceId !== input.workspaceId ||
-    request.originalOwnerUserId !== input.authorityUserId ||
-    request.recoveryExportId !== null ||
-    request.recoveryExportManifestDigest !== null ||
-    input.exportId !== workspaceDeletionRecoveryExportId(request.requestId) ||
-    registry?.status !== 'deleting' ||
-    registry.ownerUserId !== request.originalOwnerUserId ||
-    registry.registryRevision !== request.expectedRegistryRevision + 1
-  ) {
-    throw new Error('Workspace deletion recovery export authority is inconsistent.');
-  }
-  return true;
-}
-
 /** Creates and verifies one server-managed portable Workspace export. */
 export function createVerifiedWorkspaceExport({
   authorityActor,
@@ -1144,21 +1113,29 @@ export function createVerifiedWorkspaceExport({
 }) {
   if (!isEntityId('wsexp', exportId))
     throw new Error('Workspace export requires a canonical wsexp identity.');
+  const deletionRecoveryContext =
+    deletionRecoveryRequestId !== undefined
+      ? {
+          authorityUserId,
+          coreDb,
+          dataRoot,
+          exportId,
+          requestId: deletionRecoveryRequestId,
+          workspaceId,
+        }
+      : undefined;
+  const deletionRecoveryAuthorized = deletionRecoveryContext
+    ? assertWorkspaceDeletionRecoveryExportAuthority(deletionRecoveryContext)
+    : false;
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
-  if (!administratorEligible && threads.some((thread) => thread.visibility === 'private')) {
+  if (
+    !administratorEligible &&
+    !deletionRecoveryAuthorized &&
+    threads.some((thread) => thread.visibility === 'private')
+  ) {
     throw new Error('Private Thread history requires a separately authorized export.');
   }
-  const deletionRecoveryAuthorized = deletionRecoveryRequestId
-    ? assertDeletionRecoveryExportAuthority({
-        authorityUserId,
-        coreDb,
-        dataRoot,
-        exportId,
-        requestId: deletionRecoveryRequestId,
-        workspaceId,
-      })
-    : false;
   assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   assertCanonicalDirectory(dataRoot);
@@ -1437,6 +1414,7 @@ export function createVerifiedWorkspaceExport({
   const exported = writeWorkspaceExportTree({
     sourceWorkspaceRoot: join(dataRoot, 'workspaces', workspaceId),
     administratorEligible,
+    ...(deletionRecoveryContext ? { deletionRecoveryContext } : {}),
     exportRoot,
     exportId,
     sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
@@ -1527,7 +1505,7 @@ export function createVerifiedWorkspaceExport({
 
     try {
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: authorityUserId },
+        authorityActor: authorityActor ?? { kind: 'user', id: authorityUserId },
         workspaceDb,
         callId: deriveEntityId('cap', ['storage_export', exportId]),
         workspaceId,

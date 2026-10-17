@@ -30,7 +30,6 @@ const SHARING_OPERATION_IDS = [
   'workspace.my-invitation-accept',
   'workspace.my-invitation-decline',
   'workspace.invitation-revoke',
-  'workspace.member-access-change',
   'workspace.member-remove',
   'workspace.leave',
   'workspace.ownership-transfer',
@@ -76,21 +75,16 @@ function insertUser(coreDb: CoreDb, userId: string, email: string): void {
 }
 
 /** Inserts one active non-owner membership. */
-function insertMember(
-  coreDb: CoreDb,
-  workspaceId: string,
-  userId: string,
-  accessLevel: 'editor' | 'viewer'
-): void {
+function insertMember(coreDb: CoreDb, workspaceId: string, userId: string): void {
   const now = '2026-07-19T00:00:00.000Z';
   coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
-        workspace_id, user_id, status, access_level, invitation_id,
+        workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, ?, 'active', ?, NULL, ?, NULL, 1, ?, ?)`
+      ) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`
     )
-    .run(workspaceId, userId, accessLevel, now, now, now);
+    .run(workspaceId, userId, now, now, now);
 }
 
 /** Creates one direct route fixture without duplicating central-authorizer tests. */
@@ -124,8 +118,8 @@ function createFixture(): RouteFixture {
     ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     workspaceId: foreignWorkspaceId,
   });
-  insertMember(coreDb, workspaceId, 'usr_00000000-0000-7609-aed5-db4b5c95e76c', 'editor');
-  insertMember(coreDb, workspaceId, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'viewer');
+  insertMember(coreDb, workspaceId, 'usr_00000000-0000-7609-aed5-db4b5c95e76c');
+  insertMember(coreDb, workspaceId, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8');
 
   const actorState: ActorState = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
@@ -137,7 +131,7 @@ function createFixture(): RouteFixture {
     const pathWorkspaceId = /^\/api\/app\/workspaces\/([^/]+)/.exec(context.req.path)?.[1];
     if (pathWorkspaceId) {
       context.set('workspaceAccess', {
-        effectiveRole: 'owner',
+        isOwner: true,
         kind: 'workspace',
         policyOperation: 'workspace.read',
         workspaceId: pathWorkspaceId,
@@ -227,7 +221,7 @@ describe('Workspace sharing routes', () => {
     );
 
     expect(body).toMatchObject({
-      items: [{ effectiveRole: 'owner', workspace: { id: fixture.workspaceId } }],
+      items: [{ isOwner: true, workspace: { id: fixture.workspaceId } }],
     });
   });
 
@@ -259,7 +253,7 @@ describe('Workspace sharing routes', () => {
         ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         membershipStatus: null,
         accessCause: 'administrator',
-        effectiveRole: null,
+        isOwner: false,
         membershipRevision: null,
         workspace: expect.objectContaining({ id: fixture.workspaceId }),
       }),
@@ -276,9 +270,9 @@ describe('Workspace sharing routes', () => {
       fixture.coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
-            invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+            invitation_id, workspace_id, invitee_user_id, inviter_user_id,
             status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
-          ) VALUES (?, ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'viewer', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES (?, ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(invitationId, workspaceId, '2026-07-26T00:00:00.000Z', now, now);
     }
@@ -308,7 +302,7 @@ describe('Workspace sharing routes', () => {
     const requestId = '00000000-0000-4000-8000-000000000001';
     const input = {
       inviteeEmail: 'invitee@example.com',
-      proposedAccessLevel: 'viewer',
+
       requestId,
     } as const;
 
@@ -343,7 +337,7 @@ describe('Workspace sharing routes', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             ...input,
-            proposedAccessLevel: 'editor',
+            inviteeEmail: 'different@example.com',
           }),
         }
       )
@@ -381,17 +375,16 @@ describe('Workspace sharing routes', () => {
     const fixture = createFixture();
     const noOp = await fixture.app.request(
       ...operationRequest(
-        'workspace.member-access-change',
+        'workspace.ownership-transfer',
         {
           workspaceId: fixture.workspaceId,
-          targetUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+          targetUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         },
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            accessLevel: 'editor',
-            expectedRevision: 1,
+            expectedRegistryRevision: 1,
             requestId: '00000000-0000-4000-8000-000000000002',
           }),
         }
@@ -399,17 +392,16 @@ describe('Workspace sharing routes', () => {
     );
     const conflict = await fixture.app.request(
       ...operationRequest(
-        'workspace.member-access-change',
+        'workspace.ownership-transfer',
         {
           workspaceId: fixture.workspaceId,
-          targetUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+          targetUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         },
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            accessLevel: 'viewer',
-            expectedRevision: 9,
+            expectedRegistryRevision: 9,
             requestId: '00000000-0000-4000-8000-000000000003',
           }),
         }
@@ -427,8 +419,8 @@ describe('Workspace sharing routes', () => {
     await expect(conflict.json()).resolves.toMatchObject({
       code: 'revision_conflict',
       details: {
-        current: { revision: 1, userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
-        resource: 'membership',
+        current: { registryRevision: 1, ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
+        resource: 'workspace',
       },
     });
   });
@@ -440,9 +432,9 @@ describe('Workspace sharing routes', () => {
       fixture.coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
-            invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+            invitation_id, workspace_id, invitee_user_id, inviter_user_id,
             status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
-          ) VALUES ('inv_00000000-0000-7d26-983c-83c7b6f9b27f', ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'viewer', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES ('inv_00000000-0000-7d26-983c-83c7b6f9b27f', ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(fixture.foreignWorkspaceId, '2026-07-26T00:00:00.000Z', now, now);
       return 'inv_00000000-0000-7d26-983c-83c7b6f9b27f';
@@ -599,7 +591,7 @@ describe('Workspace sharing routes', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            action: 'add-self-as-editor',
+            action: 'add-self-as-member',
             expectedRegistryRevision: 1,
             requestId: '00000000-0000-4000-8000-000000000008',
           }),
@@ -635,7 +627,7 @@ describe('Workspace sharing routes', () => {
     expect(read.status).toBe(200);
     await expect(read.json()).resolves.toEqual({
       recovery: {
-        administratorRole: null,
+        administratorMembershipStatus: null,
         ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         registryRevision: 1,
         workspaceId: fixture.workspaceId,
@@ -643,7 +635,7 @@ describe('Workspace sharing routes', () => {
     });
     expect(recovered.status).toBe(200);
     await expect(recovered.json()).resolves.toMatchObject({
-      recovery: { administratorRole: 'editor', registryRevision: 2 },
+      recovery: { administratorMembershipStatus: 'active', registryRevision: 2 },
     });
     expect(disabled.status).toBe(200);
     expect(disabledNoOp.status).toBe(200);
@@ -684,7 +676,7 @@ describe('Workspace sharing routes', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            action: 'add-self-as-editor',
+            action: 'add-self-as-member',
             expectedRegistryRevision: 1,
             requestId: '00000000-0000-4000-8000-000000000011',
           }),
@@ -717,7 +709,7 @@ it('keeps safe sharing request field detail in the common validation projection'
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           inviteeEmail: 42,
-          proposedAccessLevel: 'viewer',
+
           requestId: '00000000-0000-4000-8000-000000000001',
         }),
       }

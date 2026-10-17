@@ -1,5 +1,6 @@
 import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { deriveEntityId } from '@openkit/protocol';
+import type { Actor } from '../auth/identity.js';
 import {
   finishCapabilityCall,
   recordUsage,
@@ -9,6 +10,7 @@ import {
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { isCurrentServerMcpMaterial } from '../vault/server-mcp-authority.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { getVaultGrant } from '../vault/vault-grants.js';
 import { getVaultReference } from '../vault/vault-references.js';
@@ -48,6 +50,8 @@ export interface PreparedCapturedPendingCall {
 
 /** Resolves credential material through the existing audited MCP Vault owner before a claim. */
 export async function prepareCapturedPendingCall(input: {
+  /** Actual human approving this captured effect, retained by the existing native operation. */
+  readonly actor: Pick<Actor, 'userId'>;
   readonly record: PendingRequestRecord;
   readonly catalog: WorkspaceMcpServerCatalog | null;
   readonly coreDb: CoreDb | undefined;
@@ -65,7 +69,11 @@ export async function prepareCapturedPendingCall(input: {
     });
     const environmentPackage = {
       snapshotId: record.packageDigest ?? '',
-      scope: { workspaceId: record.workspaceId, agentSessionId: record.agentSessionId ?? '' },
+      scope: {
+        workspaceId: record.workspaceId,
+        agentSessionId: record.agentSessionId ?? '',
+        triggerActor: { kind: 'user' as const, id: input.actor.userId },
+      },
       agent: { agentId: record.agentId ?? '' },
     };
     const material = await resolveWorkerMcpCredentials({
@@ -80,15 +88,11 @@ export async function prepareCapturedPendingCall(input: {
       resolved,
       workspaceDb: input.workspaceDb,
     });
-    const grants = material.injections.map(({ grant }) => {
-      const reference = getVaultReference(input.coreDb!, grant.vaultReferenceId);
-      if (!reference) throw new Error('Resolved Vault reference is missing.');
-      return {
-        id: grant.grantId,
-        referenceId: reference.referenceId,
-        version: reference.currentVersion,
-      };
-    });
+    const grants = material.injections.map(({ grant, referenceVersion }) => ({
+      id: grant.grantId,
+      referenceId: grant.vaultReferenceId,
+      version: referenceVersion,
+    }));
     return {
       credentials: material.credentials,
       grants,
@@ -249,7 +253,7 @@ export function evaluateCapturedPendingCall(input: {
     policyAllows: resolved.approvalRequiredTools.includes(record.toolName),
     credentialsValid:
       !input.prepared?.failed &&
-      credentialsStillValid(input.coreDb, resolved.credentialBindings, record, input.prepared),
+      credentialsStillValid(input.coreDb, resolved, record, input.prepared),
   };
 }
 
@@ -262,6 +266,8 @@ export function evaluateCapturedPendingCall(input: {
  * @returns Disposition recorded by the approval command.
  */
 export async function executeCapturedPendingCall(input: {
+  /** Existing backend used only for the current shared material check before dispatch. */
+  readonly vaultBackend?: (() => VaultBackend) | undefined;
   readonly catalog: WorkspaceMcpServerCatalog | null;
   readonly coreDb: CoreDb | undefined;
   readonly record: PendingRequestRecord;
@@ -319,6 +325,31 @@ export async function executeCapturedPendingCall(input: {
       false
     );
     return { disposition: 'execution-error', reason: 'arguments-invalid', result: null };
+  }
+  if (
+    resolved.scope === 'server' &&
+    (resolved.catalogDigest !== record.catalogRevision ||
+      !credentialsStillValid(input.coreDb, resolved, record, input.prepared) ||
+      resolved.credentialBindings.some((binding) => {
+        const grant = input.coreDb ? getVaultGrant(input.coreDb, binding.vaultGrantId) : null;
+        const reference =
+          grant && input.coreDb ? getVaultReference(input.coreDb, grant.vaultReferenceId) : null;
+        try {
+          const backend = input.vaultBackend?.();
+          return !backend || !reference || !isCurrentServerMcpMaterial(backend, reference);
+        } catch {
+          return true;
+        }
+      }))
+  ) {
+    recordCapturedExecution(
+      input.executionCall,
+      input.workspaceDb,
+      'failed',
+      'credentials-invalid',
+      false
+    );
+    return { disposition: 'execution-error', reason: 'credentials-invalid', result: null };
   }
   try {
     const result = await input.workerMcpGateway.callTool({
@@ -378,10 +409,11 @@ function recordCapturedExecution(
 
 function credentialsStillValid(
   coreDb: CoreDb | undefined,
-  bindings: ReadonlyArray<{ readonly vaultGrantId: string }>,
+  resolved: ReturnType<typeof resolveWorkspaceMcpServer>,
   record: PendingRequestRecord,
   prepared: PreparedCapturedPendingCall | undefined
 ): boolean {
+  const bindings = resolved.credentialBindings;
   if (bindings.length === 0) return true;
   if (!coreDb) return false;
   const now = Date.now();
@@ -397,6 +429,7 @@ function credentialsStillValid(
             agent: { agentId: record.agentId ?? '' },
           },
           operation: 'mcp.call_tool',
+          resolved,
         },
         grant,
         reference
@@ -404,12 +437,12 @@ function credentialsStillValid(
     } catch {
       return false;
     }
-    const resolved = prepared?.grants.find((candidate) => candidate.id === binding.vaultGrantId);
+    const observed = prepared?.grants.find((candidate) => candidate.id === binding.vaultGrantId);
     return Boolean(
-      resolved &&
+      observed &&
         reference &&
-        resolved.referenceId === reference.referenceId &&
-        resolved.version === reference.currentVersion &&
+        observed.referenceId === reference.referenceId &&
+        observed.version === reference.currentVersion &&
         (grant!.expiresAt === null || Date.parse(grant!.expiresAt) > now)
     );
   });

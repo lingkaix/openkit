@@ -32,7 +32,7 @@ function createSelectionFixture(): { dataRoot: string; path: string } {
           kind: 'file',
           path: 'SKILL.md',
           contentBase64: Buffer.from(
-            `---\nname: ${id}\ndescription: Selection fixture guidance.\n---\n# ${id}\n`
+            `---\nname: ${id}\ndescription: Fixture selection Skill.\n---\n# ${id}\n`
           ).toString('base64'),
         },
       ],

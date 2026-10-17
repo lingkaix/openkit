@@ -3,7 +3,6 @@ import {
   AcceptWorkspaceInvitationRequestSchema,
   type AuthorizedWorkspaceSummary,
   AuthorizedWorkspaceSummarySchema,
-  ChangeWorkspaceMemberAccessRequestSchema,
   CreateWorkspaceInvitationRequestSchema,
   DeclineWorkspaceInvitationRequestSchema,
   DisableUserRequestSchema,
@@ -48,11 +47,10 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import type { CoreDb } from './storage/db.js';
-import { resolveWorkspaceRole } from './workspace-membership.js';
+import { resolveWorkspaceMembershipRelation } from './workspace-membership.js';
 import {
   acceptWorkspaceInvitation,
   type CreateWorkspaceInvitationResult,
-  changeWorkspaceMemberAccess,
   createWorkspaceInvitation,
   declineWorkspaceInvitation,
   getWorkspaceAccessRecoveryState,
@@ -142,7 +140,6 @@ export function createWorkspaceSharingOperationImplementations(
                 publicOperationActor(context)
               ),
               inviteeEmail: request.inviteeEmail,
-              proposedAccessLevel: request.proposedAccessLevel,
               workspaceId,
             });
             const created = requireCreatedInvitation(result);
@@ -319,7 +316,7 @@ export function createWorkspaceSharingOperationImplementations(
               coreDb,
               expectedRevision: request.expectedRevision,
               invitationId,
-              ownerUserId: actorId,
+              actorUserId: actorId,
               administratorEligible: isCurrentDeploymentAdministrator(
                 coreDb,
                 publicOperationActor(context)
@@ -338,51 +335,6 @@ export function createWorkspaceSharingOperationImplementations(
           workspaceId,
         });
         return WorkspaceInvitationMutationResponseSchema.parse({ invitation });
-      } catch (error) {
-        throwSharingError(error);
-      }
-    },
-
-    'workspace.member-access-change': async (value, context) => {
-      try {
-        const coreDb = requireCoreDb(input.coreDb);
-        const store = input.store!;
-        const actorId = publicOperationActor(context).userId;
-        const workspaceId = value.workspaceId;
-        const memberUserId = value.targetUserId;
-        assertMemberLineage(coreDb, workspaceId, memberUserId);
-        const request = ChangeWorkspaceMemberAccessRequestSchema.parse(
-          Object.fromEntries(
-            Object.entries(value).filter(([key]) =>
-              Object.hasOwn(ChangeWorkspaceMemberAccessRequestSchema.shape, key)
-            )
-          )
-        );
-        const member = await runMemberMutation({
-          action: 'workspace.member.access.change',
-          actorId,
-          coreDb,
-          execute: () =>
-            changeWorkspaceMemberAccess({
-              accessLevel: request.accessLevel,
-              coreDb,
-              expectedRevision: request.expectedRevision,
-              memberUserId,
-              ownerUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(
-                coreDb,
-                publicOperationActor(context)
-              ),
-              workspaceId,
-            }),
-          inflightCommands,
-          memberUserId,
-          request,
-          store,
-          summary: 'Workspace membership access changed.',
-          workspaceId,
-        });
-        return WorkspaceMemberMutationResponseSchema.parse({ member });
       } catch (error) {
         throwSharingError(error);
       }
@@ -412,7 +364,7 @@ export function createWorkspaceSharingOperationImplementations(
               coreDb,
               expectedRevision: request.expectedRevision,
               memberUserId,
-              ownerUserId: actorId,
+              actorUserId: actorId,
               administratorEligible: isCurrentDeploymentAdministrator(
                 coreDb,
                 publicOperationActor(context)
@@ -517,7 +469,7 @@ export function createWorkspaceSharingOperationImplementations(
             });
             const result = transferWorkspaceOwnership({
               coreDb,
-              currentOwnerUserId: actorId,
+              actorUserId: actorId,
               administratorEligible: isCurrentDeploymentAdministrator(
                 coreDb,
                 publicOperationActor(context)
@@ -761,7 +713,7 @@ interface RunInvitationTransitionInput {
   readonly store: FsStore;
   /** Redacted lifecycle audit summary. */
   readonly summary: string;
-  /** Exact Workspace for owner-controlled revocation. */
+  /** Exact Workspace for member-authorized revocation. */
   readonly workspaceId?: string;
   /** Current trusted administrator eligibility at this invocation. */
   readonly administratorEligible?: boolean;
@@ -950,14 +902,17 @@ function projectWorkspaceRelation(
   administratorEligible: boolean
 ) {
   const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
-  if (!registry || (!administratorEligible && !resolveWorkspaceRole(coreDb, workspaceId, userId))) {
+  if (
+    !registry ||
+    (!administratorEligible && !resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId))
+  ) {
     throw accessDenied();
   }
   const member = getWorkspaceMember(coreDb, workspaceId, userId);
   return {
     ownerUserId: registry.ownerUserId,
     registryRevision: registry.registryRevision,
-    effectiveRole: member?.effectiveRole ?? null,
+    isOwner: registry.ownerUserId === userId,
     membershipRevision: member?.revision ?? null,
     membershipStatus: member?.status ?? null,
     accessCause: administratorEligible ? ('administrator' as const) : ('membership' as const),
