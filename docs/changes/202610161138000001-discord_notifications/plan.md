@@ -32,7 +32,7 @@ Review corrected prior-user Web cache retention, missing usable grant links, dup
 
 ## Next Action
 
-Review the regenerated conflict resolution and combined execution record, push, and run one complete affected-module gate on the exact committed head. The earlier separate gates do not prove this merged head. Acquire the landing window after a passing gate, use Express landing and watch the containing main-push CI. A real bot account and separately authorized send remain later proof; their absence does not block this fake-backed feature.
+Complete the active serial Native gate without changing its frozen checkout. Reconcile the final Main overlap under Express item8, retain unchanged passing suites, and run the exact merged-head local gate with the complete overlapping owner modules and affected consumers. The source review and deciding gate logs remain landing preconditions. Acquire the window only when ready, land through Express, and watch the containing main-push CI. A real bot account and separately authorized send remain later proof; their absence does not block this fake-backed feature.
 
 ## Verification Evidence
 
@@ -104,3 +104,10 @@ The c9 Native gate found the existing Knowledge OpenAPI count still pinned to23 
 The complete corrected OpenAPI file then exposed an existing expected-schema helper that calls Zod omit on the new refined Notebook request object. That check failed29 passing and1 failing case; its output remains notebook-count-repair-check.log. The test now projects the original input schema before removing the mutation-only HTTP request-id header property and required entry. It still compares every remaining JSON Schema field exactly, preserves all output and route assertions, and does not call the production projection helper as its oracle. Production validation and refinements remain unchanged.
 
 Main Notebook fixture reconciliation retains the owner repair at a8179685. Core Thread audience, Quick Chat and Search tests match Main exactly. The OpenAPI test retains Main's complete Knowledge assertions and the P23 signed-ingress exclusion and exact live-route checks. The standalone duplicate fixture repair was not published. This merge changes no P23 production, migration or generated interface bytes.
+
+
+## Personal Memory Main Integration
+
+Main b37afdcbd81a5eaf64e1b8432acec71d0368e770 adds the personal Memory owner and twelve Memory operations. The merge retains Main's current-command intent check and approval availability rules together with the P23 post-publication attention observer. The App imports both dependency types and the observer hook. Core0004 channel SQL remains unchanged. OpenAPI and CLI are regenerated from the combined definitions, and the normal nine-package build and generation command passes in memory-main-integration-generate.log.
+
+Main f9d1020476bd52362e721010d45bd69e2af4eb8a supplies the Web inventory correction. Use its owner text and twelve explicit unpublished R069 dispositions, retaining the five live Channels operations. The combined catalog is264 total operations,204 included,58 server and2 Gateway. The parallel standalone inventory repair was not published because Main already supplies its correction. No Memory UI, new request authority, transport state, or real account operation is added by this reconciliation. The earlier four-test-only merged gate plan is superseded by the actual production overlap in the root composition, Pending Request owner, storage helper and shared schemas.
