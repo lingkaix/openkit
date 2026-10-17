@@ -133,13 +133,6 @@ export const WorkerContextPackageProjectionSchema = z.object({
   originalSnapshotPath: IdSchema.optional(),
   representationSnapshotPath: IdSchema.optional(),
   pdfTextLayer: PdfTextLayerEvidenceSchema.optional(),
-  tokenAccounting: z
-    .strictObject({
-      identity: IdSchema.max(1024),
-      budgetTokens: z.number().int().positive().safe(),
-      countedTokens: z.number().int().nonnegative().safe(),
-    })
-    .optional(),
 });
 /** Exact text projection admitted by the existing package owner. */
 export type WorkerContextPackageProjection = z.infer<typeof WorkerContextPackageProjectionSchema>;
@@ -2323,14 +2316,9 @@ function assertFileProof(
   }
 }
 
-/** Checks independent text, range, identity and accounting bounds before delivery. */
+/** Checks independent text, range and identity bounds before delivery. */
 function assertProjection(value: WorkerContextPackageProjection, bytes?: Uint8Array): void {
   const projection = WorkerContextPackageProjectionSchema.parse(value);
-  if (
-    projection.tokenAccounting &&
-    projection.tokenAccounting.countedTokens > projection.tokenAccounting.budgetTokens
-  )
-    throw new Error('Worker Context Package explicit token budget exceeded.');
   let previousEnd = 0;
   let total = 0;
   for (const range of projection.ranges) {

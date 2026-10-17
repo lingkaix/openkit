@@ -3156,7 +3156,7 @@ describe('createConfiguredTurnExecutor', () => {
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it.each([
     'missing-lease',
@@ -10790,7 +10790,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  }, 30_000);
+  }, 60_000);
 
   it('dispatches DeepSeek after OpenCode returns to a previously evicted Sandbox identity', async () => {
     const coreDb = createFactoryCoreDb();

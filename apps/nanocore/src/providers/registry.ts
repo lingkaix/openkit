@@ -227,7 +227,7 @@ export function gatewayCapabilitiesForProfile(
     return { chatCompletions: 'native', responses: 'native' };
   }
 
-  if (subscriptionFamily === 'openai-codex') {
+  if (subscriptionFamily === 'openai-codex' || subscriptionFamily === 'xai') {
     return { chatCompletions: 'bridged', responses: 'native' };
   }
 

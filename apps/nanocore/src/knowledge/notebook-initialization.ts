@@ -1,8 +1,12 @@
 import { join } from 'node:path';
 import type { ActorRef, KnowledgeNotebookAdmission } from '@openkit/protocol';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import {
+  recordServerAuditEvent,
+  recordUserAuditEvent,
+  recordWorkspaceAuditEvent,
+} from '../audit-events.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission } from './notebook-publication.js';
@@ -69,7 +73,34 @@ export function initializeWorkspaceNotebook(input: {
   readonly files?: Readonly<Record<string, string>>;
   readonly revalidate: () => NotebookPublicationAdmission;
 }): string {
-  const ownerScope = { kind: 'workspace', workspaceId: input.workspaceId } as const;
+  if (input.workspaceDb.workspaceId !== input.workspaceId)
+    throw new NotebookError('invalid_request');
+  return initializeNotebook({
+    notebookRoot: join(input.workspaceRoot, 'knowledge'),
+    owner: { kind: 'workspace', workspaceDb: input.workspaceDb },
+    initialization: input.initialization,
+    ...(input.files === undefined ? {} : { files: input.files }),
+    revalidate: input.revalidate,
+  });
+}
+
+/** Reuses one validation/Git/Audit boundary for native fresh-scope creation; callers own staging and current admission. */
+export function initializeNotebook(input: {
+  readonly notebookRoot: string;
+  readonly owner:
+    | { readonly kind: 'workspace'; readonly workspaceDb: WorkspaceDb }
+    | { readonly kind: 'user'; readonly userDb: UserDb }
+    | { readonly kind: 'server'; readonly coreDb: CoreDb };
+  readonly initialization: NotebookInitialization;
+  readonly files?: Readonly<Record<string, string>>;
+  readonly revalidate: () => NotebookPublicationAdmission;
+}): string {
+  const ownerScope =
+    input.owner.kind === 'workspace'
+      ? { kind: 'workspace' as const, workspaceId: input.owner.workspaceDb.workspaceId }
+      : input.owner.kind === 'user'
+        ? { kind: 'user' as const, userId: input.owner.userDb.userId }
+        : { kind: 'server' as const };
   const files = initialNotebookFiles(input.files ?? {});
   // System attribution is only for the unchanged service seed, never authored content or navigation.
   if (
@@ -87,7 +118,7 @@ export function initializeWorkspaceNotebook(input: {
   } as const;
   const inputDigest = commandInputHash({ ownerScope, files, authority });
   const notebook = new KnowledgeNotebook({
-    repositoryPath: join(input.workspaceRoot, 'knowledge', 'notebook.git'),
+    repositoryPath: join(input.notebookRoot, 'notebook.git'),
   });
   const admission = input.revalidate();
   const validation = validateNotebookCandidate({
@@ -100,23 +131,30 @@ export function initializeWorkspaceNotebook(input: {
   let evidence: KnowledgeNotebookAdmission | undefined;
   const audit = (action: string): void => {
     if (!evidence) throw new NotebookError('recovery_required');
-    recordWorkspaceAuditEvent({
-      workspaceDb: input.workspaceDb,
-      workspaceId: input.workspaceId,
+    const event = {
       requestId: input.initialization.requestId,
       actor: input.initialization.producer,
-      category: 'knowledge',
+      category: 'knowledge' as const,
       action,
-      outcome: 'succeeded',
+      outcome: 'succeeded' as const,
       resource: `knowledge-notebook:${evidence.candidateRevision}`,
       notebookAdmission: evidence,
       summary: 'Initial notebook publication evidence retained.',
-    });
+    };
+    if (input.owner.kind === 'workspace')
+      recordWorkspaceAuditEvent({
+        ...event,
+        workspaceDb: input.owner.workspaceDb,
+        workspaceId: input.owner.workspaceDb.workspaceId,
+      });
+    else if (input.owner.kind === 'user')
+      recordUserAuditEvent({ ...event, userDb: input.owner.userDb });
+    else recordServerAuditEvent({ ...event, coreDb: input.owner.coreDb });
   };
   const revision = notebook.initialize({
     files,
     metadata: {
-      summary: 'Initialize Workspace notebook',
+      summary: `Initialize ${input.owner.kind === 'workspace' ? 'Workspace' : input.owner.kind === 'user' ? 'User' : 'Server'} notebook`,
       changeRequest: { requestId: input.initialization.requestId, inputDigest },
       producer: input.initialization.producer,
       authority,
@@ -151,7 +189,7 @@ export function initializeWorkspaceNotebook(input: {
   });
   audit('knowledge.notebook.initialize');
   writeFileAtomic(
-    join(input.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
+    join(input.notebookRoot, 'schema', 'scope-schema.yaml'),
     admission.scopeSchemaText
   );
   return revision;

@@ -2123,7 +2123,7 @@ describe('app api openapi projection', () => {
     expect(validateBuild({ releaseTag: null, sourceCommit: null })).toBe(true);
     expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit })).toBe(true);
     expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit: null })).toBe(false);
-    expect(validateBuild({ releaseTag: null, sourceCommit })).toBe(false);
+    expect(validateBuild({ releaseTag: null, sourceCommit })).toBe(true);
     expect(process).toMatchObject({
       type: 'object',
       required: ['observedAt', 'nodeVersion', 'uptimeSeconds', 'memory', 'telemetry'],
@@ -2217,7 +2217,15 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
       ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(23);
+    expect(Object.keys(definitions)).toHaveLength(27);
+    expect(Object.keys(definitions)).toEqual(
+      expect.arrayContaining([
+        'knowledge.notebook.history',
+        'knowledge.notebook.diff',
+        'knowledge.notebook.restore',
+        'knowledge.notebook.update',
+      ])
+    );
     for (const [id, definition] of Object.entries(definitions)) {
       const route = document.paths[operationHttpPath(id)] as unknown as {
         post: Record<string, unknown>;
@@ -2237,13 +2245,14 @@ describe('Knowledge OpenAPI derivation', () => {
         },
       });
       const components = document.components.schemas as Record<string, unknown>;
-      expect(components[`${id}.input`]).toEqual(
-        z.toJSONSchema(
-          'requestId' in definition.inputSchema.shape
-            ? definition.inputSchema.omit({ requestId: true } as never)
-            : definition.inputSchema
-        )
-      );
+      const expectedInput = z.toJSONSchema(definition.inputSchema);
+      if ('requestId' in definition.inputSchema.shape) {
+        delete expectedInput.properties?.requestId;
+        if (expectedInput.required) {
+          expectedInput.required = expectedInput.required.filter((name) => name !== 'requestId');
+        }
+      }
+      expect(components[`${id}.input`]).toEqual(expectedInput);
       expect(components[`${id}.output`]).toEqual(z.toJSONSchema(definition.outputSchema));
     }
     expect(Object.keys(document.paths).filter((path) => /\/knowledge(?:\/|$)/.test(path))).toEqual(

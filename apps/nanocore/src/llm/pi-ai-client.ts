@@ -944,11 +944,8 @@ export class PiAiGatewayClient {
       return this.applyEffectiveModel(provider, modelId, pairModel);
     }
 
-    const registered = this.registerConfiguredProviderModel(
-      provider,
-      modelId,
-      this.lookupAdapterModel(provider, modelId)
-    );
+    const template = this.lookupAdapterModel(provider, modelId);
+    const registered = this.registerConfiguredProviderModel(provider, modelId, template);
 
     if (!registered) {
       throw new PiAiGatewayConfigurationError(
@@ -987,8 +984,9 @@ export class PiAiGatewayClient {
         return null;
       }
 
+      // Unknown xAI APIs use the existing Chat transport; either public format maps through stock IR.
       const apiName =
-        provider.gatewayCapabilities.responses === 'native'
+        provider.gatewayCapabilities.responses === 'native' && provider.adapterId !== 'xai'
           ? 'openai-responses'
           : 'openai-completions';
       const effective = resolveEffectiveModelMetadata(metadataProfile(provider), modelId);

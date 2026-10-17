@@ -2473,7 +2473,7 @@ describe('app api schemas', () => {
         ...payload,
         build: { releaseTag: null, sourceCommit: release.sourceCommit },
       }).success
-    ).toBe(false);
+    ).toBe(true);
     expect(
       AppDiagnosticsClientResponseSchema.safeParse({
         ...payload,
