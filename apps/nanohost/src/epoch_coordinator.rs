@@ -3536,6 +3536,7 @@ mod tests {
             &mut sender,
             &mut cursor,
             false,
+            &root,
         )
         .await
         .unwrap()

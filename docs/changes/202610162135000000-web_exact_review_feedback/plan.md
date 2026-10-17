@@ -29,3 +29,8 @@ The coordinator permits source preparation on the latest P17 branch before publi
 ## Landed Receipt Integration
 
 P26 landed at c3c6530c449796cc809f29fbff38c449ba9417fe. This branch normally merges that actual main and composes both guide paragraphs, browser imports and the current operation inventory. Official generation, Web and Native typechecks, focused lint and the complete inventory guard pass. The measured joined catalog contains 247 operations: 58 server, two Gateway actor and 187 included operations. The generated delta adds the two existing receipt operations to this P27 source; no Review contract changes in this merge. Final joined owner suites, independent delta review, the exact local gate and actual P17 main publication dependency remain open.
+
+
+## Current P17 Fixture Reconciliation
+
+Normally merge the newer P17 head8a8715ced89b7dafd2f82ebad998cdc089bf13e9. Compose its deterministic Assistant Provider, private clarification and current replay status with this branch's exact invalid-UTF8 and empty originals, explicit private Worker disclosure, private-history exclusion and unchanged-byte replay assertions. The Assistant case uses a private source and proves that clarification keeps both originals there without a shared Thread or Worker launch. The upstream native test call also receives its existing fixture staging root. These are fixture and integration corrections; production Review behavior and the whole-revision apply contract remain unchanged. The complete current conversation-file module and final joined gate remain required.
