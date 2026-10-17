@@ -25,6 +25,7 @@ import { z } from 'zod';
 import type { WorkspaceDb } from './storage/db.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
 import {
+  assertWorkspaceMaterialRange,
   getWorkspaceMaterial,
   getWorkspaceMaterialRevision,
   saveWorkspaceMaterialRevision,
@@ -523,29 +524,12 @@ function assertRangeFeedback(
     range.contentDigest !== proposal.baseContentDigest
   )
     throw reviewError(code, 'Range feedback must identify the recorded Material proposal base.');
-  const base = getWorkspaceMaterialRevision(
-    workspaceDb,
-    proposal.materialId,
-    proposal.baseRevisionId
-  );
-  const content = base.content;
-  /** A UTF-16 source boundary cannot separate a high and low surrogate. */
-  const splitsPair = (offset: number) =>
-    offset > 0 &&
-    offset < content.length &&
-    content.charCodeAt(offset - 1) >= 0xd800 &&
-    content.charCodeAt(offset - 1) <= 0xdbff &&
-    content.charCodeAt(offset) >= 0xdc00 &&
-    content.charCodeAt(offset) <= 0xdfff;
-  if (
-    range.start < 0 ||
-    range.start >= range.end ||
-    range.end > content.length ||
-    splitsPair(range.start) ||
-    splitsPair(range.end) ||
-    content.slice(range.start, range.end) !== range.originalText
-  )
+  try {
+    assertWorkspaceMaterialRange(workspaceDb, range);
+  } catch (error) {
+    if (!hasErrorCode(error, 'stale')) throw error;
     throw reviewError(code, 'Range feedback does not match the exact original Material source.');
+  }
   return proposal;
 }
 
