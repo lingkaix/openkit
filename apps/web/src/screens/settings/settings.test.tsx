@@ -460,7 +460,7 @@ const CAPABILITY_USAGE = {
     {
       id: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
       workspaceId: WORKSPACE.id,
-      threadId: 'th_00000000-0000-7c5c-9c79-5b0771f81e38',
+      threadId: 'th_019a0000-0000-7000-8000-000000000021',
       turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
       itemId: null,
       agentId: 'agent_1',
@@ -489,7 +489,7 @@ const CAPABILITY_USAGE = {
       id: 'use_00000000-0000-7bad-8061-11b8ce86e984',
       workspaceId: WORKSPACE.id,
       responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
-      threadId: 'th_00000000-0000-7c5c-9c79-5b0771f81e38',
+      threadId: 'th_019a0000-0000-7000-8000-000000000022',
       turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
       itemId: null,
       capabilityCallId: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
@@ -594,7 +594,8 @@ const USAGE_FIELD_POISONS = [
 ] as const;
 
 const USAGE_NON_DISPLAY_FIELDS = [
-  'th_00000000-0000-7c5c-9c79-5b0771f81e38',
+  'th_019a0000-0000-7000-8000-000000000021',
+  'th_019a0000-0000-7000-8000-000000000022',
   'as_00000000-0000-7fee-81f4-cfcfc003f25f',
   'provider_openai',
   'gateway-reported:input',
@@ -1594,6 +1595,57 @@ describe('Debug settings (board 11)', () => {
 });
 
 describe('Usage and audit settings (board 17)', () => {
+  it('shows only the recorded interrupter and exact audit lineage, with absent historical identity explicit', async () => {
+    const threadId = 'th_019a0000-0000-7000-8000-000000000012';
+    const turnId = 'tu_019a0000-0000-7000-8000-000000000013';
+    const requestId = '019a0000-0000-7000-8000-000000000014';
+    const client = makeClient({
+      operations: {
+        'audit.workspace-list': vi.fn().mockResolvedValue({
+          workspaceId: WORKSPACE.id,
+          auditEvents: [
+            {
+              ...WORKSPACE_AUDIT_EVENTS.auditEvents[0],
+              category: 'command',
+              action: 'turn.interrupt',
+              summary: 'The Stop request was accepted.',
+              actor: {
+                kind: 'user',
+                id: 'usr_019a0000-0000-7000-8000-000000000015',
+                displayName: POISON_SECRET,
+              },
+              triggerActor: { kind: 'user', id: 'usr_019a0000-0000-7000-8000-000000000016' },
+              threadId,
+              turnId,
+              requestId,
+            },
+            {
+              ...WORKSPACE_AUDIT_EVENTS.auditEvents[0],
+              id: 'aud_019a0000-0000-7000-8000-000000000018',
+              threadId: null,
+            },
+          ],
+        }),
+      },
+    });
+    renderApp('/workspace/usage', client);
+    expect(
+      await screen.findByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
+    ).toBeVisible();
+    expect(screen.getByText('Actor not recorded')).toBeVisible();
+    expect(
+      screen.getByRole('link', { name: `Open Thread ${threadId} in Workspace ${WORKSPACE.id}` })
+    ).toHaveAttribute('href', `/chat/${WORKSPACE.id}/${threadId}`);
+    expect(screen.getByText(`Turn: ${turnId}`)).toBeVisible();
+    expect(screen.getByText(`Request: ${requestId}`)).toBeVisible();
+    expect(
+      screen.getByText('Stop request accepted. Runtime cleanup is not confirmed by this event.')
+    ).toBeVisible();
+    expect(screen.getAllByRole('link', { name: /^Open Thread / })).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('usr_019a0000-0000-7000-8000-000000000016');
+    expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
+  });
+
   it('labels recorded measurements and keeps capability details collapsed until opened', async () => {
     const user = userEvent.setup();
     const sources = ['input', 'output', 'cache_read', 'cache_write', 'total', 'cost_estimate'];

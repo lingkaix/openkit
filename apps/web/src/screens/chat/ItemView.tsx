@@ -12,6 +12,7 @@ import {
 import { ArtifactReference } from '../artifacts/ArtifactReference';
 import type { ThreadItem } from './data';
 import { GenerativePresentationView } from './GenerativePresentationView';
+import { useDisplayedMessageBody } from './ThreadReadReceipts';
 
 /** Protocol user-input request rendered by the inline Gate control. */
 type UserInputRequestItem = Extract<ThreadItem, { type: 'user-input-request' }>;
@@ -261,6 +262,7 @@ export function ItemView({
   onRetryAnswers,
   requestObjective,
 }: ItemViewProps) {
+  const bodyRef = useDisplayedMessageBody(item.id);
   switch (item.type) {
     case 'user-message': {
       // Core retains exact outcome input for S39 verification; S59 publishes its human decision separately.
@@ -279,11 +281,20 @@ export function ItemView({
         item.text
       );
       return item.actor.kind === 'user' ? (
-        <UserMessage author={authorName ?? item.actor.id} isSelf={item.actor.id === viewerUserId}>
+        <UserMessage
+          author={authorName ?? item.actor.id}
+          isSelf={item.actor.id === viewerUserId}
+          bodyRef={bodyRef}
+        >
           {body}
         </UserMessage>
       ) : (
-        <AssistantMessage hue="scout" initials="AI" author={authorName ?? item.actor.id}>
+        <AssistantMessage
+          hue="scout"
+          initials="AI"
+          author={authorName ?? item.actor.id}
+          bodyRef={bodyRef}
+        >
           {body}
         </AssistantMessage>
       );
@@ -291,7 +302,12 @@ export function ItemView({
 
     case 'assistant-message':
       return (
-        <AssistantMessage hue="scout" initials="AI" author={authorName ?? 'Agent'}>
+        <AssistantMessage
+          hue="scout"
+          initials="AI"
+          author={authorName ?? 'Agent'}
+          bodyRef={bodyRef}
+        >
           {item.text || <span className="text-fg-muted">…</span>}
         </AssistantMessage>
       );

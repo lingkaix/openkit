@@ -12,6 +12,7 @@ import { type FamilyImplementations, publicOperationActor } from './operation-co
 import { OperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
+import { markThreadRead, readThreadReadState } from './thread-read-state.js';
 import { archiveThread, createThread, updateThread } from './thread-routes.js';
 /** Joins Thread creation, record/history reads and dashboard projection without a second lifecycle. */
 export function createThreadOperationImplementations(
@@ -111,6 +112,30 @@ export function createThreadOperationImplementations(
         if (error instanceof IdempotencyKeyConflictError)
           throw new OperationError(error.code, error.message, error.status, { cause: error });
         throw error;
+      }
+    },
+    'thread.read-state': (input, context) => {
+      try {
+        return readThreadReadState({
+          ...input,
+          store: dependencies.store!,
+          coreDb: dependencies.coreDb!,
+          userId: publicOperationActor(context).userId,
+        });
+      } catch (error) {
+        threadCommandFailure(error, 'thread_read_state_failed');
+      }
+    },
+    'thread.mark-read': (input, context) => {
+      try {
+        return markThreadRead({
+          ...input,
+          store: dependencies.store!,
+          coreDb: dependencies.coreDb!,
+          userId: publicOperationActor(context).userId,
+        });
+      } catch (error) {
+        threadCommandFailure(error, 'thread_mark_read_failed');
       }
     },
     'thread.dashboard': async (input, context) => {
