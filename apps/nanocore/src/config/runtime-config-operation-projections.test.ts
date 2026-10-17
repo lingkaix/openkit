@@ -206,8 +206,8 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
     'provider-subscription.account-create': { subscriptionProviderId: 'xai', accountSlotId: 'new' },
     'provider-subscription.account-update': { ...pair, displayName: 'Changed' },
     'provider-subscription.account-delete': pair,
-    'provider-subscription.account-login-start': { ...pair, mode: 'device_code' },
-    'provider-subscription.account-login-cancel': { ...pair, interactionId: 'pending' },
+    'provider-subscription.login-start': { ...pair, mode: 'device_code' },
+    'provider-subscription.login-cancel': { ...pair, interactionId: 'pending' },
     'provider-subscription.account-logout': pair,
   };
   expect(Object.keys(cases).sort()).toEqual(

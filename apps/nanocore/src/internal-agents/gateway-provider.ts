@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { operationToolName } from '@openkit/app-api-schemas';
+import { assertOperationNames, operationToolName } from '@openkit/app-api-schemas';
 
 import {
   type CapabilityAuditLineage,
@@ -469,6 +469,7 @@ function projectInternalAgentRequest(
   request: Pick<InternalAgentProviderRequest, 'systemPrompt' | 'messages' | 'tools'>
 ) {
   // Transport aliases are request-local; only this exact map may restore canonical identity.
+  assertOperationNames(request.tools.map(({ name }) => name));
   const canonicalToAlias = new Map<string, string>();
   const aliasToCanonical = new Map<string, string>();
   for (const { name } of request.tools) {

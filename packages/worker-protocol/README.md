@@ -45,7 +45,7 @@ Workspace snapshots are collected outside the Sandbox through NanoHost; this pac
 
 The optional `session.open.workspaceGitBaseline` success field carries the Sandbox Git client’s exact commit and tree for a new checkout. It is absent for source-less or retained slots; NanoCore alone compares its commit to the source pin before accepting the outside scan baseline.
 
-Artifact declaration records are removed from the transcript schema. Workers use synchronous `work_submit_artifact` on the existing MCP supply; Core and NanoHost retain their existing private handwritten file-effect validator rather than adding a shared export schema here.
+Artifact declaration records are removed from the transcript schema. Workers use synchronous `work_artifact_submit` on the existing MCP supply; Core and NanoHost retain their existing private handwritten file-effect validator rather than adding a shared export schema here.
 
 Descriptive readers strip additions recursively. Canonical event, terminal, observation and transcript schema entry points are readers; their `EmissionSchema` counterparts remain exact producer assertions. Other directional boundaries expose a `ReaderSchema` alongside the exact construction schema. Lineage bindings and capture-coverage admission remain exact. See [Worker Control Protocol](../../docs/specs/20260703-worker_control_protocol.md#descriptive-readers-and-exact-emitters) for the partition and raw-byte identity rules.
 

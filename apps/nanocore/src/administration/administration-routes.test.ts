@@ -166,7 +166,7 @@ describe('administration conversation route', () => {
     const inertTools = inertEnvironmentTools();
     const environmentTools = [
       {
-        name: 'worker_environment.list',
+        name: 'worker-environment.list',
         description: 'List retained Worker environments in one exact Workspace.',
         inputSchema: {
           type: 'object',
@@ -924,7 +924,7 @@ describe('administration conversation route', () => {
 
 function inertEnvironmentTools(): AdministrationEnvironmentTools {
   return ['list', 'status', 'prepare', 'recover'].map((operation) => ({
-    name: `worker_environment.${operation}`,
+    name: `worker-environment.${operation}`,
     description: `Inert ${operation} Tool.`,
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     execute: async () => ({ content: [] }),

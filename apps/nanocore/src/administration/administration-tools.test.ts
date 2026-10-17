@@ -111,7 +111,7 @@ describe('administration Tool assembly', () => {
 
   it('rejects renamed or effectful environment slots before provider contact', () => {
     const invalid = environmentTools().map((tool) => ({ ...tool })) as AgentTool[];
-    invalid[2] = { ...invalid[2]!, name: 'worker_environment.activate' };
+    invalid[2] = { ...invalid[2]!, name: 'worker-environment.activate' };
 
     expect(() =>
       createAdministrationTools({

@@ -107,9 +107,9 @@ export function createProviderSubscriptionOperationImplementations(
       }),
     'provider-subscription.account-status': (input) =>
       runAccountOperation(async () => project(await manager().getStatus(requirePair(input)))),
-    'provider-subscription.account-login-start': (input) =>
+    'provider-subscription.login-start': (input) =>
       runAccountOperation(async () => project(await manager().startLogin(requirePair(input)))),
-    'provider-subscription.account-login-cancel': (input) =>
+    'provider-subscription.login-cancel': (input) =>
       runAccountOperation(async () =>
         project(await manager().cancelLogin(requirePair(input), input.interactionId))
       ),

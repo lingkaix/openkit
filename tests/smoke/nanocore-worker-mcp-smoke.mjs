@@ -583,7 +583,7 @@ function expectedSmokeObservation() {
       call: { itemIdValid: true, schemaSnapshotIdValid: true, status: 'succeeded' },
       item: { server: 'echo', status: 'completed', tool: 'echo', type: 'tool-call' },
       attempt: { phase: 'closed' },
-      permission: [{ enforcementPoint: 'worker_capability.mcp.call_tool', result: 'allow' }],
+      permission: [{ enforcementPoint: 'worker_capability.mcp.call-tool', result: 'allow' }],
       schema: { catalogEntryId: 'echo', source: 'live', toolNames: ['echo'] },
       usage: [{ quantity: 1, unit: 'tool_calls' }],
     },
@@ -902,7 +902,7 @@ async function readDurableOutcome(dataRoot, turnId) {
     const calls = workspaceDb.sqlite
       .prepare(
         `SELECT call_id AS callId, item_id AS itemId, schema_snapshot_id AS schemaSnapshotId, status
-         FROM capability_calls WHERE operation = 'mcp.call_tool' AND provider_ref = 'echo'`
+         FROM capability_calls WHERE operation = 'mcp.call-tool' AND provider_ref = 'echo'`
       )
       .all();
     if (calls.length === 1) {

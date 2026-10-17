@@ -1,4 +1,3 @@
-import { ADMINISTRATION_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { AgentTool, AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 import type { AdministrationConfigurationTools } from './configuration-tools.js';
 
@@ -8,10 +7,10 @@ export const ADMINISTRATION_TOOL_NAMES = [
   'administration.schema.read',
   'administration.configuration.propose',
   'administration.configuration.apply',
-  'worker_environment.list',
-  'worker_environment.status',
-  'worker_environment.prepare',
-  'worker_environment.recover',
+  'worker-environment.list',
+  'worker-environment.status',
+  'worker-environment.prepare',
+  'worker-environment.recover',
   'nanohost.runtime-target',
 ] as const;
 
@@ -61,8 +60,7 @@ export function createAdministrationTools(
   ].map((tool) => ({
     ...tool,
     execute: async (input: unknown, context): Promise<AgentToolResult> => {
-      if (!Object.hasOwn(ADMINISTRATION_OPERATION_DEFINITIONS, tool.name))
-        options.requireCurrentAdministrator();
+      options.requireCurrentAdministrator();
       return tool.execute(input, context);
     },
   }));

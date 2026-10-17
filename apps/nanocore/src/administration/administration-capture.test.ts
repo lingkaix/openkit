@@ -131,7 +131,7 @@ it('binds the actual Administration prompt and ordered tools before model access
         coreDb,
         environmentToolsForTurn: () =>
           ['list', 'status', 'prepare', 'recover'].map((operation) => ({
-            name: `worker_environment.${operation}`,
+            name: `worker-environment.${operation}`,
             description: 'PRIVATE_TOOL_DESCRIPTION',
             inputSchema: { type: 'object', properties: {}, additionalProperties: false },
             execute: async () => ({ content: [] }),

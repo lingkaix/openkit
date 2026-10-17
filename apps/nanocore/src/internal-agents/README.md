@@ -46,3 +46,5 @@ The history Tool also reads an exact source-bound range. Its byte cursor resumes
 Delegation references validate Workspace, Thread, Artifact and Item identities through their Protocol kind owners. Knowledge context identity and historical Task review selectors stay with their own owners. The private instruction schema stays exact while the Task response projection keeps its descriptive-reader boundary.
 
 The fixed administration prompt describes the sole delegated configuration exception: an exact registered Worker Git-read candidate under current finite Server Policy. It keeps other candidates human-confirmed and directs unknown command outcomes to inspection. Tool assembly, candidate validation, current authority and file effects remain with `../administration/`, `../config/` and `../policy/`; prompt text grants no authority.
+
+Internal Tool definitions retain canonical dotted IDs. The Gateway validates the current supplied names and projects dots to underscores only; exact maps restore canonical names for execution and evidence. See Operation Definition for the naming and compatibility contract.

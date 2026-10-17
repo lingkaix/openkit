@@ -113,3 +113,5 @@ Product diagnostics use `client.operations['diagnostics.app']({})` and `client.o
 `client.conversationFiles.submit(input, files)` sends the file-body form of the existing `conversation.submit` operation. The caller supplies the complete canonical metadata inventory and retained request id, plus matching ordered Blobs. The binding combines bounded JSON framing and Blob parts without reading whole originals. Callers can first use `client.operations['conversation.submit'](input)` to reconcile an accepted receipt; a fresh nonempty inventory returns `file_input_bytes_required` without effects.
 
 Turn feedback responses include ordered attributable `history` and the current rating/note. Submit requests still contain only rating, note and the Turn selector; NanoCore binds the actor. [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md#turn-feedback-attribution-and-history) owns these semantics.
+
+Provider account login operations use `provider-subscription.login-start` and `provider-subscription.login-cancel`; provider and account selectors remain required.

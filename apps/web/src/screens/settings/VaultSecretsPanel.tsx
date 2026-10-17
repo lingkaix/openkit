@@ -24,7 +24,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
   const [targetAgentId, setTargetAgentId] = useState('');
   const [targetAgentSessionId, setTargetAgentSessionId] = useState('');
   const [targetCapabilityId, setTargetCapabilityId] = useState<
-    '' | 'mcp.list_tools' | 'mcp.call_tool'
+    '' | 'mcp.list-tools' | 'mcp.call-tool'
   >('');
   const [grantExpiry, setGrantExpiry] = useState('');
   const [grantStatus, setGrantStatus] = useState<string | null>(null);
@@ -268,13 +268,13 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
         label="Grant capability"
         selectedKey={targetCapabilityId || 'unchanged'}
         onSelectionChange={(key) =>
-          setTargetCapabilityId(key === 'mcp.list_tools' || key === 'mcp.call_tool' ? key : '')
+          setTargetCapabilityId(key === 'mcp.list-tools' || key === 'mcp.call-tool' ? key : '')
         }
         isDisabled={disabled}
         items={[
           { id: 'unchanged', label: 'No new capability restriction' },
-          { id: 'mcp.list_tools', label: 'MCP tool discovery only' },
-          { id: 'mcp.call_tool', label: 'MCP tool calls only' },
+          { id: 'mcp.list-tools', label: 'MCP tool discovery only' },
+          { id: 'mcp.call-tool', label: 'MCP tool calls only' },
         ]}
       />
       <TextField

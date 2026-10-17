@@ -246,7 +246,7 @@ NanoCore supervises the executable as a local service in phase 1. The service ac
 
 The executable provides a directory CLI that defaults to the current directory and accepts one named directory. The directory adapter binds one scope index to that root and derives source keys from root-relative paths. It reads text directly, creates identity-only sidecars only for files it cannot index directly, and computes digests incrementally. It visits regular files under the selected root, includes dotfiles, and skips its own derived cache/index. It does not apply implicit Git ignore rules or follow symlinks. Unavailable files and concurrent changes appear in coverage. Directory selection and operating-system access bound this local tool; they do not grant product access.
 
-The executable also provides one MCP search tool over an already admitted adapter view. The tool accepts the same modes, query, and limit and returns the same result semantics. Product scope construction stays in NanoCore. A local directory MCP launch binds its root at startup; a model cannot widen it by passing another path. MCP uses standard input/output and adds no remote server, authentication store, or write tool. Index preparation and explicit rebuild use the same executable operations outside the search tool.
+The executable also provides the MCP Tool `retrieval_search` (canonical `retrieval.search`) over an already admitted adapter view. The tool accepts the same modes, query, and limit and returns the same result semantics. Product scope construction stays in NanoCore. A local directory MCP launch binds its root at startup; a model cannot widen it by passing another path. MCP uses standard input/output and adds no remote server, authentication store, or write tool. Index preparation and explicit rebuild use the same executable operations outside the search tool.
 
 Package the executable and tokenizer dictionaries for amd64 and arm64. Linux application distributions must contain target-matched artifacts for both architectures. NanoCore source support on Linux and macOS also requires compatible retrieval supply for both architectures; source-build support does not imply qualified macOS Sandbox support. Phase 1 installs no CLI or MCP face inside a Sandbox.
 
@@ -339,3 +339,5 @@ No decision record is added within the allowed writer paths. Independent review 
 - [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md)
 - [Test Strategy](20260529-test_strategy.md)
 - [Thread Visibility And Explicit Sharing](20260909-thread_visibility_and_sharing.md)
+
+The standalone directory-bound MCP search has canonical ID `retrieval.search` and model name `retrieval_search` under [Operation Definition](20261002-operation_definition.md#names). It keeps the same startup-bound directory and search schema; it is not Server MCP operation discovery or governed Knowledge retrieval.

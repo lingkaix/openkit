@@ -267,8 +267,8 @@ function makeClient(
               accountSlotId: slot,
             })
         ),
-      'provider-subscription.account-login-start': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
-      'provider-subscription.account-login-cancel': vi.fn().mockResolvedValue(CODEX_ACCOUNT),
+      'provider-subscription.login-start': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
+      'provider-subscription.login-cancel': vi.fn().mockResolvedValue(CODEX_ACCOUNT),
       'provider-subscription.account-logout': vi.fn().mockResolvedValue(CODEX_ACCOUNT),
       'provider-subscription.account-quota': vi
         .fn()
@@ -393,7 +393,7 @@ describe('AI interface deployment-admin workflow', () => {
               accounts: subscriptionProviderId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
             })
           ),
-        'provider-subscription.account-login-start': vi.fn().mockImplementation(
+        'provider-subscription.login-start': vi.fn().mockImplementation(
           () =>
             new Promise((resolve) => {
               finish = resolve;
@@ -466,7 +466,7 @@ describe('AI interface deployment-admin workflow', () => {
             ),
           'provider-subscription.account-status': vi.fn().mockResolvedValue(account),
           'provider-subscription.account-quota': getAccountQuota,
-          'provider-subscription.account-login-start': vi.fn().mockResolvedValue(
+          'provider-subscription.login-start': vi.fn().mockResolvedValue(
             ProviderSubscriptionAccountSchema.parse({
               ...PENDING_ACCOUNT,
               subscriptionProviderId: providerId,
@@ -517,7 +517,7 @@ describe('AI interface deployment-admin workflow', () => {
         ).toBeInTheDocument();
         await user.click(within(card).getByRole('button', { name: 'Sign in again' }));
         expect(
-          client.operations['provider-subscription.account-login-start']
+          client.operations['provider-subscription.login-start']
         ).toHaveBeenCalledExactlyOnceWith({
           subscriptionProviderId: providerId,
           accountSlotId: 'primary',
@@ -526,7 +526,7 @@ describe('AI interface deployment-admin workflow', () => {
         expect(getAccountQuota).not.toHaveBeenCalled();
       } else {
         expect(
-          client.operations['provider-subscription.account-login-start']
+          client.operations['provider-subscription.login-start']
         ).not.toHaveBeenCalled();
       }
       if (exhausted) {
@@ -632,7 +632,7 @@ describe('AI interface deployment-admin workflow', () => {
           availability: 'authentication_required',
           observedAt: TIMESTAMP,
         }),
-        'provider-subscription.account-login-start': startAccountLogin,
+        'provider-subscription.login-start': startAccountLogin,
       },
     });
     renderScreen(client);
@@ -877,7 +877,7 @@ describe('AI interface deployment-admin workflow', () => {
               })
           ),
         'provider-subscription.account-status': getAccountStatus,
-        'provider-subscription.account-login-start': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
+        'provider-subscription.login-start': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
       },
     });
     renderScreen(client);
@@ -888,7 +888,7 @@ describe('AI interface deployment-admin workflow', () => {
     expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument();
     const verification = screen.getByRole('link', { name: 'https://example.com/device' });
     expect(verification).toHaveAttribute('href', 'https://example.com/device');
-    expect(client.operations['provider-subscription.account-login-start']).toHaveBeenCalledWith({
+    expect(client.operations['provider-subscription.login-start']).toHaveBeenCalledWith({
       subscriptionProviderId: 'openai-codex',
       accountSlotId: 'primary',
       ...{ mode: 'device_code' },
@@ -902,7 +902,7 @@ describe('AI interface deployment-admin workflow', () => {
 
     await user.click(within(codex).getByRole('button', { name: 'Cancel login' }));
     await waitFor(() =>
-      expect(client.operations['provider-subscription.account-login-cancel']).toHaveBeenCalledWith({
+      expect(client.operations['provider-subscription.login-cancel']).toHaveBeenCalledWith({
         subscriptionProviderId: 'openai-codex',
         accountSlotId: 'primary',
         ...{ interactionId: 'interaction-pending' },
@@ -1630,11 +1630,11 @@ describe('Unified Gateway acceptance', () => {
     await user.click(screen.getByRole('button', { name: 'Add subscription Provider' }));
     expect(await screen.findByText(/Slot creation: completed/)).toBeInTheDocument();
     expect(await screen.findByText(/Profile creation: Access denied/)).toBeInTheDocument();
-    expect(client.operations['provider-subscription.account-login-start']).not.toHaveBeenCalled();
+    expect(client.operations['provider-subscription.login-start']).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Retry profile creation' }));
     expect(await screen.findByText(/Profile persisted revision: profile-2/)).toBeInTheDocument();
     expect(client.operations['provider-subscription.account-create']).toHaveBeenCalledTimes(1);
-    expect(client.operations['provider-subscription.account-login-start']).toHaveBeenCalledTimes(1);
+    expect(client.operations['provider-subscription.login-start']).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Provider activation: restart required/)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('private-canary');
   });
@@ -1856,7 +1856,7 @@ describe('Gateway dependency and routing completion', () => {
           return Promise.resolve(createdAccount);
         }),
         'provider-subscription.account-status': status,
-        'provider-subscription.account-login-start': startAccountLogin,
+        'provider-subscription.login-start': startAccountLogin,
       },
     });
     renderScreen(client);
