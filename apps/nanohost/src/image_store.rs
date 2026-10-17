@@ -1574,6 +1574,39 @@ mod tests {
     }
 
     #[test]
+    fn versioned_index_ignores_descriptive_keys_and_keeps_core_closed() {
+        let digest = format!("sha256:{:064x}", 9);
+        let entry = StoreEntry {
+            digest: digest.clone(),
+            size: 10,
+            acquired_at: 1,
+            lineage: StoreLineage::LocalArchive(digest),
+        };
+        let encoded = entry.encode().expect("encode index");
+        assert_eq!(
+            StoreEntry::decode(&format!("{encoded}source_note=operator supplied\n")),
+            Ok(entry)
+        );
+        assert!(encoded.starts_with("format_version=1\n"));
+        assert_eq!(
+            StoreEntry::decode(&encoded.replacen("format_version=1\n", "", 1)),
+            Err(StoreError::InvalidMetadata)
+        );
+        assert_eq!(
+            StoreEntry::decode(&encoded.replace("format_version=1", "format_version=2")),
+            Err(StoreError::InvalidMetadata)
+        );
+        assert_eq!(
+            StoreEntry::decode(&format!("{encoded}size=11\n")),
+            Err(StoreError::InvalidMetadata)
+        );
+        assert_eq!(
+            StoreEntry::decode(&encoded.replace("verification=oci-manifest", "verification=unknown")),
+            Err(StoreError::InvalidMetadata)
+        );
+    }
+
+    #[test]
     fn malformed_first_numeric_metadata_field_cannot_be_replaced_by_a_duplicate() {
         let digest = format!("sha256:{:064x}", 9);
         let metadata = format!(
