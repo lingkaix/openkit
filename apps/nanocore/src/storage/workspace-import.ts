@@ -212,6 +212,15 @@ const ImportedThreadMaterialBindingSchema = z
   .strip();
 const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.safeExtend({
   materialProposal: ArtifactReviewViewSchema.shape.materialProposal.unwrap().strip().nullable(),
+  rangeFeedback: ArtifactReviewViewSchema.shape.rangeFeedback
+    .unwrap()
+    .unwrap()
+    .strip()
+    .nullable()
+    .optional(),
+  candidateSelections: z
+    .array(ArtifactReviewViewSchema.shape.candidateSelections.unwrap().element.strip())
+    .default([]),
   decisionRequestId: z.string().min(1).nullable(),
 }).strip();
 
@@ -3115,6 +3124,12 @@ function readWorkResourceImportState(
         ? requiredMapValue(context.turnIds, review.sourceTurnId, 'turn')
         : null,
       materialProposal,
+      rangeFeedback:
+        review.rangeFeedback == null ? null : remapReviewRange(context, review.rangeFeedback),
+      candidateSelections: review.candidateSelections.map((selection) => ({
+        ...selection,
+        requestId: importRequestLineage(context, selection.requestId),
+      })),
       decisionRequestId: review.decisionRequestId
         ? importRequestLineage(context, review.decisionRequestId)
         : null,
@@ -3372,6 +3387,9 @@ function remintWorkerRequest(text: string, context: ImportRemintContext): string
             ),
           }
         : null,
+      ...(followUp.data.rangeFeedback == null
+        ? {}
+        : { rangeFeedback: remapReviewRange(context, followUp.data.rangeFeedback) }),
       decisionRequestId: importRequestLineage(context, followUp.data.decisionRequestId),
       workerRequestId: importRequestLineage(context, followUp.data.workerRequestId),
     });
@@ -3435,6 +3453,18 @@ function remintWorkerRequest(text: string, context: ImportRemintContext): string
   });
 }
 
+/** Remints exact Material source identities while retaining original offsets and bytes. @param context Existing import owner maps. @param range Source Review range. @returns Range bound to the reminted immutable revision. */
+function remapReviewRange(
+  context: ImportRemintContext,
+  range: NonNullable<ImportedArtifactReview['rangeFeedback']>
+): NonNullable<ImportedArtifactReview['rangeFeedback']> {
+  return {
+    ...range,
+    materialId: requiredMapValue(context.materialIds, range.materialId, 'Material'),
+    revisionId: requiredMaterialRevisionId(context, range.materialId, range.revisionId),
+  };
+}
+
 /**
  * Validates one source and reminted Artifact Review against its durable result owners.
  *
@@ -3481,6 +3511,31 @@ function assertArtifactReviewImport(
     source.artifactVersion > artifact.version
   ) {
     throw new Error('Artifact Review source lineage is contradictory.');
+  }
+  if (target.rangeFeedback != null) {
+    const range = target.rangeFeedback;
+    const base = revisions.find(
+      (revision) =>
+        revision.materialId === range.materialId && revision.revisionId === range.revisionId
+    );
+    const content = base?.content;
+    const splitsPair = (offset: number) =>
+      content !== undefined &&
+      offset > 0 &&
+      offset < content.length &&
+      content.charCodeAt(offset - 1) >= 0xd800 &&
+      content.charCodeAt(offset - 1) <= 0xdbff &&
+      content.charCodeAt(offset) >= 0xdc00 &&
+      content.charCodeAt(offset) <= 0xdfff;
+    if (
+      content === undefined ||
+      base?.contentDigest !== range.contentDigest ||
+      range.end > content.length ||
+      splitsPair(range.start) ||
+      splitsPair(range.end) ||
+      content.slice(range.start, range.end) !== range.originalText
+    )
+      throw new Error('Artifact Review range feedback contradicts its immutable Material base.');
   }
   if (source.decision === null) {
     if (
@@ -3592,6 +3647,8 @@ function assertArtifactReviewImport(
       !proposalMatches ||
       request.data.decision !== source.decision ||
       request.data.feedback !== source.feedback ||
+      JSON.stringify(request.data.rangeFeedback ?? null) !==
+        JSON.stringify(source.rangeFeedback ?? null) ||
       request.data.decisionRequestId !== decisionRequestId ||
       request.data.workerRequestId !== sourceTrace.requestId ||
       (!/^import-lineage:sha256:[a-f0-9]{64}$/.test(decisionRequestId) &&

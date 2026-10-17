@@ -1020,6 +1020,8 @@ function proposalFixture(
       baseRevisionId: REVISION_2.revisionId,
       baseContentDigest: REVISION_2.contentDigest,
     },
+    candidateSelections: [],
+    rangeFeedback: null,
     decision: null,
     decisionActorId: null,
     feedback: null,
