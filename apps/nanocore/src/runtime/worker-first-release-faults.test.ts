@@ -18,6 +18,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -200,7 +201,11 @@ async function faultFixture() {
     app,
     coreDb,
     nanoHostConfig: target,
-    dispatch: createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority }),
+    dispatch: createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+    }),
     harnessCommandDispatched: runtime.acceptNanoHostHarnessCommand,
     harnessResultSettled: runtime.acceptNanoHostHarnessResult,
     harnessCommandDeliveryFailed: runtime.failNanoHostHarnessDelivery,

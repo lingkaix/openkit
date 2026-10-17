@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -16,6 +17,9 @@ import {
   type SkillCandidateArtifactError,
   type SkillCandidateArtifactSelection,
 } from './skill-candidate-artifact.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { stageArtifactPayload } from './storage/artifacts/file-payload.js';
+import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -169,6 +173,70 @@ describe('Skill Artifact source admission', () => {
       },
       source: { origin: { kind: 'turn-output', threadId: state.thread.id, turnId: state.turn.id } },
     });
+  });
+
+  it('reads exact file-backed Worker JSON as a native Skill candidate without changing the original', async () => {
+    const state = workSource(fixture(), undefined, 'ag_producing_worker');
+    const original = state.store.getArtifact(
+      state.selection.workspaceId,
+      state.selection.artifactId
+    );
+    const bytes = Buffer.from(JSON.stringify(tree));
+    const workspaceRoot = join(state.dataRoot, 'workspaces', state.selection.workspaceId);
+    const admission = new FileStorageAdmission(state.dataRoot, () => 0n);
+    const reservation = admission.reserve({
+      stagingBytes: BigInt(bytes.length),
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: BigInt(bytes.length),
+    });
+    const staged = await stageArtifactPayload({
+      workspaceRoot,
+      reservation,
+      source: Readable.from([bytes]),
+      expectedByteLength: bytes.length,
+      expectedDigest: state.selection.contentDigest,
+    });
+    let artifact: typeof original;
+    try {
+      artifact = state.store.createArtifact(
+        {
+          ...original,
+          id: allocateEntityId('ar'),
+          content: { format: 'file', mediaType: 'application/json', byteLength: bytes.length },
+        },
+        staged
+      );
+    } finally {
+      await staged.remove();
+      reservation.release();
+    }
+    const selection = { ...state.selection, artifactId: artifact.id };
+    const payload = artifactFilePayloadPath(workspaceRoot, artifact.id, selection.version);
+    const before = readFileSync(payload);
+    const result = readSkillCandidateArtifact({
+      ...state,
+      selection,
+      store: new FsStore({ dataRoot: state.dataRoot }),
+      destination: 'workspace-skill',
+    });
+    expect(result).toMatchObject({
+      tree,
+      digest: validateCatalogTree(tree).digest,
+      source: { ...selection, origin: original.origin },
+      producer: { kind: 'agent', id: 'ag_producing_worker', responsibleUserId: state.actor.userId },
+      submitter: { kind: 'user', id: state.actor.userId },
+      producingTurn: {
+        workspaceId: selection.workspaceId,
+        threadId: state.thread.id,
+        turnId: state.turn.id,
+      },
+    });
+    expect(readFileSync(payload)).toEqual(before);
+    expect(before).toEqual(bytes);
+    expect(`sha256:${createHash('sha256').update(before).digest('hex')}`).toBe(
+      selection.contentDigest
+    );
   });
 
   it('reports unproven Worker identity as unavailable instead of using the submitter', () => {

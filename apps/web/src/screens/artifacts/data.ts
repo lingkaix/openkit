@@ -1,9 +1,11 @@
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
+import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useThreads, useWorkspaces } from '../chat/data';
 import { useArtifact } from '../goal/data';
-import { sha256Content } from '../material/data';
+import { sha256ArtifactFile } from './file-digest';
 
 /** Product-safe Artifact list fields; list payloads never carry preview bytes. */
 export type ArtifactListItem = Pick<
@@ -11,9 +13,9 @@ export type ArtifactListItem = Pick<
   'id' | 'kind' | 'status' | 'summary' | 'title' | 'version'
 >;
 
-/** Media types admitted by `client.operations['artifact.import']`. */
+/** Media types admitted by the exact original streaming import. */
 export type ArtifactImportMediaType = Parameters<
-  CoreClient['operations']['artifact.import']
+  CoreClient['artifactFiles']['import']
 >[0]['mediaType'];
 
 /** Frozen import command bound to one Workspace and request identity. */
@@ -21,7 +23,7 @@ export interface ArtifactImportInput {
   workspaceId: string;
   title: string;
   mediaType: ArtifactImportMediaType;
-  content: string;
+  content: string | Blob;
   requestId: string;
 }
 
@@ -46,12 +48,6 @@ export const artifactKeys = {
   list: (workspaceId: string) => ['artifacts', workspaceId] as const,
 };
 
-const IMPORT_MEDIA_TYPES: readonly ArtifactImportMediaType[] = [
-  'text/markdown',
-  'text/plain',
-  'application/json',
-];
-
 /** Re-export selected-Workspace discovery, Thread list, and the existing exact Artifact read. */
 export { createRequestId, useArtifact, useCurrentWorkspaceId, useThreads, useWorkspaces };
 
@@ -72,7 +68,7 @@ function apiCode(error: unknown): string | null {
  * @returns True when the value may be submitted.
  */
 export function isArtifactImportMediaType(value: string): value is ArtifactImportMediaType {
-  return (IMPORT_MEDIA_TYPES as readonly string[]).includes(value);
+  return ArtifactMediaTypeSchema.safeParse(value).success;
 }
 
 /**
@@ -281,63 +277,52 @@ export function useArtifacts(workspaceId: string | null) {
 /**
  * Imports one immutable Workspace Artifact bound to the command's Workspace.
  *
- * @returns Mutation over `client.operations['artifact.import']`.
+ * @returns Mutation over the exact original `client.artifactFiles.import` binding.
  */
 export function useImportWorkspaceArtifact() {
   const client = useCoreClient();
+  // Mutation variables retain one command and File through unknown settlement. Weak keys release
+  // the prepared bytes and digest when the caller releases that draft; no server draft exists.
+  const preparations = useRef(
+    new WeakMap<ArtifactImportInput, Promise<{ body: Blob; contentDigest: string }>>()
+  );
   return useMutation({
-    mutationFn: async (input: ArtifactImportInput) =>
-      client.operations['artifact.import']({
-        workspaceId: input.workspaceId,
-        ...{
+    mutationFn: async (input: ArtifactImportInput) => {
+      let preparation = preparations.current.get(input);
+      if (!preparation) {
+        const file = typeof input.content === 'string' ? new Blob([input.content]) : input.content;
+        if (file.size > MAX_ARTIFACT_FILE_BYTES) {
+          throw new ApiCallError(413, 'The file admission byte limit was exceeded.', {
+            code: 'file_too_large',
+          });
+        }
+        preparation = sha256ArtifactFile(file).then((contentDigest) => ({
+          body: file,
+          contentDigest,
+        }));
+        preparations.current.set(input, preparation);
+      }
+      let prepared: Awaited<typeof preparation>;
+      try {
+        prepared = await preparation;
+      } catch (error) {
+        preparations.current.delete(input);
+        throw error;
+      }
+      return client.artifactFiles.import(
+        {
+          workspaceId: input.workspaceId,
           title: input.title,
           mediaType: input.mediaType,
-          content: input.content,
-          contentDigest: await sha256Content(input.content),
+          byteLength: prepared.body.size,
+          contentDigest: prepared.contentDigest,
           requestId: input.requestId,
         },
-      }),
+        prepared.body
+      );
+    },
     retry: false,
   });
-}
-
-/**
- * Imports a Composer text file through the caller's existing Artifact mutation.
- *
- * @param workspaceId Selected Workspace, required before reading the file.
- * @param file File whose case-sensitive suffix selects Markdown, JSON, or plain text.
- * @param importArtifact Existing mutation retaining failed input for an exact explicit retry; list refresh stays with the caller.
- * @returns The exact imported attachment; read and mutation failures propagate unchanged.
- */
-export async function importComposerFile(
-  workspaceId: string | null,
-  file: File,
-  importArtifact: ReturnType<typeof useImportWorkspaceArtifact>
-): Promise<{ id: string; version: number; label: string }> {
-  if (!workspaceId) throw new Error('Workspace is required.');
-  const mediaType = file.name.endsWith('.md')
-    ? 'text/markdown'
-    : file.name.endsWith('.json')
-      ? 'application/json'
-      : 'text/plain';
-  const content = await file.text();
-  const previous = importArtifact.isError ? importArtifact.variables : undefined;
-  // Response loss can follow a committed import; retry only identical input with its retained identity.
-  const requestId =
-    previous?.workspaceId === workspaceId &&
-    previous.title === file.name &&
-    previous.mediaType === mediaType &&
-    previous.content === content
-      ? previous.requestId
-      : createRequestId();
-  const imported = await importArtifact.mutateAsync({
-    workspaceId,
-    title: file.name,
-    mediaType,
-    content,
-    requestId,
-  });
-  return { id: imported.artifactId, version: imported.artifactVersion, label: file.name };
 }
 
 /**
@@ -373,4 +358,71 @@ export function useIntroduceWorkspaceArtifact() {
     },
     retry: false,
   });
+}
+
+/** Exact original selected for explicit ZIP folder processing. */
+export interface ArtifactFolderInput {
+  readonly workspaceId: string;
+  readonly artifactId: string;
+  readonly artifactVersion: number;
+  readonly originalDigest: string;
+}
+
+/** Reads one bounded inventory page; stale or failed reads never supply cached protected names. */
+export function useArtifactFolder(input: ArtifactFolderInput, offset: number) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: [
+      'artifact-folder',
+      input.workspaceId,
+      input.artifactId,
+      input.artifactVersion,
+      input.originalDigest,
+      offset,
+    ],
+    queryFn: async () => {
+      const result = await client.operations['artifact.folder-read']({
+        workspaceId: input.workspaceId,
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        offset,
+      });
+      assertFolderSource(input, result);
+      return result;
+    },
+    retry: false,
+  });
+}
+
+/** Explicit extraction is retryable from the exact retained original; it creates no new import. */
+export function useExtractArtifactFolder() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: async (input: ArtifactFolderInput) => {
+      const result = await client.operations['artifact.folder-extract']({
+        workspaceId: input.workspaceId,
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        offset: 0,
+      });
+      assertFolderSource(input, result);
+      return result;
+    },
+    retry: false,
+  });
+}
+
+/** Prevents a current or unrelated source response from replacing the selected exact original. */
+function assertFolderSource(
+  input: ArtifactFolderInput,
+  result: { artifactId: string; artifactVersion: number; originalDigest: string }
+): void {
+  if (
+    result.artifactId !== input.artifactId ||
+    result.artifactVersion !== input.artifactVersion ||
+    result.originalDigest !== input.originalDigest
+  )
+    throw new ApiCallError(409, 'The folder snapshot source is inconsistent.', {
+      code: 'recovery_required',
+    });
 }

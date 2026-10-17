@@ -7,11 +7,14 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  ArtifactFolderSnapshotResponseSchema,
   ImportWorkspaceArtifactRequestSchema,
   ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactRequestSchema,
   IntroduceWorkspaceArtifactResponseSchema,
   ListArtifactReviewsResponseSchema,
+  SelectArtifactReviewCandidateRequestSchema,
+  SelectArtifactReviewCandidateResponseSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   SubmitArtifactReviewDecisionResponseSchema,
 } from './material.js';
@@ -47,7 +50,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Read one Artifact with its exact inline content and immutable origin.',
+    description: 'Read one Artifact descriptor and immutable origin.',
     inputSchema: z.object({ ...workspaceSelector, artifactId: ArtifactIdSchema }).strict(),
     outputSchema: GetArtifactResponseSchema,
     credentials: publicCredentials,
@@ -57,7 +60,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'artifact.import': {
-    binding: 'json',
+    binding: 'streaming',
     returnsOneTimeSecret: false,
     description: 'Import one immutable Workspace Artifact version.',
     inputSchema: ImportWorkspaceArtifactRequestSchema.safeExtend({ ...workspaceSelector }),
@@ -68,6 +71,65 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     policyOperation: 'artifact.write',
     mutating: true,
     successStatus: 201,
+  },
+  'artifact.download': {
+    binding: 'streaming',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Download the exact original bytes of one immutable Artifact version.',
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        artifactId: ArtifactIdSchema,
+        artifactVersion: z.number().int().positive(),
+      })
+      .strict(),
+    outputSchema: z.unknown(),
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.folder-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Read a verified paged folder inventory.',
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        artifactId: ArtifactIdSchema,
+        artifactVersion: z.number().int().positive(),
+        offset: z.number().int().min(0).max(100_000).default(0),
+      })
+      .strict(),
+    outputSchema: ArtifactFolderSnapshotResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.folder-extract': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Explicitly extract a bounded ZIP folder snapshot; preserve the original.',
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        artifactId: ArtifactIdSchema,
+        artifactVersion: z.number().int().positive(),
+        offset: z.number().int().min(0).max(100_000).default(0),
+      })
+      .strict(),
+    outputSchema: ArtifactFolderSnapshotResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: true,
   },
   'artifact.introduce': {
     binding: 'json',
@@ -97,6 +159,23 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     target: { kind: 'workspace' },
     policyOperation: 'artifact.read',
     mutating: false,
+  },
+  'artifact.review.select': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Record an attributable choice of one exact available Artifact candidate.',
+    inputSchema: SelectArtifactReviewCandidateRequestSchema.extend({
+      ...workspaceSelector,
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+    }),
+    outputSchema: SelectArtifactReviewCandidateResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'review.apply',
+    mutating: true,
   },
   'artifact.review.decide': {
     binding: 'json',

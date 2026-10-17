@@ -354,6 +354,8 @@ export interface TurnStartRuntimeContext {
 export interface TurnCommandRuntimeContext {
   /** Request id for the client command that caused the emitted events. */
   requestId: string | null;
+  /** Private Core stop cause; public interruption commands cannot set this field. */
+  stopReason?: 'budget_exhausted' | 'error';
 }
 
 /** Runtime context for one human response that must retain the authenticated user actor. */

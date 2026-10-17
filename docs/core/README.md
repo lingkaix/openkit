@@ -96,7 +96,7 @@ Descriptive text can explain intent, but stable protocol, model, ownership, and 
 
 ## Required Core Aspect Set
 
-The current required core aspect set contains 21 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
+The current required core aspect set contains 22 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
 
 ### Foundation
 
@@ -104,6 +104,7 @@ The current required core aspect set contains 21 documents. Future merge or reti
 - `core-concepts.md` — shared vocabulary and object boundaries.
 - `work-model.md` — user-facing work model.
 - `architecture.md` — stable system architecture and layer boundaries.
+- `fault-tolerance.md` — fault model, correctness properties under failure, collection before loss, proportional recovery, and guarantee limits.
 
 ### Execution And Communication
 
@@ -144,6 +145,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection | `work-model.md` |
 | App, Core, Agent layer boundary, Agent Adapter, workspace service, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
+| Fault Source, Acknowledgement Point, Collection Before Loss, correctness properties under failure, guarantee limits | `fault-tolerance.md` |
 | Light App, Light App Catalog, Generative Kernel, Generative UI, agent-first data and presentation composition | `generative-apps.md` |
 | Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
@@ -171,23 +173,24 @@ Discuss and promote the core docs in this order:
 2. `core-concepts.md`
 3. `work-model.md`
 4. `architecture.md`
-5. `runtime-model.md`
-6. `agent-supply.md`
-7. `agent-session.md`
-8. `agent-workflow.md`
-9. `protocol.md`
-10. `communication.md`
-11. `storage.md`
-12. `identity.md`
-13. `vault.md`
-14. `agent-capability.md`
-15. `permissions.md`
-16. `sandbox.md`
-17. `knowledge.md`
-18. `audit.md`
-19. `metering.md`
-20. `contract-evolution.md`
-21. `generative-apps.md`
+5. `fault-tolerance.md`
+6. `runtime-model.md`
+7. `agent-supply.md`
+8. `agent-session.md`
+9. `agent-workflow.md`
+10. `protocol.md`
+11. `communication.md`
+12. `storage.md`
+13. `identity.md`
+14. `vault.md`
+15. `agent-capability.md`
+16. `permissions.md`
+17. `sandbox.md`
+18. `knowledge.md`
+19. `audit.md`
+20. `metering.md`
+21. `contract-evolution.md`
+22. `generative-apps.md`
 
 ## Promotion And Retirement Rules
 

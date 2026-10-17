@@ -1,4 +1,5 @@
-import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient, type GetArtifactResponse } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -8,8 +9,10 @@ import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { SURFACES } from '../../app/surfaces';
+import type { ArtifactReview } from '../goal/data';
 import { useWorkspaceStore } from '../workspace-store';
 import { useSaveWorkspaceMaterialRevision } from './data';
+import { ProposalReview } from './ProposalReview';
 
 const WORKSPACE_ID = 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55';
 const THREAD_ID = 'th_00000000-0000-7797-b2b8-f3be78117473';
@@ -257,7 +260,7 @@ describe('Material route identity', () => {
               workspace: { id: workspaceId, name: 'Exact Workspace' },
               effectiveRole: 'owner',
               membershipRevision: 1,
-              ownerUserId: 'user_local',
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
             },
           ],
@@ -357,7 +360,7 @@ describe('S19-F Material Workspace discovery barrier', () => {
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -967,5 +970,241 @@ describe('Workspace Material Plane 1 S12', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(excludeThreadMaterial).toHaveBeenCalledOnce();
     expect(getThreadMaterial).toHaveBeenCalledOnce();
+  });
+});
+
+const PROPOSAL_ARTIFACT_ID = allocateEntityId('ar');
+const PROPOSAL_TURN_ID = allocateEntityId('tu');
+const PROPOSAL_REVIEW_ID = allocateEntityId('arev');
+
+/** Small canonical proposal fixture; expected SHA-256 literals were independently precomputed from its exact UTF-8 bytes. */
+function proposalFixture(
+  text = '\ufeff# Proposed release notes\n界 ships.\n',
+  version = 1,
+  contentDigest = 'sha256:7016ac7cb4a4f6358bed70b70eb9b64ad285a8d036402de53562c347db2025ad'
+) {
+  const bytes = new TextEncoder().encode(text);
+  const artifact: GetArtifactResponse = {
+    id: PROPOSAL_ARTIFACT_ID,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: PROPOSAL_TURN_ID,
+    kind: 'report',
+    title: 'Proposal',
+    status: 'ready',
+    summary: null,
+    version,
+    content: { format: 'file', mediaType: 'text/markdown', byteLength: bytes.length },
+    contentDigest,
+    lastMutationRequestId: 'req_proposal',
+    origin: {
+      kind: 'turn-output',
+      threadId: THREAD_ID,
+      turnId: PROPOSAL_TURN_ID,
+      requestId: 'req_proposal',
+    },
+    createdAt: TIMESTAMP,
+    updatedAt: TIMESTAMP,
+  };
+  const review: ArtifactReview = {
+    workspaceId: WORKSPACE_ID,
+    reviewId: PROPOSAL_REVIEW_ID,
+    artifactId: artifact.id,
+    artifactVersion: version,
+    contentDigest,
+    sourceThreadId: THREAD_ID,
+    sourceTurnId: PROPOSAL_TURN_ID,
+    sourceAgentId: 'agent_proposal',
+    materialProposal: {
+      materialId: MATERIAL_ID,
+      baseRevisionId: REVISION_2.revisionId,
+      baseContentDigest: REVISION_2.contentDigest,
+    },
+    candidateSelections: [],
+    rangeFeedback: null,
+    decision: null,
+    decisionActorId: null,
+    feedback: null,
+    decidedAt: null,
+    followUpTurnId: null,
+    appliedMaterialRevisionId: null,
+    createdAt: TIMESTAMP,
+  };
+  const cancel = vi.fn();
+  const downloaded = () => ({
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Split a multibyte BOM so the fixture observes streaming decoding.
+        controller.enqueue(bytes.subarray(0, 1));
+        controller.enqueue(bytes.subarray(1));
+        controller.close();
+      },
+      cancel,
+    }),
+    byteLength: bytes.length,
+    mediaType: 'text/markdown',
+    contentDigest,
+  });
+  return { artifact, review, bytes, text, downloaded, cancel };
+}
+
+/** Keeps one QueryClient across rerenders to expose stale-query display. */
+function renderProposal(
+  download: CoreClient['artifactFiles']['download'],
+  initial: ReturnType<typeof proposalFixture>
+) {
+  const client: CoreClient = {
+    ...makeClient(),
+    artifactFiles: { download, import: vi.fn(), browserDownloadUrl: vi.fn() },
+  };
+  const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = (fixture: ReturnType<typeof proposalFixture>) => (
+    <QueryClientProvider client={queries}>
+      <CoreClientProvider client={client}>
+        <ProposalReview
+          workspaceId={WORKSPACE_ID}
+          artifact={fixture.artifact}
+          review={fixture.review}
+          conflict={false}
+          onRefresh={vi.fn()}
+        />
+      </CoreClientProvider>
+    </QueryClientProvider>
+  );
+  const result = render(view(initial));
+  return {
+    rerender: (fixture: ReturnType<typeof proposalFixture>) => result.rerender(view(fixture)),
+  };
+}
+
+describe('exact Material proposal text', () => {
+  it('downloads the exact file-backed proposal and preserves inline text without another download', async () => {
+    const fixture = proposalFixture();
+    const pending = createDeferred<ReturnType<typeof fixture.downloaded>>();
+    const download = vi.fn().mockReturnValue(pending.promise);
+    const view = renderProposal(download, fixture);
+    expect(await screen.findByText('Loading reviewed proposal text.')).toBeInTheDocument();
+    expect(download).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WORKSPACE_ID,
+      artifactId: fixture.artifact.id,
+      artifactVersion: 1,
+    });
+    pending.resolve(fixture.downloaded());
+    await waitFor(() =>
+      expect(
+        screen.getByRole('region', { name: 'Reviewed artifact proposal' }).querySelector('pre')
+          ?.textContent
+      ).toBe(fixture.text)
+    );
+    const inline = proposalFixture(
+      'Inline proposal',
+      2,
+      'sha256:bb2d8b3e7f5c5bdc7f13cb38f8be6cf1876c621878af2e0baed801e9d2bded5b'
+    );
+    inline.artifact.content = { format: 'text', body: inline.text };
+    view.rerender(inline);
+    expect(screen.getByRole('region', { name: 'Reviewed artifact proposal' })).toHaveTextContent(
+      'Inline proposal'
+    );
+    expect(download).toHaveBeenCalledOnce();
+  });
+
+  it('hides the previous version while loading and refuses changed original bytes', async () => {
+    const first = proposalFixture(
+      'Original version',
+      1,
+      'sha256:46dd9599c8810a12958ab82213e13650ebe51c805b3fd459e2b143ae03745a25'
+    );
+    const next = proposalFixture(
+      'Changed version!',
+      2,
+      'sha256:5a7910d2e791c67a96a395727195787e828ec3ea3f8648e22eecb5123aea9116'
+    );
+    const pending = createDeferred<ReturnType<typeof next.downloaded>>();
+    const download = vi
+      .fn()
+      .mockResolvedValueOnce(first.downloaded())
+      .mockReturnValueOnce(pending.promise);
+    const view = renderProposal(download, first);
+    await screen.findByText(first.text);
+    view.rerender(next);
+    await screen.findByText('Loading reviewed proposal text.');
+    expect(screen.queryByText(first.text)).not.toBeInTheDocument();
+    const corrupt = first.downloaded();
+    pending.resolve({
+      ...corrupt,
+      byteLength: next.bytes.length,
+      contentDigest: next.artifact.contentDigest,
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
+    expect(screen.queryByText(first.text)).not.toBeInTheDocument();
+    expect(screen.queryByText(next.text)).not.toBeInTheDocument();
+    expect(download).toHaveBeenLastCalledWith({
+      workspaceId: WORKSPACE_ID,
+      artifactId: next.artifact.id,
+      artifactVersion: 2,
+    });
+  });
+
+  it('refuses oversized metadata, invalid UTF-8 and an oversized actual stream before display', async () => {
+    const fixture = proposalFixture();
+    fixture.artifact.content = {
+      format: 'file',
+      mediaType: 'text/markdown',
+      byteLength: 16_777_217,
+    };
+    const download = vi.fn();
+    const view = renderProposal(download, fixture);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
+    expect(download).not.toHaveBeenCalled();
+    const invalid = proposalFixture(
+      'a',
+      2,
+      'sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb'
+    );
+    const bytes = new Uint8Array([255]);
+    invalid.artifact.contentDigest =
+      'sha256:a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89';
+    invalid.review.contentDigest = invalid.artifact.contentDigest;
+    download.mockResolvedValue({
+      ...invalid.downloaded(),
+      contentDigest: invalid.artifact.contentDigest,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+    });
+    view.rerender(invalid);
+    await waitFor(() => expect(download).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
+    expect(screen.queryByText('\ufffd')).not.toBeInTheDocument();
+    const overflow = proposalFixture(
+      'a',
+      3,
+      'sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb'
+    );
+    const cancelled = vi.fn();
+    download.mockResolvedValue({
+      ...overflow.downloaded(),
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([97, 97]));
+        },
+        cancel: cancelled,
+      }),
+    });
+    view.rerender(overflow);
+    await waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
   });
 });
