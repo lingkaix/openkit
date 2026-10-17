@@ -969,6 +969,9 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   drawing.fillRect(8, 0, 8, 8);
   const bytes = await original.encode('png');
   const f = await sourceToolFixture(bytes, 'image/png');
+  const stagingRoot = join(f.dataRoot, 'workspaces', '.staging');
+  const stagingBaseline = readdirSync(stagingRoot).sort();
+  expect(stagingBaseline.some((name) => name.startsWith('vision-view-'))).toBe(false);
   const args = { path: f.packagePath, crop: { left: 8, top: 0, width: 8, height: 8 } };
   const result = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
   expect(result).not.toHaveProperty('structuredContent');
@@ -1002,7 +1005,9 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   expect(pixel[0]).toBeLessThan(15);
   expect(delivered.length).toBeLessThanOrEqual(262_144);
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
-  expect(readdirSync(join(f.dataRoot, 'workspaces', '.staging'))).toEqual([]);
+  const afterSuccess = readdirSync(stagingRoot).sort();
+  expect(afterSuccess).toEqual(stagingBaseline);
+  expect(afterSuccess.some((name) => name.startsWith('vision-view-'))).toBe(false);
   const processActual = visionProcessor.processVisionView;
   const revoke = vi
     .spyOn(visionProcessor, 'processVisionView')
@@ -1021,7 +1026,9 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   expect(denied.content.some((block) => block.type === 'image')).toBe(false);
   expect(JSON.stringify(denied)).not.toContain(f.artifactId);
   expect(JSON.stringify(denied)).not.toContain(f.source.originalDigest);
-  expect(readdirSync(join(f.dataRoot, 'workspaces', '.staging'))).toEqual([]);
+  const afterDenied = readdirSync(stagingRoot).sort();
+  expect(afterDenied).toEqual(stagingBaseline);
+  expect(afterDenied.some((name) => name.startsWith('vision-view-'))).toBe(false);
 }, 45_000);
 
 it('reads retained bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
