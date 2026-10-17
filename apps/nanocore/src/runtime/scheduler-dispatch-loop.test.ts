@@ -730,9 +730,10 @@ describe('scheduler dispatch loop', () => {
   });
 
   it.each([
-    false,
-    true,
-  ])('dispatches event-linked work without a receipt and never repairs missing publication: missing=%s', async (missing) => {
+    'none',
+    'missing',
+    'stale-cache',
+  ] as const)('dispatches event-linked work without a receipt and preserves faulty publication: %s', async (fault) => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new RecordingTurnExecutor(coreDb);
@@ -815,7 +816,41 @@ describe('scheduler dispatch loop', () => {
       agentId: manifest.id,
       executorKind: 'worker',
     });
-    if (missing)
+    const app = createApp({ coreDb, dataRoot: coreDb.dataRoot, store, automationStore: schedules });
+    const published = readPublishedTurnFileRecords(
+      coreDb.dataRoot,
+      DEMO_WORKSPACE_ID,
+      caseThread.id,
+      entry.turnId
+    );
+    const turnRoot = join(
+      coreDb.dataRoot,
+      'workspaces',
+      DEMO_WORKSPACE_ID,
+      'threads',
+      caseThread.id,
+      'turns',
+      entry.turnId
+    );
+    const originalBytes = ['turn.json', 'items.jsonl'].map((file) =>
+      readFileSync(join(turnRoot, file))
+    );
+    if (fault === 'stale-cache') {
+      const persist = vi
+        .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
+        .mockImplementationOnce(() => {
+          throw new Error('Turn persistence interrupted');
+        });
+      try {
+        expect(() => store.updateTurn(entry.turnId, { agentId: 'other-worker' })).toThrow(
+          'Turn persistence interrupted'
+        );
+      } finally {
+        persist.mockRestore();
+      }
+      expect(store.getTurnById(entry.turnId).agentId).toBe('other-worker');
+    }
+    if (fault === 'missing')
       rmSync(
         join(
           coreDb.dataRoot,
@@ -840,7 +875,7 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         providerRegistry: localProviderRegistry(),
       });
-      if (missing) {
+      if (fault !== 'none') {
         expect(outcome).toMatchObject({
           startedTurns: [],
           terminalResult: { status: 'queued', reason: 'recovery-required' },
@@ -849,6 +884,31 @@ describe('scheduler dispatch loop', () => {
         expect(executor.prepareCalls).toEqual([]);
         expect(create).not.toHaveBeenCalled();
         expect(update).not.toHaveBeenCalled();
+        const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: DEMO_WORKSPACE_ID,
+            queueEntryId: entry.queueEntryId,
+          }),
+        });
+        expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+        expect(update).not.toHaveBeenCalled();
+        expect(
+          readPublishedTurnFileRecords(
+            coreDb.dataRoot,
+            DEMO_WORKSPACE_ID,
+            caseThread.id,
+            entry.turnId
+          )
+        ).toEqual(fault === 'missing' ? null : published);
+        expect(
+          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+        ).toBe('cancelled');
+        if (fault === 'stale-cache')
+          expect(
+            ['turn.json', 'items.jsonl'].map((file) => readFileSync(join(turnRoot, file)))
+          ).toEqual(originalBytes);
       } else {
         expect(outcome.startedTurns).toHaveLength(1);
         expect(executor.calls.map((call) => call.input)).toEqual(['Only this case brief.']);

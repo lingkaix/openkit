@@ -45,7 +45,7 @@ import {
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempt-records.js';
 import type { ExecutionBackend } from './execution-backend.js';
-import { inspectExternalTriggerAdmission } from './external-trigger-source.js';
+import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
 import {
   type StartTurnDependencies,
   startTurn,
@@ -242,16 +242,8 @@ function schedulerEntryPublicationComplete(
   const occurrence = findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId);
   if (occurrence) return recurringTurnPublicationIssue(input.store, entry) === null;
   const eventAdmission = findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId);
-  if (eventAdmission) {
-    try {
-      return (
-        inspectExternalTriggerAdmission(input.coreDb, input.store, eventAdmission).turn.status ===
-        'pending'
-      );
-    } catch {
-      return false;
-    }
-  }
+  if (eventAdmission)
+    return externalTriggerTurnPublicationComplete(input.coreDb, input.store, eventAdmission);
   try {
     const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
     if (turn.status !== 'pending' || turn.agentId !== entry.requestedAgentId) return false;

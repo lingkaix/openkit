@@ -71,6 +71,20 @@ export function inspectExternalTriggerAdmission(
   }
 }
 
+/** Fences native mutations from a stale cache while duplicate reads retain canonical history. */
+export function externalTriggerTurnPublicationComplete(
+  coreDb: CoreDb,
+  store: FsStore,
+  admission: ExternalTriggerAdmission
+): boolean {
+  try {
+    const { entry, turn } = inspectExternalTriggerAdmission(coreDb, store, admission);
+    return isDeepStrictEqual(store.getTurn(entry.workspaceId, entry.threadId, entry.turnId), turn);
+  } catch {
+    return false;
+  }
+}
+
 /** Fixed refusal for an incomplete or contradictory accepted tuple; never exposes storage details. */
 export function externalTriggerRecoveryRequired(): TurnStartValidationError {
   return new TurnStartValidationError(
