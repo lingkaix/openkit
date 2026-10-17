@@ -120,7 +120,7 @@ Paths beginning with `C/` resolve under `apps/nanocore/src/`; `S/` under `docs/s
 
 ### SQLite Authority Families
 
-SQL columns and embedded JSON have separate reader boundaries. The general evolution rule applies; the split file envelope is not a blanket SQL implementation. Current native journals end at Core `0003_notebook_admission`, User `0002_notebook_admission`, Workspace `0002_notebook_admission` and App `0001_notebook_admission`.
+SQL columns and embedded JSON have separate reader boundaries. The general evolution rule applies; the split file envelope is not a blanket SQL implementation. Current native journals end at Core `0004_channel_notifications`, User `0002_notebook_admission`, Workspace `0002_notebook_admission` and App `0001_notebook_admission`.
 
 The rows cover all current product-table groups: Core identity/settings/decisions/Audit/Vault/scheduler/runtime/receipts/channel bindings/notification observations; User receipts and Audit; Workspace approval/content/Goal/evidence/synchronization/UI; and App metadata/business records. Retired Goal and host-repository setup tables do not become retained families because historical DDL mentions them. Native post-journal cutovers remove them. AEP snapshots and immutable App definitions remain files, not additional SQL content stores.
 
