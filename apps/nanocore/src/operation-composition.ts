@@ -35,6 +35,7 @@ import {
 } from './internal-agents/assistant-skill-resources.js';
 import type { ToolExecutionContext } from './internal-agents/internal-agent-loop.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
+import { createKnowledgeProposalPreviewOperationImplementations } from './knowledge/notebook-proposal-preview.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
@@ -220,6 +221,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),
