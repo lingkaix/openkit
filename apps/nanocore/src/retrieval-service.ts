@@ -4,6 +4,10 @@ import { lstat, mkdir, readdir } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import type {
+  FileDigestWindowScanInput,
+  FileDigestWindowScanResult,
+} from './storage/artifacts/worker-credential-scan.js';
 
 /** The version-1 local service's admitted source, never a permission record. */
 export interface RetrievalDocument {
@@ -87,6 +91,13 @@ const analysisSchema = z.object({
   query_terms: z.array(z.string()).max(10000),
   title_terms: z.array(z.string()).max(10000),
   body_terms: z.array(z.string()).max(10000),
+});
+const digestWindowResultSchema = z.object({
+  start: count,
+  end: count,
+  bytes: count,
+  range_digest: digest,
+  matches: z.array(z.object({ start: count, end: count })).max(1024),
 });
 /** Term evidence produced by the same selected analyzer as the canonical Document. */
 export type RetrievalAnalysis = z.infer<typeof analysisSchema>;
@@ -194,6 +205,37 @@ export class RetrievalService {
       })
     );
   }
+  /** Compares generic digest windows under the same startup root; no retrieval generation is read or written. */
+  async digestWindows(
+    request: FileDigestWindowScanInput,
+    signal?: AbortSignal
+  ): Promise<FileDigestWindowScanResult> {
+    const result = this.decode(
+      digestWindowResultSchema,
+      await this.request({ op: 'digest-windows', request }, signal)
+    );
+    if (
+      result.start !== request.start ||
+      result.end !== request.end ||
+      result.bytes !== request.end - request.start ||
+      result.matches.length > request.bounds.max_matches ||
+      result.matches.some(
+        (match, index) =>
+          match.start < request.start ||
+          match.end > request.end ||
+          match.start >= match.end ||
+          !request.patterns.some((pattern) => pattern.window_bytes === match.end - match.start) ||
+          (index > 0 &&
+            (result.matches[index - 1]!.start > match.start ||
+              (result.matches[index - 1]!.start === match.start &&
+                result.matches[index - 1]!.end >= match.end)))
+      )
+    ) {
+      this.stop();
+      throw new RetrievalServiceError('unavailable');
+    }
+    return result;
+  }
   /** Sends EOF, then bounds termination; a closed supervisor never starts another child. */
   async close(): Promise<void> {
     this.closed = true;
@@ -221,10 +263,11 @@ export class RetrievalService {
     return parsed.data;
   }
   /** Serializes complete RPCs, including the capacity reservation before publication. */
-  private request(operation: Record<string, unknown>): Promise<unknown> {
+  private request(operation: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const run = this.tail
       .catch(() => undefined)
       .then(async () => {
+        signal?.throwIfAborted();
         if (this.closed) throw new RetrievalServiceError('unavailable');
         if (operation.op === 'publish') {
           await mkdir(this.options.storeRoot, { recursive: true, mode: 0o700 });
@@ -234,15 +277,18 @@ export class RetrievalService {
         }
         if (this.child) {
           try {
-            await this.rpc({
-              op: 'search',
-              request: {
-                mode: 'lexical',
-                query: 'health',
-                scopes: [],
-                limit: 1,
+            await this.rpc(
+              {
+                op: 'search',
+                request: {
+                  mode: 'lexical',
+                  query: 'health',
+                  scopes: [],
+                  limit: 1,
+                },
               },
-            });
+              signal
+            );
           } catch (error) {
             // Only the source-free health probe ran; the requested operation was not sent.
             if (
@@ -253,7 +299,8 @@ export class RetrievalService {
               throw error;
           }
         }
-        return this.rpc(operation);
+        signal?.throwIfAborted();
+        return this.rpc(operation, signal);
       });
     this.tail = run;
     return run;
@@ -311,7 +358,8 @@ export class RetrievalService {
     if (this.child) this.failChild(this.child);
   }
   /** Owns one bounded frame/reply pair; an explicit later request may restart the child. */
-  private async rpc(operation: Record<string, unknown>): Promise<unknown> {
+  private async rpc(operation: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
     const id = ++this.sequence;
     const bytes = Buffer.from(`${JSON.stringify({ version: 1, id, ...operation })}\n`);
     if (bytes.length > FRAME_BYTES) throw new RetrievalServiceError('resource-limited');
@@ -320,6 +368,7 @@ export class RetrievalService {
       let sent = false;
       const cleanup = () => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
         this.pending = undefined;
         this.response = undefined;
       };
@@ -331,7 +380,9 @@ export class RetrievalService {
         () => this.failChild(child, 'resource-limited'),
         this.options.timeoutMs ?? 65_000
       );
+      const abort = () => this.failChild(child);
       this.pending = fail;
+      signal?.addEventListener('abort', abort, { once: true });
       this.response = (value) => {
         const envelope = z
           .object({
@@ -364,6 +415,10 @@ export class RetrievalService {
         if (reply.error) reject(new RetrievalServiceError(reply.error.code));
         else resolve(reply.result);
       };
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
       sent = true;
       child.stdin.write(bytes, (error) => {
         if (error) this.failChild(child);

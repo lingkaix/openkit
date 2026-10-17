@@ -37,6 +37,7 @@ describe('browser CORS', () => {
       expect(allowed.status).toBe(200);
       expect(allowed.headers.get('access-control-allow-origin')).toBe(origin);
       expect(allowed.headers.get('access-control-allow-credentials')).toBe('true');
+      expect(allowed.headers.get('access-control-expose-headers')).toBe('X-OpenKit-Content-Digest');
     }
 
     for (const origin of [
@@ -50,6 +51,7 @@ describe('browser CORS', () => {
       expect(rejected.status).toBe(403);
       expect(rejected.headers.get('access-control-allow-origin')).toBeNull();
       expect(rejected.headers.get('access-control-allow-credentials')).toBeNull();
+      expect(rejected.headers.get('access-control-expose-headers')).toBeNull();
     }
   });
 

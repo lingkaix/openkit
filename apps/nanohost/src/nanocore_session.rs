@@ -394,7 +394,7 @@ pub struct RawImportFile {
     /// Exact declared and observed length.
     pub byte_length: u64,
     /// Complete source bytes, admitted only after all metadata verifies.
-    pub bytes: Vec<u8>,
+    pub file: crate::file_transfer::VerifiedFile,
 }
 
 /// The exact twelve command/result pairs carried on the authoritative connection.
@@ -1937,6 +1937,7 @@ pub async fn poll_effect_command(
     sender: &mut h2::client::SendRequest<Bytes>,
     cursor: &mut usize,
     live_bridge: bool,
+    staging_root: &std::path::Path,
 ) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
     let first_poll = *cursor == 0;
     let kind = effect_kind_for_cursor(*cursor);
@@ -1946,7 +1947,7 @@ pub async fn poll_effect_command(
     // Reserve zero for the first poll so a completed cycle cannot reopen its terminal window.
     *cursor = index + 1;
     if kind == RuntimeEffectKind::ImportReference {
-        return poll_reference_import(authority, sender, path).await;
+        return poll_reference_import(authority, sender, path, staging_root).await;
     }
     let (status, body, trace_context) =
         match send_effect_request(authority, sender, path, b"{}", None).await {
@@ -2270,6 +2271,7 @@ async fn poll_reference_import(
     authority: &str,
     sender: &mut h2::client::SendRequest<Bytes>,
     path: &str,
+    staging_root: &std::path::Path,
 ) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
     let operation = OuterSessionOperation::ImportReference;
     let terminal_without_status =
@@ -2364,7 +2366,13 @@ async fn poll_reference_import(
         .parse::<u64>()
         .ok()
         .filter(|length| {
-            length.to_string() == byte_length_text && *length <= FILE_DATA_BODY_MAX_BYTES
+            length.to_string() == byte_length_text
+                && *length
+                    <= if matches!(slot.as_str(), "artifact-input" | "turn-inputs" | "context") {
+                        crate::file_transfer::FILE_BYTES
+                    } else {
+                        FILE_DATA_BODY_MAX_BYTES
+                    }
         })
         .ok_or_else(|| terminal("reference.import byte length invalid"))?;
     let content_length_text = required_header(headers, "content-length").map_err(terminal)?;
@@ -2377,24 +2385,27 @@ async fn poll_reference_import(
         return Err(terminal("reference.import length mismatch"));
     }
     let mut response_body = response.into_body();
-    let mut bytes = BytesMut::new();
+    let mut stage = crate::file_transfer::FileStage::create(staging_root, byte_length, byte_length)
+        .map_err(|_| terminal("reference.import capacity unavailable"))?;
+    let mut observed = 0_u64;
     while let Some(chunk) = response_body.data().await {
         let chunk = chunk.map_err(|_| reconnect("reference.import response failed"))?;
-        if bytes.len() as u64 + chunk.len() as u64 > byte_length {
+        if observed + chunk.len() as u64 > byte_length {
             return Err(terminal("reference.import body exceeded declared length"));
         }
         for consumed in chunk.chunks(FILE_DATA_APPLICATION_CHUNK_BYTES) {
-            bytes.extend_from_slice(consumed);
+            std::io::Write::write_all(&mut stage, consumed)
+                .map_err(|_| terminal("reference.import staging failed"))?;
+            observed += consumed.len() as u64;
             response_body
                 .flow_control()
                 .release_capacity(consumed.len())
                 .map_err(|_| terminal("reference.import flow control failed"))?;
         }
     }
-    if bytes.len() as u64 != byte_length || format!("sha256:{:x}", Sha256::digest(&bytes)) != sha256
-    {
-        return Err(terminal("reference.import body digest or length mismatch"));
-    }
+    let file = stage
+        .complete(Some((byte_length, &sha256)))
+        .map_err(|_| terminal("reference.import body digest or length mismatch"))?;
     Ok(Some(PolledEffectCommand {
         kind: RuntimeEffectKind::ImportReference,
         request_id,
@@ -2405,7 +2416,7 @@ async fn poll_reference_import(
             relative_path,
             sha256,
             byte_length,
-            bytes: bytes.to_vec(),
+            file,
         }),
     }))
 }
@@ -2534,11 +2545,10 @@ pub async fn submit_file_export_result(
                 .get("maxByteLength")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0)
-        || result.bytes().len() as u64 != result.byte_length()
-        || format!("sha256:{:x}", Sha256::digest(result.bytes())) != result.sha256()
     {
         return Err(terminal_without_status("file export result invalid"));
     }
+    let mut source = result.reader().map_err(terminal_without_status)?;
     let (_, path, _) = EFFECT_PATHS
         .iter()
         .find(|(_, _, kind)| *kind == RuntimeEffectKind::ExportFile)
@@ -2566,9 +2576,11 @@ pub async fn submit_file_export_result(
     let (response, mut request_body) = ready
         .send_request(request, false)
         .map_err(|_| reconnect_without_status("file export result delivery uncertain"))?;
-    let mut offset = 0;
-    while offset < result.bytes().len() {
-        let wanted = (result.bytes().len() - offset).min(FILE_DATA_APPLICATION_CHUNK_BYTES);
+    let mut offset = 0_u64;
+    let mut buffer = [0_u8; FILE_DATA_APPLICATION_CHUNK_BYTES];
+    while offset < result.byte_length() {
+        let wanted =
+            (result.byte_length() - offset).min(FILE_DATA_APPLICATION_CHUNK_BYTES as u64) as usize;
         request_body.reserve_capacity(wanted);
         let available = std::future::poll_fn(|context| request_body.poll_capacity(context))
             .await
@@ -2578,13 +2590,12 @@ pub async fn submit_file_export_result(
         if sent == 0 {
             continue;
         }
+        std::io::Read::read_exact(&mut source, &mut buffer[..sent])
+            .map_err(|_| terminal_without_status("file export retained source changed"))?;
         request_body
-            .send_data(
-                Bytes::copy_from_slice(&result.bytes()[offset..offset + sent]),
-                false,
-            )
+            .send_data(Bytes::copy_from_slice(&buffer[..sent]), false)
             .map_err(|_| reconnect_without_status("file export result delivery uncertain"))?;
-        offset += sent;
+        offset += sent as u64;
     }
     request_body
         .send_data(Bytes::new(), true)
@@ -3182,9 +3193,14 @@ mod tests {
                 let (mut sender, driver) = h2::client::handshake(client_io).await.unwrap();
                 let driver = tokio::spawn(driver);
                 let mut cursor = index;
-                let result =
-                    poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
-                        .await;
+                let result = poll_effect_command(
+                    "http://nanocore.test",
+                    &mut sender,
+                    &mut cursor,
+                    false,
+                    std::env::temp_dir().as_path(),
+                )
+                .await;
                 if extra && !additive_collect {
                     assert!(
                         result.is_err(),
@@ -4130,6 +4146,7 @@ mod tests {
             &mut sender,
             &mut cursor,
             false,
+            std::env::temp_dir().as_path(),
         )
         .await
         .expect("verified image.build command")
@@ -4336,6 +4353,7 @@ mod tests {
                 &mut sender,
                 &mut cursor,
                 false,
+                std::env::temp_dir().as_path()
             )
             .await
             .expect("next poll after definite failure")
@@ -4607,9 +4625,15 @@ mod tests {
             }),
             |_, mut sender| async move {
                 let mut cursor = 0;
-                poll_effect_command("http://nanocore:80", &mut sender, &mut cursor, false)
-                    .await
-                    .map(|_| ())
+                poll_effect_command(
+                    "http://nanocore:80",
+                    &mut sender,
+                    &mut cursor,
+                    false,
+                    std::env::temp_dir().as_path(),
+                )
+                .await
+                .map(|_| ())
             },
         )
         .await
@@ -4897,9 +4921,15 @@ mod tests {
             }),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
-                poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
-                    .await
-                    .map(|_| ())
+                poll_effect_command(
+                    "http://nanocore.test",
+                    &mut sender,
+                    &mut cursor,
+                    false,
+                    std::env::temp_dir().as_path(),
+                )
+                .await
+                .map(|_| ())
             },
         )
         .await
@@ -4970,9 +5000,15 @@ mod tests {
                     serde_json::json!({ "sandboxId": "sandbox-a" }),
                 )
                 .await?;
-                poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
-                    .await
-                    .map(|_| ())
+                poll_effect_command(
+                    "http://nanocore.test",
+                    &mut sender,
+                    &mut cursor,
+                    false,
+                    std::env::temp_dir().as_path(),
+                )
+                .await
+                .map(|_| ())
             },
         )
         .await
@@ -5011,13 +5047,25 @@ mod tests {
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 assert!(
-                    poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
-                        .await?
-                        .is_none()
+                    poll_effect_command(
+                        "http://nanocore.test",
+                        &mut sender,
+                        &mut cursor,
+                        false,
+                        std::env::temp_dir().as_path()
+                    )
+                    .await?
+                    .is_none()
                 );
-                poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
-                    .await
-                    .map(|_| ())
+                poll_effect_command(
+                    "http://nanocore.test",
+                    &mut sender,
+                    &mut cursor,
+                    false,
+                    std::env::temp_dir().as_path(),
+                )
+                .await
+                .map(|_| ())
             },
         )
         .await
@@ -5092,14 +5140,21 @@ mod tests {
                                 &mut sender,
                                 &mut cursor,
                                 false,
+                                std::env::temp_dir().as_path()
                             )
                             .await?
                             .is_none()
                         );
                     }
-                    poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
-                        .await
-                        .map(|_| ())
+                    poll_effect_command(
+                        "http://nanocore.test",
+                        &mut sender,
+                        &mut cursor,
+                        false,
+                        std::env::temp_dir().as_path(),
+                    )
+                    .await
+                    .map(|_| ())
                 },
             )
             .await
@@ -5143,9 +5198,15 @@ mod tests {
             }),
             |_, mut sender| async move {
                 let mut cursor = 2;
-                poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, true)
-                    .await
-                    .map(|_| ())
+                poll_effect_command(
+                    "http://nanocore.test",
+                    &mut sender,
+                    &mut cursor,
+                    true,
+                    std::env::temp_dir().as_path(),
+                )
+                .await
+                .map(|_| ())
             },
         )
         .await
@@ -5213,10 +5274,16 @@ mod tests {
         let mut cursor = usize::MAX - 3;
         for _ in 0..EFFECT_PATHS.len() {
             assert!(
-                poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
-                    .await
-                    .expect("bounded fair poll")
-                    .is_none()
+                poll_effect_command(
+                    "http://nanocore.test",
+                    &mut sender,
+                    &mut cursor,
+                    false,
+                    std::env::temp_dir().as_path()
+                )
+                .await
+                .expect("bounded fair poll")
+                .is_none()
             );
         }
         let _ = release_server.send(());
@@ -5513,9 +5580,15 @@ mod tests {
             }
         };
         let mut cursor = 11usize;
+        let staging_root = std::env::temp_dir();
         let polled = {
-            let poll_future =
-                poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false);
+            let poll_future = poll_effect_command(
+                "http://nanocore.test",
+                &mut sender,
+                &mut cursor,
+                false,
+                &staging_root,
+            );
             tokio::pin!(poll_future);
             tokio::time::timeout(
                 std::time::Duration::from_secs(8),

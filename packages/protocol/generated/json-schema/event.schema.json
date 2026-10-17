@@ -2612,6 +2612,41 @@
                     ]
                   }
                 },
+                "fileInputs": {
+                  "maxItems": 10000,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
+                      },
+                      "mediaType": {
+                        "type": "string",
+                        "maxLength": 255,
+                        "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                      },
+                      "sizeBytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000000
+                      },
+                      "contentDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "mediaType",
+                      "sizeBytes",
+                      "contentDigest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "error": {
                   "anyOf": [
                     {
@@ -8067,26 +8102,55 @@
                   "maximum": 9007199254740991
                 },
                 "content": {
-                  "type": "object",
-                  "properties": {
-                    "format": {
-                      "type": "string",
-                      "enum": [
-                        "markdown",
-                        "text",
-                        "json"
-                      ]
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "markdown",
+                            "text",
+                            "json"
+                          ]
+                        },
+                        "body": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "format",
+                        "body"
+                      ],
+                      "additionalProperties": false
                     },
-                    "body": {
-                      "type": "string",
-                      "minLength": 1
+                    {
+                      "type": "object",
+                      "properties": {
+                        "format": {
+                          "type": "string",
+                          "const": "file"
+                        },
+                        "mediaType": {
+                          "type": "string",
+                          "maxLength": 255,
+                          "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                        },
+                        "byteLength": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1000000000
+                        }
+                      },
+                      "required": [
+                        "format",
+                        "mediaType",
+                        "byteLength"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "format",
-                    "body"
-                  ],
-                  "additionalProperties": false
+                  ]
                 },
                 "contentDigest": {
                   "type": "string",
@@ -8361,26 +8425,55 @@
                   "maximum": 9007199254740991
                 },
                 "content": {
-                  "type": "object",
-                  "properties": {
-                    "format": {
-                      "type": "string",
-                      "enum": [
-                        "markdown",
-                        "text",
-                        "json"
-                      ]
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "markdown",
+                            "text",
+                            "json"
+                          ]
+                        },
+                        "body": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "format",
+                        "body"
+                      ],
+                      "additionalProperties": false
                     },
-                    "body": {
-                      "type": "string",
-                      "minLength": 1
+                    {
+                      "type": "object",
+                      "properties": {
+                        "format": {
+                          "type": "string",
+                          "const": "file"
+                        },
+                        "mediaType": {
+                          "type": "string",
+                          "maxLength": 255,
+                          "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                        },
+                        "byteLength": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1000000000
+                        }
+                      },
+                      "required": [
+                        "format",
+                        "mediaType",
+                        "byteLength"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "format",
-                    "body"
-                  ],
-                  "additionalProperties": false
+                  ]
                 },
                 "contentDigest": {
                   "type": "string",
@@ -10797,6 +10890,41 @@
                         "additionalProperties": false
                       }
                     ]
+                  }
+                },
+                "fileInputs": {
+                  "maxItems": 10000,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
+                      },
+                      "mediaType": {
+                        "type": "string",
+                        "maxLength": 255,
+                        "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                      },
+                      "sizeBytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000000
+                      },
+                      "contentDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "mediaType",
+                      "sizeBytes",
+                      "contentDigest"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "error": {

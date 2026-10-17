@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,6 +40,81 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== 'linux')('NanoCore retrieval service supervision', () => {
+  it(
+    'returns only generic exact digest-window positions and refuses incomplete byte or match coverage',
+    async () => {
+      const fixture = createFixture(),
+        service = createService(fixture, 10_000);
+      const bytes = Buffer.from('binary\0needle\0needle');
+      writeFileSync(join(fixture.sourcesRoot, 'source'), bytes);
+      const request = {
+        path: 'source',
+        source_bytes: bytes.length,
+        start: 0,
+        end: bytes.length,
+        patterns: [
+          {
+            window_bytes: 6,
+            encoding: 'bytes' as const,
+            digests: [createHash('sha256').update('needle').digest('hex')],
+          },
+        ],
+        bounds: { max_bytes: bytes.length, max_matches: 2, timeout_ms: 1000 },
+      };
+      expect(await service.digestWindows(request)).toEqual({
+        start: 0,
+        end: bytes.length,
+        bytes: bytes.length,
+        range_digest: createHash('sha256').update(bytes).digest('hex'),
+        matches: [
+          { start: 7, end: 13 },
+          { start: 14, end: 20 },
+        ],
+      });
+      await expect(
+        service.digestWindows({ ...request, bounds: { ...request.bounds, max_matches: 1 } })
+      ).rejects.toMatchObject({ code: 'resource-limited', uncertain: false });
+      await expect(
+        service.digestWindows({ ...request, bounds: { ...request.bounds, max_bytes: 1 } })
+      ).rejects.toMatchObject({ code: 'resource-limited', uncertain: false });
+      await expect(service.digestWindows({ ...request, path: '../source' })).rejects.toMatchObject({
+        code: 'invalid-request',
+        uncertain: false,
+      });
+      await expect(service.health()).resolves.toBeUndefined();
+    },
+    TEST_TIMEOUT_MS
+  );
+  it(
+    'cancels an active generic scan and starts a fresh healthy child for the next operation',
+    async () => {
+      const fixture = createFixture(),
+        service = createService(fixture, 10_000);
+      const bytes = Buffer.alloc(1024 * 1024, 65);
+      writeFileSync(join(fixture.sourcesRoot, 'source'), bytes);
+      await service.start();
+      const controller = new AbortController();
+      const scan = service.digestWindows(
+        {
+          path: 'source',
+          source_bytes: bytes.length,
+          start: 0,
+          end: bytes.length,
+          patterns: [{ window_bytes: 43, encoding: 'bytes', digests: ['0'.repeat(64)] }],
+          bounds: { max_bytes: bytes.length, max_matches: 1, timeout_ms: 10000 },
+        },
+        controller.signal
+      );
+      const timer = setTimeout(() => controller.abort(), 20);
+      try {
+        await expect(scan).rejects.toMatchObject({ uncertain: false });
+      } finally {
+        clearTimeout(timer);
+      }
+      await expect(service.health()).resolves.toBeUndefined();
+    },
+    TEST_TIMEOUT_MS
+  );
   it(
     'starts a healthy service, restarts a failed child with no retained scope grant, and shuts it down',
     async () => {
