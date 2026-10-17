@@ -38,6 +38,7 @@ import { createKernelOperationImplementations } from './kernel-operation-impleme
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
+import { createLightAppDefinitionOperationImplementations } from './light-app-definition-operations.js';
 import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
 import { createMaterialOperationImplementations } from './material-operation-implementations.js';
 import { createMemoryOperationImplementations } from './memory-operations.js';
@@ -205,6 +206,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     }),
     createKernelOperationImplementations(dependencies),
     createRemainingKernelOperationImplementations(dependencies),
+    createLightAppDefinitionOperationImplementations(dependencies),
     createGenerativeUiOperationImplementations(dependencies),
     createWorkspaceOperationImplementations(dependencies),
     createWorkspaceTransferOperationImplementations(dependencies),
