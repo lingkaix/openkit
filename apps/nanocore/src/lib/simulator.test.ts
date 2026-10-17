@@ -400,8 +400,14 @@ describe('SimulatedTurnExecutor', () => {
   it('reuses one compatible current AgentSession across sequential simulator Turns', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new SimulatedTurnExecutor({ coreDb });
+    const admission = new FileStorageAdmission(
+      coreDb.dataRoot,
+      () => 2_000_000n,
+      () => 16_000_000n
+    );
+    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission: admission });
     const app = createApp({
+      fileAdmission: admission,
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -523,7 +529,12 @@ describe('SimulatedTurnExecutor', () => {
     const imageRefB = 'openkit/worker-codex:image-b';
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new SimulatedTurnExecutor({ coreDb });
+    const admission = new FileStorageAdmission(
+      coreDb.dataRoot,
+      () => 2_000_000n,
+      () => 16_000_000n
+    );
+    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission: admission });
     const providerRegistry = new ProviderRegistry([
       {
         defaultModel: 'openai/gpt-5.2',
@@ -534,6 +545,7 @@ describe('SimulatedTurnExecutor', () => {
       },
     ]);
     const firstApp = createApp({
+      fileAdmission: admission,
       agentManifests: [createTestAgentSetup({ imageRef: imageRefA }).manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -543,6 +555,7 @@ describe('SimulatedTurnExecutor', () => {
       turnExecutor: executor,
     });
     const secondApp = createApp({
+      fileAdmission: admission,
       agentManifests: [createTestAgentSetup({ imageRef: imageRefB }).manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
