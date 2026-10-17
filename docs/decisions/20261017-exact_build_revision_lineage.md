@@ -23,4 +23,4 @@ Revisit the representation if an accepted build process no longer has one exact 
 
 ## Affected Owners
 
-[Work Data Retention Format](../specs/20260921-work_data_retention_format.md), [Container Image Packaging](../specs/20260708-container_image_packaging.md) and [Release Management](../specs/20260829-release_management.md) own the criteria.
+[Work Data Retention Format](../specs/20260921-work_data_retention_format.md), [Container Image Packaging](../specs/20260708-container_image_packaging.md) [Release Management](../specs/20260829-release_management.md) and [Operational Telemetry](../specs/20260731-operational_telemetry_standardization.md) own the criteria.

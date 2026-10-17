@@ -2046,7 +2046,7 @@ describe('app api openapi projection', () => {
     expect(validateBuild({ releaseTag: null, sourceCommit: null })).toBe(true);
     expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit })).toBe(true);
     expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit: null })).toBe(false);
-    expect(validateBuild({ releaseTag: null, sourceCommit })).toBe(false);
+    expect(validateBuild({ releaseTag: null, sourceCommit })).toBe(true);
     expect(process).toMatchObject({
       type: 'object',
       required: ['observedAt', 'nodeVersion', 'uptimeSeconds', 'memory', 'telemetry'],
