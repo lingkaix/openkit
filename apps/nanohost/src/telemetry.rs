@@ -347,4 +347,281 @@ mod tests {
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    #[ignore = "requires an explicitly selected verified stock otelcol-contrib 0.163.1 binary"]
+    fn stock_collector_exports_parented_effect_with_startup_link() {
+        use opentelemetry_sdk::trace::{IdGenerator, RandomIdGenerator, SdkTracerProvider};
+        use serde_json::{Value, json};
+        use std::net::{TcpListener, TcpStream};
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        for name in [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        ] {
+            assert!(
+                std::env::var_os(name).is_none_or(|value| value.is_empty()),
+                "unset ambient OTLP endpoint/header controls before opting in"
+            );
+        }
+
+        // This guard owns only this test's child, exporter and temporary output, including on panic.
+        struct Fixture {
+            root: std::path::PathBuf,
+            child: Option<Child>,
+            provider: Option<SdkTracerProvider>,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                if let Some(provider) = self.provider.take() {
+                    global::set_tracer_provider(
+                        opentelemetry::trace::noop::NoopTracerProvider::new(),
+                    );
+                    let _ = provider.shutdown_with_timeout(Duration::from_secs(1));
+                }
+                if let Some(child) = &mut self.child {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+
+        let binary = std::path::PathBuf::from(
+            std::env::var_os("OPENKIT_TEST_OTELCOL_BINARY")
+                .expect("select the verified stock Collector binary before opting in"),
+        );
+        assert!(binary.is_absolute() && binary.is_file());
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-collector-{}",
+            RandomIdGenerator::default().new_trace_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut fixture = Fixture {
+            root,
+            child: None,
+            provider: None,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let output = fixture.root.join("spans.jsonl");
+        let config = fixture.root.join("collector.json");
+        std::fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "receivers": {"otlp": {"protocols": {"http": {"endpoint": address.to_string()}}}},
+                "exporters": {"file": {"path": output, "format": "json", "flush_interval": "10ms"}},
+                "service": {
+                    "telemetry": {"metrics": {"level": "none"}},
+                    "pipelines": {"traces": {"receivers": ["otlp"], "exporters": ["file"]}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        drop(listener);
+        fixture.child = Some(
+            Command::new(binary)
+                .arg("--config")
+                .arg(&config)
+                .current_dir(&fixture.root)
+                .env_clear()
+                .env("TMPDIR", &fixture.root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("start only the fixture-owned stock Collector"),
+        );
+        let ready = Instant::now();
+        loop {
+            assert!(
+                fixture
+                    .child
+                    .as_mut()
+                    .unwrap()
+                    .try_wait()
+                    .unwrap()
+                    .is_none()
+            );
+            if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
+                break;
+            }
+            assert!(
+                ready.elapsed() < Duration::from_secs(10),
+                "Collector did not listen"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        fixture.provider =
+            Some(provider_for_endpoint(&format!("http://{address}/v1/traces")).unwrap());
+        global::set_tracer_provider(fixture.provider.as_ref().unwrap().clone());
+        let mut startup =
+            Observation::start("nanohost.epoch.start", &Context::new(), Vec::new(), None);
+        startup.finish(true);
+        let startup_context = startup.context().span().span_context().clone();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "traceparent",
+            "00-11111111111111111111111111111111-2222222222222222-01"
+                .parse()
+                .unwrap(),
+        );
+        let mut effect = Observation::start(
+            "nanohost.effect",
+            &extract(&headers),
+            vec![KeyValue::new("openkit.operation", "storage.inspect")],
+            Some(&startup_context),
+        );
+        let effect_context = effect.context().span().span_context().clone();
+        effect.finish(true);
+        fixture.provider.as_ref().unwrap().force_flush().unwrap();
+
+        let written = Instant::now();
+        let records = loop {
+            let bytes = std::fs::read(&output).unwrap_or_default();
+            if bytes.ends_with(b"\n")
+                && let Ok(records) = bytes
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(serde_json::from_slice::<Value>)
+                    .collect::<Result<Vec<_>, _>>()
+            {
+                let count: usize = records
+                    .iter()
+                    .flat_map(|record| record["resourceSpans"].as_array().into_iter().flatten())
+                    .flat_map(|resource| resource["scopeSpans"].as_array().into_iter().flatten())
+                    .map(|scope| scope["spans"].as_array().map_or(0, Vec::len))
+                    .sum();
+                if count >= 2 {
+                    break records;
+                }
+            }
+            assert!(
+                fixture
+                    .child
+                    .as_mut()
+                    .unwrap()
+                    .try_wait()
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                written.elapsed() < Duration::from_secs(10),
+                "Collector did not export both spans"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let attributes = |value: &Value| -> BTreeMap<String, String> {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|attribute| {
+                    assert_eq!(attribute.as_object().unwrap().len(), 2);
+                    assert_eq!(attribute["value"].as_object().unwrap().len(), 1);
+                    (
+                        attribute["key"].as_str().unwrap().to_owned(),
+                        attribute["value"]["stringValue"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                    )
+                })
+                .collect()
+        };
+        let mut spans = Vec::new();
+        for record in records {
+            for resource in record["resourceSpans"].as_array().unwrap() {
+                let actual = attributes(&resource["resource"]["attributes"]);
+                assert_eq!(actual.len(), 4);
+                assert_eq!(actual["service.name"], "nanohost");
+                assert_eq!(actual["service.version"], env!("CARGO_PKG_VERSION"));
+                assert_eq!(actual["deployment.environment.name"], "test");
+                let instance = &actual["service.instance.id"];
+                assert_eq!(instance.len(), 32);
+                assert!(instance.bytes().all(|byte| byte.is_ascii_hexdigit()));
+                assert_ne!(instance, &"0".repeat(32));
+                for scope in resource["scopeSpans"].as_array().unwrap() {
+                    assert_eq!(scope["scope"]["name"], "nanohost");
+                    assert!(
+                        scope["scope"]["attributes"]
+                            .as_array()
+                            .is_none_or(Vec::is_empty)
+                    );
+                    spans.extend(scope["spans"].as_array().unwrap().iter().cloned());
+                }
+            }
+        }
+        assert_eq!(spans.len(), 2);
+        let startup = spans
+            .iter()
+            .find(|span| span["name"] == "nanohost.epoch.start")
+            .unwrap();
+        let effect = spans
+            .iter()
+            .find(|span| span["name"] == "nanohost.effect")
+            .unwrap();
+        assert!(startup_context.is_valid() && effect_context.is_valid());
+        assert_ne!(startup_context.trace_id(), effect_context.trace_id());
+        assert_eq!(startup["traceId"], startup_context.trace_id().to_string());
+        assert_eq!(startup["spanId"], startup_context.span_id().to_string());
+        assert_eq!(startup["parentSpanId"].as_str().unwrap_or_default(), "");
+        assert!(startup["links"].as_array().is_none_or(Vec::is_empty));
+        assert_eq!(effect["traceId"], "11111111111111111111111111111111");
+        assert_eq!(effect["spanId"], effect_context.span_id().to_string());
+        assert_eq!(effect["parentSpanId"], "2222222222222222");
+        let links = effect["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["traceId"], startup["traceId"]);
+        assert_eq!(links[0]["spanId"], startup["spanId"]);
+        assert!(links[0]["attributes"].as_array().is_none_or(Vec::is_empty));
+        assert_eq!(
+            attributes(&startup["attributes"]),
+            BTreeMap::from([("openkit.outcome".into(), "returned".into())])
+        );
+        assert_eq!(
+            attributes(&effect["attributes"]),
+            BTreeMap::from([
+                ("openkit.operation".into(), "storage.inspect".into()),
+                ("openkit.outcome".into(), "returned".into()),
+            ])
+        );
+        for span in &spans {
+            assert!(span["events"].as_array().is_none_or(Vec::is_empty));
+            let start: u64 = span["startTimeUnixNano"].as_str().unwrap().parse().unwrap();
+            let end: u64 = span["endTimeUnixNano"].as_str().unwrap().parse().unwrap();
+            assert!(start > 0 && end >= start);
+        }
+        let startup_end: u64 = startup["endTimeUnixNano"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let effect_start: u64 = effect["startTimeUnixNano"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            startup_end <= effect_start,
+            "startup must finish before the later effect"
+        );
+        global::set_tracer_provider(opentelemetry::trace::noop::NoopTracerProvider::new());
+        let _ = fixture
+            .provider
+            .take()
+            .unwrap()
+            .shutdown_with_timeout(Duration::from_secs(1));
+        let child = fixture.child.as_mut().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        fixture.child = None;
+        std::fs::remove_dir_all(&fixture.root).unwrap();
+    }
 }
