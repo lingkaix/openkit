@@ -57,7 +57,10 @@ import {
   RestoreKnowledgeNotebookRequestSchema,
   RestoreKnowledgeNotebookResponseSchema,
 } from './knowledge-notebook-history.js';
-import { ReadKnowledgeProposalRequestSchema, ReadKnowledgeProposalResponseSchema } from './knowledge-proposal-preview.js';
+import {
+  ReadKnowledgeProposalRequestSchema,
+  ReadKnowledgeProposalResponseSchema,
+} from './knowledge-proposal-preview.js';
 import type { OperationDefinition } from './operation-contract.js';
 import { KnowledgeAskRequestSchema, KnowledgeAskResponseSchema, KnowledgeTellRequestSchema,
   KnowledgeMaintainRequestSchema, KnowledgeMaintenanceResponseSchema } from './knowledge-agent.js';
@@ -328,11 +331,18 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.proposal.read': {
-    binding: 'json', returnsOneTimeSecret: false, successStatus: 200,
-    description: 'Read the exact saved Proposal inventory or bounded candidate text under current source authority.',
-    inputSchema: ReadKnowledgeProposalRequestSchema, outputSchema: ReadKnowledgeProposalResponseSchema,
-    credentials: publicCredentials, scope: { kind: 'body-workspace', field: 'workspaceId' },
-    target: { kind: 'workspace' }, policyOperation: 'review.apply', mutating: false,
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Read the exact saved Proposal inventory or bounded candidate text under current source authority.',
+    inputSchema: ReadKnowledgeProposalRequestSchema,
+    outputSchema: ReadKnowledgeProposalResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'review.apply',
+    mutating: false,
   },
   'knowledge.proposal.decide': {
     binding: 'json',
