@@ -190,28 +190,41 @@ describe('exact retained Worker Skill delivery', () => {
     }
     expect(resolvePackage().supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
     const imports = await prepare();
+    const expectedFiles = [
+      ['empty-file', Buffer.alloc(0), false],
+      ['run.sh', SCRIPT_BODY, true],
+      ['SKILL.md', SKILL_BODY, false],
+      ['supporting.bin', SUPPORTING_BODY, false],
+    ] as const;
+    expect(imports.slice(1)).toStrictEqual([
+      {
+        entryKind: 'directory',
+        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/empty-dir`,
+        slot: 'worker-supply',
+      },
+      ...expectedFiles.map(([path, body, executable]) => ({
+        body,
+        byteLength: body.byteLength,
+        contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+        entryKind: 'file',
+        executable,
+        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/${path}`,
+        slot: 'worker-supply',
+      })),
+    ]);
     expect(imports.map((entry) => entry.slot)).toEqual([
       'package-config',
       'worker-supply',
       'worker-supply',
       'worker-supply',
       'worker-supply',
+      'worker-supply',
     ]);
-    const expectedFiles = [
-      ['empty-file', Buffer.alloc(0)],
-      ['run.sh', SCRIPT_BODY],
-      ['SKILL.md', SKILL_BODY],
-      ['supporting.bin', SUPPORTING_BODY],
-    ] as const;
-    expect(imports.slice(1)).toEqual(
-      expectedFiles.map(([path, body]) => ({
-        body,
-        byteLength: body.byteLength,
-        contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/${path}`,
-        slot: 'worker-supply',
-      }))
-    );
+    expect(imports[0]).toMatchObject({
+      entryKind: 'file',
+      executable: false,
+      slot: 'package-config',
+    });
     const importedPackage = JSON.parse(
       imports[0]!.body.toString('utf8')
     ) as AgentEnvironmentPackage;

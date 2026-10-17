@@ -393,6 +393,8 @@ Use the returned session cookie for protected JSON operations such as `POST /api
 
 ## NanoHost Worker Mode
 
+Selected Skill delivery preserves the admitted complete tree through the existing `reference.import` path. Its closed file/directory union carries normalized executable flags only for files; directories carry no file payload. Context files are captured before the selected Skill trees, so the existing whole-set Skill eligibility check follows all asynchronous Context reads. Materialization captures that complete collection before its Sandbox effects and reuses those bytes for dispatch. Early admission keeps its existing complete Skill preview verification and placeholder Context lifecycle. The fixed helper installs directories and normalized modes, and Worker Shim verifies the complete installed source digest before adapter projection. `worker-skill-snapshot.test.ts`, the backend/factory/dispatcher suites and the actual local Codex consumption regression cover these distinct boundaries; local proof does not assert deployed Worker acceptance.
+
 Per-Turn file export carries accepted final-status proof and does not claim process-group absence or stop a reusable resident Harness. Physical termination proof remains with Harness and Sandbox close operations.
 
 NanoCore derives exact typed filesystem and endpoint authorization intent from the accepted AEP and validates it before sending `sandbox.create.policyIntent`. NanoHost renders native OpenShell policy locally and refuses unknown fields or unsupported enforcement before effects. Effective Gateway policy digest recording and verification remain unimplemented, and non-transient Providers v2 attachments remain disabled.
