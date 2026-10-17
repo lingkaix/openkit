@@ -145,6 +145,13 @@ export async function askKnowledgeAgent(
       outputTurnId: input.access.outputThreadId ? input.access.outputTurnId : turn.id,
     };
     const bound = { ...target, access };
+    // Retrieval keeps its existing trusted caller classes; the KM Turn owns role accounting.
+    const retrievalCaller =
+      input.caller === 'worker'
+        ? 'task-mode'
+        : input.caller === 'internal-agent'
+          ? 'assistant'
+          : 'app-api';
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
     });
@@ -259,7 +266,7 @@ export async function askKnowledgeAgent(
           const args = searchSchema.parse(value);
           const workspace = await retrieveWorkspaceKnowledge({
             ...bound,
-            caller: input.caller,
+            caller: retrievalCaller,
             ...args,
           });
           if (workspace.notebookRevision !== baseRevision)
@@ -271,7 +278,7 @@ export async function askKnowledgeAgent(
             try {
               const server = await retrieveWorkspaceKnowledge({
                 ...bound,
-                caller: input.caller,
+                caller: retrievalCaller,
                 sourceScope: 'server',
                 ...args,
               });

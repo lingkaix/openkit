@@ -34,13 +34,7 @@ const KnowledgeProposalSafeTextSchema = z
   });
 
 /** Server-assigned semantic owner of one Knowledge Manager invocation path. */
-export const KnowledgeManagerCallerSchema = z.enum([
-  'assistant',
-  'task-mode',
-  'app-api',
-  'internal-agent',
-  'worker',
-]);
+export const KnowledgeManagerCallerSchema = z.enum(['assistant', 'task-mode', 'app-api']);
 
 /** Workspace knowledge source material category. */
 export const KnowledgeSourceKindSchema = z.enum([

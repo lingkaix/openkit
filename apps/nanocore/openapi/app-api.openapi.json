@@ -52259,9 +52259,7 @@
             "enum": [
               "assistant",
               "task-mode",
-              "app-api",
-              "internal-agent",
-              "worker"
+              "app-api"
             ]
           },
           "retrievalTraceRef": {
@@ -54369,9 +54367,7 @@
             "enum": [
               "assistant",
               "task-mode",
-              "app-api",
-              "internal-agent",
-              "worker"
+              "app-api"
             ]
           },
           "requestDigest": {
@@ -54649,9 +54645,7 @@
             "enum": [
               "assistant",
               "task-mode",
-              "app-api",
-              "internal-agent",
-              "worker"
+              "app-api"
             ]
           },
           "retrievalTraceRef": {
@@ -54892,9 +54886,7 @@
             "enum": [
               "assistant",
               "task-mode",
-              "app-api",
-              "internal-agent",
-              "worker"
+              "app-api"
             ]
           },
           "proposal": {
@@ -55207,9 +55199,7 @@
             "enum": [
               "assistant",
               "task-mode",
-              "app-api",
-              "internal-agent",
-              "worker"
+              "app-api"
             ]
           },
           "outcome": {
@@ -55322,9 +55312,7 @@
             "enum": [
               "assistant",
               "task-mode",
-              "app-api",
-              "internal-agent",
-              "worker"
+              "app-api"
             ]
           },
           "outcome": {
@@ -57057,9 +57045,7 @@
             "enum": [
               "assistant",
               "task-mode",
-              "app-api",
-              "internal-agent",
-              "worker"
+              "app-api"
             ]
           },
           "requestDigest": {
@@ -112540,5 +112526,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:1550d8038fcf5c423921b7226a115911101a3d12487ff7b345e7008f49edae4a"
+  "x-openkit-source-digest": "sha256:3487cf7650a56179d39229901504bbc20e847eef1f71407676913034d940649b"
 }

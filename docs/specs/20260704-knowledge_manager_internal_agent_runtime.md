@@ -136,7 +136,7 @@ Restart/provider failure never resumes a virtual editing session. A new Turn rec
 
 ### Callers
 
-The operation caller vocabulary is `assistant`, `task-mode`, `app-api`, `internal-agent` and `worker`. Native internal-role calls bind `internal-agent` and the role identity from trusted invocation context. The `worker` caller is bound by the authenticated Task capability context and admits only `knowledge_ask` and `knowledge_tell`. `caller` identifies the owning invocation path and is assigned by that service or route; it is not a request actor, authorization claim, or client-selectable value. External App API payloads MUST NOT accept a caller override, and authentication plus audit records retain the separately authenticated actor.
+Entry paths use `assistant`, `task-mode`, `app-api`, `internal-agent` and `worker`. Existing semantic operation results and S61 traces retain `assistant | task-mode | app-api`; trusted KM queries map internal roles to `assistant` and Workers to `task-mode` there. The separate KM Turn retains the actual role, model and usage. Native internal-role calls bind `internal-agent` and the role identity from trusted invocation context. The `worker` caller is bound by the authenticated Task capability context and admits only `knowledge_ask` and `knowledge_tell`. `caller` identifies the owning invocation path and is assigned by that service or route; it is not a request actor, authorization claim, or client-selectable value. External App API payloads MUST NOT accept a caller override, and authentication plus audit records retain the separately authenticated actor.
 
 | Operation | Allowed semantic callers |
 | --- | --- |
