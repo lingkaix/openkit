@@ -68,8 +68,8 @@ export interface KnowledgeManagerAgentRun {
   readonly readEvidence: (items: readonly Item[]) => string;
   /** The existing loop validates this result Tool schema before role output admission. */
   readonly resultSchema: JsonSchema;
-  /** Role output admission occurs before the Turn can claim successful completion. */
-  readonly validateResult: (text: string) => void;
+  /** Returns safe repair guidance for a missing prerequisite; throws for other admission failures. */
+  readonly validateResult: (text: string) => undefined | string;
 }
 
 /** Pins finite role admission before a daily trigger returns; this performs no Provider effect. */
@@ -181,12 +181,30 @@ async function executeKnowledgeManagerAgent(
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(limits.deadlineMs)]);
     let resultText: string | undefined;
     let usedToolCalls = 0;
+    let repairUsed = false;
+    let notebookSubmissionAttempted = false;
     const tools: AgentTool[] = [
       ...input.tools.map((tool) => ({
         ...tool,
         execute: async (value: unknown, context: Parameters<AgentTool['execute']>[1]) => {
           if (resultText !== undefined) throw new Error('Knowledge result is already submitted.');
           usedToolCalls += 1;
+          // Repair can read evidence or supply a missing submission, but cannot repeat an edit effect.
+          if (
+            repairUsed &&
+            (tool.name === 'knowledge.notebook-workspace.update' ||
+              (tool.name === 'knowledge.notebook.update' && notebookSubmissionAttempted))
+          )
+            return {
+              isError: true,
+              content: [
+                {
+                  type: 'text',
+                  text: 'Repair cannot repeat notebook effects. Start a new request.',
+                },
+              ],
+            };
+          if (tool.name === 'knowledge.notebook.update') notebookSubmissionAttempted = true;
           return tool.execute(value, context);
         },
       })),
@@ -201,7 +219,8 @@ async function executeKnowledgeManagerAgent(
           if (resultText !== undefined) throw new Error('Knowledge result is already submitted.');
           usedToolCalls += 1;
           const text = JSON.stringify(value);
-          input.validateResult(text);
+          const guidance = input.validateResult(text);
+          if (guidance) return { isError: true, content: [{ type: 'text', text: guidance }] };
           resultText = text;
           return { content: [{ type: 'text', text: 'Result accepted.' }] };
         },
@@ -262,10 +281,8 @@ async function executeKnowledgeManagerAgent(
           commitMessages,
           callProvider: ordinary,
         });
-        // A final text response or rejected result call gets one repair response, within the same
-        // captured Provider, compaction call budget and absolute deadline. Notebook effects are not retried.
-        let repairUsed = false;
-        let repairResponseReceived = false;
+        // One repair turn may read missing evidence or submit an unsubmitted candidate. It shares
+        // the captured Provider, compaction call budget and absolute deadline; effects are not repeated.
         let resultRequested = false;
         const callIds = new Set<string>();
         const resultProvider: InternalAgentProviderCall = async (request) => {
@@ -274,13 +291,14 @@ async function executeKnowledgeManagerAgent(
           // The result Tool is terminal. End the loop without another Provider effect.
           if (resultText !== undefined)
             return { message: { role: 'assistant', content: [], truncated: false } };
-          if (repairResponseReceived) throw new Error('Knowledge result repair failed.');
-          if (resultRequested) repairUsed = true;
+          if (resultRequested) {
+            if (repairUsed) throw new Error('Knowledge result repair failed.');
+            repairUsed = true;
+          }
           const response = await provider(request);
-          if (repairUsed) repairResponseReceived = true;
           for (const part of response.message.content) {
             if (part.type !== 'toolCall') continue;
-            if (callIds.has(part.callId) || (repairUsed && part.name !== 'knowledge.result'))
+            if (callIds.has(part.callId))
               throw new Error('Knowledge result repair has invalid Tool calls.');
             callIds.add(part.callId);
           }
@@ -317,14 +335,13 @@ async function executeKnowledgeManagerAgent(
                   content: [
                     {
                       type: 'text',
-                      text: 'The run has no accepted result. Call knowledge.result with its required fields now. Plain text is not a result. Do not repeat notebook effects.',
+                      text: 'The run has no accepted result. Complete missing evidence reads or the unsubmitted native notebook outcome, then call knowledge.result with its required fields. Plain text is not a result. Do not repeat notebook effects.',
                     },
                   ],
                 },
               ],
               limits: {
                 ...limits,
-                maxModelTurns: 1,
                 maxToolCalls: limits.maxToolCalls - usedToolCalls,
               },
             },
