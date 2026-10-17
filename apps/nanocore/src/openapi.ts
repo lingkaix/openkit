@@ -4,7 +4,6 @@ import {
   AcceptWorkspaceInvitationRequestSchema,
   AppUpdateStatusResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
-  CONVERSATION_FILE_MEDIA_TYPE,
   CreateWorkspaceInvitationRequestSchema,
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
@@ -19,6 +18,7 @@ import {
   ListWorkspaceInvitationsResponseSchema,
   ListWorkspaceMembersResponseSchema,
   OPERATION_DEFINITIONS,
+  type OperationProjectionFacts,
   operationHttpPath,
   operationModelInput,
   operationUsesBootstrapSecret,
@@ -132,6 +132,7 @@ function appJsonOperation<const OperationId extends string>(input: {
   responseSchema: string;
   responseDescription?: string;
   requestSchema?: string;
+  binaryRequestBody?: OperationProjectionFacts['binaryRequestBody'];
   parameters?: JsonValue[];
   security?: JsonValue[];
 }) {
@@ -149,14 +150,13 @@ function appJsonOperation<const OperationId extends string>(input: {
               [JSON_CONTENT_TYPE]: {
                 schema: { $ref: `#/components/schemas/${input.requestSchema}` },
               },
-              ...(input.operationId === 'conversation.submit'
+              ...(input.binaryRequestBody
                 ? {
-                    [CONVERSATION_FILE_MEDIA_TYPE]: {
+                    [input.binaryRequestBody.mediaType]: {
                       schema: {
                         type: 'string',
                         format: 'binary',
-                        description:
-                          'Four-byte unsigned big-endian UTF-8 JSON length (1 through 1,048,576), that many strict conversation.submit input bytes, then one exact payload per ordered fileInputs entry. No extra bytes. Combined payload limit: 1,000,000,000 bytes. JSON-only nonempty inventory reconciles an existing receipt; a new command returns file_input_bytes_required before effects.',
+                        description: input.binaryRequestBody.description,
                       },
                     },
                   }
@@ -355,6 +355,9 @@ function operationPaths() {
                 ? { security: DEPLOYMENT_ADMIN_SECURITY }
                 : {}),
             requestSchema: `${id}.input`,
+            ...('binaryRequestBody' in definition
+              ? { binaryRequestBody: definition.binaryRequestBody }
+              : {}),
             responseSchema: `${id}.output`,
             responseStatus:
               'successStatus' in definition ? (`${definition.successStatus}` as const) : '200',
