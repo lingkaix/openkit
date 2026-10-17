@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 288;
+const EXPECTED_CATALOG_SIZE = 294;
 const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 228;
+const EXPECTED_INCLUDED_SIZE = 234;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -86,6 +86,12 @@ const WEB_OPERATION_GROUPS = {
     'artifact.version-read': { disposition: 'live', surface: 'Artifacts' },
     'artifact.version-commit': { disposition: 'live', surface: 'Artifacts' },
     'artifact.version-file-commit': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-create': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-list': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-read': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-select': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.judgement-add': { disposition: 'live', surface: 'Artifacts' },
+    'material.range-correct': { disposition: 'live', surface: 'Material' },
     'artifact.download': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },

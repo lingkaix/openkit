@@ -34,9 +34,11 @@ The primary owns owner text, integration and held paths after release. A separat
 
 ## Current Checkpoint
 
-Root merged main `624cf26895f18a1eca8b80278b88c5536bac0c7f` normally as `0145f856d8c528688892db0679f3656188b50e7d`. The two builders began from that head. Owner text and the Harness link are being written before integration. S16 and P18-held reader, portable storage and Context paths remain untouched. The external lane checkpoint records exact helper state, source heads and observed checks.
+Landing 1 remains separate on `lane/web` at `ba0ab2e3`, after normal main `6df9b925` integration. Version records, stream/API/client seams and history/publication UI are implemented with focused regressions. Held P18 loader, Workspace portability, Context, owner and generated paths remain unchanged. The external checkpoint records the exact sequencing request and observed main status. No final gate or acceptance is claimed.
 
-Next action: complete the small owner text and the external S16 amendment draft, then integrate the two independent version seams. Expected observation: retained historical bytes, current-head projection and Web exact-version reads agree. Missing history must produce a clear error, with no pre-stable data conversion or synthetic lineage. No final gate or acceptance is claimed yet.
+Landing 2 is prepared independently on `lane/web-evaluation-records`. It contains normal candidate backend and comparison UI merges. The existing Review and Material revision owners gain annotation columns through an ordinary migration. Shared judgement operations use current Workspace command transactions and dispatch to those owners. Two reused builders own bounded Artifact persistence and review UI work in private branches; the primary owns Material correction, API integration and documentation. An independent Sol reviewer inspects committed source. Reports and exact test output remain in the external lane checkpoint.
+
+Next action: complete target-owned judgements and exact range correction, then merge matching P18 main landings before held integration. Preserve both coherent landings and qualify each exact committed head with its complete affected-module suites and Web e2e. Missing history or unavailable source remains a clear error, with no conversion, reconstruction or synthetic lineage.
 
 ## Effect Boundary
 
