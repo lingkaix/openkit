@@ -95,6 +95,8 @@ The default state filter admits only active pages. Explicit `states` selection o
 
 The Notebook UI provides page editing, state selection, source links, revision history, changed-file list and text diff with responsible human/Agent attribution. History defaults to the selected notebook and current permissions. It never exposes raw repository paths, Git configuration, unpublished candidates belonging to an unauthorized audience or data denied by current source restrictions. `index.md` and `log.md` may be edited with other pages, but the user-visible change history comes from Git and does not rely on an Agent's prose log.
 
+Required Proposal review reads the saved candidate through the existing Proposal owner, with current Source disclosure checks on both sides. Its preview binds the Proposal digest, base and candidate commits. A bounded preview names remaining text ranges; an excerpt cannot stand in for the complete diff. The Web review requires inspection of every complete changed page before acceptance and submits the displayed identity tuple. Rejection and deferral do not require acceptance. Unpublished candidates remain outside generic published history.
+
 Restore computes a candidate diff from selected historical paths into the current base and publishes it through the same validation and authority checks as any edit. It adds a new commit, never rewinds published history or undoes external effects. No generic cherry-pick/rebase/reset API is exposed. Missing historical bytes, revoked source access or now-invalid schema produces an explicit unavailable/conflict result, not a lossy restore.
 
 ## Administrator Masking (Not Implemented)

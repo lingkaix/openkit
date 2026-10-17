@@ -27,7 +27,6 @@ import {
   type CreateKnowledgeCommand,
   type DeleteKnowledgeCommand,
   type KnowledgeItem,
-  type KnowledgeProposalDecision,
   type KnowledgeProposalDecisionInput,
   type KnowledgeStoreProjection,
   knowledgeActionErrorMessage,
@@ -67,6 +66,7 @@ import {
   workspaceKeys,
 } from './data';
 import { NotebookHistoryPanel } from './NotebookHistoryPanel';
+import { KnowledgeProposalRow } from './KnowledgeProposalRow';
 
 const KIND_LABEL: Record<KnowledgeItem['kind'], string> = {
   preference: 'Preferences',
@@ -134,23 +134,6 @@ const OBSERVATION_KIND_ITEMS = Object.entries(OBSERVATION_KIND_LABEL).map(([id, 
   id,
   label,
 }));
-
-/** Map one exact supported POST action to the Knowledge decision contract. */
-function proposalDecisionForAction(
-  action: AttentionRow['actions'][number]
-): KnowledgeProposalDecision | null {
-  if (action.method !== 'POST') return null;
-  switch (action.kind) {
-    case 'accept_knowledge':
-      return 'accepted';
-    case 'reject_knowledge':
-      return 'rejected';
-    case 'defer':
-      return 'deferred';
-    default:
-      return null;
-  }
-}
 
 function isSourceKind(value: string): value is keyof typeof SOURCE_KIND_LABEL {
   return Object.hasOwn(SOURCE_KIND_LABEL, value);
@@ -805,7 +788,7 @@ export function KnowledgeScreen() {
               <fieldset disabled={proposalWriteBlocked} className="contents">
                 <ErrorBanner
                   message="Couldn't submit that proposal decision."
-                  onRetry={() => submitProposalDecision(failedProposalDecision)}
+                  onRetry={failedProposalDecision.decision === 'accepted' ? undefined : () => submitProposalDecision(failedProposalDecision)}
                 />
               </fieldset>
             ) : null}
@@ -814,33 +797,12 @@ export function KnowledgeScreen() {
                 const source = row.source;
                 if (source.type !== 'knowledge') return null;
                 return (
-                  <ListRow key={row.id}>
-                    <div className="min-w-0 flex-1 py-1">
-                      <p className="text-sm font-bold text-fg-strong">{row.title}</p>
-                      <p className="mt-0.5 text-xs text-fg-muted">{row.summary}</p>
-                    </div>
-                    <div className="flex shrink-0 items-start gap-2">
-                      {row.actions.map((action) => {
-                        const decision = proposalDecisionForAction(action);
-                        if (!decision) return null;
-                        return (
-                          <div key={action.kind} className="flex flex-col items-start gap-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              isDisabled={proposalWriteBlocked || action.disabled === true}
-                              onPress={() => submitProposalDecision({ source, decision })}
-                            >
-                              {action.label}
-                            </Button>
-                            {action.reason ? (
-                              <p className="max-w-64 text-xs text-fg-muted">{action.reason}</p>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </ListRow>
+                  <KnowledgeProposalRow
+                    key={`${source.workspaceId}/${source.knowledgeProposalId}/${source.proposalDigest}/${source.candidateRevision}`}
+                    row={row}
+                    blocked={proposalWriteBlocked}
+                    onDecide={submitProposalDecision}
+                  />
                 );
               })}
             </Card>
