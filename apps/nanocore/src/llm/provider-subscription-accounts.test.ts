@@ -5116,6 +5116,7 @@ describe('inference route same-credential rejection', () => {
 });
 
 describe('subscription refresh inference ownership', () => {
+  // Real credential storage and inference closeout need a local runner budget; provider deadlines stay unchanged.
   it.each([
     'openai-codex',
     'xai',
@@ -5173,7 +5174,7 @@ describe('subscription refresh inference ownership', () => {
     } finally {
       db.sqlite.close();
     }
-  });
+  }, 60_000);
 
   for (const subscriptionProviderId of ['openai-codex', 'xai'] as const)
     it.each([
