@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { CandidateSetRecordSchema } from '@openkit/app-api-schemas';
+import { CandidateSetRecordSchema, JudgementRecordSchema } from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './_lib/servers.js';
@@ -59,6 +59,25 @@ test('compares two retained versions and sends the selected older candidate expl
     await history.getByRole('button', { name: 'Add exact version to comparison' }).click();
     await history.getByRole('button', { name: 'View version 1', exact: true }).click();
     await expect(history.getByText(contentDigest, { exact: true })).toBeVisible();
+    const assessment = history.getByRole('region', { name: 'Artifact version assessments' });
+    await assessment.getByRole('button', { name: 'Assess exact version' }).click();
+    await assessment.getByRole('textbox', { name: 'Assessment note' }).fill('Keep this original.');
+    const assessing = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/app/operations/evaluation.judgement-add'
+    );
+    await assessment.getByRole('button', { name: 'Record accept assessment' }).click();
+    const assessed = await assessing;
+    expect(assessed.status()).toBe(201);
+    const judgement = JudgementRecordSchema.parse((await assessed.json()).judgement);
+    expect(judgement.target).toEqual({
+      kind: 'artifact-version',
+      artifactId: imported.artifactId,
+      artifactVersion: 1,
+      contentDigest,
+    });
+    expect(judgement.actor.kind).toBe('user');
+    await expect(assessment.getByText('Keep this original.', { exact: true })).toBeVisible();
     await history.getByRole('button', { name: 'Add exact version to comparison' }).click();
     const comparison = page.getByRole('region', { name: 'Artifact comparisons' });
     const creating = page.waitForResponse(
@@ -82,8 +101,8 @@ test('compares two retained versions and sends the selected older candidate expl
     const chosen = await choosing;
     expect(chosen.status()).toBe(200);
     const record = CandidateSetRecordSchema.parse(await chosen.json());
-    const judgement = record.judgements.filter((entry) => entry.kind === 'select').at(-1);
-    expect(judgement?.choice).toEqual({
+    const selection = record.judgements.filter((entry) => entry.kind === 'select').at(-1);
+    expect(selection?.choice).toEqual({
       artifactId: imported.artifactId,
       artifactVersion: 1,
       contentDigest,
