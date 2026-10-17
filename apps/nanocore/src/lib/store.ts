@@ -224,6 +224,18 @@ const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export type CommandRequestName =
   | 'knowledge.tell'
   | 'knowledge.maintain'
+  | 'administration.server-mcp-create'
+  | 'administration.server-mcp-stage-version'
+  | 'administration.server-mcp-select-version'
+  | 'administration.server-mcp-update-binding'
+  | 'administration.server-mcp-remove'
+  | 'vault.server-mcp-secret-create'
+  | 'vault.server-mcp-secret-rotate'
+  | 'vault.server-mcp-secret-revoke'
+  | 'vault.server-mcp-grant-create'
+  | 'vault.server-mcp-grant-revoke'
+  | 'vault.server-mcp-grant-narrow'
+  | 'catalog.shared-mcp-set-disabled'
   | 'catalog.skill-import'
   | 'catalog.skill-select'
   | 'catalog.skill-pin'
@@ -326,6 +338,9 @@ export type CommandRequestName =
  * Resource kind returned by an idempotent command.
  */
 export type CommandRequestResponseKind =
+  | 'catalog_mcp'
+  | 'vault_reference'
+  | 'vault_grant'
   | 'light_app_definition'
   | 'light_app_catalog'
   | 'skill_version'

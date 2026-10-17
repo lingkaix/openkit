@@ -95,7 +95,6 @@ describe('nanocore e2e server auth', () => {
       {
         workspaceId: workspace.id,
         inviteeEmail: 'sharing-editor@example.com',
-        proposedAccessLevel: 'editor',
         requestId: '10000000-0000-4000-8000-000000000002',
       },
       ownerCookie

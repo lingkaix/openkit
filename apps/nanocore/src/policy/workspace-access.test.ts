@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  evaluateWorkspaceRoleAccess,
+  evaluateWorkspaceMemberAccess,
   PRODUCT_OPERATION_ACCESS_RIGHTS,
 } from './workspace-access.js';
 
@@ -36,87 +36,40 @@ const EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'workspace.write': 'ar:workspace-write',
 } as const;
 
-const ROLE_MATRIX = [
-  ['workspace.read', ['owner', 'editor', 'viewer']],
-  ['workspace.write', ['owner', 'editor']],
-  ['thread.read', ['owner', 'editor', 'viewer']],
-  ['turn.run', ['owner', 'editor']],
-  ['artifact.read', ['owner', 'editor', 'viewer']],
-  ['artifact.write', ['owner', 'editor']],
-  ['review.apply', ['owner', 'editor']],
-  ['approval.respond', ['owner', 'editor']],
-  ['knowledge.read', ['owner', 'editor', 'viewer']],
-  ['knowledge.write', ['owner', 'editor']],
-  ['knowledge.propose', ['owner', 'editor']],
-  ['audit.read', ['owner', 'editor']],
-  ['workspace.configure', ['owner']],
-  ['workspace.export', ['owner']],
-  ['workspace.leave', ['editor', 'viewer']],
-  ['workspace.lifecycle', ['owner']],
-  ['membership.manage', ['owner']],
-  ['vault.use', ['owner', 'editor']],
-  ['vault.admin', ['owner']],
-  ['tool.use', ['owner', 'editor']],
-  ['tool.grant', ['owner']],
-  ['runtime.launch', ['owner', 'editor']],
-  ['network.egress', ['owner', 'editor']],
-  ['llm.gateway.use', ['owner', 'editor']],
-] as const;
-
-describe('Workspace fixed-role policy adapter', () => {
-  it('cannot grant Server maintenance through any Workspace role', () => {
-    for (const role of ['owner', 'editor', 'viewer'] as const) {
-      expect(
-        evaluateWorkspaceRoleAccess({ role, operation: 'administration.configuration.apply' })
-          .effect
-      ).toBe('deny');
-    }
-  });
+describe('Workspace active-member policy adapter', () => {
   it('exports the exact closed product operation to access-right registry', () => {
     expect(PRODUCT_OPERATION_ACCESS_RIGHTS).toEqual(EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS);
   });
 
-  it('projects each fixed role ceiling through the policy kernel', () => {
-    const roles = ['owner', 'editor', 'viewer'] as const;
-
-    for (const [operation, allowedRoles] of ROLE_MATRIX) {
-      for (const role of roles) {
-        const decision = evaluateWorkspaceRoleAccess({ operation, role });
-        const allowed = allowedRoles.some((allowedRole) => allowedRole === role);
-
-        expect(decision.effect, `${role} ${operation}`).toBe(allowed ? 'allow' : 'deny');
-        expect(decision.trace.requiredAccessRights, `${role} ${operation}`).toEqual([
-          EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS[operation],
-        ]);
-        expect(decision.reasons[0]?.code, `${role} ${operation}`).toBe(
-          allowed ? 'association-grant' : 'missing-privilege'
-        );
-      }
+  it('grants full Workspace eligibility through one active-member association', () => {
+    for (const operation of Object.keys(EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS).filter(
+      (value) =>
+        ![
+          'api.call',
+          'deployment.recover',
+          'invitation.respond',
+          'administration.configuration.apply',
+        ].includes(value)
+    )) {
+      const decision = evaluateWorkspaceMemberAccess({ operation });
+      expect(decision.effect, operation).toBe('allow');
+      expect(decision.trace.requiredAccessRights).toEqual([
+        EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS[
+          operation as keyof typeof EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS
+        ],
+      ]);
+      expect(decision.trace.matchedAssociations).toEqual(['assoc:workspace-active-member']);
     }
   });
 
   it.each([
-    'owner',
-    'editor',
-    'viewer',
-  ] as const)('rejects the retired repo.push right for %s', (role) => {
-    expect(evaluateWorkspaceRoleAccess({ operation: 'repo.push', role })).toMatchObject({
-      effect: 'deny',
-      reasons: [{ code: 'missing-operation', operation: 'repo.push' }],
-      trace: { requiredAccessRights: [] },
-    });
-  });
-
-  it('fails closed through the policy kernel for an unregistered operation', () => {
-    const decision = evaluateWorkspaceRoleAccess({
-      operation: 'workspace.unregistered',
-      role: 'owner',
-    });
-
-    expect(decision).toMatchObject({
-      effect: 'deny',
-      reasons: [{ code: 'missing-operation', operation: 'workspace.unregistered' }],
-      trace: { requiredAccessRights: [] },
-    });
+    'api.call',
+    'deployment.recover',
+    'invitation.respond',
+    'administration.configuration.apply',
+    'repo.push',
+    'unknown.operation',
+  ])('does not grant non-Workspace or unknown operation %s', (operation) => {
+    expect(evaluateWorkspaceMemberAccess({ operation }).effect).toBe('deny');
   });
 });

@@ -22,6 +22,7 @@ import {
   type VaultReferenceRow,
   type VaultUseRow,
 } from './data';
+import { VaultGrantRequestsPanel } from './VaultGrantRequestsPanel';
 
 /**
  * Maps a Vault lifecycle value to the fixed status-chip vocabulary.
@@ -109,6 +110,7 @@ export function VaultScreen() {
         actions={disconnected ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
       />
 
+      <VaultGrantRequestsPanel key={workspaceId} workspaceId={workspaceId} />
       {vault.isError ? (
         <ErrorBanner message="Couldn't load Vault records." onRetry={() => void vault.refetch()} />
       ) : vault.data ? (

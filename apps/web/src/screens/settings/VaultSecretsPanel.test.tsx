@@ -1,4 +1,8 @@
-import type { CoreClient } from '@openkit/core-client';
+import {
+  CreateWorkspaceVaultGrantRequestSchema,
+  NarrowWorkspaceVaultGrantRequestSchema,
+} from '@openkit/app-api-schemas';
+import { type CoreClient, createCoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -244,4 +248,59 @@ describe('Vault secret administration', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
     expect(operations['vault.secret-create']).toHaveBeenCalledTimes(1);
   });
+});
+
+it.each([
+  ['create', 'Grant target Agent', 'targetAgentId'],
+  ['create', 'Grant target AgentSession', 'targetAgentSessionId'],
+  ['narrow', 'Grant target Agent', 'targetAgentId'],
+  ['narrow', 'Grant target AgentSession', 'targetAgentSessionId'],
+] as const)('rejects a pasted credential in %s %s before transport or mutation retention', async (action, label, field) => {
+  const { operations, cache } = setup();
+  const transport = vi.fn(async () => new Response('{}', { status: 500 }));
+  const realClient = createCoreClient({
+    baseUrl: 'https://vault-custody.invalid',
+    fetch: transport,
+  });
+  operations['vault.grant-create'].mockImplementation(realClient.operations['vault.grant-create']);
+  operations['vault.grant-narrow'].mockImplementation(realClient.operations['vault.grant-narrow']);
+  const constraints = { [field]: SECRET };
+  const parsed =
+    action === 'create'
+      ? CreateWorkspaceVaultGrantRequestSchema.safeParse({
+          referenceId: reference.referenceId,
+          ...constraints,
+        })
+      : NarrowWorkspaceVaultGrantRequestSchema.shape.constraints.safeParse(constraints);
+  expect(parsed.success).toBe(false);
+  if (!parsed.success)
+    expect(
+      parsed.error.issues.some(
+        (issue) => issue.message === 'Response contains a raw-secret-shaped string.'
+      )
+    ).toBe(true);
+  const input = await screen.findByLabelText(label);
+  await waitFor(() => expect(input).toBeEnabled());
+  await userEvent.type(screen.getByLabelText('Secret value'), SECRET);
+  await userEvent.type(input, SECRET);
+  await userEvent.click(
+    screen.getByRole('button', {
+      name:
+        action === 'create'
+          ? `Create gateway grant for ${reference.referenceId}`
+          : `Narrow grant ${grant.grantId}`,
+    })
+  );
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Grant restriction fields are invalid. Enter exact supported bounds only.'
+  );
+  expect(transport).not.toHaveBeenCalled();
+  expect(operations['vault.grant-create']).not.toHaveBeenCalled();
+  expect(operations['vault.grant-narrow']).not.toHaveBeenCalled();
+  expect(cache.getMutationCache().getAll()).toHaveLength(0);
+  expect(cacheBytes(cache)).not.toContain(SECRET);
+  expect(screen.getByLabelText('Grant target Agent')).toHaveValue('');
+  expect(screen.getByLabelText('Grant target AgentSession')).toHaveValue('');
+  expect(screen.getByLabelText('Secret value')).toHaveValue('');
+  expect(document.body.textContent).not.toContain(SECRET);
 });

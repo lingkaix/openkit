@@ -242,7 +242,6 @@ it('attributes a member edit to the actual caller while preserving the responsib
     scope: {
       kind: 'workspace',
       workspaceId: input.workspaceId,
-      effectiveRole: 'editor',
       policyOperation: 'workspace.configure',
     },
     resolvedLineage: {

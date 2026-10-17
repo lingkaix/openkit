@@ -306,7 +306,7 @@ function makeClient(
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
-            effectiveRole: 'owner',
+            isOwner: true,
             membershipRevision: 1,
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
@@ -320,7 +320,7 @@ function makeClient(
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
-                effectiveRole: 'owner',
+                isOwner: true,
                 membershipRevision: 1,
                 ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
@@ -381,7 +381,7 @@ describe('Administration', () => {
             workspace.id === foreignQuickChat.id
               ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
               : 'usr_00000000-0000-7000-8000-000000000001',
-          effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
+          isOwner: workspace.id !== foreignQuickChat.id,
           registryRevision: 1,
           membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
         })),
@@ -419,7 +419,7 @@ describe('Administration', () => {
           workspace.id === foreignQuickChat.id
             ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
             : 'usr_00000000-0000-7000-8000-000000000001',
-        effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
+        isOwner: workspace.id !== foreignQuickChat.id,
         registryRevision: 1,
         membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
       })),

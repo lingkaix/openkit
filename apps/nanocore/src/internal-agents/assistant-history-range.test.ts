@@ -67,8 +67,8 @@ function fixture(
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId });
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
-    (workspace_id, user_id, status, access_level, joined_at, revision, created_at, updated_at)
-    VALUES (?, ?, 'active', 'editor', ?, 1, ?, ?)`)
+    (workspace_id, user_id, status, joined_at, revision, created_at, updated_at)
+    VALUES (?, ?, 'active', ?, 1, ?, ?)`)
     .run(workspace.id, LOCAL_USER_ID, timestamp, timestamp, timestamp);
   const audience = { visibility: 'private' as const, privateOwnerUserId: LOCAL_USER_ID };
   const source = store.createThread(

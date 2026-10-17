@@ -1,5 +1,15 @@
 # Resource Catalog
 
+`resource-catalog.ts` is the single reader, immutable-content owner and compare-and-set publisher for scope-owned Skill, MCP and plugin catalogs. Server and Workspace use the same document layout and writer. Skill and plugin import remain Workspace operations in this feature; their retained arrays are preserved in both document scopes.
+
+Trusted `ResourceCatalogOwner` arguments select Server or exact Workspace storage. `loadResourceCatalog` validates that scope agrees with its path and returns known fields. Catalog mutation reads preserve retained descriptive additions; public projections select known fields. Both scopes require an explicit matching `scope`; missing or unknown values fail schema validation. The reader and writer do not convert missing scope. Before `v0.1.0`, a release may require an authorized reset under [Pre-Stable Data Continuity](../../../../docs/decisions/20261014-pre_stable_data_continuity.md). Catalog path lookup never creates or revives a Workspace. Reads preserve bytes; immutable tree/configuration identity and Workspace effective MCP identity stay unchanged.
+
+MCP create, stage, select and binding mutations take an explicit owner. Server administration remains in `../administration/server-mcp-operations.ts`; this module owns no user authorization or Vault effects. Server management never creates mutable Server process-data directories. Bindings retain their stable data key; the Gateway materializes shared mutable data inside each consuming Workspace.
+
+`composeWorkspaceMcpCatalog` projects current Server supply without copying it into a Workspace. Any local entry, including inactive/removed entries, suppresses a same-id shared entry. Exact `mcp.disabledServerIds` belongs to the consuming Workspace. Only canonical shared projections add Server origin to effective digest identity. Callers must still recheck current selection, grant and audience at effect boundaries.
+
+Run the focused catalog and shared flow tests with `pnpm --filter @openkit/nanocore exec vitest run src/catalog/resource-catalog.test.ts src/catalog/server-scope.test.ts src/server-shared-mcp.test.ts --maxWorkers=1`. Follow the parent [NanoCore guide](../../README.md) for checks and toolchain rules.
+
 This directory owns the existing scoped catalog records and immutable installed Skill, MCP and Agent Plugin snapshots. It does not own Worker execution, permissions, Vault secrets or a learning runner.
 
 ## Boundaries

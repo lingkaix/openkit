@@ -178,8 +178,8 @@ describe('serialized recurring scanner', () => {
         .run(testEntityId('usr', 'user_replacement'), Date.parse(timestamp), Date.parse(timestamp));
       db.sqlite
         .prepare(`INSERT INTO workspace_members
-        (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-        VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+        (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+        VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
         .run(
           workspace.id,
           testEntityId('usr', 'user_replacement'),
