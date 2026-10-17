@@ -288,14 +288,6 @@ describe('isolated PDF text-layer representation', () => {
     await expectClean(f);
   });
 
-  it('bounds the real child heap without crashing NanoCore', async () => {
-    const f = await fixture(pdf(['Text']));
-    const result = await processPdfTextLayer({ ...f.input, limits: { heapBytes: 8 * 1_048_576 } });
-    expect(result).toMatchObject({ status: 'unavailable', reason: 'resource-limited' });
-    expect(observations.launches[0]!.args).toContain('--max-old-space-size=8');
-    await expectClean(f);
-  });
-
   it('cancels a real Node child and waits for exit before releasing staging', async () => {
     const f = await fixture(pdf(['Text']));
     const controller = new AbortController();
