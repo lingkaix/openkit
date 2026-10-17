@@ -471,11 +471,12 @@ fn epoch_inventory_reports_missing_os_proof_without_invented_identity() {
 fn exec_member(fixture: &LocalInventory) -> (Child, ChildStdin) {
     let image = fixture.root.join("private-member-0");
     std::fs::copy("/bin/sh", &image).unwrap();
-    let mut child = Command::new(image)
+    let child = Command::new(&image)
         .args(["-c", "read result; exec /bin/sleep 60"])
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
+    let mut child = wait_for_member_image(child, &image);
     let input = child.stdin.take().unwrap();
     (child, input)
 }
