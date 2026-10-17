@@ -15,7 +15,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
-import { useArtifact, useArtifacts } from '../artifacts/data';
+import { useArtifacts, useArtifactVersion } from '../artifacts/data';
 import {
   chatKeys,
   type ThreadItem,
@@ -142,19 +142,27 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const workspaceArtifacts = useArtifacts(workspaceId);
   const send = useSendTurn();
   const submission = useConversationSubmission(workspaceId, threadId);
-  // A Review handoff seeds only an unsent exact input; the existing submission stays immutable.
+  // An exact candidate handoff seeds only an unsent input; the existing submission stays immutable.
   const candidateInput = location.state?.candidateInput;
   const hasCandidateInput = candidateInput !== undefined;
   const candidateContextMatches =
     hasCandidateInput &&
     candidateInput?.workspaceId === workspaceId &&
     candidateInput?.threadId === threadId &&
-    typeof candidateInput?.artifactId === 'string';
+    typeof candidateInput?.artifactId === 'string' &&
+    Number.isSafeInteger(candidateInput?.artifactVersion) &&
+    candidateInput.artifactVersion > 0 &&
+    typeof candidateInput?.contentDigest === 'string' &&
+    /^sha256:[a-f0-9]{64}$/.test(candidateInput.contentDigest);
   const unfinishedSubmission = submission?.status === 'pending' || submission?.status === 'error';
-  const candidate = useArtifact(
-    workspaceId,
-    candidateContextMatches && !unfinishedSubmission ? candidateInput.artifactId : ''
+  const exactCandidate = useArtifactVersion(
+    workspaceId ?? '',
+    candidateContextMatches ? candidateInput.artifactId : '',
+    candidateContextMatches ? candidateInput.artifactVersion : 1,
+    candidateContextMatches && !unfinishedSubmission
   );
+  // The existing draft and chip consumers read the Artifact projection from this exact response.
+  const candidate = { ...exactCandidate, data: exactCandidate.data?.artifact };
   const candidateLoading =
     hasCandidateInput && !unfinishedSubmission && candidateContextMatches && candidate.isPending;
   const candidateUnavailable =

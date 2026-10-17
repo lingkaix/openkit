@@ -7037,6 +7037,19 @@ describe('exact Review candidate draft handoff', () => {
     title: 'Reviewed candidate',
   };
 
+  /** Exact read fixture mirrors only the fields used by candidate-input admission. */
+  function exactArtifact(value: typeof artifact) {
+    return {
+      artifact: value,
+      version: {
+        workspaceId: value.workspaceId,
+        artifactId: value.id,
+        artifactVersion: value.version,
+        contentDigest: value.contentDigest,
+      },
+    };
+  }
+
   it('pins a retained earlier candidate after a newer head exists and waits for explicit Send', async () => {
     const user = userEvent.setup();
     const earlier = { ...candidate, artifactVersion: 1 };
@@ -7061,7 +7074,7 @@ describe('exact Review candidate draft handoff', () => {
       undefined,
       { candidateInput: earlier }
     );
-    await screen.findByRole('button', { name: `Remove ${candidate.artifactId}` });
+    await screen.findByRole('button', { name: 'Remove Reviewed candidate' });
     expect(readExact).toHaveBeenCalledWith({
       workspaceId: earlier.workspaceId,
       artifactId: earlier.artifactId,
@@ -7081,12 +7094,12 @@ describe('exact Review candidate draft handoff', () => {
 
   it('adds only the chosen exact candidate to an explicit next Send and retains uncertain retry', async () => {
     const user = userEvent.setup();
-    const read = vi.fn().mockResolvedValue(artifact);
+    const read = vi.fn().mockResolvedValue(exactArtifact(artifact));
     const submit = vi.fn().mockRejectedValue(new Error('Response unavailable'));
     renderApp(
       path,
       makeClient({
-        'artifact.read': read,
+        'artifact.version-read': read,
         'artifact.list': vi.fn().mockResolvedValue({ items: [artifact] }),
         'conversation.submit': submit,
       }),
@@ -7097,6 +7110,7 @@ describe('exact Review candidate draft handoff', () => {
     expect(read).toHaveBeenCalledWith({
       workspaceId: candidate.workspaceId,
       artifactId: candidate.artifactId,
+      artifactVersion: candidate.artifactVersion,
     });
     expect(submit).not.toHaveBeenCalled();
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Use this candidate.');
@@ -7120,13 +7134,13 @@ describe('exact Review candidate draft handoff', () => {
     const user = userEvent.setup();
     const read = vi
       .fn()
-      .mockResolvedValueOnce(artifact)
-      .mockResolvedValue({ ...artifact, version: 3 });
+      .mockResolvedValueOnce(exactArtifact(artifact))
+      .mockResolvedValue(exactArtifact({ ...artifact, version: 3 }));
     const submit = vi.fn();
     const cache = renderApp(
       path,
       makeClient({
-        'artifact.read': read,
+        'artifact.version-read': read,
         'artifact.list': vi.fn().mockResolvedValue({ items: [artifact] }),
         'conversation.submit': submit,
       }),
@@ -7164,7 +7178,12 @@ describe('exact Review candidate draft handoff', () => {
     await user.type(input, 'Keep my next instruction.');
     await act(async () => {
       await cache.invalidateQueries({
-        queryKey: ['artifact', candidate.workspaceId, candidate.artifactId],
+        queryKey: [
+          'artifact-version',
+          candidate.workspaceId,
+          candidate.artifactId,
+          candidate.artifactVersion,
+        ],
         exact: true,
       });
     });
@@ -7227,7 +7246,9 @@ describe('exact Review candidate draft handoff', () => {
     renderApp(
       path,
       makeClient({
-        'artifact.read': vi.fn().mockResolvedValue({ ...artifact, version: 3 }),
+        'artifact.version-read': vi
+          .fn()
+          .mockResolvedValue(exactArtifact({ ...artifact, version: 3 })),
         'artifact.list': vi.fn().mockResolvedValue({ items: [{ ...artifact, version: 3 }] }),
         'conversation.submit': submit,
       }),

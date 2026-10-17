@@ -1,5 +1,6 @@
+import type { JudgementRecord } from '@openkit/app-api-schemas';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -82,7 +83,12 @@ afterEach(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   list.mockResolvedValue({ items: [] });
-  create.mockResolvedValue(set);
+  create.mockImplementation((input) => {
+    const result = { ...set, candidateSetId: input.requestId };
+    list.mockResolvedValue({ items: [result] });
+    read.mockResolvedValue(result);
+    return Promise.resolve(result);
+  });
   read.mockResolvedValue(set);
   versionRead.mockImplementation(({ artifactVersion }: { artifactVersion: number }) =>
     Promise.resolve(version(artifactVersion === 1 ? first : second))
@@ -90,24 +96,21 @@ beforeEach(() => {
   threads.mockResolvedValue({
     items: [{ id: threadId, name: 'Continue report', status: 'active' }],
   });
+  const judgements: JudgementRecord[] = [];
   select.mockImplementation((input) => {
-    const result = {
-      ...set,
-      judgements: [
-        {
-          formatVersion: 1,
-          workspaceId,
-          requestId: input.requestId,
-          kind: 'select',
-          target: { kind: 'candidate-set', candidateSetId: set.candidateSetId },
-          choice: input.choice,
-          actor,
-          recordedAt,
-          note: input.note ?? null,
-          extensions: {},
-        },
-      ],
-    };
+    judgements.push({
+      formatVersion: 1,
+      workspaceId,
+      requestId: input.requestId,
+      kind: 'select',
+      target: { kind: 'candidate-set', candidateSetId: input.candidateSetId },
+      choice: input.choice,
+      actor,
+      recordedAt,
+      note: input.note ?? null,
+      extensions: {},
+    });
+    const result = { ...set, candidateSetId: input.candidateSetId, judgements: [...judgements] };
     list.mockResolvedValue({ items: [result] });
     read.mockResolvedValue(result);
     return Promise.resolve(result);
@@ -123,6 +126,7 @@ function DraftHandoff() {
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
+  const onClearDraft = vi.fn();
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={['/artifacts']}>
@@ -135,7 +139,7 @@ function mount() {
                 draftCandidates={[first, second]}
                 disabled={false}
                 onRemoveCandidate={vi.fn()}
-                onClearDraft={vi.fn()}
+                onClearDraft={onClearDraft}
                 onDraftLockedChange={vi.fn()}
               />
             }
@@ -145,10 +149,78 @@ function mount() {
       </MemoryRouter>
     </QueryClientProvider>
   );
-  return client;
+  return { client, onClearDraft };
 }
 
 describe('exact Artifact candidate comparison', () => {
+  it('keeps an unknown choice frozen through current refresh and retries its exact request', async () => {
+    list.mockResolvedValue({ items: [set] });
+    select.mockRejectedValue(new Error('private transport failure'));
+    mount();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole('button', { name: `Open comparison ${set.candidateSetId}` })
+    );
+    await screen.findByText('# First exact original');
+    await user.click(screen.getByRole('button', { name: /Candidate choice/ }));
+    await user.click(await screen.findByRole('option', { name: /Report · version 1/ }));
+    await user.type(screen.getByRole('textbox', { name: 'Choice note' }), 'Frozen choice.');
+    await user.click(screen.getByRole('button', { name: 'Record choice' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The result is unknown.');
+    await user.click(screen.getByRole('button', { name: 'Refresh comparisons' }));
+    expect(screen.getByRole('textbox', { name: 'Choice note' })).toHaveValue('Frozen choice.');
+    expect(screen.getByRole('button', { name: 'Record choice' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Edit refused request' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry same choice request' }));
+    await waitFor(() => expect(select).toHaveBeenCalledTimes(2));
+    expect(select.mock.calls[1]).toEqual(select.mock.calls[0]);
+    expect(screen.queryByText('private transport failure')).not.toBeInTheDocument();
+  });
+
+  it('hides protected originals and choices when the current comparison read fails', async () => {
+    list.mockResolvedValue({ items: [set] });
+    const { client } = mount();
+    await userEvent.click(
+      await screen.findByRole('button', { name: `Open comparison ${set.candidateSetId}` })
+    );
+    expect(await screen.findByText('# First exact original')).toBeInTheDocument();
+    read.mockRejectedValue(new Error('private membership failure'));
+    await act(async () => {
+      await client.invalidateQueries({
+        queryKey: ['candidate-set', workspaceId, set.candidateSetId],
+      });
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't read that comparison.");
+    expect(screen.queryByText('# First exact original')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Download version 1' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Use selected in next Turn' })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('private membership failure')).not.toBeInTheDocument();
+  });
+
+  it('does not open a late create result after the user inspects another comparison', async () => {
+    list.mockResolvedValue({ items: [set] });
+    let settle!: (record: typeof set) => void;
+    create.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+    );
+    const { onClearDraft } = mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create comparison' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: `Open comparison ${set.candidateSetId}` }));
+    await screen.findByText('# First exact original');
+    const createdId = create.mock.calls[0][0].requestId;
+    await act(async () => settle({ ...set, candidateSetId: createdId }));
+    expect(onClearDraft).not.toHaveBeenCalled();
+    expect(read.mock.calls.some(([input]) => input.candidateSetId === createdId)).toBe(false);
+    expect(screen.getByText('# First exact original')).toBeInTheDocument();
+  });
+
   it('creates two versions of one Artifact, records an exact human choice, and hands the older version to the existing unsent draft', async () => {
     mount();
     const user = userEvent.setup();
@@ -159,21 +231,31 @@ describe('exact Artifact candidate comparison', () => {
     expect(screen.getByText('# Newer head')).toBeInTheDocument();
     expect(select).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: /Candidate choice/ }));
+    await user.click(await screen.findByRole('option', { name: /Report · version 2/ }));
+    await user.type(
+      screen.getByRole('textbox', { name: 'Choice note' }),
+      'Later edition considered.'
+    );
+    await user.click(screen.getByRole('button', { name: 'Record choice' }));
+    expect(await screen.findByText('Later edition considered.')).toBeInTheDocument();
+    await user.clear(screen.getByRole('textbox', { name: 'Choice note' }));
+    await user.click(screen.getByRole('button', { name: /Candidate choice/ }));
     await user.click(await screen.findByRole('option', { name: /Report · version 1/ }));
     await user.type(
       screen.getByRole('textbox', { name: 'Choice note' }),
       'Keep the earlier result.'
     );
     await user.click(screen.getByRole('button', { name: 'Record choice' }));
-    await waitFor(() => expect(select).toHaveBeenCalledTimes(1));
-    expect(select.mock.calls[0][0]).toMatchObject({
+    await waitFor(() => expect(select).toHaveBeenCalledTimes(2));
+    expect(select.mock.calls[1][0]).toMatchObject({
       workspaceId,
-      candidateSetId: set.candidateSetId,
+      candidateSetId: create.mock.calls[0][0].requestId,
       choice: first,
       note: 'Keep the earlier result.',
     });
     expect(await screen.findByText('Keep the earlier result.')).toBeInTheDocument();
-    expect(screen.getByText(actor.id)).toBeInTheDocument();
+    expect(screen.getByText('Later edition considered.')).toBeInTheDocument();
+    expect(screen.getAllByText(actor.id).length).toBeGreaterThan(0);
     await user.click(screen.getByRole('button', { name: /Next conversation/ }));
     await user.click(await screen.findByRole('option', { name: 'Continue report' }));
     await user.click(screen.getByRole('button', { name: 'Use selected in next Turn' }));

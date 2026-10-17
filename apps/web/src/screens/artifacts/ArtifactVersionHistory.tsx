@@ -1,3 +1,4 @@
+import type { EvaluationCandidate } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { useEffect, useState } from 'react';
 import {
@@ -30,6 +31,8 @@ export function ArtifactVersionHistory(props: {
   disabled: boolean;
   unavailable?: boolean;
   onVersionChange: (version: number, readable: boolean) => void;
+  onAddCandidate?: (candidate: EvaluationCandidate) => void;
+  comparisonDisabled?: boolean;
 }) {
   const client = useCoreClient();
   const current = props.currentArtifact;
@@ -201,6 +204,22 @@ export function ArtifactVersionHistory(props: {
         <p className="text-sm text-fg" role="status">
           Version {createdVersion} saved. Select it to inspect the new version.
         </p>
+      ) : null}
+      {readable && content && props.onAddCandidate ? (
+        <Button
+          size="sm"
+          variant="outline"
+          isDisabled={props.disabled || props.comparisonDisabled}
+          onPress={() =>
+            props.onAddCandidate?.({
+              artifactId: content.id,
+              artifactVersion: content.version,
+              contentDigest: content.contentDigest,
+            })
+          }
+        >
+          Add exact version to comparison
+        </Button>
       ) : null}
       {creating ? (
         <div hidden={history.isError || props.unavailable}>
