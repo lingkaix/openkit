@@ -239,11 +239,12 @@ export async function dispatchOpenkitWorkTool(
           workspaceId: scope.workspaceId, requestId: uuidv5(JSON.stringify(['knowledge.tell', input.knowledgeCallId])),
           instructions: 'Integrate the supplied information and keep the notebook overview current.',
           trigger: 'request', actor: scope.triggerActor, signal,
+          askingThreadId: scope.threadId, askingTurnId: scope.turnId,
           currentAdmission: input.knowledgePublicationAdmission,
           tellContent: KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true }).parse(args).content,
         });
     input.requireAdmission?.();
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], isError: false };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result as Record<string, unknown>, isError: false };
   }
   if (toolName === 'work_submit_artifact') {
     try {

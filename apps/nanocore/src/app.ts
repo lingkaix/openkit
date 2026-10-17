@@ -93,7 +93,8 @@ import {
 import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { askKnowledgeAgent } from './knowledge/knowledge-agent.js';
-import { maintainKnowledgeAgent, prepareKnowledgeMaintenance } from './knowledge/knowledge-agent-maintenance.js';
+import { prepareKnowledgeMaintenance } from './knowledge/knowledge-agent-maintenance.js';
+import { runKnowledgeMaintenanceCommand } from './knowledge/knowledge-maintenance-command.js';
 import { pinKnowledgeManagerExecution, runKnowledgeManagerAgent } from './internal-agents/knowledge-manager-agent.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge/knowledge-maintenance-schedule.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
@@ -1453,7 +1454,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ask: (input) => askKnowledgeAgent(knowledgeDependencies, input),
     maintain: (input) => {
       if (!options.coreDb) throw new Error('Knowledge Manager storage is unavailable.');
-      return maintainKnowledgeAgent({
+      return runKnowledgeMaintenanceCommand({
         store: sharedStore, coreDb: options.coreDb, runtimeConfigManager,
         workspaceMutationAdmission, openWorkspace: repositoryWorkspaceDb, inflightCommands,
         pin: (run) => { pinKnowledgeManagerExecution(knowledgeDependencies, run); },
@@ -1472,9 +1473,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       listTurns: ({ ownerScope }) => sharedStore.listThreads(ownerScope.workspaceId)
         .flatMap((thread) => sharedStore.listThreadTurns(ownerScope.workspaceId, thread.id))
         .filter((turn) => turn.startedAt !== null)
-        .map((turn) => ({ startedAt: turn.startedAt!, internalExecution: turn.internalExecution ??
-          (turn.agentId === 'knowledge-manager' && turn.triggerSource?.kind === 'automation' && turn.triggerSource.summary === 'Knowledge Manager scheduled maintenance.'
-            ? { roleId: 'knowledge-manager', knowledge: { purpose: 'maintenance' as const, ownerScope, trigger: 'schedule' as const } } : undefined) })),
+        .map((turn) => ({ startedAt: turn.startedAt!,
+          ...(turn.internalExecution?.knowledge ? { internalExecution: { roleId: turn.internalExecution.roleId,
+            knowledge: { purpose: turn.internalExecution.knowledge.purpose, ownerScope: turn.internalExecution.knowledge.ownerScope, trigger: turn.internalExecution.knowledge.trigger } } }
+            : turn.agentId === 'knowledge-manager' && turn.triggerSource?.kind === 'automation' && turn.triggerSource.summary === 'Knowledge Manager scheduled maintenance.'
+              ? { internalExecution: { roleId: 'knowledge-manager', knowledge: { purpose: 'maintenance' as const, ownerScope, trigger: 'schedule' as const } } } : {}) })),
       prepare: ({ ownerScope }, startedAt) => {
         const workspaceId = ownerScope.workspaceId;
         const owner = getWorkspaceRegistryLifecycleFact(coreDb, workspaceId)?.ownerUserId;

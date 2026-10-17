@@ -1073,6 +1073,28 @@ function createWorkResourceLineageExportInput(followUp?: {
       decisionActorId: 'usr_00000000-0000-7000-8000-000000000001',
       decisionRequestId: 'request_review_accept',
       feedback: null,
+      rangeFeedback: {
+        materialId,
+        revisionId: baseRevisionId,
+        contentDigest: baseContentDigest,
+        start: 2,
+        end: 15,
+        originalText: 'Portable base',
+      },
+      candidateSelections: [
+        {
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          requestId: 'choose-first',
+          reason: 'Keep the first reason.',
+          selectedAt: timestamp,
+        },
+        {
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          requestId: 'choose-second',
+          reason: 'Keep the second reason.',
+          selectedAt: timestamp,
+        },
+      ],
       followUpTurnId: null,
       materialProposal: { materialId, baseRevisionId, baseContentDigest },
       reviewId: deriveArtifactReviewId(source.workspaceId, source.artifactId, 1),
@@ -1177,6 +1199,14 @@ function createWorkResourceLineageExportInput(followUp?: {
       sourceTurnId: source.turnId,
       sourceAgentId: 'agent_codex_host',
       materialProposal: { materialId, baseRevisionId, baseContentDigest },
+      rangeFeedback: {
+        materialId,
+        revisionId: baseRevisionId,
+        contentDigest: baseContentDigest,
+        start: 2,
+        end: 15,
+        originalText: 'Portable base',
+      },
       decision: 'redo',
       feedback: 'Try again.',
       decisionRequestId,
@@ -2289,6 +2319,23 @@ describe('workspace auxiliary lineage reminting', () => {
       sourceTurnId: imported.turns[0]?.id,
       workspaceId: targetWorkspaceId,
     });
+    expect(review?.rangeFeedback).toEqual({
+      materialId: material?.materialId,
+      revisionId: revisions[0]?.revisionId,
+      contentDigest: revisions[0]?.contentDigest,
+      start: 2,
+      end: 15,
+      originalText: 'Portable base',
+    });
+    expect(review?.candidateSelections.map((choice) => choice.reason)).toEqual([
+      'Keep the first reason.',
+      'Keep the second reason.',
+    ]);
+    expect(
+      review?.candidateSelections.every((choice) =>
+        choice.requestId.startsWith('import-lineage:sha256:')
+      )
+    ).toBe(true);
     expect(material?.lastMutationRequestId).toBe(review?.decisionRequestId);
     expect(revisions[1]?.createdByRequestId).toBe(review?.decisionRequestId);
     expect(binding?.lastMutationRequestId).toBe(review?.decisionRequestId);
@@ -2533,6 +2580,7 @@ describe('workspace auxiliary lineage reminting', () => {
       JSON.parse(item?.type === 'user-message' ? item.text : '{}')
     );
 
+    expect(request.rangeFeedback).toEqual(review.rangeFeedback);
     expect(request.artifactMediaType).toBe('text/markdown');
     expect(request.materialProposal?.materialId).toBe(imported.workspaceMaterials[0]?.materialId);
     expect(request.decisionRequestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);

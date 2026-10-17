@@ -52,6 +52,11 @@ const uuid7 = '01890f3e-0000-7000-8000-000000000001';
 const uuid5 = '01890f3e-0000-5000-8000-000000000001';
 const fields = [
   {
+    kind: 'mat',
+    schema: material.ArtifactReviewRangeFeedbackSchema.shape.materialId,
+    derived: true,
+  },
+  {
     kind: 'tu',
     schema: material.ThreadMaterialActiveDeliverySchema.shape.pendingTurnId,
     derived: true,
@@ -76,6 +81,7 @@ const fields = [
     material.WorkspaceMaterialRevisionSummarySchema.shape.revisionId,
     material.WorkspaceMaterialRevisionSummarySchema.shape.parentRevisionId,
     material.ArtifactMaterialProposalSchema.shape.baseRevisionId,
+    material.ArtifactReviewRangeFeedbackSchema.shape.revisionId,
     material.ArtifactReviewViewSchema.shape.appliedMaterialRevisionId,
     material.ThreadMaterialActiveDeliverySchema.shape.revisionId,
     material.ThreadMaterialViewSchema.shape.latestQueuedRevisionId,
