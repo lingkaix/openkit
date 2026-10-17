@@ -23,7 +23,12 @@ it('imports, pins, activates and restores a reusable definition through public o
   const call = (operation: string, input: object) =>
     app.request(`/api/app/operations/${operation}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...('requestId' in input && typeof input.requestId === 'string'
+          ? { 'x-openkit-request-id': input.requestId }
+          : {}),
+      },
       body: JSON.stringify({ workspaceId: workspace.id, ...input }),
     });
   try {
@@ -77,7 +82,7 @@ it('imports, pins, activates and restores a reusable definition through public o
       schemaRevision: live.schemaRevision,
       data: { applicant: 'synthetic-001', note: 'Keep this value in recovery.' },
     });
-    expect(record.status, await record.clone().text()).toBe(201);
+    expect(record.status, await record.clone().text()).toBe(200);
     const saved = await record.json();
     const next = JSON.parse(original.version.definitionJson);
     next.collections[0].fields = next.collections[0].fields.filter(
