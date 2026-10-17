@@ -691,8 +691,15 @@ describe('administration conversation route', () => {
       store.updateTurn(firstBody.turn.id, { status: 'running', completedAt: null, error: null })
     ).toThrow(/is terminal and does not admit this write/);
 
-    vi.spyOn(store, 'updateTurn').mockImplementationOnce(() => {
-      throw new Error('completion persistence failed');
+    const updateTurn = store.updateTurn.bind(store);
+    let completionFailureInjected = false;
+    vi.spyOn(store, 'updateTurn').mockImplementation((turnId, input, admission) => {
+      // Admission pins internalExecution first; fail the terminal publication this case exercises.
+      if (!completionFailureInjected && input.status === 'completed') {
+        completionFailureInjected = true;
+        throw new Error('completion persistence failed');
+      }
+      return updateTurn(turnId, input, admission);
     });
     const partialRequest = {
       input: 'Inspect another Worker environment.',
@@ -710,6 +717,7 @@ describe('administration conversation route', () => {
       )
     );
     expect(partial.status).toBe(409);
+    expect(completionFailureInjected).toBe(true);
     await expect(partial.json()).resolves.toMatchObject({ code: 'recovery_required' });
     const partialReplay = await app.request(
       ...operationRequest(
