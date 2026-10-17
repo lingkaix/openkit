@@ -1740,13 +1740,13 @@ export function readWorkspaceKnowledgeEntries(workspaceRoot: string): KnowledgeE
  * @param proposal Proposal tuple to serialize.
  * @returns Exact canonical proposal-file bytes.
  */
-export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalRecord): string {
+export function serializeKnowledgeProposalRecord(proposal: Omit<KnowledgeProposalRecord, 'workspaceId'>): string {
   const retained = (
     proposal as KnowledgeProposalRecord & {
       [retainedProposal]?: { bytes: string; core: KnowledgeProposalRecord };
     }
   )[retainedProposal];
-  if (retained && isDeepStrictEqual(retained.core, KnowledgeProposalRecordSchema.parse(proposal)))
+  if (retained && 'workspaceId' in proposal && isDeepStrictEqual(retained.core, KnowledgeProposalRecordSchema.parse(proposal)))
     return retained.bytes;
   return [
     '---',

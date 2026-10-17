@@ -1,3 +1,4 @@
+import { createServerThreadOperations } from './server-thread-operations.js';
 import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
@@ -88,6 +89,8 @@ export interface OperationInvocationDependencies {
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
       }
     | undefined;
+  /** Shared Server KM execution, publisher and Core evidence owners. */
+  readonly serverKnowledgeMaintenance?: import('./knowledge/server-knowledge-maintenance.js').ServerKnowledgeMaintenanceDependencies;
   readonly coreDb: CoreDb | undefined;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
@@ -235,6 +238,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createServerThreadOperations(dependencies),
     createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),

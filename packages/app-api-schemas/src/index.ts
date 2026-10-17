@@ -66,3 +66,5 @@ export * from './workspace-lifecycle-operations.js';
 export * from './workspace-sharing.js';
 export * from './workspace-sync.js';
 export * from './workspace-transfer.js';
+
+export * from './server-threads.js';

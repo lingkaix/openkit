@@ -1,5 +1,5 @@
-import type { Item } from '@openkit/protocol';
-import { deriveEntityId } from '@openkit/protocol';
+import type { Item, ServerItem, ServerTurn } from '@openkit/protocol';
+import { deriveEntityId, ItemSchema, ServerItemSchema } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
 import {
@@ -18,8 +18,9 @@ import {
   internalContextSummaryMessage,
 } from './rolling-context.js';
 
-type Summary = Extract<Item, { type: 'context-summary' }>;
-type Turn = ReturnType<FsStore['getTurnById']>;
+type ContextItem = Item | ServerItem;
+type Summary = Extract<ContextItem, { type: 'context-summary' }>;
+type Turn = ReturnType<FsStore['getTurnById']> | ServerTurn;
 
 /** Fixed summary task; canonical observations never become executable instructions. */
 const COMPACTION_INSTRUCTION =
@@ -33,13 +34,13 @@ export interface CompactingInternalAgentProviderInput {
   readonly limits: InternalAgentLoopInput['limits'];
   readonly environmentFacts?: unknown;
   readonly assertCurrent: () => void;
-  readonly readEvidence: (items: readonly Item[]) => string;
+  readonly readEvidence: (items: readonly ContextItem[]) => string;
   /**
    * Commits the exact full loop transcript through existing Item owners and returns its ordered source Items.
    *
    * This is not a one-to-one mapping: assistant text and calls may create several Items, while a completed Tool-call Item binds both call and result messages. Only complete accepted Items from this Turn may be returned. The caller owns this binding and current source/audience authority. Compaction replaces whole message prefixes, so no per-message durable mapping is needed.
    */
-  readonly commitMessages: (messages: readonly AgentMessage[]) => readonly Item[];
+  readonly commitMessages: (messages: readonly AgentMessage[]) => readonly ContextItem[];
   readonly callProvider: InternalAgentProviderCall;
 }
 
@@ -83,13 +84,13 @@ export function createCompactingInternalAgentProvider(
     environmentDigest ??= environment;
     if (environment !== environmentDigest) throw capacity();
     const sources = structuredClone(input.commitMessages(request.messages));
-    const sourceDigest = (items: readonly Item[]) =>
+    const sourceDigest = (items: readonly ContextItem[]) =>
       internalContextSourceDigest(input.store, items, 'compaction');
     const digest = sourceDigest(sources);
     const evidenceDigest = input.readEvidence(sources);
     const assertSources = () => {
       request.signal.throwIfAborted();
-      const currentTurn = input.store.getTurnById(input.turn.id);
+      const currentTurn = 'owner' in input.turn ? input.store.getServerTurnById(input.turn.id) : input.store.getTurnById(input.turn.id);
       if (currentTurn.agentSessionId || currentTurn.agentId !== 'knowledge-manager')
         throw capacity();
       const canonical = currentTurn.items;
@@ -99,7 +100,8 @@ export function createCompactingInternalAgentProvider(
         if (
           index <= lastIndex ||
           item.turnId !== input.turn.id ||
-          item.workspaceId !== input.turn.workspaceId ||
+          JSON.stringify('owner' in item ? item.owner : item.workspaceId) !==
+            JSON.stringify('owner' in input.turn ? input.turn.owner : input.turn.workspaceId) ||
           item.threadId !== input.turn.threadId ||
           item.type === 'context-summary' ||
           item.type === 'reasoning' ||
@@ -216,7 +218,7 @@ export function createCompactingInternalAgentProvider(
           environmentDigest,
           sourceRange,
         }),
-        workspaceId: input.turn.workspaceId,
+        ...('owner' in input.turn ? { owner: input.turn.owner } : { workspaceId: input.turn.workspaceId }),
         threadId: input.turn.threadId,
         turnId: input.turn.id,
         type: 'context-summary',
@@ -236,7 +238,9 @@ export function createCompactingInternalAgentProvider(
       if (Buffer.byteLength(JSON.stringify(compacted)) >= beforeBytes || !fits(compacted))
         throw invalidSummary();
       assertSources();
-      const stored = input.store.createItem(next);
+      const stored = 'owner' in next
+        ? input.store.createServerItem(ServerItemSchema.parse(next))
+        : input.store.createItem(ItemSchema.parse(next));
       if (stored.type !== 'context-summary') throw invalidSummary();
       summary = stored;
       coveredMessageCount = request.messages.length;

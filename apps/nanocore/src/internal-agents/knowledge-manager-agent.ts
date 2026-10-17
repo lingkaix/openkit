@@ -1,6 +1,8 @@
-import type { ActorRef, Item } from '@openkit/protocol';
+import type { ActorRef, Item, ServerItem, ServerTurn } from '@openkit/protocol';
 import {
   allocateEntityId,
+  ItemSchema,
+  ServerItemSchema,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
@@ -12,7 +14,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
@@ -72,22 +74,43 @@ export interface KnowledgeManagerAgentRun {
   readonly validateResult: (text: string) => undefined | string;
 }
 
+/** Server runs use the same bounded role loop and the existing Core evidence owner. */
+export interface ServerKnowledgeManagerAgentRun extends Omit<KnowledgeManagerAgentRun, 'turn' | 'workspaceDb' | 'readEvidence'> {
+  readonly kind: 'server';
+  readonly turn: ServerTurn;
+  readonly coreDb: CoreDb;
+  readonly readEvidence: (items: readonly ServerItem[]) => string;
+}
+
+type AnyKnowledgeManagerAgentRun = KnowledgeManagerAgentRun | ServerKnowledgeManagerAgentRun;
+
+/** Selects the original canonical owner without a Workspace alias. */
+function runTurn(store: FsStore, input: Pick<AnyKnowledgeManagerAgentRun, 'turn'>): Turn | ServerTurn {
+  return 'owner' in input.turn ? store.getServerTurnById(input.turn.id) : store.getTurnById(input.turn.id);
+}
+
+/** Writes only the Turn whose immutable owner admitted this run. */
+function updateRunTurn(store: FsStore, turn: Turn | ServerTurn, patch: Parameters<FsStore['updateTurn']>[1]) {
+  return 'owner' in turn ? store.updateServerTurn(turn.id, patch) : store.updateTurn(turn.id, patch);
+}
+
 /** Pins finite role admission before a daily trigger returns; this performs no Provider effect. */
 export function pinKnowledgeManagerExecution(
   dependencies: KnowledgeManagerAgentDependencies,
-  input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>
+  input: Pick<AnyKnowledgeManagerAgentRun, 'turn' | 'inputs'>
 ) {
-  const turn = dependencies.store.getTurnById(input.turn.id);
+  const turn = runTurn(dependencies.store, input);
   const userId = responsibleUserIdForActor(turn.triggerActor);
   if (!userId || !input.inputs || turn.agentId !== 'knowledge-manager' || turn.status !== 'running')
     throw new Error('Knowledge Manager input is unavailable.');
   const snapshot = dependencies.runtimeConfig();
   const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
-  const workspaceConfig = findWorkspaceConfig(snapshot, turn.workspaceId)?.config;
+  const workspaceId = 'workspaceId' in turn ? turn.workspaceId : undefined;
+  const workspaceConfig = workspaceId ? findWorkspaceConfig(snapshot, workspaceId)?.config : undefined;
   const pinned = turn.internalExecution;
   const selection = resolveInternalRoleProfile({
     roleId: 'knowledge-manager',
-    workspaceId: turn.workspaceId,
+    ...(workspaceId ? { workspaceId } : {}),
     gatewayConfig: snapshot.gatewayConfig,
     profilesConfig: snapshot.internalRoleProfiles,
     providerRegistry: snapshot.providerRegistry,
@@ -110,7 +133,7 @@ export function pinKnowledgeManagerExecution(
       JSON.stringify(pinned.knowledge) !== JSON.stringify(input.inputs))
   )
     throw new Error('Knowledge Manager admitted inputs changed.');
-  dependencies.store.updateTurn(turn.id, {
+  updateRunTurn(dependencies.store, turn, {
     internalExecution: {
       roleId: 'knowledge-manager',
       logicalModelId: selection.logicalModel.id,
@@ -139,6 +162,22 @@ export async function runKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
   input: KnowledgeManagerAgentRun
 ): Promise<{ readonly turnId: string; readonly text: string }> {
+  return runBoundedKnowledgeManagerAgent(dependencies, input);
+}
+
+/** Executes a Server role on the same loop, capture, compaction and cancellation owners. */
+export async function runServerKnowledgeManagerAgent(
+  dependencies: KnowledgeManagerAgentDependencies,
+  input: ServerKnowledgeManagerAgentRun
+): Promise<{ readonly turnId: string; readonly text: string }> {
+  return runBoundedKnowledgeManagerAgent(dependencies, input);
+}
+
+/** Owns the single live cancellation handle for either canonical Thread owner. */
+async function runBoundedKnowledgeManagerAgent(
+  dependencies: KnowledgeManagerAgentDependencies,
+  input: AnyKnowledgeManagerAgentRun
+): Promise<{ readonly turnId: string; readonly text: string }> {
   const { store } = dependencies;
   const controller = new AbortController();
   let finish!: () => void;
@@ -166,10 +205,10 @@ export async function runKnowledgeManagerAgent(
 /** Executes within the caller's live cancellation handle, retaining the normal Turn lifecycle. */
 async function executeKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
-  input: KnowledgeManagerAgentRun
+  input: AnyKnowledgeManagerAgentRun
 ): Promise<{ readonly turnId: string; readonly text: string }> {
   const { store } = dependencies;
-  const turn = store.getTurnById(input.turn.id);
+  const turn = runTurn(store, input);
   if (turn.agentId !== 'knowledge-manager' || turn.agentSessionId || turn.status !== 'running')
     throw new Error('Knowledge Manager Turn is not admitted.');
   try {
@@ -233,7 +272,7 @@ async function executeKnowledgeManagerAgent(
       {
         store,
         turn,
-        workspaceDb: input.workspaceDb,
+        ...('kind' in input ? { coreDb: input.coreDb } : { workspaceDb: input.workspaceDb }),
         environment: { systemPrompt, tools },
       },
       async (capture) => {
@@ -257,12 +296,12 @@ async function executeKnowledgeManagerAgent(
                 providerSubscriptionAccountManager: dependencies.providerSubscriptionAccountManager,
               }
             : {}),
-          promptCacheScope: { sessionId: turn.threadId, workspaceId: turn.workspaceId },
+          promptCacheScope: { sessionId: turn.threadId, ...('workspaceId' in turn ? { workspaceId: turn.workspaceId } : { owner: { kind: 'server' as const } }) },
           usageEndpoint: 'responses',
           callContext: {
             authorityActor: turn.triggerActor,
             agentId: 'knowledge-manager',
-            workspaceId: turn.workspaceId,
+            ...('workspaceId' in turn ? { workspaceId: turn.workspaceId } : { owner: { kind: 'server' as const } }),
             family: 'llm',
             operation: 'knowledge.run',
             capabilityId: 'inference.local.knowledge-manager',
@@ -279,7 +318,9 @@ async function executeKnowledgeManagerAgent(
           compactThreshold: threshold,
           limits,
           assertCurrent: input.assertCurrent,
-          readEvidence: input.readEvidence,
+          readEvidence: (items: readonly (Item | ServerItem)[]) => 'kind' in input
+            ? input.readEvidence(items.map((item) => ServerItemSchema.parse(item)))
+            : input.readEvidence(items.map((item) => ItemSchema.parse(item))),
           commitMessages,
           callProvider: ordinary,
         });
@@ -358,11 +399,11 @@ async function executeKnowledgeManagerAgent(
         return resultText;
       }
     );
-    store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    updateRunTurn(store, turn, { status: 'completed', completedAt: new Date().toISOString() });
     return { turnId: turn.id, text: result };
   } catch (error) {
-    if (!isSealedTurnTerminal(store.getTurnById(turn.id).status))
-      store.updateTurn(turn.id, {
+    if (!isSealedTurnTerminal(runTurn(store, input).status))
+      updateRunTurn(store, turn, {
         status: input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
         error: internalContextFailure(error) ?? {
@@ -379,14 +420,20 @@ async function executeKnowledgeManagerAgent(
  *
  * Model call IDs correlate retained calls but select no effect. The full ordered source inventory is returned for compaction; summaries are never copied into that inventory.
  */
+export function createKnowledgeManagerTranscript(store: FsStore, turn: Turn, actor: ActorRef): (messages: readonly AgentMessage[]) => readonly Item[];
+export function createKnowledgeManagerTranscript(store: FsStore, turn: ServerTurn, actor: ActorRef): (messages: readonly AgentMessage[]) => readonly ServerItem[];
+export function createKnowledgeManagerTranscript(store: FsStore, turn: Turn | ServerTurn, actor: ActorRef): (messages: readonly AgentMessage[]) => readonly (Item | ServerItem)[];
 export function createKnowledgeManagerTranscript(
   store: FsStore,
-  turn: Turn,
+  turn: Turn | ServerTurn,
   actor: ActorRef
-): (messages: readonly AgentMessage[]) => readonly Item[] {
-  const committed = new Map<string, Item>();
+): (messages: readonly AgentMessage[]) => readonly (Item | ServerItem)[] {
+  const committed = new Map<string, Item | ServerItem>();
+  const create = (value: unknown): Item | ServerItem => 'owner' in turn
+    ? store.createServerItem(ServerItemSchema.parse(value))
+    : store.createItem(ItemSchema.parse(value));
   return (messages) => {
-    const items: Item[] = [];
+    const items: (Item | ServerItem)[] = [];
     for (const [index, message] of messages.entries()) {
       if (message.role === 'tool') continue;
       const text = message.content
@@ -398,7 +445,7 @@ export function createKnowledgeManagerTranscript(
           const timestamp = new Date().toISOString();
           const base = {
             id: allocateEntityId('it'),
-            workspaceId: turn.workspaceId,
+            ...('workspaceId' in turn ? { workspaceId: turn.workspaceId } : { owner: { kind: 'server' as const } }),
             threadId: turn.threadId,
             turnId: turn.id,
             status: 'completed' as const,
@@ -408,7 +455,7 @@ export function createKnowledgeManagerTranscript(
           };
           committed.set(
             key,
-            store.createItem(
+            create(
               message.role === 'user'
                 ? { ...base, type: 'user-message', actor }
                 : { ...base, type: 'assistant-message' }
@@ -430,9 +477,9 @@ export function createKnowledgeManagerTranscript(
           const timestamp = new Date().toISOString();
           committed.set(
             key,
-            store.createItem({
+            create({
               id: allocateEntityId('it'),
-              workspaceId: turn.workspaceId,
+              ...('workspaceId' in turn ? { workspaceId: turn.workspaceId } : { owner: { kind: 'server' as const } }),
               threadId: turn.threadId,
               turnId: turn.id,
               type: 'tool-call',
@@ -459,8 +506,7 @@ export function createKnowledgeManagerTranscript(
     }
     // Native publication outcomes can be committed between a call and its loop result.
     // Include that accepted canonical prefix so exact history ranges and summary source counts agree.
-    return store
-      .getTurnById(turn.id)
+    return ('owner' in turn ? store.getServerTurnById(turn.id) : store.getTurnById(turn.id))
       .items.filter(
         (item) =>
           item.type !== 'context-summary' &&
