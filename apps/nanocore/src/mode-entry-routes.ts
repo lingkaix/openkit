@@ -2379,6 +2379,7 @@ export function createConversationService({
   startModeWorkerTurn,
   workerCoordinatorCandidates,
   goalServices,
+  knowledgeAgent,
 }: {
   readonly coreDb: CoreDb | undefined;
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
@@ -2419,6 +2420,7 @@ export function createConversationService({
     ) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly goalServices?: () => GoalOwnerServices;
+  readonly knowledgeAgent?: import('./operation-composition.js').OperationInvocationDependencies['knowledgeAgent'];
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string,
@@ -3074,9 +3076,10 @@ export function createConversationService({
           inflightCommands,
           repositoryWorkspaceDb,
           workspaceMutationAdmission,
+          knowledgeAgent,
         })(
-          'knowledge.answer',
-          { workspaceId, query: conversationPrompt, limit: 3 },
+          'knowledge.ask',
+          { workspaceId, question: conversationPrompt },
           {
             kind: 'public',
             actor: actor,
@@ -3085,7 +3088,7 @@ export function createConversationService({
         );
         const completedAt = new Date().toISOString();
         const turn = inputTurn ?? createChatTurn(completedAt);
-        const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
+        const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.reference).join(', ');
         const answerItem = store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
           workspaceId,
@@ -3104,7 +3107,7 @@ export function createConversationService({
           body: ConversationCommandBodySchema.parse({
             outcome: 'answered',
             explanation:
-              knowledgeAnswer.outcome === 'answered'
+              knowledgeAnswer.citations.length > 0
                 ? 'The Knowledge Manager answered from Workspace Knowledge.'
                 : 'The Knowledge Manager found insufficient Workspace evidence.',
             turn: completedTurn,
@@ -3635,6 +3638,7 @@ export function createConversationService({
                 inflightCommands,
                 repositoryWorkspaceDb,
                 workspaceMutationAdmission,
+                knowledgeAgent,
                 ...(goalServices ? { goalServices: goalServices() } : {}),
               })(id, value, {
                 kind: 'public',
@@ -4439,6 +4443,7 @@ export function createConversationService({
               inflightCommands,
               repositoryWorkspaceDb,
               workspaceMutationAdmission,
+              knowledgeAgent,
               ...(goalServices ? { goalServices: goalServices() } : {}),
             })(id, value, {
               kind: 'public',

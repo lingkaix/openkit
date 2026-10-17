@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { KnowledgeAskResponseSchema, type KnowledgeRetrievalCandidate } from '@openkit/app-api-schemas';
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import { z } from 'zod';
@@ -6,7 +7,7 @@ import { runKnowledgeManagerAgent, type KnowledgeManagerAgentDependencies } from
 import { internalContextDigest } from '../internal-agents/rolling-context.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
-import { admitKnowledgeRetrieval, readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
+import { admitKnowledgeRetrieval, knowledgeSourceAudienceReadable, readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -19,6 +20,7 @@ export interface KnowledgeAgentQuestion {
   readonly access: KnowledgeRetrievalAccess;
   readonly capabilityCallId?: string;
   readonly signal: AbortSignal;
+  readonly assertCurrent?: () => void;
 }
 
 /** Application-owned database and existing role dependencies for native and Worker requests. */
@@ -31,7 +33,8 @@ const answerSchema = z.object({
   uncertainty: z.string().min(1).nullable(),
 }).strict();
 const searchSchema = z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(10).default(5) }).strict();
-const pageSchema = z.object({ pageId: z.string().min(1) }).strict();
+const pageSchema = z.object({ pageId: z.string().min(1), offset: z.number().int().nonnegative().default(0) }).strict();
+const sourceSchema = z.object({ sourceId: z.string().min(1), offset: z.number().int().nonnegative().default(0) }).strict();
 
 /**
  * Runs one isolated model query using current Kernel selection and exact authorized page reads.
@@ -52,6 +55,7 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
       : { visibility: 'private', privateOwnerUserId: userId });
   const turn = store.createTurn(input.workspaceId, thread.id, input.question, input.access.actor, null,
     { agentId: 'knowledge-manager', executorKind: 'assistant', triggerSource: { kind: 'system-input', summary: 'Knowledge question.' } });
+  try {
   // Threadless human requests use their new work Thread; running callers keep their exact query context.
   const access: KnowledgeRetrievalAccess = {
     ...input.access, outputThreadId: input.access.outputThreadId ?? thread.id,
@@ -65,13 +69,19 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   if (!overview) throw new Error('Knowledge overview is unavailable.');
   const candidates = new Map<string, KnowledgeRetrievalCandidate>();
   const read = new Map<string, { candidate: KnowledgeRetrievalCandidate; content: string }>();
+  const readSources = new Map<string, string>();
   const assertCurrent = () => {
+    input.assertCurrent?.();
     input.signal.throwIfAborted();
     admitKnowledgeRetrieval(bound);
     for (const [id, evidence] of read) {
       const page = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: [id] }).pages[0];
       if (!page || page.contentDigest !== evidence.candidate.contentDigest)
         throw new Error('Knowledge citation is no longer available.');
+    }
+    for (const [id, digest] of readSources) {
+      if (!knowledgeSourceAudienceReadable(bound, id) || store.getKnowledgeSource(input.workspaceId, id).contentDigest !== digest)
+        throw new Error('Knowledge Source is no longer available.');
     }
   };
   const schema = (value: z.ZodType) => {
@@ -97,14 +107,40 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
       inputSchema: schema(pageSchema),
       execute: async (value: unknown) => {
         assertCurrent();
-        const { pageId } = pageSchema.parse(value);
+        const { pageId, offset } = pageSchema.parse(value);
         const candidate = candidates.get(pageId);
         if (!candidate) throw new Error('Search this page before reading it.');
         const page = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: [pageId] }).pages[0];
         if (!page || page.contentDigest !== candidate.contentDigest) throw new Error('Selected page changed.');
         read.set(pageId, { candidate, content: page.content });
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ ...candidate, content: page.content }) }] };
+        const content = page.content.slice(offset, offset + 16_384);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ...candidate, content, offset,
+          nextOffset: offset + content.length < page.content.length ? offset + content.length : null }) }] };
       },
+    },
+    {
+      name: 'knowledge.source.read', description: 'Read a captured Source referenced by an actually read page. Use nextOffset for a large Source.',
+      inputSchema: schema(sourceSchema),
+      execute: async (value: unknown) => {
+        assertCurrent();
+        const { sourceId, offset } = sourceSchema.parse(value);
+        if (![...read.values()].some(({ candidate }) => candidate.sourceReferences.some((ref) => ref === `source:${sourceId}` || ref.startsWith(`source:${sourceId}@`))) ||
+          !knowledgeSourceAudienceReadable(bound, sourceId)) throw new Error('Source is unavailable.');
+        const source = store.getKnowledgeSource(input.workspaceId, sourceId);
+        const original = store.readKnowledgeSourceMaterial(input.workspaceId, sourceId);
+        if (original === null || source.contentDigest !== `sha256:${createHash('sha256').update(original).digest('hex')}`)
+          throw new Error('Captured Source bytes are unavailable.');
+        readSources.set(sourceId, source.contentDigest);
+        const content = original.slice(offset, offset + 16_384);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ reference: `source:${sourceId}@${source.contentDigest}`,
+          content, offset, nextOffset: offset + content.length < original.length ? offset + content.length : null }) }] };
+      },
+    },
+    {
+      name: 'knowledge.notebook.history', description: 'Read bounded commit history of this fixed notebook base; history grants no publication authority.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async () => { assertCurrent(); return { content: [{ type: 'text' as const,
+        text: JSON.stringify(notebook.history({ revision: baseRevision, limit: 20 })) }] }; },
     },
   ];
   const workspaceDb = dependencies.openWorkspace(input.workspaceId);
@@ -139,4 +175,10 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
       }),
     });
   } finally { workspaceDb.sqlite.close(); }
+  } catch (error) {
+    if (store.getTurnById(turn.id).status === 'running') store.updateTurn(turn.id, {
+      status: 'failed', completedAt: new Date().toISOString(), error: { code: 'knowledge_query_failed', message: 'Knowledge query failed. Start a new request after inspection.' },
+    });
+    throw error;
+  }
 }

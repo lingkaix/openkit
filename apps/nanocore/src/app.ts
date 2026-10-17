@@ -91,6 +91,9 @@ import {
 } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
+import { askKnowledgeAgent } from './knowledge/knowledge-agent.js';
+import { maintainKnowledgeAgent } from './knowledge/knowledge-agent-maintenance.js';
+import { runKnowledgeManagerAgent } from './internal-agents/knowledge-manager-agent.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
@@ -1432,6 +1435,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return resolveProviderProfileToLLMConfig(profile, providerCredentialResolver);
   }
 
+  const knowledgeDependencies = {
+    store: sharedStore, runtimeConfig, dispatcher: llmGatewayDispatcher,
+    resolveGatewayProvider, openWorkspace: repositoryWorkspaceDb,
+    providerCredentialConfigured,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+  };
+  const knowledgeAgent: NonNullable<OperationInvocationDependencies['knowledgeAgent']> = {
+    ask: (input) => askKnowledgeAgent(knowledgeDependencies, input),
+    maintain: (input) => {
+      if (!options.coreDb) throw new Error('Knowledge Manager storage is unavailable.');
+      return maintainKnowledgeAgent({
+        store: sharedStore, coreDb: options.coreDb, runtimeConfigManager,
+        workspaceMutationAdmission, openWorkspace: repositoryWorkspaceDb,
+        run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
+      }, input);
+    },
+  };
+
   app.use('/api/worker-control/*', browserCors);
   registerWorkerControlRoutes({
     app,
@@ -1458,6 +1479,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-capabilities/*', browserCors);
   registerWorkerMcpRoutes({
+    knowledgeAgent,
     fileAdmission,
     ...(configuredWorkerRuntime?.captureArtifact
       ? { captureArtifact: configuredWorkerRuntime.captureArtifact }
@@ -1747,6 +1769,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   const chatService = createConversationService({
+    knowledgeAgent,
     providerCredentialConfigured,
     coreDb: options.coreDb,
     inflightCommands,
@@ -1936,6 +1959,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerOperationJsonRoutes({
+    knowledgeAgent,
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
@@ -1991,6 +2015,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    knowledgeAgent,
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),

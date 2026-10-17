@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
-import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
+import { ListThreadItemsResponseSchema, KNOWLEDGE_OPERATION_DEFINITIONS, operationToolName,
+  KnowledgeAskRequestSchema, KnowledgeTellRequestSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   ArtifactMediaTypeSchema,
@@ -25,6 +26,9 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
+import { uuidv5 } from '../generative-kernel/uuid.js';
+import type { NotebookPublicationAdmission, NotebookUpdate } from '../knowledge/notebook-publication.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
 import {
   FileAdmissionError,
@@ -122,6 +126,12 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
 
 /** Fixed built-in work tools; their schemas ignore inert additive input members. */
 export const OPENKIT_WORK_TOOLS = [
+  ...(['knowledge.ask', 'knowledge.tell'] as const).map((id) => ({
+    name: operationToolName(id), description: KNOWLEDGE_OPERATION_DEFINITIONS[id].description,
+    inputSchema: mcpInputSchema(id === 'knowledge.ask'
+      ? KnowledgeAskRequestSchema.omit({ workspaceId: true })
+      : KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true })),
+  })),
   {
     name: 'work_request_input',
     description:
@@ -193,6 +203,9 @@ export async function dispatchOpenkitWorkTool(
     readonly fileAdmission?: FileStorageAdmission;
     readonly signal?: AbortSignal;
     readonly requireAdmission?: () => void;
+    readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
+    readonly knowledgeCallId?: string;
+    readonly knowledgePublicationAdmission?: (request: NotebookUpdate) => NotebookPublicationAdmission;
   },
   toolName: string,
   args: Record<string, unknown>
@@ -207,6 +220,30 @@ export async function dispatchOpenkitWorkTool(
     turn.status !== 'running'
   ) {
     throw new WorkerControlGatewayError('turn_not_active', 'The Turn is not running.', 409);
+  }
+  if (toolName === operationToolName('knowledge.ask') || toolName === operationToolName('knowledge.tell')) {
+    input.requireAdmission?.();
+    if (!input.knowledgeAgent || !input.knowledgeCallId)
+      throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+    const signal = input.signal ?? new AbortController().signal;
+    const result = toolName === operationToolName('knowledge.ask')
+      ? await input.knowledgeAgent.ask({
+          ...KnowledgeAskRequestSchema.omit({ workspaceId: true }).parse(args),
+          workspaceId: scope.workspaceId, caller: 'worker', capabilityCallId: input.knowledgeCallId,
+          access: { store: input.store, coreDb: input.coreDb, actor: scope.triggerActor,
+            outputThreadId: scope.threadId, outputTurnId: scope.turnId }, signal,
+          assertCurrent: () => { input.requireAdmission?.(); },
+        })
+      : await input.knowledgeAgent.maintain({
+          ...KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true }).parse(args),
+          workspaceId: scope.workspaceId, requestId: uuidv5(JSON.stringify(['knowledge.tell', input.knowledgeCallId])),
+          instructions: 'Integrate the supplied information and keep the notebook overview current.',
+          trigger: 'request', actor: scope.triggerActor, signal,
+          currentAdmission: input.knowledgePublicationAdmission,
+          tellContent: KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true }).parse(args).content,
+        });
+    input.requireAdmission?.();
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], isError: false };
   }
   if (toolName === 'work_submit_artifact') {
     try {

@@ -26,9 +26,11 @@ interface WorkspacePublicationAuthority {
   readonly store: FsStore;
   readonly coreDb: CoreDb;
   readonly workspaceDb: WorkspaceDb;
-  readonly requestActor: Actor;
+  readonly requestActor?: Actor;
+  /** Trusted Worker/schedule entry rechecks its existing admission instead of inventing a human session. */
+  readonly currentAuthority?: () => void;
   readonly actor: Extract<ActorRef, { kind: 'user' }>;
-  readonly runtimeConfigManager: RuntimeConfigManager;
+  readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly notebook: KnowledgeNotebook;
   readonly request: NotebookUpdate;
@@ -39,13 +41,13 @@ export function readWorkspaceNotebookAdmission(
   input: WorkspacePublicationAuthority
 ): NotebookPublicationAdmission {
   const { workspaceId } = input.request;
+  input.currentAuthority?.();
   if (
-    input.actor.id !== input.requestActor.userId ||
     input.workspaceMutationAdmission.isClosed(workspaceId) ||
-    !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
+    (input.requestActor ? input.actor.id !== input.requestActor.userId || !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
       mutating: true,
       policyOperation: 'knowledge.write',
-    })
+    }) : !input.currentAuthority)
   )
     throw new OperationError('workspace_access_denied', 'Notebook publication access denied.', 403);
   const workspace = input.store.getWorkspace(workspaceId);

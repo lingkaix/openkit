@@ -349,12 +349,40 @@ export function createKnowledgeOperationImplementations(
     | 'repositoryWorkspaceDb'
     | 'runtimeConfigManager'
     | 'workspaceMutationAdmission'
+    | 'knowledgeAgent'
   >
 ) {
   const store = dependencies.store!;
   const coreDb = dependencies.coreDb;
   const inflightCommands = dependencies.inflightCommands!;
   const repositoryWorkspaceDb = dependencies.repositoryWorkspaceDb!;
+
+  /** The asking call retains delivery bytes; the separate role Turn owns inference and usage. */
+  const ask = async (input: { workspaceId: string; question: string }, context: AdmittedOperationContext) => {
+    if (!dependencies.knowledgeAgent || !coreDb)
+      throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+    const db = repositoryWorkspaceDb(input.workspaceId);
+    const call = startCapabilityCall({ workspaceDb: db, workspaceId: input.workspaceId,
+      authorityActor: context.actorRef, family: 'knowledge', operation: 'knowledge.ask',
+      capabilityId: 'knowledge.ask', requestId: null, providerRef: null,
+      serviceRef: 'knowledge-manager', redactionClass: 'metadata-only', summary: 'Knowledge question.',
+      threadId: context.queryContext?.threadId ?? null, turnId: context.queryContext?.turnId ?? null,
+    });
+    try {
+      const result = await dependencies.knowledgeAgent.ask({ ...input,
+        caller: context.delivery === 'model' ? 'internal-agent' : 'app-api',
+        capabilityCallId: call.id, signal: context.signal ?? new AbortController().signal,
+        access: { store, coreDb, actor: context.actorRef,
+          ...(context.kind === 'worker' ? {} : { requestActor: context.actor }),
+          outputThreadId: context.queryContext?.threadId, outputTurnId: context.queryContext?.turnId },
+      });
+      finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'succeeded', deliveredKnowledgeAnswer: JSON.stringify(result) });
+      return result;
+    } catch (error) {
+      finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'failed', errorCode: 'knowledge_query_failed' });
+      throw error;
+    } finally { db.sqlite.close(); }
+  };
 
   /** Binds existing entry commands to current native authority and the one Git/Audit/receipt publisher. */
   const publishEntry = async (input: NotebookEntryEdit, context: AdmittedOperationContext) => {
@@ -528,6 +556,23 @@ export function createKnowledgeOperationImplementations(
   }
 
   return {
+    'knowledge.ask': ask,
+    'knowledge.tell': async (input, context) => {
+      if (!dependencies.knowledgeAgent) throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+      return dependencies.knowledgeAgent.maintain({
+        workspaceId: input.workspaceId, requestId: input.requestId, instructions: 'Integrate the supplied information and keep the notebook overview current.',
+        sources: input.sources, tellContent: input.content, trigger: 'request',
+        actor: context.actorRef, requestActor: publicOperationActor(context),
+        signal: context.signal ?? new AbortController().signal,
+      });
+    },
+    'knowledge.maintain': async (input, context) => {
+      if (!dependencies.knowledgeAgent) throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+      return dependencies.knowledgeAgent.maintain({ ...input, sources: [], trigger: 'request',
+        actor: context.actorRef, requestActor: publicOperationActor(context),
+        signal: context.signal ?? new AbortController().signal,
+      });
+    },
     ...createNotebookHistoryOperations(dependencies, notebookCommandFailure),
     'knowledge.notebook.update': async (input, context) => {
       const dataRoot = store.getDataRoot();
@@ -1219,9 +1264,7 @@ export function createKnowledgeOperationImplementations(
               workspaceId,
               requestId: commandInput.requestId,
               baseRevision: proposal.baseRevision,
-              changes: [
-                { path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes },
-              ],
+              changes: proposal.changes ?? [{ path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes! }],
               summary: proposal.rationale,
             },
             context,
@@ -1337,7 +1380,7 @@ export function createKnowledgeOperationImplementations(
         workspaceId,
         requestId: commandInput.requestId,
         baseRevision: commandInput.baseRevision,
-        changes: [{ path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes }],
+        changes: proposal.changes ?? [{ path: `${proposal.knowledgePageId}.md`, content: proposal.canonicalPageBytes! }],
         summary: proposal.rationale,
       };
       return withGovernedNotebook(request, context, async (owner) => {
@@ -1490,7 +1533,7 @@ export function createKnowledgeOperationImplementations(
         if (
           decision.review.proposalId !== proposalId ||
           decision.review.decision !== 'accepted' ||
-          input.knowledgePageId !== proposal.knowledgePageId ||
+          (proposal.changes ? !proposal.changes.some((change) => change.path === `${input.knowledgePageId}.md`) : input.knowledgePageId !== proposal.knowledgePageId) ||
           input.expectedContentDigest !== proposal.contentDigest
         )
           throw new OperationError(
@@ -1505,10 +1548,11 @@ export function createKnowledgeOperationImplementations(
         const notebook = new KnowledgeNotebook({
           repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
         });
-        const path = `${proposal.knowledgePageId}.md`;
+        const path = `${input.knowledgePageId}.md`;
         const original = notebook.readRevision(proposal.baseRevision).files[path] ?? null;
         const baseBytes = notebook.readRevision(input.baseRevision).files[path];
-        if (baseBytes !== proposal.canonicalPageBytes)
+        const candidateBytes = proposal.changes ? proposal.changes.find((change) => change.path === path)!.content : proposal.canonicalPageBytes;
+        if ((baseBytes ?? null) !== candidateBytes)
           throw new OperationError('conflict', 'Knowledge page changed after Review.', 409);
         const request: NotebookUpdate = {
           workspaceId,
@@ -1522,7 +1566,7 @@ export function createKnowledgeOperationImplementations(
             {
               ...owner,
               command: { name: 'knowledge.proposal.reverse', input },
-              ...(original === null && input.confirmRemoval
+              ...(original === null && baseBytes !== undefined && input.confirmRemoval
                 ? { confirmedRemovals: { [path]: baseBytes } }
                 : {}),
             },
@@ -1533,7 +1577,7 @@ export function createKnowledgeOperationImplementations(
             proposalId,
             reviewId: input.reviewId,
             application: {
-              knowledgePageId: proposal.knowledgePageId,
+              knowledgePageId: input.knowledgePageId,
               contentDigest:
                 content === undefined
                   ? proposal.contentDigest

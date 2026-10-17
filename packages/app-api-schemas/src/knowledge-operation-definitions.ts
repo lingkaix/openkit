@@ -77,14 +77,14 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     binding: 'json', returnsOneTimeSecret: false, successStatus: 200,
     description: 'Ask the Knowledge Manager one bounded question in the current Workspace query context.',
     inputSchema: KnowledgeAskRequestSchema, outputSchema: KnowledgeAskResponseSchema,
-    credentials: [...publicCredentials, 'worker'], scope: { kind: 'body-workspace', field: 'workspaceId' },
+    credentials: [...publicCredentials, 'worker-package'], scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' }, policyOperation: 'knowledge.read', mutating: false,
   },
   'knowledge.tell': {
     binding: 'json', returnsOneTimeSecret: false, successStatus: 200,
     description: 'Give information and Source references to one bounded Knowledge Manager maintenance run.',
     inputSchema: KnowledgeTellRequestSchema, outputSchema: KnowledgeMaintenanceResponseSchema,
-    credentials: [...publicCredentials, 'worker'], scope: { kind: 'body-workspace', field: 'workspaceId' },
+    credentials: [...publicCredentials, 'worker-package'], scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' }, policyOperation: 'knowledge.write', mutating: true,
   },
   'knowledge.maintain': {
