@@ -113,7 +113,7 @@ const self = {
   successStatus: 200,
 } as const;
 
-/** Explicit source-free self management; no Worker, automatic capture or caller-selected owner is admitted. */
+/** Explicit self Memory and literal Source management; no Worker, automatic capture or caller-selected owner is admitted. */
 export const MEMORY_OPERATION_DEFINITIONS = {
   'memory.source.register': {
     ...self,
