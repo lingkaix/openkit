@@ -10,7 +10,8 @@ export const EXTERNAL_TRIGGER_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 202,
-    description: 'Admit isolated Worker work for one external event observed by a scheduled poll.',
+    description:
+      'From a live scheduled poll, admit isolated Worker work once per stable source event key.',
     inputSchema: AdmitExternalTriggerRequestSchema,
     outputSchema: AdmitExternalTriggerResponseSchema,
     credentials: ['worker-package'],

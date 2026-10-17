@@ -115,7 +115,7 @@ describe('recurring portable history', () => {
   it('explicitly accounts for every recurring Core history table', () => {
     const names = coreDb.sqlite
       .prepare(
-        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'recurring_%' ORDER BY name"
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND (name LIKE 'recurring_%' OR name LIKE 'external_trigger_%') ORDER BY name"
       )
       .all() as { name: string }[];
     expect(names.map((row) => row.name)).toEqual([...RECURRING_PORTABLE_CORE_TABLES].sort());

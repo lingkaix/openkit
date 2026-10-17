@@ -34,6 +34,7 @@ export const RECURRING_PORTABLE_CORE_TABLES = [
   'recurring_schedules',
   'recurring_occurrences',
   'recurring_expired_ranges',
+  'external_trigger_admissions',
 ] as const;
 /** Exact paths for Core history; scheduler authority is never included. */
 export const RECURRING_PORTABLE_PATHS = {
