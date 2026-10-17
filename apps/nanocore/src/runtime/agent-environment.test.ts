@@ -36,6 +36,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
@@ -1143,7 +1144,10 @@ describe('agent environment package resolver', () => {
         producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n',
+              'utf8'
+            ).toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },
@@ -1196,7 +1200,10 @@ describe('agent environment package resolver', () => {
         producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# v1\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# v1\n',
+              'utf8'
+            ).toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },
@@ -1220,7 +1227,10 @@ describe('agent environment package resolver', () => {
         producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
-            contentBase64: Buffer.from('# v2\n', 'utf8').toString('base64'),
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# v2\n',
+              'utf8'
+            ).toString('base64'),
             kind: 'file',
             path: 'SKILL.md',
           },
@@ -2528,6 +2538,7 @@ describe('public network AEP admission', () => {
       'requireBootValue',
       'bootWorkerControlGateway',
       'workspaceMutationAdmission',
+      'fileAdmission',
       javascript
     )(
       createConfiguredWorkerLifecycleRuntime,
@@ -2538,7 +2549,8 @@ describe('public network AEP admission', () => {
       undefined,
       (value: unknown) => value,
       undefined,
-      undefined
+      undefined,
+      new FileStorageAdmission(dataRoot, () => 0n)
     ) as ReturnType<typeof createConfiguredWorkerLifecycleRuntime>;
     expect(reads).not.toHaveBeenCalled();
     const preview = runtime.turnExecutor as unknown as {

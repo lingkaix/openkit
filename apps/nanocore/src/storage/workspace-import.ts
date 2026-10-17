@@ -554,6 +554,8 @@ export interface ReadWorkspaceImportSnapshotInput {
 
 /** Importable record snapshot extracted from one workspace export. */
 export interface WorkspaceImportSnapshot {
+  /** Target-relative immutable payload paths mapped to their verified private export sources. */
+  artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Validated current Goal records and Task terminal facts; approval grants remain source-local. */
   goalState: ReturnType<typeof readCurrentGoalImportState>;
   /** Verified dry-run report for the export. */
@@ -1062,8 +1064,44 @@ export function readWorkspaceImportSnapshot(
     recurringHistory,
   };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
+  const sourceArtifactIds = new Map(
+    [...context.artifactIds].map(([sourceId, targetId]) => [targetId, sourceId])
+  );
+  const artifactPayloadFiles = new Map<string, string>();
+  const sourceTurnIds = new Map([...context.turnIds].map(([source, target]) => [target, source]));
+  const sourceThreadIds = new Map(
+    [...context.threadIds].map(([source, target]) => [target, source])
+  );
+  for (const turn of canonical.turns) {
+    const sourceTurnId = sourceTurnIds.get(turn.id);
+    const sourceThreadId = sourceThreadIds.get(turn.threadId);
+    for (const ordinal of (turn.fileInputs ?? []).keys()) {
+      const sourcePath = input.verified.artifactPayloadFiles.get(
+        `threads/${sourceThreadId}/turns/${sourceTurnId}/inputs/${ordinal}/payload`
+      );
+      if (!sourceTurnId || !sourceThreadId || !sourcePath)
+        throw new Error('Imported Turn input payload is unavailable.');
+      artifactPayloadFiles.set(
+        `threads/${turn.threadId}/turns/${turn.id}/inputs/${ordinal}/payload`,
+        sourcePath
+      );
+    }
+  }
+  for (const artifact of canonical.artifacts) {
+    if (artifact.content.format !== 'file') continue;
+    const sourceId = sourceArtifactIds.get(artifact.id);
+    const sourcePath = input.verified.artifactPayloadFiles.get(
+      `artifacts/${sourceId}/versions/${artifact.version}/payload`
+    );
+    if (!sourceId || !sourcePath) throw new Error('Imported Artifact payload is unavailable.');
+    artifactPayloadFiles.set(
+      `artifacts/${artifact.id}/versions/${artifact.version}/payload`,
+      sourcePath
+    );
+  }
 
   return {
+    artifactPayloadFiles,
     report,
     goalState: readCurrentGoalImportState(context),
     workspace: canonical.workspace,
@@ -3818,10 +3856,15 @@ function readRetrievalTraceImportState(
       continue;
     }
     const targetSourceScope = remintImportedPageScope(sourceTrace.sourceScope, context);
+    const userSelection = sourceTrace.retrievalParameters.sourceScope === 'user';
     const expectedSourceScope =
       sourceTrace.retrievalParameters.sourceScope === 'workspace'
         ? `page/workspace/${context.report.exportedWorkspaceId}`
-        : 'page/server';
+        : userSelection
+          ? sourceTrace.queryContext.actor.kind === 'user'
+            ? `page/user/${sourceTrace.queryContext.actor.id}`
+            : null
+          : 'page/server';
     if (sourceTrace.sourceScope !== expectedSourceScope) {
       throw new Error('Portable retrieval trace source selection is contradictory.');
     }
@@ -3844,7 +3887,9 @@ function readRetrievalTraceImportState(
         return {
           ...entry,
           reference,
-          sourceReferences: rewritePortableReferences(entry.sourceReferences, replacements),
+          sourceReferences: userSelection
+            ? entry.sourceReferences
+            : rewritePortableReferences(entry.sourceReferences, replacements),
         };
       }
       if (entry.sourceReferences.some((value) => value.startsWith('context-package:'))) {
@@ -3896,10 +3941,9 @@ function readRetrievalTraceImportState(
         targetSourceScope,
         context
       );
-      const targetSourceReferences = rewritePortableReferences(
-        entry.sourceReferences,
-        replacements
-      );
+      const targetSourceReferences = userSelection
+        ? entry.sourceReferences
+        : rewritePortableReferences(entry.sourceReferences, replacements);
       if (sourceTrace.sourceScope.startsWith('page/workspace/') && entry.contentDigest !== null) {
         if (entry.sourceReferences.some((value) => value.startsWith('context-package:'))) {
           throw new Error(
@@ -3943,7 +3987,8 @@ function readRetrievalTraceImportState(
       requestDigest: sourceTrace.requestDigest,
       queryContext: {
         ...sourceTrace.queryContext,
-        serverId: context.targetServerId,
+        // S51 retains a User query's external authority so a foreign import cannot acquire target self access.
+        serverId: userSelection ? sourceTrace.queryContext.serverId : context.targetServerId,
         workspaceId: context.targetWorkspaceId,
         threadId: targetThreadId,
         ...(targetTurnId ? { turnId: targetTurnId } : { turnId: undefined }),
@@ -4229,8 +4274,25 @@ function readExportedArtifacts(
     const artifactId = metadataPath.split('/')[1] as string;
     const metadata = readImportJson(files, metadataPath) as Record<string, unknown>;
     const format = z
-      .enum(['markdown', 'text', 'json'])
+      .enum(['markdown', 'text', 'json', 'file'])
       .parse((metadata.content as { format?: unknown } | undefined)?.format);
+    if (format === 'file') {
+      const artifact = ArtifactSchema.parse(metadata);
+      const payloadPath = `artifacts/${artifactId}/versions/${artifact.version}/payload`;
+      const payload = manifest.contentInventory.find((entry) => entry.path === payloadPath);
+      if (
+        artifact.id !== artifactId ||
+        artifact.content.format !== 'file' ||
+        !payload ||
+        payload.bytes !== artifact.content.byteLength ||
+        payload.digest !== artifact.contentDigest
+      ) {
+        throw new Error('Artifact export payload ownership is inconsistent.');
+      }
+      expectedPaths.add(metadataPath);
+      expectedPaths.add(payloadPath);
+      return artifact;
+    }
     const bodyPath = `artifacts/${artifactId}/files/${artifactContentFileName(format)}`;
 
     expectedPaths.add(metadataPath);

@@ -13,6 +13,7 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
@@ -279,7 +280,11 @@ describe('authoritative NanoHost session dispatch', () => {
               ? { ...fixture.input, futureAuthority: true }
               : fixture.input,
         };
-        const current = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+        const current = createNanoHostSessionDispatch({
+          coreDb,
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          sessionAuthority: authority,
+        });
         await current.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64), note: 'ignored' })),
@@ -437,7 +442,11 @@ describe('authoritative NanoHost session dispatch', () => {
           );
       }
       // Exercise the live extension through the same physical-session and handwritten validator owners.
-      const live = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      const live = createNanoHostSessionDispatch({
+        coreDb,
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        sessionAuthority: authority,
+      });
       await live.readiness!(
         physical,
         Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
@@ -462,7 +471,7 @@ describe('authoritative NanoHost session dispatch', () => {
       };
       for (const invalid of [
         { maxByteLength: 0 },
-        { maxByteLength: 16 * 1024 * 1024 + 2 },
+        { maxByteLength: 1_000_000_002 },
         { presence: 'required' },
         { agentSessionId: '' },
         { terminalBarrierProved: true },
@@ -475,9 +484,20 @@ describe('authoritative NanoHost session dispatch', () => {
             requestId: 'b'.repeat(64),
             input: { ...liveInput, ...invalid },
           })
-        ).rejects.toThrow(/invalid/i);
+        ).rejects.toThrow(/invalid|bound/i);
         expect(await live.poll(physical, 'file.export')).toBeNull();
       }
+      const largeRequestId = 'e'.repeat(64);
+      const large = live.effect({
+        kind: 'file.export',
+        requestId: largeRequestId,
+        input: { ...liveInput, maxByteLength: 1_000_000_001 },
+      });
+      expect(await live.poll(physical, 'file.export')).toMatchObject({
+        maxByteLength: 1_000_000_001,
+      });
+      await live.result(physical, 'file.export', { requestId: largeRequestId, state: 'absent' });
+      await expect(large).resolves.toEqual({ state: 'absent' });
       const refusedId = 'b'.repeat(64);
       const refused = live.effect({ kind: 'file.export', requestId: refusedId, input: liveInput });
       expect(await live.poll(physical, 'file.export')).toEqual({
@@ -549,7 +569,11 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-cleanup-poll-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+    });
     const target = { deploymentId: 'live-cleanup', identityId: 'live-cleanup' };
     allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
@@ -652,7 +676,11 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-collection-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+    });
     const target = { deploymentId: 'collection', identityId: 'collection' };
     allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
@@ -1073,7 +1101,11 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-result-ack-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+    });
     const target = { deploymentId: 'deployment-ack', identityId: 'host-ack' };
     allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
@@ -1374,7 +1406,11 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-settlement-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+    });
     const target = {
       coreDb,
       deploymentId: 'deployment-settlement',
@@ -1450,7 +1486,11 @@ describe('authoritative NanoHost session dispatch', () => {
       expect(authority.mayCarryWork(physical)).toBe(true);
       coreDb.sqlite.exec('PRAGMA query_only = OFF');
       await dispatch.result(physical, 'image.acquire', result);
-      const restarted = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      const restarted = createNanoHostSessionDispatch({
+        coreDb,
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        sessionAuthority: authority,
+      });
       await expect(restarted.result(physical, 'image.acquire', result)).resolves.toBeUndefined();
       await restarted.readiness!(
         physical,
@@ -2236,7 +2276,11 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-effect-epoch-origin-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+    });
     const target = {
       coreDb,
       deploymentId: 'deployment-effect-epoch-origin',

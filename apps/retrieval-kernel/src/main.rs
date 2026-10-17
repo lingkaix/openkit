@@ -205,6 +205,9 @@ struct Request {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 enum Operation {
+    DigestWindows {
+        request: digest_window::DigestWindowRequest,
+    },
     Publish {
         view: ScopeView,
         #[serde(deserialize_with = "required_expected")]
@@ -243,6 +246,10 @@ fn service(kernel: &Kernel, value: Value) -> Option<Value> {
             ));
         }
         match request.operation {
+            Operation::DigestWindows { request } => {
+                serde_json::to_value(kernel.digest_windows(request)?)
+                    .map_err(|_| error("io", "response serialization failed"))
+            }
             Operation::Publish {
                 view,
                 expected_generation,

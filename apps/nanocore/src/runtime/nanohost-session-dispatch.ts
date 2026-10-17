@@ -1,7 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { mkdtemp, open, rename, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
@@ -19,7 +18,9 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { OperationError } from '../operation-error.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
+import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
 import {
   captureTelemetryContext,
   injectTelemetryContext,
@@ -68,7 +69,8 @@ const INFERENCE_BODY_MAX_BYTES = 2 * 1024 * 1024;
 /** Per-request capability body ceiling, independent of the family DATA reservation. */
 const CAPABILITY_BODY_MAX_BYTES = 512 * 1024;
 /** Exact V1 maximum for one file-data body. */
-const FILE_DATA_MAX_BYTES = 256 * 1024 * 1024;
+const FILE_DATA_MAX_BYTES = 1_000_000_001;
+const TERMINAL_FILE_MAX_BYTES = 256 * 1024 * 1024;
 /** Maximum application write or consumption release for file data. */
 const FILE_DATA_CHUNK_BYTES = 64 * 1024;
 /** Sole media type accepted on the two raw file-data directions. */
@@ -239,6 +241,8 @@ export interface NanoHostResultOnlySettlement {
 export interface CreateNanoHostSessionDispatchInput {
   /** Existing server database used for preparation-image settlement and cleaned-delete correlation. */
   readonly coreDb?: CoreDb | undefined;
+  /** Shared Core disk reserve and all in-flight file-write capacity. */
+  readonly fileAdmission?: FileStorageAdmission;
   /** Optional direct handler used by lower-level dispatcher checks. */
   readonly effectHandler?: (request: NanoHostSessionEffectRequest) => Promise<unknown>;
   /** Optional semantic-route handler used by the shared outer session. */
@@ -1086,6 +1090,7 @@ export function createNanoHostSessionDispatch(
         requestId !== pending.requestId ||
         request.headers.get('content-length') !== String(byteLength) ||
         byteLength === 0 ||
+        byteLength > TERMINAL_FILE_MAX_BYTES ||
         (unstable !== 'true' && unstable !== 'false') ||
         !sameWorkspaceSnapshot(previousHead, command.previousHead) ||
         !sameWorkspaceSnapshot(acceptedBase, command.acceptedBase) ||
@@ -1101,7 +1106,11 @@ export function createNanoHostSessionDispatch(
       const staged = await stageFileExport(
         request,
         { byteLength, sha256 },
-        pending.collectionAbort?.signal
+        {
+          dataRoot: input.coreDb?.dataRoot,
+          admission: input.fileAdmission,
+          signal: pending.collectionAbort?.signal,
+        }
       );
       try {
         requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
@@ -1141,7 +1150,10 @@ export function createNanoHostSessionDispatch(
         throw effectTransportError(409, 'NanoHost file export cannot retry on one generation.');
       }
 
-      const staged = await stageFileExport(request, metadata);
+      const staged = await stageFileExport(request, metadata, {
+        dataRoot: input.coreDb?.dataRoot,
+        admission: input.fileAdmission,
+      });
       if (!pending) {
         const matchesCompleted = sameFileResult(completed?.fileResult, metadata);
         await rm(staged.directory, { force: true, recursive: true });
@@ -1909,7 +1921,7 @@ function requireFileExportCommand(
     live &&
     (value.presence !== 'optional' ||
       maximum < 1 ||
-      maximum > 16 * 1024 * 1024 + 1 ||
+      maximum > FILE_DATA_MAX_BYTES ||
       [
         'submissionRequestId',
         'turnId',
@@ -1924,7 +1936,7 @@ function requireFileExportCommand(
   )
     throw effectTransportError(400, 'NanoHost live export admission is invalid.');
   // Terminal producers and Host admission retain their existing proof owners; live capture adds no terminal gate.
-  if (!live && maximum !== FILE_DATA_MAX_BYTES)
+  if (!live && maximum !== TERMINAL_FILE_MAX_BYTES)
     throw effectTransportError(400, 'NanoHost terminal export bound is invalid.');
   return { ...value, requestId };
 }
@@ -2301,8 +2313,22 @@ function requirePendingFileExport(
 async function stageFileExport(
   request: Request,
   metadata: Pick<NanoHostFileResultIdentity, 'byteLength' | 'sha256'>,
-  signal?: AbortSignal
+  input: {
+    readonly dataRoot: string | undefined;
+    readonly admission: FileStorageAdmission | undefined;
+    readonly signal?: AbortSignal | undefined;
+  }
 ): Promise<{ readonly directory: string; readonly path: string }> {
+  if (!input.dataRoot || !input.admission)
+    throw effectTransportError(503, 'NanoHost file capacity admission is unavailable.');
+  const { signal } = input;
+  const reservation = input.admission.reserve({
+    stagingBytes: BigInt(metadata.byteLength),
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 65_536n,
+  });
+  let safeToRelease = false;
   let directory = '';
   let file: Awaited<ReturnType<typeof open>> | null = null;
   const digest = createHash('sha256');
@@ -2313,7 +2339,10 @@ async function stageFileExport(
   };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    directory = await mkdtemp(join(tmpdir(), 'openkit-nanocore-file-export-'));
+    signal?.throwIfAborted();
+    const parent = join(input.dataRoot, 'workspaces', '.staging');
+    await ensureCanonicalDirectoryAsync(parent);
+    directory = await mkdtemp(join(parent, 'nanohost-export-'));
     const partialPath = join(directory, '.partial');
     const finalPath = join(directory, 'complete');
     file = await open(partialPath, 'wx', 0o600);
@@ -2334,7 +2363,15 @@ async function stageFileExport(
           throw effectTransportError(413, 'NanoHost file export exceeds its bound.');
         }
         digest.update(slice);
-        await file.write(slice);
+        let written = 0;
+        while (written < slice.byteLength) {
+          signal?.throwIfAborted();
+          const { bytesWritten } = await file.write(slice, written);
+          if (!bytesWritten)
+            throw effectTransportError(500, 'NanoHost file export write made no progress.');
+          reservation.recordWritten(bytesWritten);
+          written += bytesWritten;
+        }
       }
     }
     signal?.throwIfAborted();
@@ -2352,6 +2389,10 @@ async function stageFileExport(
     }
     signal?.removeEventListener('abort', cancel);
     reader?.releaseLock();
+    reservation.assertAvailable();
+    // The transport stage is fully written and fsynced. Its bytes now occupy this filesystem;
+    // the consumer holds its own future-write reservation before creating a publication stage.
+    safeToRelease = true;
     return { directory, path: finalPath };
   } catch (error) {
     signal?.removeEventListener('abort', cancel);
@@ -2359,13 +2400,20 @@ async function stageFileExport(
     reader?.releaseLock();
     await file?.close().catch(() => undefined);
     if (directory) {
-      await rm(directory, { force: true, recursive: true }).catch(() => undefined);
-    }
+      try {
+        await rm(directory, { force: true, recursive: true });
+        safeToRelease = true;
+      } catch {
+        /* Keep unwritten capacity reserved when private staging cleanup is unproved. */
+      }
+    } else safeToRelease = true;
     const status = (error as { readonly status?: unknown } | null)?.status;
     if (status === 400 || status === 409 || status === 413) {
       throw error;
     }
     throw effectTransportError(500, 'NanoHost file export staging failed.');
+  } finally {
+    if (safeToRelease) reservation.release();
   }
 }
 
@@ -2522,7 +2570,7 @@ function isNormalizedRelativePath(value: string): boolean {
  * @param message Bounded private diagnostic.
  * @returns Tagged error consumed only by the private route projection.
  */
-function effectTransportError(status: 400 | 409 | 413 | 500, message: string): Error {
+function effectTransportError(status: 400 | 409 | 413 | 500 | 503, message: string): Error {
   return Object.assign(new Error(message), { status });
 }
 

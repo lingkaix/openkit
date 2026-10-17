@@ -682,7 +682,7 @@ describe('S16 Material and Artifact Review schemas', () => {
           title: 'Imported notes',
           mediaType: 'text/markdown',
           contentDigest,
-          content: '# Imported notes',
+          byteLength: 16,
         },
         'workspaceId',
       ],
@@ -704,16 +704,28 @@ describe('S16 Material and Artifact Review schemas', () => {
         false
       );
     }
-    for (const [content, expected] of [
-      ['{"valid":true}', true],
-      ['{"invalid":', false],
-    ] as const) {
+    // File import admits exact arbitrary-byte metadata. Content decoding belongs to an explicit processor.
+    for (const mediaType of ['application/json', 'application/octet-stream', 'image/png']) {
+      expect(
+        ImportWorkspaceArtifactRequestSchema.safeParse({ ...requests[0][1], mediaType }).success
+      ).toBe(true);
       expect(
         ImportWorkspaceArtifactRequestSchema.safeParse({
           ...requests[0][1],
-          mediaType: 'application/json',
-          content,
+          mediaType,
+          content: '{"invalid":',
         }).success
+      ).toBe(false);
+    }
+    for (const [byteLength, expected] of [
+      [0, true],
+      [1_000_000_000, true],
+      [1_000_000_001, false],
+      [-1, false],
+      [0.5, false],
+    ] as const) {
+      expect(
+        ImportWorkspaceArtifactRequestSchema.safeParse({ ...requests[0][1], byteLength }).success
       ).toBe(expected);
     }
     expect(
@@ -2461,7 +2473,7 @@ describe('app api schemas', () => {
         ...payload,
         build: { releaseTag: null, sourceCommit: release.sourceCommit },
       }).success
-    ).toBe(false);
+    ).toBe(true);
     expect(
       AppDiagnosticsClientResponseSchema.safeParse({
         ...payload,
@@ -5004,6 +5016,7 @@ describe('app api schemas', () => {
         rating: 'good',
         note: null,
         createdAt: timestamp,
+        history: [],
       }).rating
     ).toBe('good');
     expect(

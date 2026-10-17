@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
+  chmodSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -13,6 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
@@ -548,6 +551,7 @@ test('the operations Skill includes the standalone administrator CLI and the pub
   assert.equal(existsSync(join(repoRoot, 'skills', 'openkit')), false);
   assert.deepEqual(listFiles(skillRoot), [
     'SKILL.md',
+    'THIRD-PARTY-NOTICES.md',
     'references/getting-started.en.md',
     'references/nanocore-data-root-config.en.md',
     'references/nanocore-deployment-modes.en.md',
@@ -591,6 +595,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       .map(([id]) => id)
       .sort(),
     [
+      'artifact.download',
+      'artifact.import',
       'bootstrap.consume',
       'token.create',
       'token.rotate',
@@ -785,7 +791,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       );
       const localFields =
         definition.binding === 'streaming'
-          ? [entry.id === 'workspace.archive-download' ? 'destinationPath' : 'sourcePath']
+          ? [entry.id.endsWith('download') ? 'destinationPath' : 'sourcePath']
           : [];
       assert.deepEqual(
         Object.keys(sharedShape).sort(),
@@ -1464,6 +1470,7 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
   const { operationCatalog } = await operations();
   const expectedMappings = {
     'artifact.import': 'artifact.import',
+    'artifact.download': 'artifact.download',
     'artifact.introduce': 'artifact.introduce',
     'artifact.review.decide': 'artifact.review.decide',
     'artifact.review-list': 'artifact.review-list',
@@ -1978,6 +1985,202 @@ for (const [label, executable] of [
     assert.equal(JSON.parse(aliasCall.stdout).error.code, 'operation_not_found');
   });
 }
+
+test('Artifact CLI transfers import and download originals through the bundled command', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-cli-artifact-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const original = JSON.parse(
+    readFileSync(join(repoRoot, 'tests/fixtures/large-context/cases.json'), 'utf8')
+  ).originals.find((entry) => entry.id === 'binary-invalid-utf8');
+  const bytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
+  const sourcePath = join(root, 'source.bin');
+  const destinationPath = join(root, 'original.bin');
+  writeFileSync(sourcePath, bytes);
+  const workspaceId = protocol.allocateEntityId('ws');
+  const artifactId = protocol.allocateEntityId('ar');
+  const env = {
+    OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456',
+    OPENKIT_NANOCORE_TOKEN: 'okt_artifact_fixture',
+  };
+  const fetchModule = dataModule(`
+    globalThis.fetch = async (url, options) => {
+      const parsed = new URL(url);
+      const headers = new Headers(options.headers);
+      if (headers.get('authorization') !== 'Bearer okt_artifact_fixture') throw new Error('missing credential');
+      if (parsed.searchParams.has('sourcePath') || parsed.searchParams.has('destinationPath')) throw new Error('local path leaked');
+      if (parsed.pathname === '/api/app/operations/artifact.import') {
+        if (options.method !== 'POST') throw new Error('unexpected upload method');
+        if (headers.get('x-openkit-request-id') !== 'cli-raw-import') throw new Error('request identity changed');
+        const body = Buffer.from(await new Response(options.body).arrayBuffer());
+        if (!body.equals(Buffer.from('${bytes.toString('hex')}', 'hex'))) throw new Error('original changed');
+        return Response.json({ artifactId: '${artifactId}', artifactVersion: 1 }, { status: 201 });
+      }
+      if (parsed.pathname !== '/api/app/operations/artifact.download' || options.method !== 'GET') throw new Error('unexpected download');
+      if (parsed.searchParams.get('artifactVersion') !== '1' || parsed.searchParams.has('requestId')) throw new Error('selector changed');
+      return new Response(Buffer.from('${bytes.toString('hex')}', 'hex'), { headers: { 'content-type': 'application/octet-stream', 'content-length': '${original.size}', 'x-openkit-content-digest': '${original.sha256}' } });
+    };
+  `);
+  const uploaded = await runCli(
+    ['ops', 'call', 'artifact.import', '--input', '-'],
+    env,
+    JSON.stringify({
+      workspaceId,
+      requestId: 'cli-raw-import',
+      title: 'Original',
+      mediaType: 'application/octet-stream',
+      byteLength: original.size,
+      contentDigest: original.sha256,
+      sourcePath,
+    }),
+    [fetchModule]
+  );
+  assert.equal(uploaded.code, 0, uploaded.stdout + uploaded.stderr);
+  assert.deepEqual(JSON.parse(uploaded.stdout).data, { artifactId, artifactVersion: 1 });
+  const downloaded = await runCli(
+    ['ops', 'call', 'artifact.download', '--input', '-'],
+    env,
+    JSON.stringify({
+      workspaceId,
+      artifactId,
+      artifactVersion: 1,
+      destinationPath,
+    }),
+    [fetchModule]
+  );
+  assert.equal(downloaded.code, 0, downloaded.stdout + downloaded.stderr);
+  assert.deepEqual(JSON.parse(downloaded.stdout).data, { downloaded: true });
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
+  assert.doesNotMatch(
+    uploaded.stdout + downloaded.stdout + uploaded.stderr + downloaded.stderr,
+    /okt_artifact_fixture/
+  );
+});
+
+test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local destinations', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-skill-artifact-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const original = JSON.parse(
+    readFileSync(join(repoRoot, 'tests/fixtures/large-context/cases.json'), 'utf8')
+  ).originals.find((entry) => entry.id === 'binary-invalid-utf8');
+  const bytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
+  const sourcePath = join(root, 'source.bin');
+  const destinationPath = join(root, 'download.bin');
+  writeFileSync(sourcePath, bytes);
+  const { operationCatalog } = await operations();
+  const upload = operationCatalog.find((entry) => entry.id === 'artifact.import');
+  const download = operationCatalog.find((entry) => entry.id === 'artifact.download');
+  assert.equal(upload.clientMethod, 'artifactFiles.import');
+  assert.equal(download.clientMethod, 'artifactFiles.download');
+  assert.equal(download.mutating, true, 'writing the destination is a local mutation');
+  const workspaceId = protocol.allocateEntityId('ws');
+  const artifactId = protocol.allocateEntityId('ar');
+  const metadata = {
+    workspaceId,
+    requestId: 'artifact-cli-import',
+    title: 'Exact binary',
+    mediaType: 'application/octet-stream',
+    byteLength: original.size,
+    contentDigest: original.sha256,
+  };
+  const selector = { workspaceId, artifactId, artifactVersion: 1 };
+  const client = createCoreClient({
+    baseUrl: 'http://127.0.0.1',
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      const headers = new Headers(init.headers);
+      if (url.pathname === '/api/app/operations/artifact.import') {
+        assert.equal(init.method, 'POST');
+        assert.equal(headers.get('x-openkit-request-id'), metadata.requestId);
+        assert.deepEqual(Object.fromEntries(url.searchParams), {
+          workspaceId: metadata.workspaceId,
+          title: metadata.title,
+          mediaType: metadata.mediaType,
+          byteLength: String(original.size),
+          contentDigest: original.sha256,
+        });
+        assert.deepEqual(Buffer.from(await new Response(init.body).arrayBuffer()), bytes);
+        return Response.json(
+          { artifactId: selector.artifactId, artifactVersion: 1 },
+          { status: 201 }
+        );
+      }
+      assert.equal(url.pathname, '/api/app/operations/artifact.download');
+      assert.equal(init.method, 'GET');
+      assert.deepEqual(Object.fromEntries(url.searchParams), { ...selector, artifactVersion: '1' });
+      return new Response(bytes, {
+        headers: {
+          'content-length': String(original.size),
+          'content-type': 'application/octet-stream',
+          'x-openkit-content-digest': original.sha256,
+        },
+      });
+    },
+  });
+  assert.equal(Object.hasOwn(client.operations, 'artifact.import'), false);
+  assert.equal(Object.hasOwn(client.operations, 'artifact.download'), false);
+  assert.deepEqual(
+    await upload.handler({ client }, upload.inputSchema.parse({ ...metadata, sourcePath })),
+    { artifactId, artifactVersion: 1 }
+  );
+  assert.deepEqual(
+    await download.handler(
+      { client },
+      download.inputSchema.parse({ ...selector, destinationPath })
+    ),
+    { downloaded: true }
+  );
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
+  await assert.rejects(
+    download.handler({ client }, { ...selector, destinationPath }),
+    (error) => error.code === 'artifact_destination_exists'
+  );
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  const linkedSource = join(root, 'source-link');
+  symlinkSync(sourcePath, linkedSource);
+  for (const path of [linkedSource, root]) {
+    await assert.rejects(
+      async () => upload.handler({ client }, { ...metadata, sourcePath: path }),
+      (error) => error.code === 'invalid_artifact_source'
+    );
+  }
+  const linkedDestination = join(root, 'download-link');
+  symlinkSync(sourcePath, linkedDestination);
+  await assert.rejects(
+    download.handler({ client }, { ...selector, destinationPath: linkedDestination }),
+    (error) => error.code === 'artifact_destination_exists'
+  );
+  assert.deepEqual(readFileSync(sourcePath), bytes);
+  for (const failure of ['digest', 'length', 'stream']) {
+    const path = join(root, `${failure}.bin`);
+    const failedClient = {
+      artifactFiles: {
+        async download() {
+          return {
+            body:
+              failure === 'stream'
+                ? new ReadableStream({
+                    start(controller) {
+                      controller.error(new Error('Fixture interrupted stream.'));
+                    },
+                  })
+                : new Response(bytes).body,
+            byteLength: failure === 'length' ? bytes.length + 1 : bytes.length,
+            contentDigest: failure === 'digest' ? `sha256:${'0'.repeat(64)}` : original.sha256,
+            mediaType: 'application/octet-stream',
+          };
+        },
+      },
+    };
+    await assert.rejects(
+      download.handler({ client: failedClient }, { ...selector, destinationPath: path }),
+      (error) => error.code === 'artifact_download_failed'
+    );
+    // The exclusive destination may retain partial bytes after a failed transfer. It is never an accepted download.
+    if (existsSync(path)) assert.equal(statSync(path).mode & 0o777, 0o600);
+  }
+});
 
 test('portable archive operations stream bytes and refuse local path replacement', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-skill-archive-'));
@@ -3149,6 +3352,159 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
     assert.equal(JSON.parse(result.stdout).error.code, 'vault_mutation_failed');
     assert.ok(!result.stdout.includes(material));
     assert.ok(!result.stderr.includes(material));
+  }
+});
+
+test('the bundled CLI stages one local Skill in the caller and uploads only its exact tree', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-local-skill-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, 'source');
+  const selected = join(source, 'skills', 'sample');
+  mkdirSync(join(selected, 'empty'), { recursive: true });
+  const header = Buffer.from(
+    '\uFEFF---\r\nname: Original Name\r\ndescription: Keep authored bytes.\r\n---\r\nOriginal instructions.\r\n'
+  );
+  const script = Buffer.from('#!/bin/sh\nprintf "authored\\n"\n');
+  writeFileSync(join(selected, 'SKILL.md'), header);
+  writeFileSync(join(selected, 'run.sh'), script);
+  chmodSync(join(selected, 'run.sh'), 0o751);
+  const executable = join(root, 'openkit');
+  cpSync(cliPath, executable);
+  const input = {
+    workspaceId: protocol.allocateEntityId('ws'),
+    requestId: '00000000-0000-4000-8000-000000000021',
+    expectedRevision: 3,
+    activate: false,
+    id: 'local-skill',
+    displayName: 'Retained display',
+    source,
+    sourceSubpath: 'skills/sample',
+    sourceSkillName: 'Original Name',
+  };
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'catalog.skill-import');
+  assert.deepEqual(operation.inputSchema.parse(input), input);
+  assert.equal(operation.inputSchema.safeParse({ ...input, hostPath: source }).success, false);
+  assert.equal(
+    operation.inputSchema.safeParse({ ...input, tree: [{ kind: 'directory', path: 'empty' }] })
+      .success,
+    false
+  );
+  const requests = [];
+  const response = {
+    revision: 4,
+    entry: {
+      id: input.id,
+      displayName: input.displayName,
+      description: null,
+      availability: 'available',
+      currentDigest: null,
+    },
+    version: {
+      entryId: input.id,
+      digest: `sha256:${'a'.repeat(64)}`,
+      digestFormat: 'openkit-tree-v1',
+      contentState: 'retained',
+      createdAt: '2026-10-17T00:00:00.000Z',
+      inventory: [],
+      producer: { kind: 'user', id: protocol.allocateEntityId('usr') },
+      publisherVersion: null,
+      provenance: {
+        baseDigest: null,
+        pluginMemberKey: null,
+        pluginVersionDigest: null,
+        sourceCommit: null,
+        sourceSubpath: null,
+        uploadedSourceId: null,
+      },
+    },
+  };
+  const server = createServer(async (request, reply) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push({
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+    });
+    reply.writeHead(201, { 'content-type': 'application/json' });
+    reply.end(JSON.stringify(response));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise((resolve, reject) => {
+        server.closeAllConnections();
+        server.close((error) => (error ? reject(error) : resolve()));
+      })
+  );
+  const env = {
+    OPENKIT_NANOCORE_URL: `http://127.0.0.1:${server.address().port}`,
+    OPENKIT_NANOCORE_TOKEN: '',
+  };
+  const args = ['ops', 'call', 'catalog.skill-import', '--input', '-'];
+  const result = await runCli(args, env, JSON.stringify(input), [], undefined, executable);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/app/operations/catalog.skill-import');
+  assert.equal(requests[0].method, 'POST');
+  assert.equal(requests[0].headers['x-openkit-client-channel'], 'openkit-cli');
+  assert.equal(requests[0].headers['x-openkit-client-source'], 'agent-skill');
+  assert.equal(requests[0].headers['x-openkit-request-id'], input.requestId);
+  assert.equal(JSON.parse(result.stdout).requestId, input.requestId);
+  assert.deepEqual(
+    {
+      ...requests[0].body,
+      tree: requests[0].body.tree?.toSorted((left, right) =>
+        Buffer.compare(Buffer.from(left.path), Buffer.from(right.path))
+      ),
+    },
+    {
+      workspaceId: input.workspaceId,
+      expectedRevision: input.expectedRevision,
+      activate: input.activate,
+      id: input.id,
+      displayName: input.displayName,
+      tree: [
+        {
+          kind: 'file',
+          path: 'SKILL.md',
+          executable: false,
+          contentBase64: header.toString('base64'),
+        },
+        { kind: 'directory', path: 'empty' },
+        {
+          kind: 'file',
+          path: 'run.sh',
+          executable: true,
+          contentBase64: script.toString('base64'),
+        },
+      ],
+    }
+  );
+  assert.equal(JSON.stringify(requests[0].body).includes(source), false);
+  for (const failed of [
+    { ...input, sourceSubpath: 'skills/missing' },
+    { ...input, unknownField: true },
+  ]) {
+    const rejected = await runCli(args, env, JSON.stringify(failed), [], undefined, executable);
+    assert.equal(rejected.code, 2, rejected.stdout + rejected.stderr);
+    assert.equal(
+      requests.length,
+      1,
+      'Local source/schema failures must not contact the import endpoint.'
+    );
+    assert.equal(rejected.stdout.includes(source), false);
+  }
+  for (const source of ['https://example.invalid/skill.zip', 'https://github.com/example/skills']) {
+    const remote = operation.inputSchema.parse({ ...input, source });
+    const forwarded = [];
+    await operation.handler(
+      { client: { operations: { 'catalog.skill-import': async (body) => forwarded.push(body) } } },
+      remote
+    );
+    assert.deepEqual(forwarded, [remote]);
   }
 });
 

@@ -99,21 +99,24 @@ async function publish(target: ReturnType<typeof deployment>, cookie: string, la
   const workspace = (await workspaceResponse.json()) as { id: string };
   expect(isEntityId('ws', workspace.id)).toBe(true);
   const content = `Synthetic ${label} evidence`;
+  const artifactQuery = new URLSearchParams({
+    workspaceId: workspace.id,
+    title: label,
+    mediaType: 'text/plain',
+    byteLength: String(Buffer.byteLength(content)),
+    contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+  });
   const artifactResponse = await target.app.request(
-    ...operationRequest(
-      'artifact.import',
-      { workspaceId: workspace.id },
-      {
-        headers: { cookie },
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          title: label,
-          mediaType: 'text/plain',
-          content,
-          contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-        }),
-      }
-    )
+    `/api/app/operations/artifact.import?${artifactQuery}`,
+    {
+      method: 'POST',
+      headers: {
+        cookie,
+        'content-type': 'text/plain',
+        'x-openkit-request-id': randomUUID(),
+      },
+      body: content,
+    }
   );
   expect(artifactResponse.status).toBe(201);
   const artifact = (await artifactResponse.json()) as { artifactId: string };
@@ -188,22 +191,22 @@ it('re-registers the protected synthetic account set on a clean candidate and re
   // Exercise the existing local Workspace fence; this is not proof of a deployment-wide writer fence.
   for (const work of sourceWork) await source.admission.close(work.workspaceId);
   const oldSession = await authenticate(source, subjects[0], false);
-  const fenced = await source.app.request(
-    ...operationRequest(
-      'artifact.import',
-      { workspaceId: sourceWork[0]!.workspaceId },
-      {
-        headers: { cookie: oldSession.cookie },
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          title: 'fenced',
-          mediaType: 'text/plain',
-          content: 'fenced',
-          contentDigest: `sha256:${createHash('sha256').update('fenced').digest('hex')}`,
-        }),
-      }
-    )
-  );
+  const fencedQuery = new URLSearchParams({
+    workspaceId: sourceWork[0]!.workspaceId,
+    title: 'fenced',
+    mediaType: 'text/plain',
+    byteLength: String(Buffer.byteLength('fenced')),
+    contentDigest: `sha256:${createHash('sha256').update('fenced').digest('hex')}`,
+  });
+  const fenced = await source.app.request(`/api/app/operations/artifact.import?${fencedQuery}`, {
+    method: 'POST',
+    headers: {
+      cookie: oldSession.cookie,
+      'content-type': 'text/plain',
+      'x-openkit-request-id': randomUUID(),
+    },
+    body: 'fenced',
+  });
   expect(fenced.status).toBe(403);
   expect(
     sourceWork.map((work) =>
@@ -227,8 +230,24 @@ it('re-registers the protected synthetic account set on a clean candidate and re
       )
     );
     expect(read.status).toBe(200);
-    const artifact = (await read.json()) as { content: { body: string } };
-    expect(artifact.content.body).toBe(work.content);
+    expect(await read.json()).toMatchObject({
+      content: {
+        format: 'file',
+        mediaType: 'text/plain',
+        byteLength: Buffer.byteLength(work.content),
+      },
+    });
+    const downloadQuery = new URLSearchParams({
+      workspaceId: work.workspaceId,
+      artifactId: work.artifactId,
+      artifactVersion: '1',
+    });
+    const download = await reopened.app.request(
+      `/api/app/operations/artifact.download?${downloadQuery}`,
+      { headers: { cookie: account.cookie } }
+    );
+    expect(download.status).toBe(200);
+    expect(await download.text()).toBe(work.content);
     verifiedSubjects.add(subject);
     if (index === 2) {
       const adminRead = await reopened.app.request(

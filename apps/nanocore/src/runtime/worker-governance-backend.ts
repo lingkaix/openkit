@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import { lstat, readdir, readFile, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   MaterializedWorkspaceRoot,
   StagedWorkspaceReview,
@@ -16,8 +18,15 @@ import {
 } from '@openkit/config-schema';
 import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
-import { skillSnapshotPath } from '../catalog/resource-catalog.js';
+import {
+  CatalogContentUnavailableError,
+  CatalogIntegrityError,
+  CatalogNotFoundError,
+  loadWorkspaceResourceCatalog,
+  readWorkspaceSkillSnapshot,
+} from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import type { CapturedWorkerFile } from '../storage/artifacts/worker-file-transfer.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
@@ -334,9 +343,6 @@ export interface NanoHostStagedExportResult {
   readonly stagingPath: string;
 }
 
-/** Worker Artifact aggregate bound retained by the existing canonical collection owner. */
-export const MAX_WORKER_ARTIFACT_BYTES = 16 * 1024 * 1024;
-
 /**
  * Prepares the canonical AEP, then declared worker-supply files, then Context Package imports.
  *
@@ -447,11 +453,14 @@ export async function prepareNanoHostContextPackageImports(
 }
 
 /**
- * Reads verified Skill snapshot files into import-only worker-supply identities.
+ * Projects the catalog's verified retained entry collection into worker-supply imports.
  *
- * @param environmentPackage Admitted AEP whose supply inventory is authoritative.
+ * Directory and executable facts remain in the AEP inventory; the existing import contract carries file bytes only.
+ *
+ * @param environmentPackage Admitted AEP whose exact selection must match retained catalog authority.
  * @param dataRoot Workspace data root holding catalog snapshots.
  * @returns Sorted regular-file imports, or an empty list when no Skills are supplied.
+ * @throws CatalogNotFoundError or CatalogIntegrityError when retained supply or its AEP claims are unavailable or changed.
  */
 async function prepareWorkerSupplyImports(
   environmentPackage: AgentEnvironmentPackage,
@@ -467,32 +476,66 @@ async function prepareWorkerSupplyImports(
     throw new Error('Worker supply imports require a data root.');
   }
   const inputPaths = workerSessionInputPaths(environmentPackage.scope.agentSessionId);
-  const imports: NanoHostContextPackageImport[] = [];
-  for (const skill of skills) {
+  const selected = skills.map((skill) => {
     const digest = skill.integrity?.sha256;
-    const inventory = skill.inventory;
-    if (!digest || !inventory) {
-      throw new Error(`Worker supply skill is missing verified inventory: ${skill.id}`);
+    if (!digest || !skill.inventory) {
+      throw new CatalogIntegrityError(
+        `Worker supply skill is missing verified inventory: ${skill.id}`
+      );
     }
-    const snapshot = skillSnapshotPath(
+    const { entries, version } = readWorkspaceSkillSnapshot({
       dataRoot,
-      environmentPackage.scope.workspaceId,
-      skill.id,
-      digest
+      digest,
+      entryId: skill.id,
+      workspaceId: environmentPackage.scope.workspaceId,
+    });
+    if (
+      skill.digestFormat !== version.digestFormat ||
+      skill.version !== (version.publisherVersion ?? digest) ||
+      skill.sourceRef !== `catalog:skill:${skill.id}:${digest}` ||
+      !isDeepStrictEqual(skill.inventory, version.inventory) ||
+      !isDeepStrictEqual(skill.lineage, {
+        baseDigest: version.provenance.baseDigest,
+        pluginMemberKey: version.provenance.pluginMemberKey,
+        pluginVersionDigest: version.provenance.pluginVersionDigest,
+      })
+    ) {
+      throw new CatalogIntegrityError(
+        `Worker Skill supply does not match its retained catalog version: ${skill.id}`
+      );
+    }
+    return { digest, entries, skill, version };
+  });
+  // Check the whole captured selection after all reads, without following later default or pin changes.
+  const current = loadWorkspaceResourceCatalog(dataRoot, environmentPackage.scope.workspaceId);
+  const imports: NanoHostContextPackageImport[] = [];
+  for (const { digest, entries, skill, version } of selected) {
+    const retained = current.skills.versions.find(
+      (item) => item.entryId === skill.id && item.digest === digest
     );
-    const files = inventory
-      .filter((entry) => entry.kind === 'file')
-      .slice()
+    if (
+      !current.skills.entries.some(
+        (item) => item.id === skill.id && item.availability === 'available'
+      ) ||
+      !retained
+    ) {
+      throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${skill.id}`);
+    }
+    if (retained.contentState === 'purged') {
+      throw new CatalogContentUnavailableError(`Skill content was purged: ${skill.id}/${digest}`);
+    }
+    if (!isDeepStrictEqual(retained, version)) {
+      throw new CatalogIntegrityError(
+        `Skill version changed during Worker supply admission: ${skill.id}/${digest}`
+      );
+    }
+    const files = entries
+      .filter((entry) => entry.kind !== 0)
       .sort((left, right) => left.path.localeCompare(right.path));
     for (const file of files) {
-      if (!file.sha256) {
-        throw new Error(`Worker supply file is missing digest: ${skill.id}/${file.path}`);
-      }
-      const body = await readFile(join(snapshot, file.path));
-      const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-      if (contentDigest !== file.sha256 || body.byteLength !== file.size) {
-        throw new Error(`Worker supply file digest mismatch: ${skill.id}/${file.path}`);
-      }
+      // The shared reader proved both this captured body and its exact inventory row.
+      const body = file.content!;
+      const contentDigest = version.inventory.find((row) => row.path === file.path)!.sha256!;
       imports.push({
         body,
         byteLength: body.byteLength,
@@ -614,6 +657,81 @@ export async function consumeNanoHostStagedExport(value: unknown): Promise<Buffe
   }
 }
 
+/** Opens one exact export with bounded verification and descriptor-owned streaming. The caller disposes the private copy on success, refusal or fencing. */
+export async function openNanoHostStagedExport(
+  value: unknown,
+  signal?: AbortSignal
+): Promise<CapturedWorkerFile> {
+  if (
+    !isRecord(value) ||
+    typeof value.stagingPath !== 'string' ||
+    !Number.isSafeInteger(value.byteLength) ||
+    (value.byteLength as number) < 0 ||
+    (value.byteLength as number) > 1_000_000_001 ||
+    typeof value.sha256 !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.sha256)
+  ) {
+    throw new Error('NanoHost staged export identity is invalid.');
+  }
+  const path = value.stagingPath;
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    signal?.throwIfAborted();
+    const before = await file.stat({ bigint: true });
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      before.size !== BigInt(value.byteLength as number)
+    )
+      throw new Error('NanoHost staged export is not the exact regular file.');
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(65_536);
+    let position = 0;
+    while (position < (value.byteLength as number)) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await file.read(
+        buffer,
+        0,
+        Math.min(buffer.length, (value.byteLength as number) - position),
+        position
+      );
+      if (!bytesRead) throw new Error('NanoHost staged export is incomplete.');
+      digest.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    const after = await file.stat({ bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      after.nlink !== 1n ||
+      `sha256:${digest.digest('hex')}` !== value.sha256
+    )
+      throw new Error('NanoHost staged export digest or identity disagrees.');
+    const source = file.createReadStream({
+      start: 0,
+      highWaterMark: 65_536,
+      ...(signal ? { signal } : {}),
+    });
+    return {
+      byteLength: position,
+      contentDigest: value.sha256,
+      source,
+      remove: async () => {
+        source.destroy();
+        await file.close();
+        await removeNanoHostStagedExport(path);
+      },
+    };
+  } catch (error) {
+    await file.close();
+    await removeNanoHostStagedExport(path);
+    throw error;
+  }
+}
+
 /**
  * Re-verifies one dispatcher-owned staged export without consuming its canonical-import lifetime.
  *
@@ -631,6 +749,7 @@ export async function inspectNanoHostStagedExport(
   if (
     typeof result.stagingPath !== 'string' ||
     typeof result.byteLength !== 'number' ||
+    result.byteLength > 256 * 1024 * 1024 ||
     typeof result.sha256 !== 'string' ||
     !/^sha256:[0-9a-f]{64}$/.test(result.sha256)
   ) {
@@ -1305,10 +1424,11 @@ export type WorkerArtifactCapture = (input: {
   readonly path: string;
   readonly maxByteLength: number;
   readonly signal?: AbortSignal;
-}) => Promise<{
-  readonly bytes: Buffer;
-  readonly credentialCheckValues: import('./worker-credential-guard.js').WorkerCredentialCheckValues;
-}>;
+}) => Promise<
+  CapturedWorkerFile & {
+    readonly credentialCheckValues: import('./worker-credential-guard.js').WorkerCredentialCheckValues;
+  }
+>;
 
 /**
  * Creates one redacted fail-closed Artifact collection error.
