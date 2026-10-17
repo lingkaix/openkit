@@ -30,7 +30,7 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 
 ## Summary
 
-NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Quick Chat, Core Assistant, Workflow Coordinator, Knowledge Manager, and every later model-using internal role assemble different role inputs over this same loop; each role uses its owned context policy and never receives a separate direct Provider runtime. The Knowledge Manager uses OpenKit compaction; other internal roles use durable rolling context.
+NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Core Assistant, Workflow Coordinator, Knowledge Manager and every later admitted model-using internal role assemble different role inputs over this same loop; each role uses its owned context policy and never receives a separate direct Provider runtime. The Knowledge Manager uses OpenKit compaction; other internal roles use durable rolling context.
 
 The caller assembles all role and product meaning before invocation, and the loop only performs model calls, consumes admitted context, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
 
@@ -313,7 +313,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 ## Acceptance Predicates
 
 - One role-agnostic loop runs distinct internal roles from assembled inputs without importing or branching on product concepts.
-- Quick Chat and every other model-using internal role use this loop, and a role remains on the same implementation regardless of conversation length.
+- Core Assistant and every other model-using internal role use this loop, and a role remains on the same implementation regardless of conversation length.
 - `InternalAgentLoopInput`, `AgentMessage`, `AgentTool`, `InternalAgentLoopExit`, and provider projection remain NanoCore-private and are absent from protocol, App API, config schema, AEP, worker-control, and NanoHost surfaces.
 - Exactly three fuses and four typed exits cover every local termination path, and none becomes product success.
 - Truncated or incomplete Tool calls execute zero environment operations, while complete calls execute sequentially after schema validation.

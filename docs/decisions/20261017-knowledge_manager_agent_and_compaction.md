@@ -15,11 +15,17 @@ The Knowledge Manager uses OpenKit compaction with a summary checkpoint near the
 
 Every internal role uses the existing configurable execution-profile resolver. The Knowledge Manager should use a knowledgeable model with low hallucination and a large context window. Grok 4.7 is the engineer's current deployment choice because only the xAI login is available; it is not a hard-coded model requirement.
 
+The engineer's approximately 06:36Z clarification keeps the existing internal roles and gives Knowledge Manager its own work and usage accounting. The requesting call supplies lineage only. Knowledge Manager has no network tools or effects outside querying and managing its notebook scope. Its operations are trusted at this stage; additional model review and confidence marks are deferred. Required human authority still applies.
+
+OKF keeps a closed core and open front-matter extensions. No page-level origin or trust field is required; existing commit metadata records the source of each change. A simple administrator tombstone mechanism is specified for the Git notebook, with implementation deferred. It masks content through ordinary commits and product reads, without rewriting history. Items and backups remain outside this mechanism.
+
 ## Reason
 
 The engineer wants agent-native retrieval and curation, not a deterministic retrieval coordinator with an agent label. A dedicated Knowledge Manager can search, read, combine evidence and explain uncertainty. A persistent maintenance conversation preserves user-visible intent and approval. Independent query runs keep audiences isolated. The engineer chose traditional compaction for its long-context maintenance work rather than applying the Assistant's rolling-window choice to every role.
 
 Source: coordinator's recorded engineer rulings of 2026-10-17, approximately 05:29Z and 05:38Z, and the accepted option B in the Knowledge and Memory rethink, Revision 2. The original wording follows verbatim at the engineer's request. The English translations preserve its meaning.
+
+At approximately 06:36Z, the engineer clarified accounting, single-purpose trust, extensible front matter and notebook-only masking. The coordinator's 06:38Z addendum assigned these rules to this same owner change. Mixed-origin pages make one required page-level origin label misleading; per-change Git attribution preserves the relevant distinction. The notebook needs a product masking mechanism because external text tools cannot easily change its Git-backed read projections. This does not require history rewrite or physical erasure.
 
 ### Approximately 05:29Z: Verbatim
 
@@ -44,10 +50,13 @@ First, use your recommended option B. Second, the model should be configurable i
 - Option A, per-request maintenance rebuilt only from the notebook and Git history, omits the persistent maintenance conversation selected for user inspection and approval.
 - A new Knowledge Manager runtime, store, scheduler or ledger duplicates owners that already hold conversation, evidence and publication.
 - A fixed provider or hard-coded model prevents the per-Workspace configuration that the engineer requires.
+- Charging queries to the caller hides the Knowledge Manager's own work and usage.
+- A required page-origin/trust label cannot describe mixed sources and closes the intended front-matter extensions.
+- History rewrite and a new review/confidence mechanism exceed the engineer's current scope.
 
 ## Revisit When
 
-Revisit if the engineer changes maintenance continuity, query isolation or the Knowledge Manager's context policy. Revisit model selection when provider supply or measured role suitability changes; configuration changes do not require a new agent architecture.
+Revisit if the engineer changes maintenance continuity, query isolation or the Knowledge Manager's context policy. Revisit masking if product requirements need finer content selection or physical erasure. Revisit model selection when provider supply or measured role suitability changes; configuration changes do not require a new agent architecture.
 
 ## Affected Owners
 
@@ -58,3 +67,4 @@ Revisit if the engineer changes maintenance continuity, query isolation or the K
 - [Context Management And Compaction](../specs/20260902-agent_runtime_context_compaction.md)
 - [Worker MCP Tool Supply](../specs/20260704-worker_mcp_tool_supply.md)
 - [Personal Memory And Knowledge Learning](../specs/20260909-personal_memory_and_knowledge_learning.md)
+- [Knowledge Notebook Editing And Publication](../specs/20260909-knowledge_notebook_editing.md)

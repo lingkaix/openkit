@@ -62,6 +62,8 @@ Knowledge does not own workflow progression, worker execution, final semantic co
 
 Artifacts may become Knowledge Sources, but artifacts are not required between ordinary source ingest and a Knowledge Proposal.
 
+The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Its operations are trusted at this stage; review by another model and confidence marks are out of scope. Current authority and required human decisions still apply.
+
 The Knowledge Manager uses existing Thread, Turn and Item owners for conversation continuity. It owns no separate runtime, scheduler, retry queue or publication authority.
 
 ## Authority And Projection
@@ -94,6 +96,8 @@ Sources preserve evidence identity and lineage; knowledge preserves reusable int
 
 The same source may support multiple Knowledge Pages, and a Knowledge Page may cite multiple sources.
 
+OKF front matter has a closed core and open extensions. Required fields retain strict validation; users and agents may add descriptive extension fields. No page-level origin or trust field is required. Each notebook commit records its change source through existing producer, authority and source references; an optional origin note is an extension.
+
 Raw sources remain source material until an authorized notebook publication creates curated interpretation. Human-authored, human-reviewed and delegated Agent-authored content remain visibly distinguishable.
 
 An explicit bounded inspection of exact completed work history MAY produce a source-linked pending Knowledge Proposal.
@@ -117,6 +121,8 @@ One fixed-base edit can change several files, repair links and update page state
 Success requires published content plus the existing command and audit evidence. Failure before publication leaves the earlier version intact; missing or contradictory post-publication command evidence is explicit recovery-required, not permission to replay or fabricate a receipt. Exact historical reads still require current scope/source permissions.
 
 Archival excludes a retained page from ordinary retrieval. Explicit removal/forgetting retains its required human confirmation. Forgetting blocks active and normal historical retrieval, stale candidate application and automatic resurrection from the same sources; independently retained evidence and backup bytes remain subject to their disclosed retention. Ordinary forgetting does not promise physical erasure. User restoration and import cannot bypass suppression or revoked source authority.
+
+Administrator masking records a tombstone through an ordinary notebook commit. Notebook reads and references honor current masks across retained history without rewriting Git history. Items and backups remain outside this mechanism.
 
 ## Automatic Learning And Evidence Assessment
 

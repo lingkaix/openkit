@@ -243,7 +243,7 @@ Acceptance requires a maintenance Thread to continue through threshold compactio
 
 ## Internal Durable Rolling Context
 
-Assistant, administration and the Goal Coordinator use one shared durable rolling-context mechanism. A deterministic Workflow Coordinator performs no model call. The Knowledge Manager instead uses OpenKit compaction above. This exception changes context assembly, not the shared Internal Agent Loop. The [engineer's ruling](../decisions/20261015-private_assistant_timeline_and_rolling_context.md) replaces the earlier transient-compaction-checkpoint design for internal roles.
+Core Assistant, including its bounded management entry, and the Goal Coordinator use one shared durable rolling-context mechanism. A deterministic Workflow Coordinator performs no model call. The Knowledge Manager instead uses OpenKit compaction above. This exception changes context assembly, not the shared Internal Agent Loop. The [engineer's ruling](../decisions/20261015-private_assistant_timeline_and_rolling_context.md) replaces the earlier transient-compaction-checkpoint design for internal roles.
 
 The context belongs to its existing role/conversation owner. Its window continues across bounded runs and process restart. It is not a per-user process, a Worker AgentSession, reusable Memory, or a second canonical conversation log. Canonical Thread Items, accepted commands, source revisions, and effect records remain authoritative. The shared Internal Agent Loop receives the owner's admitted ordered messages and retains no independent durable truth.
 

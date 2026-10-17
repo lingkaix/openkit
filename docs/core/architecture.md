@@ -88,6 +88,8 @@ Core may use lightweight internal roles for coordination. These roles remain ins
 | Knowledge Manager | Agent role for source-cited answers and authorized writing, integration and organization of Memory and Knowledge. Maintains the bounded notebook overview for working agents. | Overall workflow progression or final worker-context authority. |
 | Task Evaluator | Reserved direction for governed evaluation of outcomes, verification, and improvement proposals. | Current worker execution or an unpromoted concrete evaluation architecture. |
 
+Each model-using internal role has its own work records and usage accounting through the existing owners. A requesting call supplies lineage, not the role charged for that work. Administration is the Core Assistant's bounded management entry, not another role.
+
 Internal roles may produce decisions or proposals only through normal Core services and records. They must not create private workflow, knowledge, evaluation, or product-state authorities.
 
 Product target selection and runtime placement are independent. A product surface may select an internal role, Agent supply and profile, logical model preference, and Thread or explicit new-work action. Core alone resolves that intent to Core-local execution or worker placement; product surfaces do not select Provider routes, AgentSessions, Harnesses, Sandboxes, RuntimeTargets, or native processes.
