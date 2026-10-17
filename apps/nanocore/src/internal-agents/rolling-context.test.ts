@@ -20,7 +20,8 @@ type Turn = ReturnType<FsStore['getTurnById']>;
 const roots: string[] = [];
 const itemIdsByTurn = new Map<string, string[]>();
 const timestamp = '2026-10-16T00:00:00.000Z';
-const contextLimit = 14_000;
+// A single Turn fits, while four/eight-Turn histories still require advancing summary batches.
+const contextLimit = 7_000;
 const outputReserve = 512;
 const summaryText =
   'Keep the deployment constraint. Decision is pending. Exact sources remain in history.';
@@ -252,16 +253,17 @@ describe('source-bound internal rolling context', () => {
       tools: [tool],
       callProvider: vi.fn(async (call) => {
         requests.push(call);
-        // This independent byte check is deliberately conservative, not a claim of exact token usage.
-        expect(
-          Buffer.byteLength(
-            JSON.stringify({
-              systemPrompt: call.systemPrompt,
-              tools: call.tools,
-              messages: call.messages,
-            })
-          ) + outputReserve
-        ).toBeLessThan(contextLimit);
+        // Convert serialized UTF-8 bytes to the accepted local token estimate; byte caps have separate units.
+        // This oracle does not call the production estimator and makes no exact-token claim.
+        const requestBytes = Buffer.byteLength(
+          JSON.stringify({
+            systemPrompt: call.systemPrompt,
+            tools: call.tools,
+            messages: call.messages,
+          })
+        );
+        const estimatedInputTokens = Math.ceil(requestBytes / 3) + 4_096;
+        expect(estimatedInputTokens + outputReserve).toBeLessThan(contextLimit);
         expect(call.systemPrompt).toBe(request.systemPrompt);
         expect(call.tools).toEqual([
           { name: tool.name, description: tool.description, inputSchema: tool.inputSchema },
