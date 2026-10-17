@@ -144,8 +144,8 @@ import {
 import { assertWorkspaceDeletionRecoveryExportAuthority } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { readArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import type { FileStorageAdmission } from './artifacts/file-admission.js';
-import { verifyArtifactFilePayload } from './artifacts/file-records.js';
 import {
   reserveCanonicalFileWrite,
   withCanonicalFileWriteAdmission,
@@ -997,15 +997,16 @@ export function importVerifiedWorkspace({
         if (release) reservation?.release();
       }
     }
+    for (const [path, text] of snapshot.artifactVersionRecords) {
+      assertWorkspaceArchiveFilePath(path);
+      const target = join(workspaceRoot, path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileAtomic(target, text);
+    }
     for (const artifact of snapshot.artifacts) {
-      if (artifact.content.format !== 'file') continue;
-      verifyArtifactFilePayload({
-        workspaceRoot,
-        artifactId: artifact.id,
-        version: artifact.version,
-        byteLength: artifact.content.byteLength,
-        contentDigest: artifact.contentDigest,
-      });
+      for (let version = 1; version <= artifact.version; version += 1) {
+        readArtifactVersionRecord(workspaceRoot, artifact.id, version);
+      }
     }
     verifyImportedWorkerContextPackageSnapshot(snapshot, workspaceRoot);
     for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {

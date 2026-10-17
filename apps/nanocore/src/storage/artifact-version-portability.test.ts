@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -14,6 +14,9 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
+import { verifyWorkspaceExportTree } from './workspace-export.js';
+import { readWorkspaceImportSnapshot } from './workspace-import.js';
+import { existingWorkspaceExportRoot } from './workspace-transfer-routes.js';
 
 /** Hashes the expected original bytes independently of upload and export readers. */
 function digest(bytes: Uint8Array): string {
@@ -78,11 +81,108 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
   );
   expect(committed.status, await committed.clone().text()).toBe(201);
 
+  // These annotations are retained descriptions, including strings that resemble owned references.
+  const sourceVersionRoot = join(
+    dataRoot,
+    'workspaces',
+    workspace.id,
+    'artifacts',
+    artifactId,
+    'versions'
+  );
+  for (const version of [1, 2]) {
+    const path = join(sourceVersionRoot, String(version), 'version-record.json');
+    const raw = JSON.parse(readFileSync(path, 'utf8'));
+    raw.extensions = { sourceArtifactId: artifactId, sourceThreadId: thread.id };
+    raw.version.actor.description = 'Original publisher';
+    raw.artifact.origin.actor.description = 'Original importer';
+    raw.artifact.content.description = `Exact original ${version}`;
+    writeFileSync(path, `${JSON.stringify(raw)}\n`);
+  }
+
   const exportedResponse = await app.request(
     ...operationRequest('workspace.export', { workspaceId: workspace.id })
   );
   expect(exportedResponse.status, await exportedResponse.clone().text()).toBe(200);
   const exported = WorkspaceExportResponseSchema.parse(await exportedResponse.json());
+  const exportRoot = existingWorkspaceExportRoot(dataRoot, workspace.id, exported.exportId);
+  for (const version of [1, 2]) {
+    expect(
+      readFileSync(
+        join(
+          exportRoot,
+          'artifacts',
+          artifactId,
+          'versions',
+          String(version),
+          'version-record.json'
+        )
+      )
+    ).toEqual(readFileSync(join(sourceVersionRoot, String(version), 'version-record.json')));
+  }
+  const verified = verifyWorkspaceExportTree({ exportRoot });
+  const descriptorPath = `artifacts/${artifactId}/versions/2/version-record.json`;
+  const rawHead = JSON.parse(verified.fileContents.get(descriptorPath)!);
+  const invalidHeads = [
+    { ...rawHead, formatVersion: 2 },
+    { ...rawHead, version: { ...rawHead.version, parentVersion: null } },
+    {
+      ...rawHead,
+      version: {
+        ...rawHead.version,
+        actor: { kind: 'system', id: 'different-publisher', responsibleUserId: null },
+      },
+    },
+    {
+      ...rawHead,
+      artifact: { ...rawHead.artifact, title: 'Contradictory head' },
+      version: { ...rawHead.version, title: 'Contradictory head' },
+    },
+    {
+      ...rawHead,
+      artifact: {
+        ...rawHead.artifact,
+        origin: { ...rawHead.artifact.origin, sourceDigest: digest(Buffer.from('different')) },
+      },
+    },
+  ];
+  for (const descriptor of invalidHeads) {
+    const files = new Map(verified.fileContents);
+    files.set(descriptorPath, JSON.stringify(descriptor));
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified: { ...verified, fileContents: files },
+        targetWorkspaceId: workspace.id,
+      })
+    ).toThrow();
+  }
+  const missingOriginals = new Map(verified.artifactPayloadFiles);
+  missingOriginals.delete(`artifacts/${artifactId}/versions/1/payload`);
+  expect(() =>
+    readWorkspaceImportSnapshot({
+      verified: { ...verified, artifactPayloadFiles: missingOriginals },
+      targetWorkspaceId: workspace.id,
+    })
+  ).toThrow(/original/);
+  expect(() =>
+    readWorkspaceImportSnapshot({
+      verified: {
+        ...verified,
+        manifest: {
+          ...verified.manifest,
+          contentInventory: [
+            ...verified.manifest.contentInventory,
+            {
+              path: `artifacts/${artifactId}/versions/3/payload`,
+              digest: digest(Buffer.alloc(0)),
+              bytes: 0,
+            },
+          ],
+        },
+      },
+      targetWorkspaceId: workspace.id,
+    })
+  ).toThrow(/extra/);
   const importedResponse = await app.request(
     ...operationRequest(
       'workspace.import',
@@ -98,6 +198,10 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
   );
   expect(importedResponse.status, await importedResponse.clone().text()).toBe(200);
   const imported = WorkspaceImportResponseSchema.parse(await importedResponse.json());
+  const importedArtifact = store.listArtifacts(imported.importedWorkspaceId)[0]!;
+  expect(
+    store.listArtifactVersions(imported.importedWorkspaceId, importedArtifact.id)
+  ).toHaveLength(2);
   const reopened = new FsStore({ dataRoot });
   const restored = reopened
     .listArtifacts(imported.importedWorkspaceId)
@@ -108,6 +212,30 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
   expect(restored.origin).toMatchObject({ kind: 'imported', sourceDigest: digest(original) });
   expect(restored.threadId).toBeNull();
   expect(restored.turnId).toBeNull();
+  for (const version of [1, 2]) {
+    const raw = JSON.parse(
+      readFileSync(
+        join(
+          dataRoot,
+          'workspaces',
+          imported.importedWorkspaceId,
+          'artifacts',
+          restored.id,
+          'versions',
+          String(version),
+          'version-record.json'
+        ),
+        'utf8'
+      )
+    );
+    expect(raw.extensions).toEqual({ sourceArtifactId: artifactId, sourceThreadId: thread.id });
+    expect(raw.version.actor.description).toBe('Original publisher');
+    expect(raw.artifact.origin.actor.description).toBe('Original importer');
+    expect(raw.artifact.content.description).toBe(`Exact original ${version}`);
+    expect(raw.artifact.id).toBe(restored.id);
+    expect(raw.version.artifactId).toBe(restored.id);
+    expect(raw.version.workspaceId).toBe(imported.importedWorkspaceId);
+  }
   const first = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 1);
   const second = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 2);
   expect(first.version).toMatchObject({
