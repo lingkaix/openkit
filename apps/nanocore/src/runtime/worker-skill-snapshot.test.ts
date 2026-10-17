@@ -8,7 +8,9 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 import {
   CatalogContentUnavailableError,
   CatalogIntegrityError,
@@ -25,7 +27,7 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
@@ -62,6 +64,8 @@ describe('exact retained Worker Skill delivery', () => {
   let turn: ReturnType<typeof store.createTurn>;
   let first: ReturnType<typeof importWorkspaceSkill>;
   let environmentPackage: AgentEnvironmentPackage;
+  let userId: string;
+  let agentSessionId: string;
   const agentSetup = createTestAgentSetup({ skillIds: ['repo-guidelines'] });
 
   /** Resolves the current/pinned selection through the real AEP owner. */
@@ -70,7 +74,7 @@ describe('exact retained Worker Skill delivery', () => {
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: selectedSetup,
-        agentSessionId: 'as_exact_skill',
+        agentSessionId,
         backend: { kind: 'openshell' },
         coreDb,
         createdAt: '2026-10-05T00:00:00.000Z',
@@ -92,7 +96,7 @@ describe('exact retained Worker Skill delivery', () => {
       dataRoot: coreDb.dataRoot,
       displayName: 'Repo guidelines',
       expectedRevision: catalog.revision,
-      producer: { id: 'user_local', kind: 'user' },
+      producer: { id: userId, kind: 'user' },
       tree: skillTree(Buffer.concat([SKILL_BODY, Buffer.from('New instructions.\n')])),
       workspaceId: turn.workspaceId,
     });
@@ -109,10 +113,13 @@ describe('exact retained Worker Skill delivery', () => {
   beforeEach(() => {
     coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-exact-worker-skill-')));
     applyMigrations(coreDb);
-    store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    turn = store.createTurn('ws_demo', 'th_demo', 'Use exact retained Skill', {
+    userId = ensureLocalUser(coreDb);
+    agentSessionId = allocateEntityId('as');
+    const demo = createDemoWorkspaceForUser(userId);
+    store = createDemoStore({ dataRoot: coreDb.dataRoot }, userId);
+    turn = store.createTurn(demo.workspace.id, demo.thread.id, 'Use exact retained Skill', {
       kind: 'user',
-      id: 'user_local',
+      id: userId,
     });
     first = importWorkspaceSkill({
       activate: true,
@@ -120,7 +127,7 @@ describe('exact retained Worker Skill delivery', () => {
       dataRoot: coreDb.dataRoot,
       displayName: 'Repo guidelines',
       expectedRevision: 0,
-      producer: { id: 'user_local', kind: 'user' },
+      producer: { id: userId, kind: 'user' },
       tree: skillTree(),
       workspaceId: turn.workspaceId,
     });
@@ -201,7 +208,7 @@ describe('exact retained Worker Skill delivery', () => {
         body,
         byteLength: body.byteLength,
         contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-        relativePath: `as_exact_skill/supply/inputs/repo-guidelines/${path}`,
+        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/${path}`,
         slot: 'worker-supply',
       }))
     );
@@ -378,7 +385,7 @@ describe('exact retained Worker Skill delivery', () => {
       dataRoot: coreDb.dataRoot,
       displayName: 'Second Skill',
       expectedRevision: first.catalog.revision,
-      producer: { id: 'user_local', kind: 'user' },
+      producer: { id: userId, kind: 'user' },
       tree: [
         {
           kind: 'file',
@@ -445,7 +452,7 @@ describe('exact retained Worker Skill delivery', () => {
       dataRoot: coreDb.dataRoot,
       displayName: 'Repo guidelines',
       expectedRevision: purged.revision,
-      producer: { id: 'user_local', kind: 'user' },
+      producer: { id: userId, kind: 'user' },
       tree: skillTree(),
       workspaceId: turn.workspaceId,
     });
@@ -507,7 +514,7 @@ describe('exact retained Worker Skill delivery', () => {
     await expect(
       executor.prepareAgentSessionForTurn(store, {
         agentSetup,
-        freshAgentSessionId: 'as_exact_skill_launch',
+        freshAgentSessionId: allocateEntityId('as'),
         requestId: null,
         turn,
         turnInput: 'Use exact retained Skill',
