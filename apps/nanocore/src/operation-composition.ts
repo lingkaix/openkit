@@ -36,6 +36,7 @@ import {
 } from './internal-agents/assistant-skill-resources.js';
 import type { ToolExecutionContext } from './internal-agents/internal-agent-loop.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
+import { createKnowledgeProposalPreviewOperationImplementations } from './knowledge/notebook-proposal-preview.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
@@ -76,6 +77,17 @@ import { createWorkspaceSharingOperationImplementations } from './workspace-shar
 export interface OperationInvocationDependencies {
   /** App-owned capacity admission, shared by Artifact, ZIP and Workspace file transfers. */
   readonly fileAdmission?: FileStorageAdmission;
+  /** Bounded Knowledge Manager role supplied by application assembly. */
+  readonly knowledgeAgent?:
+    | {
+        readonly ask: (
+          input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        readonly maintain: (
+          input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
+      }
+    | undefined;
   readonly coreDb: CoreDb | undefined;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
@@ -223,6 +235,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),

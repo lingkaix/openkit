@@ -19,8 +19,10 @@ import {
   assertConversationRetrievalTraceReadable,
   createAssistantHistory,
 } from './assistant-history.js';
+import { createCompactingInternalAgentProvider } from './compacting-context.js';
 import type { AgentToolResult } from './internal-agent-loop.js';
-import { internalContextSourceDigest } from './rolling-context.js';
+import { readInternalContextEvidence } from './internal-context-evidence.js';
+import { internalContextDigest, internalContextSourceDigest } from './rolling-context.js';
 
 const timestamp = '2026-10-16T00:00:00.000Z';
 const privateText = 'RETAINED_PRIVATE_RANGE_DETAIL';
@@ -42,7 +44,8 @@ interface RangeResult {
 
 /** Composes the real canonical record, identity, membership and query-owned trace owners. */
 function fixture(
-  texts = [`${privateText} 😀漢e\u0301`.repeat(500), 'The unresolved decision is retained.']
+  texts = [`${privateText} 😀漢e\u0301`.repeat(500), 'The unresolved decision is retained.'],
+  agentId = 'quick-chat'
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-history-range-'));
   const coreDb = openCoreDb(dataRoot);
@@ -93,7 +96,7 @@ function fixture(
     'Read exact source history.',
     { kind: 'user', id: LOCAL_USER_ID },
     null,
-    { agentId: 'quick-chat', executorKind: 'assistant' }
+    { agentId, executorKind: 'assistant' }
   );
   const actor: Actor = { kind: 'local', userId: LOCAL_USER_ID };
   const context = {
@@ -207,6 +210,161 @@ function expectUnavailable(envelope: AgentToolResult) {
 }
 
 describe('Assistant exact source-bound history ranges', () => {
+  it('reads the exact committed range of a real current-run compaction summary and keeps its trace readable after terminal status changes', async () => {
+    const f = fixture([], 'knowledge-manager');
+    const source = message(
+      f.store,
+      f.turn,
+      `${privateText} The decision remains pending. `.repeat(220)
+    );
+    const provider = createCompactingInternalAgentProvider({
+      store: f.store,
+      turn: f.turn,
+      compactThreshold: 10_000,
+      limits: { maxModelTurns: 3, maxToolCalls: 3, deadlineMs: 10_000 },
+      assertCurrent: f.history.assertCurrent,
+      readEvidence: () => internalContextDigest({ version: 1, entries: [] }),
+      commitMessages: () => [source],
+      callProvider: async () => ({
+        message: {
+          role: 'assistant',
+          truncated: false,
+          content: [
+            {
+              type: 'text',
+              text: 'The decision remains pending. Read the exact source when needed.',
+            },
+          ],
+        },
+      }),
+    });
+    await provider({
+      systemPrompt: 'Preserve source boundaries.',
+      model: { logicalModelId: 'knowledge-model', capabilities: [], modelFamilyId: null },
+      tools: [],
+      messages: [{ role: 'user', content: [{ type: 'text', text: source.text }] }],
+      signal: new AbortController().signal,
+    });
+    const summary = f.store
+      .getTurnById(f.turn.id)
+      .items.find((item) => item.type === 'context-summary')!;
+    expect(summary.strategy).toBe('compaction');
+    const requestedRange = {
+      threadId: f.turn.threadId,
+      firstItemId: summary.sourceRange.firstItemId,
+      lastItemId: summary.sourceRange.lastItemId,
+      sourceDigest: summary.sourceRange.sourceDigest,
+    };
+    const { actor: _requestActor, ...nativeContext } = f.context;
+    let admitted = true;
+    const native = createAssistantHistory({
+      ...nativeContext,
+      nativeAuthority: {
+        actorRef: { kind: 'agent', id: 'worker', responsibleUserId: LOCAL_USER_ID },
+        assertCurrent: () => {
+          if (!admitted) throw new Error('Worker admission ended.');
+        },
+      },
+    });
+    const output = result(
+      await native.tool.execute(
+        { range: requestedRange, limit: 1 },
+        { callId: randomUUID(), signal: new AbortController().signal }
+      )
+    );
+    expectUnavailable(
+      await native.tool.execute(
+        { query: 'pending', mode: 'lexical' },
+        { callId: randomUUID(), signal: new AbortController().signal }
+      )
+    );
+    expectUnavailable(
+      await native.tool.execute(
+        { range: { ...requestedRange, threadId: f.source.id } },
+        { callId: randomUUID(), signal: new AbortController().signal }
+      )
+    );
+    expect(
+      readRetrievalTrace(
+        join(f.dataRoot, 'workspaces', f.workspace.id),
+        output.retrievalTraceRef,
+        'conversation'
+      )?.queryContext.actor
+    ).toEqual({ kind: 'agent', id: 'worker', responsibleUserId: LOCAL_USER_ID });
+    admitted = false;
+    expect(() => native.assertCurrent()).toThrow('Worker admission ended.');
+    admitted = true;
+    expect(output.hits[0]!.reference.itemId).toBe(source.id);
+    expect(output.hits[0]!.snippet).toBe(source.text.slice(0, 4096));
+    expect(() => f.history.assertCurrent()).not.toThrow();
+    f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
+    expect(() =>
+      assertConversationRetrievalTraceReadable({
+        ...f.context,
+        retrievalTraceRef: output.retrievalTraceRef,
+      })
+    ).not.toThrow();
+  });
+
+  it('binds compaction evidence to returned trace references in the trusted asking context, excluding later reads', async () => {
+    const f = fixture(['A bounded exact source.']);
+    const first = result(await execute(f, { range: range(f) }));
+    const run = f.store.createTurn(
+      f.workspace.id,
+      f.source.id,
+      'Knowledge query run.',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { agentId: 'knowledge-manager', executorKind: 'assistant' }
+    );
+    const item = f.store.createItem({
+      id: allocateEntityId('it'),
+      workspaceId: f.workspace.id,
+      threadId: run.threadId,
+      turnId: run.id,
+      type: 'tool-call',
+      status: 'completed',
+      tool: 'thread.history.read',
+      server: null,
+      arguments: { range: range(f) },
+      result: JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(first) }] }),
+      error: null,
+      durationMs: 1,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    const { actor: _requestActor, ...nativeContext } = f.context;
+    const evidence = {
+      ...nativeContext,
+      nativeAuthority: {
+        actorRef: { kind: 'agent' as const, id: 'worker', responsibleUserId: LOCAL_USER_ID },
+        assertCurrent: () => {},
+      },
+      threadId: run.threadId,
+      items: [item],
+      strategy: 'compaction' as const,
+      retrievalContext: { threadId: f.context.threadId, turnId: f.turn.id },
+    };
+    const digest = readInternalContextEvidence(evidence);
+    result(await execute(f, { range: range(f) }));
+    expect(readInternalContextEvidence(evidence)).toBe(digest);
+    const { retrievalContext: _askingContext, ...wrongContext } = evidence;
+    expect(() => readInternalContextEvidence(wrongContext)).toThrow();
+    const tracePath = join(
+      f.dataRoot,
+      'workspaces',
+      f.workspace.id,
+      'threads',
+      f.context.threadId,
+      'turns',
+      f.turn.id,
+      'retrieval-traces',
+      `${first.retrievalTraceRef.objectId}.json`
+    );
+    rmSync(tracePath);
+    expect(() => readInternalContextEvidence(evidence)).toThrow();
+  });
+
   it('returns failed Tool evidence as inert canonical JSON without changing its source Item', async () => {
     const f = fixture([]);
     const item = f.store.createItem({
@@ -383,6 +541,8 @@ describe('Assistant exact source-bound history ranges', () => {
           : {
               ...base,
               type: 'context-summary',
+              strategy: 'rolling',
+              logicalModelId: 'history-model',
               text: privateText,
               environmentDigest: sha('environment'),
               sourceRange: {

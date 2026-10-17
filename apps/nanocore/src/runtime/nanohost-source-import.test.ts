@@ -19,6 +19,8 @@ afterEach(async () => {
 /** Tests raw carriage below the separately tested authoritative dispatcher, using a real HTTP/2 connection and fixed route. */
 async function carriage(source: NanoHostFileImportSource, byteLength: number, sha256: string) {
   const poll = vi.fn().mockResolvedValue({
+    entryKind: 'file',
+    executable: false,
     source,
     byteLength,
     sha256,
@@ -87,6 +89,8 @@ it('streams a large original through the fixed route without eager buffering and
   expect(produced).toBe(0);
   const { request, headers } = await port.open();
   expect(headers[':status']).toBe(200);
+  expect(headers['x-openkit-entry-kind']).toBe('file');
+  expect(headers['x-openkit-executable']).toBe('false');
   expect(headers['x-openkit-byte-length']).toBe(String(total));
   expect(headers['x-openkit-sha256']).toBe(expected);
   // The peer's H2 receive window prevents the producer from materializing the complete original.

@@ -11812,6 +11812,8 @@ describe('nanocore server', () => {
           input: {
             body: importBytes,
             byteLength: importBytes.byteLength,
+            entryKind: 'file',
+            executable: false,
             relativePath: 'context.json',
             sandboxId: 'sandbox-session-main',
             sha256: importSha256,
@@ -11834,6 +11836,8 @@ describe('nanocore server', () => {
       expect(importPoll.headers).toMatchObject({
         'content-length': String(importBytes.byteLength),
         'content-type': 'application/octet-stream',
+        'x-openkit-entry-kind': 'file',
+        'x-openkit-executable': 'false',
         'x-openkit-byte-length': String(importBytes.byteLength),
         'x-openkit-relative-path': 'context.json',
         'x-openkit-request-id': importRequestId,

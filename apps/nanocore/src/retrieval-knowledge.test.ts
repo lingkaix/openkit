@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { answerKnowledgeManager } from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
+import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -21,7 +21,7 @@ afterEach(async () => {
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('Knowledge retrieval and answer segmentation', () => {
+describe('Knowledge retrieval segmentation', () => {
   it.each([
     {
       title: 'Chinese body',
@@ -30,11 +30,7 @@ describe('Knowledge retrieval and answer segmentation', () => {
       two: '测试 修复',
     },
     { title: 'Japanese body', body: '検索機能を改善しました。', one: '検索', two: '検索 改善' },
-  ])('preserves one-term title sufficiency and cites two body terms: $title', async ({
-    body,
-    one,
-    two,
-  }) => {
+  ])('retrieves segmented terms from the body and title: $title', async ({ body, one, two }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-knowledge-cjk-'));
     testRoots.push(dataRoot);
     const store = new FsStore({ dataRoot });
@@ -68,11 +64,12 @@ describe('Knowledge retrieval and answer segmentation', () => {
     );
     expect(created.status, await created.clone().text()).toBe(200);
     const page = await created.json();
-    const answer = (query: string) =>
-      answerKnowledgeManager({
+    const retrieve = (query: string) =>
+      retrieveWorkspaceKnowledge({
         dataRoot,
         workspaceId: workspace.id,
-        operationId: `answer-${query}`,
+        limit: 5,
+        pinnedReferences: [],
         caller: 'app-api',
         query,
         access: {
@@ -82,10 +79,13 @@ describe('Knowledge retrieval and answer segmentation', () => {
           requestActor: { kind: 'local', userId },
         },
       });
-    expect(await answer(one)).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
-    expect(await answer(two)).toMatchObject({
-      outcome: 'answered',
-      citations: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
+    expect((await retrieve(one)).selected).toEqual([
+      expect.objectContaining({
+        reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id },
+      }),
+    ]);
+    expect(await retrieve(two)).toMatchObject({
+      selected: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
     });
     const updated = await app.request(
       ...operationRequest(
@@ -100,9 +100,8 @@ describe('Knowledge retrieval and answer segmentation', () => {
       )
     );
     expect(updated.status, await updated.clone().text()).toBe(200);
-    expect(await answer(one)).toMatchObject({
-      outcome: 'answered',
-      citations: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
+    expect(await retrieve(one)).toMatchObject({
+      selected: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
     });
   });
 });

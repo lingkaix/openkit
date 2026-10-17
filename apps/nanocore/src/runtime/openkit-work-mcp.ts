@@ -1,6 +1,12 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
-import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
+import {
+  KNOWLEDGE_OPERATION_DEFINITIONS,
+  KnowledgeAskRequestSchema,
+  KnowledgeTellRequestSchema,
+  ListThreadItemsResponseSchema,
+  operationToolName,
+} from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   ArtifactMediaTypeSchema,
@@ -25,11 +31,17 @@ import {
   resolveCurrentWorkerSource,
   type WorkerSourceReadResult,
 } from '../context/worker-source-read.js';
+import { uuidv5 } from '../generative-kernel/uuid.js';
+import type {
+  NotebookPublicationAdmission,
+  NotebookUpdate,
+} from '../knowledge/notebook-publication.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
   type FsStore,
 } from '../lib/store.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
 import {
@@ -159,6 +171,15 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
 
 /** Fixed built-in work tools; their schemas ignore inert additive input members. */
 export const OPENKIT_WORK_TOOLS = [
+  ...(['knowledge.ask', 'knowledge.tell'] as const).map((id) => ({
+    name: operationToolName(id),
+    description: KNOWLEDGE_OPERATION_DEFINITIONS[id].description,
+    inputSchema: mcpInputSchema(
+      id === 'knowledge.ask'
+        ? KnowledgeAskRequestSchema.omit({ workspaceId: true })
+        : KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true })
+    ),
+  })),
   {
     name: 'work_request_input',
     description:
@@ -242,6 +263,11 @@ export async function dispatchOpenkitWorkTool(
     readonly fileAdmission?: FileStorageAdmission;
     readonly signal?: AbortSignal;
     readonly requireAdmission?: () => void;
+    readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
+    readonly knowledgeCallId?: string;
+    readonly knowledgePublicationAdmission?: (
+      request: NotebookUpdate
+    ) => NotebookPublicationAdmission;
   },
   toolName: string,
   args: Record<string, unknown>
@@ -259,6 +285,78 @@ export async function dispatchOpenkitWorkTool(
   }
   if (toolName === 'work_read_source') return readSource(input, args);
   if (toolName === 'work_search_source') return searchSource(input, args);
+  if (
+    toolName === operationToolName('knowledge.ask') ||
+    toolName === operationToolName('knowledge.tell')
+  ) {
+    input.requireAdmission?.();
+    if (!input.knowledgeAgent || !input.knowledgeCallId)
+      throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+    const admission = findSchedulerAdmissionForWorkerLineage(input.coreDb, {
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      agentSessionId: scope.agentSessionId,
+      packageSnapshotId: input.environmentPackage.snapshotId,
+    });
+    // Reuse the admitted real bearer lineage; Workspace authority alone cannot grant Server access.
+    const serverKnowledgeActor =
+      admission?.serverAdminTokenId && admission.triggerActor.kind === 'user'
+        ? {
+            kind: 'token' as const,
+            userId: admission.triggerActor.id,
+            tokenId: admission.serverAdminTokenId,
+            tokenScope: 'server-admin' as const,
+          }
+        : undefined;
+    const signal = input.signal ?? new AbortController().signal;
+    const result =
+      toolName === operationToolName('knowledge.ask')
+        ? await input.knowledgeAgent.ask({
+            ...KnowledgeAskRequestSchema.omit({ workspaceId: true }).parse(args),
+            workspaceId: scope.workspaceId,
+            caller: 'worker',
+            capabilityCallId: input.knowledgeCallId,
+            access: {
+              store: input.store,
+              coreDb: input.coreDb,
+              actor: scope.triggerActor,
+              ...(serverKnowledgeActor
+                ? { serverKnowledgeActor, requestActor: serverKnowledgeActor }
+                : {}),
+              outputThreadId: scope.threadId,
+              outputTurnId: scope.turnId,
+            },
+            signal,
+            assertCurrent: () => {
+              input.requireAdmission?.();
+            },
+          })
+        : await input.knowledgeAgent.maintain({
+            ...KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true }).parse(args),
+            workspaceId: scope.workspaceId,
+            requestId: uuidv5(JSON.stringify(['knowledge.tell', input.knowledgeCallId])),
+            instructions:
+              'Integrate the supplied information and keep the notebook overview current.',
+            trigger: 'request',
+            actor: scope.triggerActor,
+            signal,
+            ...(serverKnowledgeActor ? { requestActor: serverKnowledgeActor } : {}),
+            askingThreadId: scope.threadId,
+            askingTurnId: scope.turnId,
+            currentAdmission: input.knowledgePublicationAdmission,
+            tellContent: KnowledgeTellRequestSchema.omit({
+              workspaceId: true,
+              requestId: true,
+            }).parse(args).content,
+          });
+    input.requireAdmission?.();
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+      structuredContent: result as Record<string, unknown>,
+      isError: false,
+    };
+  }
   if (toolName === 'work_submit_artifact') {
     try {
       return await submitArtifact(input, args);
