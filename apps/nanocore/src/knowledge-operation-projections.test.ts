@@ -925,7 +925,7 @@ it.each([
                 id: 1,
                 method: 'tools/call',
                 params: {
-                  name: 'call',
+                  name: 'openkit_call',
                   arguments: { operation: 'knowledge.source.register', input },
                 },
               }

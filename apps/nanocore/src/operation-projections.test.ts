@@ -305,7 +305,10 @@ describe('shared family contract', () => {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'call', arguments: { operation: 'kernel.records.create', input } },
+          params: {
+            name: 'openkit_call',
+            arguments: { operation: 'kernel.records.create', input },
+          },
         }),
       });
       const envelope = (await remote.json()) as {
