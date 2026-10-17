@@ -29,6 +29,7 @@ At 11:07Z, the engineer clarified that Server Knowledge shares facts across Work
 | Native and Worker ask retain the asker's query context and delivered answer bytes | Operation assembly and openkit-work capability completion | Query and authenticated Worker MCP suites |
 | Query audiences and Source checks apply at each read and delivery | Canonical page and Source readers | Private Source and history metadata refusal regressions |
 | Server and Workspace selection stay separate and citations identify their scope | Existing retrieval source admission and query fanout | Server Kernel regression and query projection regression |
+| External trace history retains its original query Server through repeat import; fresh local queries use current admission | Existing query context and importedFrom, with source graph validation | A-to-B-to-C export/import regression and current Server query regression |
 | Tell and explicit or daily maintenance start fresh bounded Turns in one maintenance Thread | Maintenance adapter and recurring scan | Maintenance and schedule suites |
 | Inputs retain base, source range, trigger, instructions and human changes; own KM work is excluded | Turn execution metadata and admitted snapshot | Maintenance input and human-edit regressions |
 | An admitted fixed-base candidate publishes under delegation or becomes a real Proposal | In-memory editor and existing publisher/Review | Editor, publisher and maintenance suites |

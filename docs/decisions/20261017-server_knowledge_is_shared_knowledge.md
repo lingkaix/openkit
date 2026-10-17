@@ -19,11 +19,16 @@ At 11:07Z on 2026-10-17, the engineer corrected the coordinator's description of
 
 Continue at the current pace. One correction: the Server level is not Memory. It is a Knowledge base, like Workspace Knowledge. Only User-scope personal information is Memory. Its main use is sharing information across Workspaces within the Server scope.
 
+## Trace Portability Refinement
+
+On 2026-10-17, the coordinator approved retaining the original query Server for User and Server selections under the engineer's 11:07Z ruling, with independent Consultant agreement. A trace records evidence about the Server actually queried. Changing that identity would misstate history, while blanket refusal based on Workspace import provenance would block a new authorized query to the current Server. Existing query context distinguishes these acts without a new field. Retained external history can cross later imports under existing importedFrom provenance; current scope, audience, Source and exact-byte checks remain required. Workspace selections and fresh source acts retain the immediate-manifest binding.
+
 ## Rejected Alternatives
 
 - Treating Server Knowledge as Memory would mix personal information with shared facts.
 - Letting a model choose a scope would make message text select authority.
 - Automatic cross-Workspace learning adds a collection policy that this version does not define.
+- Reminting Server evidence and refusing every later Server query in an imported Workspace blocks current authorized sharing. Adding another origin field duplicates the existing query Server.
 
 ## Revisit When
 
@@ -31,6 +36,7 @@ Revisit the collection boundary when an accepted owner defines automatic cross-W
 
 ## Affected Owners
 
+- [Workspace Backup, Export And Import](../specs/20260704-workspace_backup_export_import.md)
 - [Knowledge And Personal Memory](../core/knowledge.md)
 - [Knowledge Manager Agent](../specs/20260704-knowledge_manager_internal_agent_runtime.md)
 - [Worker MCP Tool Supply](../specs/20260704-worker_mcp_tool_supply.md)

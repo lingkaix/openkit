@@ -1471,7 +1471,7 @@ describe('workspace export verifier', () => {
     });
   });
 
-  it('remints trace context while retaining foreign Server references as unavailable evidence', () => {
+  it('remints trace owners through A-to-B-to-C import while retaining foreign Server evidence', () => {
     const root = freshExportRoot('openkit-workspace-server-trace-import-');
     const thread = {
       id: 'th_00000000-0000-7967-a569-efdf670da460',
@@ -1620,7 +1620,7 @@ describe('workspace export verifier', () => {
     expect(trace).toMatchObject({
       requestDigest,
       queryContext: {
-        serverId: 'dep_00000000-0000-7a9d-bc94-7beac17dc657',
+        serverId: sourceTrace.queryContext.serverId,
         workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636',
         threadId: imported.threads[0]?.id,
       },
@@ -1639,6 +1639,46 @@ describe('workspace export verifier', () => {
     const targetTraceText = readFileSync(join(targetPortableRoot, path), 'utf8');
     expect(targetTraceText).not.toContain('private');
     expect(targetTraceText).not.toContain('futureActorNote');
+
+    // A later export must preserve the original query authority, not bind old evidence to B or C.
+    const reexported = writeWorkspaceExportTree({
+      exportRoot: freshExportRoot('openkit-workspace-server-trace-reexport-'),
+      exportId: testEntityId('wsexp', 'server-trace-reexport'),
+      sourceDeploymentId: 'dep_00000000-0000-7a9d-bc94-7beac17dc657',
+      createdAt: timestamp,
+      workspace: imported.workspace,
+      threads: imported.threads,
+      turns: imported.turns,
+      knowledge: imported.knowledge,
+      itemRevisions: imported.itemRevisions,
+      artifacts: imported.artifacts,
+      artifactReviews: imported.artifactReviews,
+      agentSessions: imported.agentSessions,
+      turnEvents: imported.turnEvents,
+      portableFileState: imported.portableFileState,
+    });
+    const thirdServerId = testEntityId('dep', 'server-trace-third-server');
+    const reimported = readWorkspaceImportSnapshot({
+      verified: reexported,
+      targetWorkspaceId: testEntityId('ws', 'server-trace-third-workspace'),
+      targetServerId: thirdServerId,
+    });
+    const [thirdPath, thirdTrace] = [...reimported.portableFileState.retrievalTraceFiles][0]!;
+    expect(reimported.workspace.importedFrom?.sourceDeploymentId).toBe(
+      'dep_00000000-0000-7a9d-bc94-7beac17dc657'
+    );
+    expect(thirdPath).toBe(`threads/${reimported.threads[0]?.id}/retrieval-traces/${traceId}.json`);
+    expect(thirdTrace).toEqual({
+      ...trace,
+      queryContext: {
+        ...trace.queryContext,
+        workspaceId: reimported.workspace.id,
+        threadId: reimported.threads[0]?.id,
+      },
+    });
+    expect(thirdTrace.queryContext.serverId).not.toBe(thirdServerId);
+    expect(JSON.stringify(thirdTrace)).not.toContain('private');
+    expect(readFileSync(join(sourcePortableRoot, sourceTracePath), 'utf8')).toBe(sourceTraceText);
   });
 
   it('rejects imported records with unsupported required features', () => {
