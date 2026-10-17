@@ -4,7 +4,12 @@ import {
   AssistantHistoryQuerySchema,
   type ConversationRetrievalTrace,
 } from '@openkit/app-api-schemas';
-import type { Item, RetrievalTraceReference } from '@openkit/protocol';
+import {
+  type ActorRef,
+  type Item,
+  type RetrievalTraceReference,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -26,51 +31,62 @@ import type { AgentTool, AgentToolResult } from './internal-agent-loop.js';
 import { redactInternalAgentText } from './redaction.js';
 import {
   internalContextHistoryBody,
-  internalContextItems,
+  internalContextRange,
   internalContextSourceDigest,
 } from './rolling-context.js';
 
+/** Existing authenticated User authority or a native caller's current admitted effect authority. */
+export type AssistantHistoryAuthority =
+  | { readonly actor: Actor; readonly nativeAuthority?: never }
+  | {
+      readonly actor?: never;
+      readonly nativeAuthority: {
+        readonly actorRef: ActorRef;
+        readonly assertCurrent: () => void;
+      };
+    };
+
 /** Trusted querying owner, never model-selected source or audience authority. */
-export interface AssistantHistoryContext {
+export type AssistantHistoryContext = AssistantHistoryAuthority & {
   readonly store: FsStore;
   readonly coreDb: CoreDb;
-  readonly actor: Actor;
   readonly workspaceId: string;
   readonly threadId: string;
   readonly turnId: string;
-}
+};
 
 type Selection = ConversationRetrievalTrace['selected'][number];
 
 /** Rechecks membership and the ordinary User audience without an administrator override. */
 function requireAudience(input: AssistantHistoryContext): void {
   const { actor, coreDb, store, workspaceId, threadId, turnId } = input;
+  input.nativeAuthority?.assertCurrent();
+  const actorRef = input.nativeAuthority?.actorRef ?? { kind: 'user', id: actor!.userId };
+  const userId = responsibleUserIdForActor(actorRef);
+  if (!userId) throw unavailable();
   if (
-    !currentWorkspaceAuthority(
-      coreDb,
-      workspaceId,
-      { kind: 'user', id: actor.userId },
-      'thread.read',
-      true
-    ) ||
-    !isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-      mutating: false,
-      policyOperation: 'thread.read',
-    })
+    !currentWorkspaceAuthority(coreDb, workspaceId, actorRef, 'thread.read', true) ||
+    (actor &&
+      !isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+        mutating: false,
+        policyOperation: 'thread.read',
+      }))
   )
     throw unavailable();
   const thread = store.getThread(workspaceId, threadId);
-  if (!isThreadVisible(store, thread, actor.userId, false)) throw unavailable();
+  if (!isThreadVisible(store, thread, userId, false)) throw unavailable();
   store.getTurn(workspaceId, threadId, turnId);
 }
 
 /** Verifies the current source bytes and their eligibility for the exact querying audience. */
 function requireSelection(input: AssistantHistoryContext, selection: Selection): void {
   if (selection.reference.workspaceId !== input.workspaceId) throw unavailable();
+  const userId = input.actor?.userId ?? responsibleUserIdForActor(input.nativeAuthority!.actorRef);
+  if (!userId) throw unavailable();
   const source = input.store.getThread(input.workspaceId, selection.reference.threadId);
   const destination = input.store.getThread(input.workspaceId, input.threadId);
   if (
-    !isThreadVisible(input.store, source, input.actor.userId, false) ||
+    !isThreadVisible(input.store, source, userId, false) ||
     (source.visibility === 'private' &&
       (destination.visibility !== 'private' ||
         destination.privateOwnerUserId !== source.privateOwnerUserId))
@@ -93,13 +109,14 @@ function requireSelection(input: AssistantHistoryContext, selection: Selection):
 }
 
 /** Checks a retained conversation trace through its existing containing-record and source owners. */
-export function assertConversationRetrievalTraceReadable(input: {
-  readonly store: FsStore;
-  readonly coreDb: CoreDb;
-  readonly actor: Actor;
-  readonly workspaceId: string;
-  readonly retrievalTraceRef: RetrievalTraceReference;
-}): void {
+export function assertConversationRetrievalTraceReadable(
+  input: AssistantHistoryAuthority & {
+    readonly store: FsStore;
+    readonly coreDb: CoreDb;
+    readonly workspaceId: string;
+    readonly retrievalTraceRef: RetrievalTraceReference;
+  }
+): void {
   const root = input.store.getDataRoot();
   if (!root) throw unavailable();
   const trace = readRetrievalTrace(
@@ -120,7 +137,7 @@ export function assertConversationRetrievalTraceReadable(input: {
   };
   requireAudience(context);
   if (trace.retrievalParameters.mode === 'range')
-    requireRange(context, trace.retrievalParameters.range);
+    requireRange(context, trace.retrievalParameters.range, false);
   for (const selection of trace.selected) requireSelection(context, selection);
 }
 
@@ -152,8 +169,9 @@ export function createAssistantHistory(input: AssistantHistoryContext): {
     assertCurrent,
     tool: {
       name: 'thread.history.read',
-      description:
-        'Search retained visible history, or read the exact source-bound range named by a summary. A next cursor resumes large Items and ranges within the same bounds. Membership and audience are checked; incomplete results do not prove absence.',
+      description: input.nativeAuthority
+        ? 'Read only exact compaction source ranges from this admitted run. Current authority and the complete source proof are required.'
+        : 'Search retained visible history, or read the exact source-bound range named by a summary. A next cursor resumes large Items and ranges within the same bounds. Membership and audience are checked; incomplete results do not prove absence.',
       inputSchema,
       execute: async (value, context) => {
         try {
@@ -209,6 +227,7 @@ export function createAssistantHistory(input: AssistantHistoryContext): {
             }
             complete = next === undefined;
           } else {
+            if (!input.actor) throw unavailable();
             const results = await searchProductSources(
               {
                 store: input.store,
@@ -281,7 +300,7 @@ export function createAssistantHistory(input: AssistantHistoryContext): {
               workspaceId: input.workspaceId,
               threadId: input.threadId,
               turnId: input.turnId,
-              actor: { kind: 'user', id: input.actor.userId },
+              actor: input.nativeAuthority?.actorRef ?? { kind: 'user', id: input.actor!.userId },
             },
             requestDigest: hash(
               JSON.stringify({
@@ -327,7 +346,7 @@ export function createAssistantHistory(input: AssistantHistoryContext): {
   };
 }
 
-/** Derives the exact eligible canonical range; its digest and qualified endpoints grant no authority. */
+/** Derives an exact range; native Tool reads stay in-run while retained traces verify their original admitted sources. */
 function requireRange(
   input: AssistantHistoryContext,
   range: {
@@ -335,25 +354,32 @@ function requireRange(
     readonly firstItemId: string;
     readonly lastItemId: string;
     readonly sourceDigest: string;
-  }
+  },
+  currentRunOnly = true
 ): Item[] {
   requireAudience(input);
+  if (currentRunOnly && input.nativeAuthority && range.threadId !== input.threadId)
+    throw unavailable();
+  const userId = input.actor?.userId ?? responsibleUserIdForActor(input.nativeAuthority!.actorRef);
+  if (!userId) throw unavailable();
   const source = input.store.getThread(input.workspaceId, range.threadId);
   const destination = input.store.getThread(input.workspaceId, input.threadId);
   if (
-    !isThreadVisible(input.store, source, input.actor.userId, false) ||
+    !isThreadVisible(input.store, source, userId, false) ||
     (source.visibility === 'private' &&
       (destination.visibility !== 'private' ||
         source.privateOwnerUserId !== destination.privateOwnerUserId))
   )
     throw unavailable();
   const current = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  const history = internalContextItems(input.store, { ...current, threadId: source.id });
-  const first = history.findIndex((item) => item.id === range.firstItemId);
-  const last = history.findIndex((item) => item.id === range.lastItemId);
-  if (first < 0 || last < first) throw unavailable();
-  const items = history.slice(first, last + 1);
-  if (internalContextSourceDigest(input.store, items) !== range.sourceDigest) throw unavailable();
+  const { items, strategy } = internalContextRange(input.store, current, range);
+  if (
+    (currentRunOnly &&
+      input.nativeAuthority &&
+      (strategy !== 'compaction' || items.some((item) => item.turnId !== input.turnId))) ||
+    internalContextSourceDigest(input.store, items, strategy) !== range.sourceDigest
+  )
+    throw unavailable();
   return items;
 }
 

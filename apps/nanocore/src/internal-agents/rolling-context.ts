@@ -74,6 +74,63 @@ export function internalContextItems(store: Pick<FsStore, 'listThreadTurns'>, tu
     );
 }
 
+/**
+ * Resolves an exact retained range using its canonical summary's continuity boundary.
+ *
+ * Valid rolling proofs keep their existing interpretation. A matching compaction summary selects only its producing Turn's complete pre-summary Items. The caller still verifies the returned source digest and current audience; the summary supplies no read authority. Import may pass the strategy already retained on the summary it is verifying.
+ */
+export function internalContextRange(
+  store: Pick<FsStore, 'listThreadTurns' | 'getTurnById'>,
+  query: Turn,
+  range: Pick<Summary['sourceRange'], 'firstItemId' | 'lastItemId' | 'sourceDigest'> & {
+    readonly threadId: string;
+  },
+  strategy?: Summary['strategy']
+): { readonly items: Item[]; readonly strategy: Summary['strategy'] } {
+  const select = (history: readonly Item[]): Item[] | undefined => {
+    const first = history.findIndex((item) => item.id === range.firstItemId);
+    const last = history.findIndex((item) => item.id === range.lastItemId);
+    return first < 0 || last < first ? undefined : history.slice(first, last + 1);
+  };
+  const rolling = select(internalContextItems(store, { ...query, threadId: range.threadId }));
+  if (
+    strategy === 'rolling' ||
+    (strategy === undefined &&
+      rolling &&
+      internalContextSourceDigest(store, rolling) === range.sourceDigest)
+  ) {
+    if (!rolling) throw capacity();
+    return { items: rolling, strategy: 'rolling' };
+  }
+  for (const turn of store.listThreadTurns(query.workspaceId, range.threadId)) {
+    for (const [index, summary] of turn.items.entries()) {
+      if (
+        summary.type !== 'context-summary' ||
+        summary.strategy !== 'compaction' ||
+        summary.sourceRange.firstItemId !== range.firstItemId ||
+        summary.sourceRange.lastItemId !== range.lastItemId
+      )
+        continue;
+      const items = select(
+        turn.items
+          .slice(0, index)
+          .filter(
+            (item) =>
+              item.type !== 'context-summary' &&
+              item.type !== 'reasoning' &&
+              (item.status === 'completed' ||
+                (item.status === 'failed' &&
+                  item.type !== 'user-message' &&
+                  item.type !== 'assistant-message'))
+          )
+      );
+      if (items) return { items, strategy: 'compaction' };
+    }
+  }
+  if (strategy === 'compaction' || !rolling) throw capacity();
+  return { items: rolling, strategy: 'rolling' };
+}
+
 /** Binds canonical source Items; only cross-run rolling history also binds terminal Turn outcomes. */
 export function internalContextSourceDigest(
   store: Pick<FsStore, 'getTurnById'>,
@@ -160,6 +217,35 @@ export async function prepareInternalAgentContext(
   const startedAt = Date.now();
   const deadline = AbortSignal.timeout(input.limits.deadlineMs);
   const signal = AbortSignal.any([input.signal, deadline]);
+  // Pin the actual rolling admission bound in the existing execution record before inference.
+  assertInternalAgentContextFits(
+    { systemPrompt: input.systemPrompt, messages: [], tools: input.tools },
+    input.bounds.context ?? undefined,
+    input.bounds.output ?? undefined
+  );
+  try {
+    input.assertCurrent();
+  } catch {
+    throw capacity();
+  }
+  const currentTurn = input.store.getTurnById(input.turn.id);
+  const execution = {
+    ...currentTurn.internalExecution,
+    roleId: currentTurn.agentId!,
+    logicalModelId: input.model.logicalModelId,
+    contextStrategy: 'rolling' as const,
+    threshold: input.bounds.context! - (input.bounds.output ?? 0),
+  };
+  if (
+    currentTurn.internalExecution &&
+    (currentTurn.internalExecution.roleId !== execution.roleId ||
+      currentTurn.internalExecution.logicalModelId !== execution.logicalModelId ||
+      currentTurn.internalExecution.contextStrategy !== execution.contextStrategy ||
+      currentTurn.internalExecution.threshold !== execution.threshold)
+  )
+    throw capacity();
+  if (!currentTurn.internalExecution)
+    input.store.updateTurn(input.turn.id, { internalExecution: execution });
   const environmentDigest = internalContextDigest({
     version: 1,
     strategy: 'rolling',

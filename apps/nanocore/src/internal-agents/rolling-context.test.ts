@@ -197,6 +197,12 @@ describe('source-bound internal rolling context', () => {
     const before = f.store.listThreadItems(f.workspace.id, f.thread.id);
     const request = input(f);
     const prepared = await prepareInternalAgentContext(request);
+    expect(f.store.getTurnById(f.turn.id).internalExecution).toEqual({
+      roleId: f.turn.agentId,
+      logicalModelId: model.logicalModelId,
+      contextStrategy: 'rolling',
+      threshold: contextLimit - outputReserve,
+    });
     expect(request.callProvider).not.toHaveBeenCalled();
     expect(prepared.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
     expect(text(prepared.messages)).toContain('Question 0:');
