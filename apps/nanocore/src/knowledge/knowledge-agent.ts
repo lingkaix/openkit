@@ -9,12 +9,13 @@ import { createAssistantHistory } from '../internal-agents/assistant-history.js'
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
-import { admitKnowledgeRetrieval, knowledgeSourceAudienceReadable, readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
+import { admitKnowledgeRetrieval, canReadServerKnowledge, knowledgeSourceAudienceReadable, readAuthorizedServerNotebookPages, readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { AuthorizedHistory } from './notebook-history.js';
 import { parseOkfDocument, stringListFrontmatterField, resolveRegisteredKnowledgeSourceReference } from './okf.js';
+import { listServerKnowledgeSources, readServerKnowledgeSource } from './server-knowledge-owner.js';
 
 /** Trusted query context remains that of the asker, separate from the Knowledge Manager work Turn. */
 export interface KnowledgeAgentQuestion {
@@ -38,7 +39,12 @@ const answerSchema = z.object({
 }).strict();
 const searchSchema = z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(10).default(5) }).strict();
 const pageSchema = z.object({ pageId: z.string().min(1), offset: z.number().int().nonnegative().default(0) }).strict();
-const sourceSchema = z.object({ sourceId: z.string().min(1), offset: z.number().int().nonnegative().default(0) }).strict();
+const sourceSchema = z.object({ pageId: z.string().min(1), sourceId: z.string().min(1), offset: z.number().int().nonnegative().default(0) }).strict();
+
+/** Selected identities contain their admitted owner; they are not scope selection arguments. */
+function citationId(candidate: KnowledgeRetrievalCandidate): string {
+  return `${candidate.reference.scopeId}/${candidate.reference.objectId}`;
+}
 
 /**
  * Runs one isolated model query using current Kernel selection and exact authorized page reads.
@@ -77,22 +83,49 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   const overview = overviewBytes.subarray(0, overviewEnd).toString('utf8');
   const candidates = new Map<string, KnowledgeRetrievalCandidate>();
   const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage.content });
-  candidates.set('index', { reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: 'index' },
+  const workspaceIndexId = `page/workspace/${input.workspaceId}/index`;
+  candidates.set(workspaceIndexId, { reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: 'index' },
     revision: baseRevision, contentDigest: overviewPage.contentDigest, score: 0,
     sourceReferences: navigation.document ? stringListFrontmatterField(navigation.document, 'source_refs') ?? [] : [] });
   const read = new Map<string, { candidate: KnowledgeRetrievalCandidate; content: string }>();
-  const readSources = new Map<string, string>();
+  const readSources = new Map<string, { pageId: string; sourceId: string; digest: string }>();
+  const serverContext = { coreDb: input.access.coreDb, actor: access.serverKnowledgeActor ?? access.requestActor };
+  const serverAdmitted = canReadServerKnowledge({ access });
+  let serverRevision: string | undefined;
+  let serverUnavailable = false;
+  if (serverAdmitted) {
+    try {
+      serverRevision = readAuthorizedServerNotebookPages({ ...bound, pageIds: [] }).notebookRevision;
+    } catch {
+      // A currently admitted source failure is visible to the model, without storage diagnostics.
+      serverUnavailable = true;
+    }
+  }
+  const currentPage = (candidate: KnowledgeRetrievalCandidate) => {
+    const selected = { ...bound, notebookRevision: candidate.revision, pageIds: [candidate.reference.objectId] };
+    return (candidate.reference.scopeId === 'page/server'
+      ? readAuthorizedServerNotebookPages(selected)
+      : readAuthorizedWorkspaceNotebookPages(selected)).pages[0];
+  };
+  const currentSource = (candidate: KnowledgeRetrievalCandidate, sourceId: string) => {
+    if (candidate.reference.scopeId === 'page/server') return readServerKnowledgeSource(serverContext, sourceId);
+    if (!knowledgeSourceAudienceReadable(bound, sourceId)) return null;
+    const source = store.getKnowledgeSource(input.workspaceId, sourceId);
+    const content = store.readKnowledgeSourceMaterial(input.workspaceId, sourceId);
+    return content === null ? null : { source, content };
+  };
   const assertCurrent = () => {
     input.assertCurrent?.();
     input.signal.throwIfAborted();
     admitKnowledgeRetrieval(bound);
-    for (const [id, evidence] of read) {
-      const page = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: [id] }).pages[0];
+    for (const evidence of read.values()) {
+      const page = currentPage(evidence.candidate);
       if (!page || page.contentDigest !== evidence.candidate.contentDigest)
         throw new Error('Knowledge citation is no longer available.');
     }
-    for (const [id, digest] of readSources) {
-      if (!knowledgeSourceAudienceReadable(bound, id) || store.getKnowledgeSource(input.workspaceId, id).contentDigest !== digest)
+    for (const { pageId, sourceId, digest } of readSources.values()) {
+      const source = currentSource(read.get(pageId)!.candidate, sourceId);
+      if (!source || source.source.contentDigest !== digest)
         throw new Error('Knowledge Source is no longer available.');
     }
   };
@@ -102,16 +135,26 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
   };
   const tools: AgentTool[] = [
     {
-      name: 'knowledge.retrieval', description: 'Search active pages in the admitted Workspace notebook. Read selected pages before citing them.',
+      name: 'knowledge.retrieval', description: 'Search the Workspace and currently admitted Server Knowledge separately. Read selected scope-qualified pageIds before citing them. Source rankings are independent.',
       inputSchema: schema(searchSchema),
       execute: async (value: unknown) => {
         assertCurrent();
         const args = searchSchema.parse(value);
-        const result = await retrieveWorkspaceKnowledge({ ...bound, caller: input.caller, ...args });
-        if (result.notebookRevision !== baseRevision) throw new Error('Notebook changed; start a new query.');
-        for (const candidate of result.selected) candidates.set(candidate.reference.objectId, candidate);
+        const workspace = await retrieveWorkspaceKnowledge({ ...bound, caller: input.caller, ...args });
+        if (workspace.notebookRevision !== baseRevision) throw new Error('Notebook changed; start a new query.');
+        const sources = [{ source: 'workspace', ...workspace }];
+        if (serverAdmitted && !serverUnavailable) {
+          if (!canReadServerKnowledge({ access })) throw new Error('Server Knowledge is no longer available.');
+          const server = await retrieveWorkspaceKnowledge({ ...bound, caller: input.caller, sourceScope: 'server', ...args });
+          if (server.notebookRevision !== serverRevision) throw new Error('Server notebook changed; start a new query.');
+          sources.push({ source: 'server', ...server });
+        }
+        for (const result of sources) for (const candidate of result.selected) candidates.set(citationId(candidate), candidate);
         assertCurrent();
-        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text' as const, text: JSON.stringify({
+          sources: sources.map((result) => ({ ...result, selected: result.selected.map((candidate) => ({ ...candidate, pageId: citationId(candidate) })) })),
+          unavailableSources: serverUnavailable ? ['server'] : [],
+        }) }] };
       },
     },
     {
@@ -122,11 +165,11 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         const { pageId, offset } = pageSchema.parse(value);
         const candidate = candidates.get(pageId);
         if (!candidate) throw new Error('Search this page before reading it.');
-        const page = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: [pageId] }).pages[0];
+        const page = currentPage(candidate);
         if (!page || page.contentDigest !== candidate.contentDigest) throw new Error('Selected page changed.');
         read.set(pageId, { candidate, content: page.content });
         const content = page.content.slice(offset, offset + 16_384);
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ ...candidate, content, offset,
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ...candidate, pageId, content, offset,
           nextOffset: offset + content.length < page.content.length ? offset + content.length : null }) }] };
       },
     },
@@ -135,16 +178,17 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
       inputSchema: schema(sourceSchema),
       execute: async (value: unknown) => {
         assertCurrent();
-        const { sourceId, offset } = sourceSchema.parse(value);
-        if (![...read.values()].some(({ candidate }) => candidate.sourceReferences.some((ref) => ref === `source:${sourceId}` || ref.startsWith(`source:${sourceId}@`))) ||
-          !knowledgeSourceAudienceReadable(bound, sourceId)) throw new Error('Source is unavailable.');
-        const source = store.getKnowledgeSource(input.workspaceId, sourceId);
-        const original = store.readKnowledgeSourceMaterial(input.workspaceId, sourceId);
-        if (original === null || source.contentDigest !== `sha256:${createHash('sha256').update(original).digest('hex')}`)
+        const { pageId, sourceId, offset } = sourceSchema.parse(value);
+        const evidence = read.get(pageId);
+        if (!evidence?.candidate.sourceReferences.some((ref) => ref === `source:${sourceId}` || ref.startsWith(`source:${sourceId}@`)))
+          throw new Error('Source is unavailable.');
+        const captured = currentSource(evidence.candidate, sourceId);
+        if (!captured || captured.source.contentDigest !== `sha256:${createHash('sha256').update(captured.content).digest('hex')}`)
           throw new Error('Captured Source bytes are unavailable.');
-        readSources.set(sourceId, source.contentDigest);
+        const { source, content: original } = captured;
+        readSources.set(`${pageId}/${sourceId}`, { pageId, sourceId, digest: source.contentDigest });
         const content = original.slice(offset, offset + 16_384);
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ reference: `source:${sourceId}@${source.contentDigest}`,
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ pageId, reference: `source:${sourceId}@${source.contentDigest}`,
           content, offset, nextOffset: offset + content.length < original.length ? offset + content.length : null }) }] };
       },
     },
@@ -175,7 +219,9 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
         overviewDeliveredDigest: `sha256:${createHash('sha256').update(overview).digest('hex')}`,
         overviewTruncated: overviewEnd < overviewBytes.length,
         overviewNextOffset: overview.length < overviewPage.content.length ? overview.length : null,
-        overviewReadTool: 'knowledge.page.read', overviewPageId: 'index', notebookRevision: baseRevision }) }] }],
+        overviewReadTool: 'knowledge.page.read', overviewPageId: workspaceIndexId, notebookRevision: baseRevision,
+        unavailableSources: serverUnavailable ? ['server'] : [],
+        instruction: 'Use exact scope-qualified pageId values for reads and citationIds. Report any unavailable source in uncertainty.' }) }] }],
       readEvidence: (items) => readInternalContextEvidence({
         store, coreDb: input.access.coreDb!, workspaceId: input.workspaceId, threadId: thread.id,
         nativeAuthority, items, strategy: 'compaction',
@@ -186,18 +232,21 @@ export async function askKnowledgeAgent(dependencies: KnowledgeAgentDependencies
       validateResult: (text) => {
         assertCurrent();
         const answer = answerSchema.parse(JSON.parse(text));
-        if (answer.citationIds.some((id) => !read.has(id)) || (!answer.citationIds.length && !answer.uncertainty))
+        if (answer.citationIds.some((id) => !read.has(id)) || ((!answer.citationIds.length || serverUnavailable) && !answer.uncertainty))
           throw new Error('Knowledge answer lacks cited evidence or stated uncertainty.');
       },
     });
     const answer = answerSchema.parse(JSON.parse(result.text));
     assertCurrent();
-    const registered = new Map(store.listKnowledgeSources(input.workspaceId).map((source) => [source.id, source.contentDigest]));
+    const workspaceSources = new Map(store.listKnowledgeSources(input.workspaceId).map((source) => [source.id, source.contentDigest]));
+    const serverSources = serverAdmitted && !serverUnavailable
+      ? new Map(listServerKnowledgeSources(serverContext).map((source) => [source.id, source.contentDigest])) : new Map<string, string>();
     return KnowledgeAskResponseSchema.parse({
       threadId: thread.id, turnId: turn.id, answer: redactInternalAgentText(answer.answer), uncertainty: answer.uncertainty,
       citations: [...new Set(answer.citationIds)].map((id) => {
         const { candidate } = read.get(id)!;
-        return { reference: `${candidate.reference.scopeId}/${id}@${candidate.revision}`,
+        const registered = candidate.reference.scopeId === 'page/server' ? serverSources : workspaceSources;
+        return { reference: `${id}@${candidate.revision}`,
           revision: candidate.revision, contentDigest: candidate.contentDigest,
           sourceReferences: candidate.sourceReferences.map((reference) => {
             const source = resolveRegisteredKnowledgeSourceReference(reference, registered);
