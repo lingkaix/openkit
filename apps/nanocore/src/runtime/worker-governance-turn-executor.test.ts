@@ -46,6 +46,7 @@ import {
   WorkerRuntimeNativeOriginIndexEntrySchema,
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestSchema,
+  workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
@@ -59,6 +60,7 @@ import {
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -8223,6 +8225,124 @@ describe('WorkerGovernanceTurnExecutor', () => {
     workspaceDb.sqlite.close();
     launchGate.mockRestore();
     coreDb.sqlite.close();
+  });
+
+  it.each([
+    'validation',
+    'launch',
+  ] as const)('refuses an overview revoked during awaited %s before later disclosure', async (boundary) => {
+    const fixture = await createWorkerContextExecutorFixture(`overview-revoked-${boundary}`);
+    let current = true;
+    const overview = vi.spyOn(knowledgeOverviewReader, 'prepareKnowledgeOverview').mockReturnValue({
+      text: 'Bounded overview from a source admitted at preparation.',
+      assertCurrent: () => {
+        if (!current) throw new Error('Overview source revoked.');
+      },
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const barrier =
+      boundary === 'validation'
+        ? vi.spyOn(backend, 'validatePackage').mockImplementation(async () => {
+            current = false;
+            return [];
+          })
+        : vi.spyOn(backend, 'prepareLaunch').mockImplementation(async () => {
+            current = false;
+          });
+    const submit = vi.spyOn(backend, 'submit');
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await expect(
+        executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'source_unavailable', status: 503 });
+      expect(submit).not.toHaveBeenCalled();
+      if (boundary === 'validation') expect(backend.calls).not.toContain('materialize');
+    } finally {
+      overview.mockRestore();
+      barrier.mockRestore();
+      submit.mockRestore();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('prepares the bounded scope overview and tells the Worker where to read it', async () => {
+    const fixture = await createWorkerContextExecutorFixture('knowledge-overview');
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        fixture.coreDb.dataRoot,
+        'workspaces',
+        fixture.turn.workspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const revision = notebook.publishedRevision();
+    const index = notebook.readRevision(revision).files['index.md']!;
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+        agentSessionId: fixture.agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+      const overview = readFileSync(join(fixture.packageRoot, 'knowledge-overview.md'), 'utf8');
+      const projection = JSON.parse(
+        overview.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
+      );
+      expect(projection.overviews).toEqual([
+        expect.objectContaining({
+          scope: `workspace:${fixture.turn.workspaceId}`,
+          path: 'index.md',
+          notebookRevision: revision,
+          contentDigest: turnRuntimeSha256(Buffer.from(index)),
+          truncated: false,
+          content: index,
+        }),
+      ]);
+      const trace = JSON.parse(readFileSync(fixture.tracePath, 'utf8'));
+      expect(trace.fileInventory).toContainEqual({
+        path: 'knowledge-overview.md',
+        byteLength: Buffer.byteLength(overview),
+        contentDigest: turnRuntimeSha256(Buffer.from(overview)),
+      });
+      expect(readFileSync(join(fixture.packageRoot, 'instructions.md'), 'utf8')).toBe(
+        fixture.workerRequest
+      );
+      expect(backend.lastPackage?.extensions?.openkit?.turnInput).toContain(fixture.workerRequest);
+      expect(backend.lastPackage?.extensions?.openkit?.turnInput).toContain(
+        `${workerSessionInputPaths(fixture.agentSessionId).contextRoot}/knowledge-overview.md`
+      );
+      expect(backend.lastPackage?.extensions?.openkit?.turnInput).toContain('knowledge_ask');
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
   });
 
   it('accepts the exact Artifact Review follow-up request through the S39 boundary', async () => {

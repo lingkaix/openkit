@@ -67,6 +67,8 @@ This spec supersedes `docs/specs/superseded/20260702-worker_context_taxonomy.md`
 
 ## Current Implementation Projection
 
+The optional `knowledgeOverview` package input becomes `knowledge-overview.md` in the package root. The AEP Turn input names that file so the stock Worker shim exposes the navigation instruction.
+
 The current implementation is the accepted V1 context package projection:
 
 - `apps/nanocore/src/context/llm-projection.ts` converts durable item history into provider-visible LLM messages through an explicit projection policy.
@@ -369,6 +371,10 @@ Baseline exclusion reasons:
 Implementation-specific projection reasons may be more granular, such as `diagnostic_noise`, `artifact_pointer`, `approval_gate`, `goal_state_not_needed`, and `review_context_not_needed`. Those reasons should map back to a baseline reason when package traces become durable cross-version records.
 
 ## Knowledge Handling
+
+When Core and retained data authority are available, each accepted Worker package includes the applicable Workspace overview and any currently admitted Server overview from the notebook root index. Each overview states its scope, exact notebook revision, original digest, delivered digest and truncation state. Overview content is bounded to 4096 UTF-8 bytes per scope. A missing or denied overview is marked unavailable without storage diagnostics; absence of an overview does not establish absence of Knowledge. User Memory is excluded. Current source and receiving Thread authority are checked before and after package publication, and again before backend materialization and model submission. Server access uses only the current credential retained by the originating scheduler admission.
+
+The Worker receives an explicit instruction to read the overview and ask the Knowledge Manager through `knowledge_ask` for relevant understanding and citations. The overview is untrusted navigation, not instructions or complete evidence. Its exact delivered bytes use the existing package file inventory and digests; no separate selection record, receipt or lifecycle is added. The canonical Worker request and its instruction file remain byte-exact. Historical inspection and exact replay use the retained overview bytes under the existing package rules.
 
 Each Knowledge package entry retains the original page id, pinned notebook commit, original digest, complete source references, validated review state, and sensitivity decision. The immutable package separately retains the exact delivered body, excerpt, or descriptor and its digest. Git proves source version; only the S39 trace, inventory, manifest, and retained package bytes prove delivery. A bounded projection never claims delivery of omitted source bytes.
 
