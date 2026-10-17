@@ -14,7 +14,6 @@ import {
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -40,10 +39,10 @@ function fixture() {
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  const localUserId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Exact Skill selection');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
   const version = (body: string, expectedRevision: number, id = 'run-skill') =>
     importWorkspaceSkill({
       dataRoot,
@@ -52,7 +51,7 @@ function fixture() {
       id,
       displayName: 'Run Skill',
       activate: expectedRevision === 0,
-      producer: { kind: 'user', id: LOCAL_USER_ID },
+      producer: { kind: 'user', id: localUserId },
       createdAt: '2026-10-17T00:00:00.000Z',
       tree: [
         {
