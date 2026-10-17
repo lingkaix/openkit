@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { expect, it, onTestFinished } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
@@ -27,7 +28,7 @@ function fixture() {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { ...result, store, dataRoot };
+  return { ...result, store, dataRoot, userId };
 }
 
 /** Submits a real model-visible Tool call through the Gateway projection. */
@@ -254,7 +255,20 @@ it('organizes the initial root index around an existing human fact through the r
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
-  const before = notebook.publishedRevision();
+  // Demo import creates an overview; this case needs an empty index beside the existing fact.
+  const imported = notebook.publishedRevision();
+  const before = notebook.prepare({
+    baseRevision: imported,
+    changes: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+    metadata: {
+      summary: 'Prepare empty overview',
+      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash('empty overview') },
+      producer: { kind: 'user', id: f.userId },
+      authority: { kind: 'direct', instructionReference: 'Prepare the maintenance fixture.' },
+      sourceReferences: [],
+    },
+  });
+  notebook.publish({ baseRevision: imported, candidateRevision: before });
   const initial = notebook.readRevision(before).files;
   expect(initial['index.md']).toBe(DEFAULT_NOTEBOOK_INDEX);
   expect(initial['mem_project.md']).toContain(
