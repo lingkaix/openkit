@@ -143,8 +143,12 @@ it('prepares a bounded preview and exact streamed original larger than the inlin
   expect(sources).toHaveLength(1);
   const source = sources[0]!;
   expect(source.originalDigest).toBe(expected);
-  expect(source.originalSnapshotPath).toBe('originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload');
-  expect(source.packagePath).toBe('sources/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1.txt');
+  expect(source.originalSnapshotPath).toBe(
+    'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload'
+  );
+  expect(source.packagePath).toBe(
+    'sources/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1.txt'
+  );
   expect(source.deliveredBytes).toEqual(original.subarray(0, 2048));
   expect(source.projection).toMatchObject({
     representationId: 'original-utf8',
@@ -221,7 +225,10 @@ it.each([
     });
   const files = packageFor(f, [source!]);
   await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
-  const snapshot = join(f.workspaceRoot, 'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package');
+  const snapshot = join(
+    f.workspaceRoot,
+    'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
+  );
   expect(readFileSync(join(snapshot, source!.originalSnapshotPath))).toEqual(body);
   expect(readFileSync(join(snapshot, source!.packagePath))).toEqual(source!.deliveredBytes);
 });
@@ -350,7 +357,9 @@ it('captures nested metadata before callbacks can mutate caller-owned input', as
   });
   expect(source!.source).toMatchObject({ artifactVersion: 1 });
   expect(source!.byteLength).toBe(f.body.length);
-  expect(source!.originalSnapshotPath).toBe('originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload');
+  expect(source!.originalSnapshotPath).toBe(
+    'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload'
+  );
   await source!.assertUnchanged();
 });
 

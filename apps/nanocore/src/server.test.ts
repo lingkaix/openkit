@@ -6016,7 +6016,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: jsonHeaders(),

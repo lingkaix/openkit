@@ -56,8 +56,7 @@ it('delivers one bounded excerpt while retaining and streaming every original by
   expect(prepared.selection.projection).toEqual(prepared.source.projection);
   expect(prepared.source.projection).toMatchObject({
     kind: 'excerpt',
-    originalSnapshotPath:
-      `originals/materials/${state.selection.materialId}/${state.selection.revisionId}/payload`,
+    originalSnapshotPath: `originals/materials/${state.selection.materialId}/${state.selection.revisionId}/payload`,
     deliveredDigest: sha256(Buffer.from(delivered)),
     representationDigest: sha256(Buffer.from(content)),
     truncated: true,

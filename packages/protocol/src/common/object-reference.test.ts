@@ -151,11 +151,7 @@ it('resolves exact file scopes without treating versions or input ordinals as ne
       { family: 'material', kind: 'workspace', workspaceId },
       materialId,
     ],
-    [
-      inputScope,
-      { family: 'input', kind: 'turn', workspaceId, threadId, turnId },
-      '0',
-    ],
+    [inputScope, { family: 'input', kind: 'turn', workspaceId, threadId, turnId }, '0'],
   ] as const) {
     expect(parseReferenceScope(scopeId)).toEqual(expected);
     expect(ScopeQualifiedReferenceSchema.safeParse({ scopeId, objectId }).success).toBe(true);
@@ -170,9 +166,9 @@ it('resolves exact file scopes without treating versions or input ordinals as ne
     expect(parseReferenceScope(scopeId)).toBeNull();
   }
   for (const objectId of ['', '-1', '+1', '01', '1.0', '1e2', '0/1', '9007199254740992']) {
-    expect(
-      ScopeQualifiedReferenceSchema.safeParse({ scopeId: inputScope, objectId }).success
-    ).toBe(false);
+    expect(ScopeQualifiedReferenceSchema.safeParse({ scopeId: inputScope, objectId }).success).toBe(
+      false
+    );
   }
   for (const [family, objectId] of [
     ['artifact', artifactId],
