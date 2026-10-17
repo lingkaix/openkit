@@ -4,6 +4,8 @@ import {
   AgentIdSchema,
   AgentProfileIdSchema,
   AgentSessionIdSchema,
+  ItemIdSchema,
+  CapabilityCallIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
@@ -33,13 +35,13 @@ export const InternalAgentExecutionSchema = z.object({
         z.object({
           threadId: ThreadIdSchema,
           turnId: TurnIdSchema,
-          firstItemId: z.string().min(1),
-          lastItemId: z.string().min(1),
+          firstItemId: ItemIdSchema,
+          lastItemId: ItemIdSchema,
         })
       ),
       askingThreadId: ThreadIdSchema.optional(),
       askingTurnId: TurnIdSchema.optional(),
-      askingCapabilityCallId: z.string().min(1).optional(),
+      askingCapabilityCallId: CapabilityCallIdSchema.optional(),
     })
     .optional(),
 });

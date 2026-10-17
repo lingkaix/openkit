@@ -43,7 +43,7 @@ export const KnowledgeMaintainRequestSchema = z.object({
 export const KnowledgeMaintenanceResponseSchema = z.object({
   threadId: ThreadIdSchema,
   turnId: TurnIdSchema,
-  outcome: z.enum(['published', 'review-required', 'no-change', 'skipped']),
+  outcome: z.enum(['published', 'review-required', 'no-change', 'skipped', 'failed']),
   notebookRevision: z.string().min(1),
   candidateRevision: z.string().min(1).optional(),
   proposalId: z.string().min(1).optional(),

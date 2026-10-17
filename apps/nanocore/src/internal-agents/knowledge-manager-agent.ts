@@ -1,4 +1,4 @@
-import type { ActorRef, Item, Turn } from '@openkit/protocol';
+import type { ActorRef, Item } from '@openkit/protocol';
 import { allocateEntityId, isSealedTurnTerminal, responsibleUserIdForActor } from '@openkit/protocol';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
@@ -15,6 +15,8 @@ import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 import { type AgentMessage, type AgentTool, runInternalAgentLoop } from './internal-agent-loop.js';
 import { resolveInternalRoleProfile } from './profile-resolver.js';
 import { internalContextFailure } from './rolling-context.js';
+
+type Turn = ReturnType<FsStore['getTurnById']>;
 
 /** Existing Gateway dependencies; the role adds no transport, execution store or scheduler. */
 export interface KnowledgeManagerAgentDependencies {
