@@ -15,7 +15,7 @@ import { TimestampSchema } from '../common/timestamps.js';
 import { GitFailureExplanationSchema } from '../errors/failure-explanation.js';
 import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
 import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from './artifact.js';
-import { ItemSchema } from './item.js';
+import { ItemSchema, ServerItemSchema } from './item.js';
 import { KnowledgeOwnerScopeSchema } from './knowledge-notebook.js';
 
 /** Pinned choices and admitted inputs of an existing internal-role Turn, never an execution store. */
@@ -191,7 +191,9 @@ export const TurnRecordSchema = TurnBaseSchema.extend({
  * @param context Zod refinement context.
  */
 function refineTurnItemRelationships(
-  turn: z.infer<typeof TurnRecordSchema>,
+  turn: Pick<z.infer<typeof TurnRecordSchema>, 'triggerActor'> & {
+    items: readonly (z.infer<typeof ItemSchema> | z.infer<typeof ServerItemSchema>)[];
+  },
   context: z.RefinementCtx
 ): void {
   const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
@@ -225,3 +227,15 @@ export const ProductTurnSchema = TurnRecordSchema.omit({ agentSessionId: true })
 
 /** Ordinary product-surface Turn without AgentSession identity. */
 export type ProductTurn = z.infer<typeof ProductTurnSchema>;
+
+/** Server Turns inherit immutable Server ownership and reuse the ordinary Turn lifecycle. */
+export const ServerTurnSchema = TurnRecordSchema.omit({ workspaceId: true, items: true })
+  .extend({
+    owner: z.object({ kind: z.literal('server') }),
+    workspaceId: z.never().optional(),
+    items: z.array(ServerItemSchema),
+  })
+  .superRefine(refineTurnItemRelationships);
+
+/** Canonical attributable round of Server work. */
+export type ServerTurn = z.infer<typeof ServerTurnSchema>;
