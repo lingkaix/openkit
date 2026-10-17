@@ -49,6 +49,8 @@ The important call is to stop organizing persistence by feature module. Storage 
 
 ## Related Docs
 
+- [Retained Format Register](20261017-retained_format_register.md) — current retained-family inventory, marker evidence, readers and fixture gaps; persistence rules remain with Core Storage.
+
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/specs/20260921-work_data_retention_format.md` — owns the semantics and content model of retained work data whose physical placement this spec owns.
 
