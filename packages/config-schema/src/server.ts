@@ -58,6 +58,8 @@ export const OpenKitCorsSchema = z
  */
 export const OpenKitServerRuntimeSchema = z
   .object({
+    /** Free Data Root capacity retained after all admitted pending file writes; default 1,000,000,000 bytes. */
+    fileReserveBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     bind: OpenKitServerBindSchema.optional(),
     cors: OpenKitCorsSchema.optional(),
     publicBaseUrl: HttpOriginSchema.optional(),

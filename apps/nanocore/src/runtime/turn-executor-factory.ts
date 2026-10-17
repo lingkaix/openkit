@@ -31,6 +31,7 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
@@ -124,6 +125,7 @@ import {
   consumeNanoHostStagedExport,
   inspectNanoHostStagedExport,
   MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES,
+  openNanoHostStagedExport,
   openShellFilesystemGrantsFromPackagePolicy,
   openShellNetworkEndpointsFromPackagePolicy,
   prepareNanoHostContextPackageImports,
@@ -193,6 +195,8 @@ export interface TurnExecutorFactoryEnv {
 
 /** Options for creating the configured NanoCore turn executor. */
 export interface CreateConfiguredTurnExecutorOptions {
+  /** Shared file capacity owner used by self-check Artifact publication. */
+  fileAdmission?: FileStorageAdmission | undefined;
   /** Reads active configuration for resolution-time public-route admission. */
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined;
   /** Optional Core database for durable workspace synchronization records. */
@@ -260,7 +264,10 @@ export function createConfiguredTurnExecutor(
   const env = options.env ?? process.env;
 
   if (env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1') {
-    return new SimulatedTurnExecutor({ coreDb: options.coreDb });
+    return new SimulatedTurnExecutor({
+      coreDb: options.coreDb,
+      fileAdmission: options.fileAdmission,
+    });
   }
 
   return createConfiguredWorkerLifecycleRuntime(options).turnExecutor;
@@ -288,7 +295,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.vaultBackend,
     options.store,
     options.workspaceMutationAdmission,
-    options.readRuntimeConfig
+    options.readRuntimeConfig,
+    options.fileAdmission
   );
 }
 
@@ -301,6 +309,7 @@ export function createConfiguredWorkerLifecycleRuntime(
  * @param workerControlGateway Existing semantic worker-control owner.
  * @param vaultBackend Optional vault backend used for runtime provider grants.
  * @param sharedStore Optional process-local store shared with the App API.
+ * @param fileAdmission Existing shared file reserve; no second simulator capacity owner is created.
  * @returns Shared worker lifecycle runtime.
  */
 function createNanoHostWorkerLifecycleRuntime(
@@ -311,7 +320,8 @@ function createNanoHostWorkerLifecycleRuntime(
   vaultBackend?: (() => VaultBackend) | undefined,
   sharedStore?: FsStore | undefined,
   workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined,
-  readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined
+  readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined,
+  fileAdmission?: FileStorageAdmission | undefined
 ): ConfiguredWorkerLifecycleRuntime {
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
@@ -333,7 +343,7 @@ function createNanoHostWorkerLifecycleRuntime(
   );
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
-      ? new SimulatedTurnExecutor({ coreDb })
+      ? new SimulatedTurnExecutor({ coreDb, fileAdmission })
       : new WorkerGovernanceTurnExecutor({
           awaitWorkerCompletion: (environmentPackage, attemptId) =>
             waitForWorkerControlFinalStatus(coreDb, {
@@ -3781,9 +3791,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         'Submit one regular file with no other hard links.',
         400
       );
-    const bytes = await consumeNanoHostStagedExport(result);
-    requireLive();
-    return { bytes, credentialCheckValues };
+    const captured = await openNanoHostStagedExport(result, input.signal);
+    try {
+      requireLive();
+      return { ...captured, credentialCheckValues };
+    } catch (error) {
+      await captured.remove();
+      throw error;
+    }
   };
 
   /** Exports transcript and evidence files only after the accepted terminal barrier. */

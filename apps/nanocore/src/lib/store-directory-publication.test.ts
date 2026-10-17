@@ -1,11 +1,12 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
+import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 
 const require = createRequire(import.meta.url);
 const nodeFs = require('node:fs') as typeof import('node:fs');
@@ -14,6 +15,11 @@ const originalMkdir = nodeFs.mkdirSync;
 const originalCopy = nodeFs.cpSync;
 const localActor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 const timestamp = '2026-07-06T00:00:00.000Z';
+const temporaryRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 type FsStoreCtor = typeof import('./store.js').FsStore;
 type InterruptPoint = 'staging-directory' | 'before-rename' | 'after-rename';
@@ -41,7 +47,7 @@ function isRecordStagingDirectory(target: string): boolean {
  * @returns Private copy that the writer's catch cannot clean.
  */
 function copyDataRoot(source: string): string {
-  const snapshot = join(mkdtempSync(join(tmpdir(), 'openkit-publication-snapshot-')), 'root');
+  const snapshot = join(newDataRoot('snapshot'), 'root');
   originalCopy(source, snapshot, { recursive: true });
   return snapshot;
 }
@@ -150,11 +156,14 @@ function sessionFilesReady(directory: string): boolean {
 
 /** Creates a private data root. */
 function newDataRoot(label: string): string {
-  return mkdtempSync(join(tmpdir(), `openkit-publication-${label}-`));
+  const root = mkdtempSync(join(tmpdir(), `openkit-publication-${label}-`));
+  temporaryRoots.push(root);
+  return root;
 }
 
-/** Reloads a data root after the filesystem fault has been removed. */
+/** Runs exclusive stopped-fixture recovery, then reloads after the filesystem fault is removed. */
 async function reload(dataRoot: string): Promise<InstanceType<FsStoreCtor>> {
+  discardAbandonedWorkspaceStaging(dataRoot);
   const { FsStore } = await import('./store.js');
   return new FsStore({ dataRoot });
 }

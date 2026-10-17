@@ -170,9 +170,12 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
       } catch {
         return [];
       }
-      const canonicalDigest = `sha256:${createHash('sha256')
-        .update(artifact?.content.body ?? '', 'utf8')
-        .digest('hex')}`;
+      const canonicalDigest =
+        artifact?.content.format === 'file'
+          ? artifact.contentDigest
+          : `sha256:${createHash('sha256')
+              .update(artifact?.content.body ?? '', 'utf8')
+              .digest('hex')}`;
       if (
         !artifact ||
         artifact.workspaceId !== review.workspaceId ||

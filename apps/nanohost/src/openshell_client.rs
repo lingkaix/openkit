@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::PathBuf;
@@ -43,7 +43,7 @@ use crate::sandbox_bridge::{
 const FILE_EFFECT_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Maximum aggregate bytes moved by one V1 file effect.
-const FILE_EFFECT_MAX_BYTES: usize = 256 * 1024 * 1024;
+const FILE_EFFECT_MAX_BYTES: usize = crate::file_transfer::FILE_BYTES as usize + 1;
 
 /// Exact value-free worker-entry evidence accepted before bridge establishment.
 const WORKER_ENTRY_MARKER: &[u8] = b"OPENKIT_WORKER_SHIM_ENTRY_V1\n";
@@ -324,8 +324,8 @@ pub enum LifecycleEffectResult {
 /// Clean terminal output from one fixed raw interactive sandbox command.
 pub struct ExecSandboxInteractiveResult {
     /// Bounded stdout bytes emitted before the terminal event.
-    pub stdout: Vec<u8>,
-    /// The single proved zero exit status.
+    pub stdout_bytes: usize,
+    /// The single proved helper exit status.
     pub exit_status: i32,
 }
 
@@ -963,12 +963,14 @@ impl NanoHostOpenShellClient {
         &self,
         sandbox_id: &str,
         command: &[String],
-        stdin: &[u8],
+        stdin: &mut dyn Read,
+        stdin_length: usize,
+        stdout: &mut dyn Write,
         output_limit: usize,
     ) -> Result<ExecSandboxInteractiveResult, EpochFault> {
         if sandbox_id.is_empty()
             || command.is_empty()
-            || stdin.len() > FILE_EFFECT_MAX_BYTES
+            || stdin_length > FILE_EFFECT_MAX_BYTES
             || output_limit > FILE_EFFECT_MAX_BYTES
             || command
                 .iter()
@@ -1003,10 +1005,18 @@ impl NanoHostOpenShellClient {
                 EpochFault::MemberExited(None)
             })?
             .into_inner();
-        for chunk in stdin.chunks(FILE_EFFECT_CHUNK_BYTES) {
+        let mut buffer = [0_u8; FILE_EFFECT_CHUNK_BYTES];
+        let mut remaining = stdin_length;
+        while remaining > 0 {
+            let wanted = remaining.min(buffer.len());
+            stdin
+                .read_exact(&mut buffer[..wanted])
+                .map_err(|_| EpochFault::IdentityMismatch)?;
             if input
                 .send(ExecSandboxInput {
-                    payload: Some(exec_sandbox_input::Payload::Stdin(chunk.to_vec())),
+                    payload: Some(exec_sandbox_input::Payload::Stdin(
+                        buffer[..wanted].to_vec(),
+                    )),
                 })
                 .await
                 .is_err()
@@ -1014,8 +1024,9 @@ impl NanoHostOpenShellClient {
                 eprintln!("stage=file-effect outcome=request-stream");
                 return Err(EpochFault::MemberExited(None));
             }
+            remaining -= wanted;
         }
-        let mut stdout = Vec::new();
+        let mut stdout_bytes = 0;
         let mut exit_status = None;
         while let Some(event) = events.message().await.map_err(|_| {
             eprintln!("stage=file-effect outcome=event-stream");
@@ -1025,9 +1036,12 @@ impl NanoHostOpenShellClient {
                 Some(exec_sandbox_event::Payload::Stdout(event))
                     if exit_status.is_none()
                         && event.data.len() <= FILE_EFFECT_CHUNK_BYTES
-                        && stdout.len() + event.data.len() <= output_limit =>
+                        && stdout_bytes + event.data.len() <= output_limit =>
                 {
-                    stdout.extend_from_slice(&event.data);
+                    stdout
+                        .write_all(&event.data)
+                        .map_err(|_| EpochFault::IdentityMismatch)?;
+                    stdout_bytes += event.data.len();
                 }
                 Some(exec_sandbox_event::Payload::Stderr(event))
                     if exit_status.is_none() && event.data.is_empty() => {}
@@ -1047,7 +1061,7 @@ impl NanoHostOpenShellClient {
         drop(input);
         match exit_status {
             Some(exit_status @ (0 | 2 | 3)) => Ok(ExecSandboxInteractiveResult {
-                stdout,
+                stdout_bytes,
                 exit_status,
             }),
             Some(124) => {
@@ -1995,7 +2009,7 @@ mod tests {
         for required in [
             "exec_sandbox_interactive",
             "64 * 1024",
-            "256 * 1024 * 1024",
+            "crate::file_transfer::FILE_BYTES",
             "exit_status",
             "stderr",
         ] {
@@ -2014,7 +2028,8 @@ mod tests {
             .expect("end of fixed interactive file helper")
             .0;
         assert!(interactive.contains("ReceiverStream"));
-        assert!(interactive.contains("chunks(FILE_EFFECT_CHUNK_BYTES)"));
+        assert!(interactive.contains("[0_u8; FILE_EFFECT_CHUNK_BYTES]"));
+        assert!(interactive.contains(".read_exact(&mut buffer[..wanted])"));
         assert!(!interactive.contains("read_to_end"));
         assert!(
             !interactive.contains("tokio::spawn"),
@@ -2027,7 +2042,7 @@ mod tests {
             .find(".exec_sandbox_interactive(ReceiverStream::new(input_rx))")
             .expect("raw bidirectional RPC admission");
         let chunk_loop = interactive
-            .find("for chunk in stdin.chunks(FILE_EFFECT_CHUNK_BYTES)")
+            .find("while remaining > 0")
             .expect("bounded sequential stdin chunks");
         let request_stream = interactive
             .find("stage=file-effect outcome=request-stream")

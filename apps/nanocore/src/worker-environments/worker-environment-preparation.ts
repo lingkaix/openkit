@@ -841,6 +841,9 @@ function parseCandidateBody<T>(
   schema: z.ZodType<T>,
   label: string
 ): T {
+  if (artifact.content.format !== 'json') {
+    throw candidateConflict(`${label} candidate content is invalid.`);
+  }
   let value: unknown;
   try {
     value = JSON.parse(artifact.content.body);
