@@ -453,6 +453,7 @@ export function readWorkspaceDashboard(input: {
     );
     const counts = {
       ...workspace.counts,
+      knowledgeEntryCount: resources.knowledge.length,
       threadCount: threads.length,
       artifactCount: workspaceArtifacts.length,
     };

@@ -50,6 +50,7 @@ function projectWorkspace(
     ...workspace,
     counts: {
       ...workspace.counts,
+      knowledgeEntryCount: store.getWorkspaceResources(workspaceId).knowledge.length,
       threadCount: store
         .listThreads(workspaceId)
         .filter((thread) => isThreadVisible(store, thread, userId, administratorEligible)).length,
