@@ -25,7 +25,9 @@ const SuppressionSchema = z.object({
   recordType: z.literal('memory-suppression'),
   id: z.uuid(),
   ownerScope: z.literal('user'),
-  lineage: z.object({ userId: UserIdSchema, knowledgeId: z.string().min(1), requestId: z.uuid() }).strict(),
+  lineage: z
+    .object({ userId: UserIdSchema, knowledgeId: z.string().min(1), requestId: z.uuid() })
+    .strict(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -53,7 +55,10 @@ function contentDigest(payload: z.infer<typeof PayloadSchema>): string {
 }
 
 /** Reads current suppression without repair, with the shared envelope's required-feature checks. */
-export function readMemorySuppressions(notebookRoot: string, userId: string): readonly MemorySuppression[] {
+export function readMemorySuppressions(
+  notebookRoot: string,
+  userId: string
+): readonly MemorySuppression[] {
   try {
     assertCanonicalDirectory(notebookRoot);
     const directory = join(notebookRoot, 'observations');
@@ -62,17 +67,27 @@ export function readMemorySuppressions(notebookRoot: string, userId: string): re
     const rows: MemorySuppression[] = [];
     const requests = new Set<string>();
     const pageIds = new Set<string>();
-    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isFile() || !/^\d{6}\.jsonl$/.test(entry.name)) throw new Error('Invalid maintenance ledger.');
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      if (!entry.isFile() || !/^\d{6}\.jsonl$/.test(entry.name))
+        throw new Error('Invalid maintenance ledger.');
       for (const raw of readCanonicalJsonLines(join(directory, entry.name))) {
         const envelope = parseRecordEnvelope(raw, { supportedFeatures: REQUIRED_FEATURES });
         const row = SuppressionSchema.parse(envelope);
         validateNotebookFiles({ [`${row.payload.pageId}.md`]: '' }, true);
-        if (row.lineage.userId !== userId || row.payload.actorId !== userId ||
-          row.lineage.knowledgeId !== row.payload.pageId || row.lineage.requestId !== row.id ||
-          row.createdAt !== row.updatedAt || row.contentDigest !== contentDigest(row.payload) ||
-          row.createdAt.slice(0, 7).replace('-', '') !== entry.name.slice(0, 6)) throw new Error('Invalid suppression evidence.');
-        if (requests.has(row.id) || pageIds.has(row.payload.pageId)) throw new Error('Contradictory suppression history.');
+        if (
+          row.lineage.userId !== userId ||
+          row.payload.actorId !== userId ||
+          row.lineage.knowledgeId !== row.payload.pageId ||
+          row.lineage.requestId !== row.id ||
+          row.createdAt !== row.updatedAt ||
+          row.contentDigest !== contentDigest(row.payload) ||
+          row.createdAt.slice(0, 7).replace('-', '') !== entry.name.slice(0, 6)
+        )
+          throw new Error('Invalid suppression evidence.');
+        if (requests.has(row.id) || pageIds.has(row.payload.pageId))
+          throw new Error('Contradictory suppression history.');
         requests.add(row.id);
         pageIds.add(row.payload.pageId);
         rows.push(row);
@@ -85,26 +100,52 @@ export function readMemorySuppressions(notebookRoot: string, userId: string): re
 }
 
 /** Appends one full canonical row through existing append/fsync IO; the native caller owns confirmation and exact target admission. */
-export function appendMemorySuppression(notebookRoot: string, input: {
-  readonly userId: string; readonly requestId: string; readonly pageId: string;
-  readonly lastRevision: string; readonly digest: string; readonly actorId: string;
-}): MemorySuppression {
+export function appendMemorySuppression(
+  notebookRoot: string,
+  input: {
+    readonly userId: string;
+    readonly requestId: string;
+    readonly pageId: string;
+    readonly lastRevision: string;
+    readonly digest: string;
+    readonly actorId: string;
+  }
+): MemorySuppression {
   try {
-    const payload = PayloadSchema.strict().parse({ pageId: input.pageId, lastRevision: input.lastRevision,
-      digest: input.digest, sourceFingerprints: [], actorId: input.actorId });
+    const payload = PayloadSchema.strict().parse({
+      pageId: input.pageId,
+      lastRevision: input.lastRevision,
+      digest: input.digest,
+      sourceFingerprints: [],
+      actorId: input.actorId,
+    });
     validateNotebookFiles({ [`${payload.pageId}.md`]: '' }, true);
     const now = new Date().toISOString();
-    const row = SuppressionSchema.strict().parse(RecordEnvelopeSchema.parse({
-      schemaVersion: 1, recordType: 'memory-suppression', id: input.requestId, ownerScope: 'user',
-      lineage: { userId: input.userId, knowledgeId: payload.pageId, requestId: input.requestId },
-      createdAt: now, updatedAt: now, contentDigest: contentDigest(payload), redactionLevel: 'none',
-      sensitivity: 'confidential', requiredFeatures: [...REQUIRED_FEATURES], extensions: {}, payload,
-    }));
+    const row = SuppressionSchema.strict().parse(
+      RecordEnvelopeSchema.parse({
+        schemaVersion: 1,
+        recordType: 'memory-suppression',
+        id: input.requestId,
+        ownerScope: 'user',
+        lineage: { userId: input.userId, knowledgeId: payload.pageId, requestId: input.requestId },
+        createdAt: now,
+        updatedAt: now,
+        contentDigest: contentDigest(payload),
+        redactionLevel: 'none',
+        sensitivity: 'confidential',
+        requiredFeatures: [...REQUIRED_FEATURES],
+        extensions: {},
+        payload,
+      })
+    );
     assertCanonicalDirectory(notebookRoot);
     const directory = join(notebookRoot, 'observations');
     if (!lstatSync(directory, { throwIfNoEntry: false })) mkdirSync(directory, { mode: 0o700 });
     assertCanonicalDirectory(directory);
-    appendCanonicalTextFile(join(directory, `${now.slice(0, 7).replace('-', '')}.jsonl`), `${JSON.stringify(row)}\n`);
+    appendCanonicalTextFile(
+      join(directory, `${now.slice(0, 7).replace('-', '')}.jsonl`),
+      `${JSON.stringify(row)}\n`
+    );
     return row;
   } catch {
     throw new NotebookError('recovery_required');
@@ -112,7 +153,13 @@ export function appendMemorySuppression(notebookRoot: string, input: {
 }
 
 /** User publication refuses retained suppressed identities, including historical replay and pending candidates. */
-export function assertMemoryPagesNotSuppressed(notebookRoot: string, userId: string, paths: readonly string[]): void {
-  const suppressed = new Set(readMemorySuppressions(notebookRoot, userId).map(({ payload }) => `${payload.pageId}.md`));
+export function assertMemoryPagesNotSuppressed(
+  notebookRoot: string,
+  userId: string,
+  paths: readonly string[]
+): void {
+  const suppressed = new Set(
+    readMemorySuppressions(notebookRoot, userId).map(({ payload }) => `${payload.pageId}.md`)
+  );
   if (paths.some((path) => suppressed.has(path))) throw new MemoryPageUnavailableError();
 }
