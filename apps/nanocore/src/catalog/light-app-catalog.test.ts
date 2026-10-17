@@ -340,7 +340,7 @@ describe('Light App definition catalog', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).lightApps).toEqual(retained.lightApps);
   });
 
-  it('refuses stale revisions, malformed definitions and invalid history before publication', () => {
+  it('refuses stale revisions, malformed definitions and missing parents before publication', () => {
     const input = fixture();
     const first = add(input);
     const path = catalogDocumentPath(input.dataRoot, input.workspaceId);
@@ -379,6 +379,37 @@ describe('Light App definition catalog', () => {
       })
     ).toThrow(CatalogInputError);
     expect(readFileSync(path, 'utf8')).toBe(before);
+    const inactive = {
+      ...fixture(),
+      entryId: 'admissions',
+      displayName: 'Admissions',
+      producer,
+      createdAt: '2026-10-17T00:00:00.000Z',
+      selectDefault: false,
+    };
+    const root = importWorkspaceLightAppDefinition({
+      ...inactive,
+      expectedRevision: 0,
+      definition: definition(),
+    });
+    const admitted = JSON.parse(root.version.definitionJson) as LightAppSchemaInput;
+    const repeated = importWorkspaceLightAppDefinition({
+      ...inactive,
+      expectedRevision: root.catalog.revision,
+      definition: admitted,
+    });
+    expect(repeated.version).toEqual(root.version);
+    expect(repeated.catalog.lightApps.versions).toHaveLength(1);
+    const inactivePath = catalogDocumentPath(inactive.dataRoot, inactive.workspaceId);
+    const inactiveBefore = readFileSync(inactivePath, 'utf8');
+    expect(() =>
+      importWorkspaceLightAppDefinition({
+        ...inactive,
+        expectedRevision: repeated.catalog.revision,
+        definition: { ...admitted, title: 'New revision' },
+      })
+    ).toThrow('Select a parent/default before importing a revision');
+    expect(readFileSync(inactivePath, 'utf8')).toBe(inactiveBefore);
   });
 
   it('refuses malformed retained definitions and broken pin references on owner reads', () => {

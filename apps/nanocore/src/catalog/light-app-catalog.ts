@@ -119,6 +119,13 @@ export function importWorkspaceLightAppDefinition(
   const retained = current.lightApps.versions.find(
     (version) => version.entryId === id && version.digest === digest
   );
+  if (
+    !retained &&
+    parentDigest === null &&
+    current.lightApps.versions.some((version) => version.entryId === id)
+  ) {
+    throw new CatalogInputError('Select a parent/default before importing a revision.');
+  }
   const version =
     retained ??
     inputValue(() =>
