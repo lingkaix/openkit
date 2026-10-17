@@ -280,12 +280,12 @@ export async function runAssistantModel(input: {
   if (input.context)
     prepared = await prepareInternalAgentContext({
       ...input.context,
-      prefixMessages: [...overviewMessages, ...(input.context.prefixMessages ?? [])],
-      environmentFacts: overview?.text
-        ? { roleFacts: input.context.environmentFacts, knowledgeOverview: overview.text }
-        : input.context.environmentFacts,
       systemPrompt: input.systemPrompt,
-      requiredMessages: input.messages.slice(input.context.prefixMessages?.length ?? 0),
+      // Navigation belongs to this answer, not a continuity summary that could outlive its grant.
+      requiredMessages: [
+        ...overviewMessages,
+        ...input.messages.slice(input.context.prefixMessages?.length ?? 0),
+      ],
       tools: input.tools,
       model: {
         logicalModelId: model.id,

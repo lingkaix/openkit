@@ -521,6 +521,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     f.createResponses.mockImplementation(async (_provider, request) => {
       expect(environments(f)).toHaveLength(1);
       const summary = JSON.stringify(request.input).includes('openkit_context_summary_task');
+      expect(JSON.stringify(request.input).includes('knowledge_overviews')).toBe(!summary);
       if (summary) {
         summaryCalls += 1;
         if (revokeOverview) {
