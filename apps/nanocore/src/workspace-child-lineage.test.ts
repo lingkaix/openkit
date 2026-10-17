@@ -63,15 +63,18 @@ async function createLineageFixture() {
     expect(foreignNotebookResponse.status, await foreignNotebookResponse.clone().text()).toBe(200);
     const { notebookRevision: foreignBaseRevision } = await foreignNotebookResponse.json();
     const created = await app.request(
-      ...operationRequest('knowledge.create', {
-        workspaceId: foreignWorkspace.id,
-        knowledgePageId: 'foreign-knowledge',
-        baseRevision: foreignBaseRevision,
-        requestId: randomUUID(),
-        kind: 'project-context',
-        title: 'Foreign knowledge',
-        content: 'This entry belongs to the foreign Workspace.',
-      })
+      ...operationRequest(
+        'knowledge.create',
+        {
+          workspaceId: foreignWorkspace.id,
+          knowledgePageId: 'foreign-knowledge',
+          baseRevision: foreignBaseRevision,
+          kind: 'project-context',
+          title: 'Foreign knowledge',
+          content: 'This entry belongs to the foreign Workspace.',
+        },
+        { body: JSON.stringify({ requestId: randomUUID() }) }
+      )
     );
     expect(created.status, await created.clone().text()).toBe(200);
     const foreignKnowledge = await created.json();

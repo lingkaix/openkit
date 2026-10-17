@@ -6,12 +6,18 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { answerKnowledgeManager } from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { createAppWithWorkspaceAuthority } from './test-support/app.js';
+import { openCoreDb } from './storage/db.js';
+import { applyMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const testRoots: string[] = [];
+const databases: ReturnType<typeof openCoreDb>[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
+  for (const db of databases.splice(0)) db.sqlite.close();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -33,7 +39,12 @@ describe('Knowledge retrieval and answer segmentation', () => {
     testRoots.push(dataRoot);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge segmentation');
-    const app = createAppWithWorkspaceAuthority({ dataRoot, store });
+    const coreDb = openCoreDb(dataRoot);
+    databases.push(coreDb);
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+    const app = createApp({ coreDb, dataRoot, store });
     const currentNotebook = async () => {
       const response = await app.request(
         ...operationRequest('knowledge.list', { workspaceId: workspace.id })
@@ -42,15 +53,18 @@ describe('Knowledge retrieval and answer segmentation', () => {
       return (await response.json()).notebookRevision as string;
     };
     const created = await app.request(
-      ...operationRequest('knowledge.create', {
-        workspaceId: workspace.id,
-        knowledgePageId: 'segmentation-evidence',
-        baseRevision: await currentNotebook(),
-        requestId: randomUUID(),
-        kind: 'project-context',
-        title: 'Unrelated',
-        content: body,
-      })
+      ...operationRequest(
+        'knowledge.create',
+        {
+          workspaceId: workspace.id,
+          knowledgePageId: 'segmentation-evidence',
+          baseRevision: await currentNotebook(),
+          kind: 'project-context',
+          title: 'Unrelated',
+          content: body,
+        },
+        { body: JSON.stringify({ requestId: randomUUID() }) }
+      )
     );
     expect(created.status, await created.clone().text()).toBe(200);
     const page = await created.json();
@@ -63,8 +77,9 @@ describe('Knowledge retrieval and answer segmentation', () => {
         query,
         access: {
           store,
-          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          coreDb,
+          actor: { kind: 'user', id: userId },
+          requestActor: { kind: 'local', userId },
         },
       });
     expect(await answer(one)).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
@@ -73,13 +88,16 @@ describe('Knowledge retrieval and answer segmentation', () => {
       citations: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
     });
     const updated = await app.request(
-      ...operationRequest('knowledge.update', {
-        workspaceId: workspace.id,
-        knowledgeEntryId: page.id,
-        baseRevision: await currentNotebook(),
-        requestId: randomUUID(),
-        title: one,
-      })
+      ...operationRequest(
+        'knowledge.update',
+        {
+          workspaceId: workspace.id,
+          knowledgeEntryId: page.id,
+          baseRevision: await currentNotebook(),
+          title: one,
+        },
+        { body: JSON.stringify({ requestId: randomUUID() }) }
+      )
     );
     expect(updated.status, await updated.clone().text()).toBe(200);
     expect(await answer(one)).toMatchObject({
