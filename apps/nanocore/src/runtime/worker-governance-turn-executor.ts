@@ -623,6 +623,7 @@ export async function prepareWorkerTurnContextPackage(
           sources: sourceFiles.map((entry) => Buffer.from(entry.deliveredBytes).toString('utf8')),
           knowledge: [...knowledgeSelections, selected].map((entry) => entry.deliveredContent) },
         contextWindowTokens: contextBudgetTokens,
+        outputReserveTokens: undefined,
       });
       knowledgeSelections.push(selected);
     } catch (error) {
