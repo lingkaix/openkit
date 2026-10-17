@@ -202,7 +202,22 @@ async function createMaterial(
   await page.getByRole('button', { name: /^Create Material$/ }).click();
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   await page.getByLabel(title).fill(content);
+  const materialId = new URL(page.url()).pathname.split('/').at(-1);
+  const saveResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'POST' ||
+      new URL(response.url()).pathname !== '/api/app/operations/material.revision-save'
+    )
+      return false;
+    const input = response.request().postDataJSON();
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+      input.materialId === materialId
+    );
+  });
   await page.getByRole('button', { name: /^Save$/ }).click();
+  const saved = await saveResponse;
+  expect(saved.ok(), `Material save response ${saved.status()}: ${await saved.text()}`).toBe(true);
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
 
   const response = await getJson<{ materials: MaterialSummary[] }>(
@@ -500,7 +515,24 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   expect(materialAfterApply.currentRevisionId).toBe(appliedRevision.revisionId);
   const revisionThreeContent = '# Release note\n\nA newer user revision after proposal one.';
   await materialEditor.fill(revisionThreeContent);
+  const revisionThreeSaveResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'POST' ||
+      new URL(response.url()).pathname !== '/api/app/operations/material.revision-save'
+    )
+      return false;
+    const input = response.request().postDataJSON();
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+      input.materialId === primary.materialId
+    );
+  });
   await page.getByRole('button', { name: /^Save$/ }).click();
+  const revisionThreeSave = await revisionThreeSaveResponse;
+  expect(
+    revisionThreeSave.ok(),
+    `Revision three save response ${revisionThreeSave.status()}: ${await revisionThreeSave.text()}`
+  ).toBe(true);
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
   const revisionsAfterUserSave = await materialRevisions(primary.materialId);
   expect(revisionsAfterUserSave).toHaveLength(4);
