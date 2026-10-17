@@ -64,6 +64,7 @@ import {
 } from './knowledge-manager.js';
 import { verifyKnowledgeProposalWorkHistory } from './knowledge-source-authority.js';
 import {
+  commandRequestKey,
   type FsStore,
   KnowledgeProposalAuthorityError,
   knowledgeAuthorityId,
@@ -1345,17 +1346,27 @@ export function createKnowledgeOperationImplementations(
           proposalId,
           requestId: commandInput.requestId,
         });
+        const commandScope = { workspaceId, actorId: context.actorRef.id };
         const receipt = store.getCommandRequest(
           'knowledge.proposal.decide',
           commandInput.requestId,
-          { workspaceId, actorId: context.actorRef.id },
+          commandScope,
           owner.workspaceDb
         );
-        if (receipt && receipt.inputHash !== commandInputHash(input))
+        const inflight = inflightCommands
+          .get(store)
+          ?.get(
+            commandRequestKey('knowledge.proposal.decide', commandInput.requestId, commandScope)
+          );
+        if (
+          (receipt && receipt.inputHash !== commandInputHash(input)) ||
+          (inflight && inflight.inputHash !== commandInputHash(input))
+        )
           throw new IdempotencyKeyConflictError();
         // A retained terminal decision without completion evidence requires inspection, not resumption.
         if (
           !receipt &&
+          !inflight &&
           store
             .listKnowledgeProposalReviewDecisions(workspaceId)
             .some((review) => review.reviewId === reviewId)
