@@ -120,6 +120,10 @@ interface ActiveTurn {
   /** A settlement is being proved. A second frame for this Turn must not start another one. */
   applying: boolean;
   readonly capture: PiRuntimeCapture;
+  /** Exact Turn-bound values used only to redact the transient native explanation. */
+  readonly diagnosticCredentials: readonly string[];
+  /** Latest outward assistant error, already redacted and bounded; later messages clear it. */
+  nativeError: string | null;
   collectionIncomplete: boolean;
   readonly collectionCancelled: Promise<void>;
   cancelCollection: () => void;
@@ -652,7 +656,11 @@ export class PiResidentBinding implements WorkerResidentSession {
         deadline.workRemainingMs(),
         'Pi structural capture preparation timed out.'
       );
-      const active = this.#beginTurn(prepared.turnId, capture);
+      const active = this.#beginTurn(
+        prepared.turnId,
+        capture,
+        input.runtimeCapture.credentialValues
+      );
       this.#nativeTerminal = undefined;
       const response = await this.#request(
         {
@@ -764,7 +772,11 @@ export class PiResidentBinding implements WorkerResidentSession {
     return this.#surfaceUnprovedTurn(error);
   }
 
-  #beginTurn(turnId: string, capture: PiRuntimeCapture): ActiveTurn {
+  #beginTurn(
+    turnId: string,
+    capture: PiRuntimeCapture,
+    credentialValues: readonly string[]
+  ): ActiveTurn {
     let resolve: (result: WorkerAdapterResult) => void = () => undefined;
     let reject: (error: Error) => void = () => undefined;
     const settled = new Promise<WorkerAdapterResult>((settle, fail) => {
@@ -777,6 +789,8 @@ export class PiResidentBinding implements WorkerResidentSession {
     });
     const active: ActiveTurn = {
       capture,
+      diagnosticCredentials: [...this.#secrets, ...credentialValues],
+      nativeError: null,
       collectionIncomplete: false,
       collectionCancelled,
       cancelCollection,
@@ -1145,7 +1159,29 @@ export class PiResidentBinding implements WorkerResidentSession {
     if (frame.kind === 'native') {
       if (this.#closeAccepted || this.#exitSeen) this.#closeEvidenceLost = true;
       if (this.#turn?.turnId === frame.turnId) {
-        this.#turn.capture.observe(frame.data);
+        const active = this.#turn;
+        const data = frame.data;
+        if (
+          isRecord(data) &&
+          (data.type === 'message_start' || data.type === 'message_end') &&
+          isRecord(data.message) &&
+          data.message.role === 'assistant'
+        ) {
+          active.nativeError = null;
+          if (
+            data.type === 'message_end' &&
+            data.message.stopReason === 'error' &&
+            typeof data.message.errorMessage === 'string'
+          ) {
+            const redacted = redactPiText(data.message.errorMessage, active.diagnosticCredentials);
+            // Streaming decode omits an incomplete final UTF-8 code point at the byte bound.
+            active.nativeError = new TextDecoder().decode(
+              Buffer.from(redacted).subarray(0, PI_DIAGNOSTIC_PREFIX_BYTES),
+              { stream: true }
+            );
+          }
+        }
+        active.capture.observe(frame.data);
         this.#nativeEventCount += 1;
         this.#recordLifecycleFact?.({ label: 'native_event' });
       }
@@ -1258,6 +1294,9 @@ export class PiResidentBinding implements WorkerResidentSession {
     this.#effortDiagnostics.reasoningEffort = effective.success ? effective.data : 'unknown';
     const diagnostics = {
       ...this.#diagnostics(),
+      ...(projected.stopReason === 'pi-inference-failed' && active.nativeError
+        ? { native: active.nativeError }
+        : {}),
       ...(active.collectionIncomplete ? { runtimeCapture: 'incomplete' } : {}),
     };
     active.resolve({

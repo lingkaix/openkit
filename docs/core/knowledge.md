@@ -72,7 +72,7 @@ Authorized users or team members own Knowledge Review decisions and direct user-
 
 Working internal agents and Workers receive the applicable notebook overview and ask the Knowledge Manager for relevant understanding. The Knowledge Manager retrieves with tools, answers with `page@revision` and `source@digest` citations, and states uncertainty. Users provide intent, information and approval; authorized simple direct edits remain available.
 
-The Knowledge Manager prepares answers, context material, proposals and notebook edits under current scope and source authority. One persistent maintenance Thread serves each notebook scope, with requests as Turns and one writer. Users inspect and approve maintenance in that Thread. Independent query runs remain bound to each asker's query context and audience. The [agent and compaction decision](../decisions/20261017-knowledge_manager_agent_and_compaction.md) records this choice.
+The Knowledge Manager prepares answers, context material, proposals and notebook edits under current scope and source authority. One maintenance Thread serves each notebook scope as the work record and approval place, not a resident agent. Explicit requests and scheduled maintenance start fresh bounded Turns with one writer. Users inspect and approve maintenance in that Thread. Cross-run memory is the notebook and its commit history. Independent query runs remain bound to each asker's query context and audience. The [agent and compaction decision](../decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md) records this choice.
 
 The Knowledge Store validates and persists knowledge, proposals, reviews, content identity and lineage, and retrieval projections through its existing owners.
 
@@ -126,7 +126,9 @@ Administrator masking records a tombstone through an ordinary notebook commit. N
 
 ## Automatic Learning And Evidence Assessment
 
-Automatic extraction, consolidation, usage aging and AI evidence assessment are deferred until after v0.1.0. Explicit user requests and delegated Knowledge Manager maintenance remain available. They use the same notebook publisher and required human decisions; no background learning scheduler is introduced.
+Consolidation and learning from the scope's recent authorized Threads are part of v0.1.0 Knowledge Manager maintenance. Daily scheduling has one on/off setting per Server, User and Workspace scope, default off; enable it only for acceptance, testing and evaluation. Explicit run requests remain available. Each run starts with fresh context, retains its inputs and produces fixed-base candidate commits. Current maintenance delegation or required proposal approval governs publication; the diff is the review surface. Existing trigger and work owners retain scheduling and outcomes; no separate learning scheduler is introduced.
+
+Knowledge Manager run records MUST NOT become later learning inputs. Human edits since the prior run MUST be included as inputs and MUST NOT be overwritten; stale-base publication fails. Failed or skipped scheduled runs MUST have a visible outcome. Usage aging and AI evidence assessment remain deferred until after v0.1.0.
 
 Users may explicitly save, inspect, edit or forget personal Memory and eligible Knowledge. A current task instruction overrides a remembered preference for that task without silently rewriting it. Direct user expression is distinguishable from a model inference; inferred learning follows current notebook maintenance authority and any required review. Existing source, candidate, review, page and evidence owners preserve the difference between a proposal, an assessment and an applied change.
 

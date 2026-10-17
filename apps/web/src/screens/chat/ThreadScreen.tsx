@@ -15,7 +15,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
-import { useArtifacts } from '../artifacts/data';
+import { useArtifact, useArtifacts } from '../artifacts/data';
 import {
   chatKeys,
   type ThreadItem,
@@ -142,6 +142,43 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const workspaceArtifacts = useArtifacts(workspaceId);
   const send = useSendTurn();
   const submission = useConversationSubmission(workspaceId, threadId);
+  // A Review handoff seeds only an unsent exact input; the existing submission stays immutable.
+  const candidateInput = location.state?.candidateInput;
+  const hasCandidateInput = candidateInput !== undefined;
+  const candidateContextMatches =
+    hasCandidateInput &&
+    candidateInput?.workspaceId === workspaceId &&
+    candidateInput?.threadId === threadId &&
+    typeof candidateInput?.artifactId === 'string';
+  const unfinishedSubmission = submission?.status === 'pending' || submission?.status === 'error';
+  const candidate = useArtifact(
+    workspaceId,
+    candidateContextMatches && !unfinishedSubmission ? candidateInput.artifactId : ''
+  );
+  const candidateLoading =
+    hasCandidateInput && !unfinishedSubmission && candidateContextMatches && candidate.isPending;
+  const candidateUnavailable =
+    hasCandidateInput &&
+    !unfinishedSubmission &&
+    !candidateLoading &&
+    (!candidateContextMatches ||
+      candidate.isError ||
+      candidate.data?.workspaceId !== workspaceId ||
+      candidate.data?.id !== candidateInput.artifactId ||
+      candidate.data?.status !== 'ready' ||
+      candidate.data?.version !== candidateInput.artifactVersion ||
+      candidate.data?.contentDigest !== candidateInput.contentDigest);
+  const candidateDraft =
+    hasCandidateInput && candidateContextMatches && !unfinishedSubmission
+      ? {
+          artifactRefs: [
+            {
+              artifactId: candidateInput.artifactId,
+              artifactVersion: candidateInput.artifactVersion,
+            },
+          ],
+        }
+      : undefined;
   const cancelledRequestId =
     submission?.status === 'error' &&
     submission.variables?.draft.targetRef === 'internal-role:assistant' &&
@@ -523,48 +560,80 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   : "Couldn't send that message. Try again."}
               </p>
             ) : null}
-            <Composer
-              fileWorkspaceLabel={
-                workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
-              }
-              key={JSON.stringify([workspaceId, threadId])}
-              initialDraft={
-                submission?.status === 'success'
-                  ? {
-                      targetRef: submission.variables?.draft.targetRef,
-                      logicalModelId: submission.variables?.draft.logicalModelId,
-                    }
-                  : submission?.variables?.draft
-              }
-              isSubmitting={submission?.status === 'pending'}
-              lastAdmittedEffort={
-                dashboard.data?.turns.findLast((turn) => turn.reasoningEffort !== undefined)
-                  ?.reasoningEffort
-              }
-              cancelledRequestId={cancelledRequestId}
-              completedRequestId={
-                submission?.status === 'success' ? submission.variables?.draft.requestId : undefined
-              }
-              targetCatalog={
-                taskDefaultTarget && targets.data
-                  ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
-                  : (targets.data ?? null)
-              }
-              artifacts={(workspaceArtifacts.data ?? []).map((artifact) => ({
-                id: artifact.id,
-                version: artifact.version,
-                label: artifact.title,
-              }))}
-              workerEnvironments={workerEnvironments}
-              disabledReason={
-                disconnected
-                  ? "Couldn't reach the local runtime."
-                  : targets.isError
-                    ? "Couldn't load conversation agents."
+            {hasCandidateInput && unfinishedSubmission ? (
+              <p role="status" className="mb-2 text-sm text-fg-muted">
+                The candidate was not added. Finish the existing message, then select Use in next
+                Turn again.
+              </p>
+            ) : null}
+            {candidateUnavailable ? (
+              <ErrorBanner
+                message="The selected candidate is unavailable or has changed. Return to its review and select an available candidate."
+                onRetry={candidateContextMatches ? () => void candidate.refetch() : undefined}
+              />
+            ) : null}
+            {candidateLoading ? (
+              <p role="status" className="text-sm text-fg-muted">
+                Checking the selected candidate.
+              </p>
+            ) : (
+              <Composer
+                fileWorkspaceLabel={
+                  workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
+                }
+                key={JSON.stringify([workspaceId, threadId])}
+                initialDraft={
+                  submission?.status === 'success'
+                    ? {
+                        targetRef: submission.variables?.draft.targetRef,
+                        logicalModelId: submission.variables?.draft.logicalModelId,
+                        ...candidateDraft,
+                      }
+                    : (submission?.variables?.draft ?? candidateDraft)
+                }
+                isSubmitting={submission?.status === 'pending'}
+                lastAdmittedEffort={
+                  dashboard.data?.turns.findLast((turn) => turn.reasoningEffort !== undefined)
+                    ?.reasoningEffort
+                }
+                cancelledRequestId={cancelledRequestId}
+                completedRequestId={
+                  submission?.status === 'success'
+                    ? submission.variables?.draft.requestId
                     : undefined
-              }
-              onSubmit={submitConversation}
-            />
+                }
+                targetCatalog={
+                  taskDefaultTarget && targets.data
+                    ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
+                    : (targets.data ?? null)
+                }
+                artifacts={(hasCandidateInput && !unfinishedSubmission
+                  ? candidateUnavailable
+                    ? []
+                    : candidate.data
+                      ? [candidate.data]
+                      : []
+                  : (workspaceArtifacts.data ?? [])
+                ).map((artifact) => ({
+                  id: artifact.id,
+                  version: artifact.version,
+                  label: artifact.title,
+                }))}
+                workerEnvironments={workerEnvironments}
+                disabledReason={
+                  disconnected
+                    ? "Couldn't reach the local runtime."
+                    : targets.isError
+                      ? "Couldn't load conversation agents."
+                      : candidateUnavailable
+                        ? 'The selected candidate is unavailable or has changed.'
+                        : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
+                          ? 'Checking the selected candidate.'
+                          : undefined
+                }
+                onSubmit={submitConversation}
+              />
+            )}
           </div>
         </div>
       </div>
