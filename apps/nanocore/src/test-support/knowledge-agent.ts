@@ -1,3 +1,4 @@
+import { operationToolName } from '@openkit/app-api-schemas';
 import { vi } from 'vitest';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -32,7 +33,7 @@ export function createKnowledgeAnswerApp(
         {
           type: 'function_call',
           call_id: `call-${planIndex}-${step}`,
-          name: search ? 'knowledge_retrieval' : 'knowledge_page_read',
+          name: operationToolName(search ? 'knowledge.retrieval' : 'knowledge.page.read'),
           arguments: JSON.stringify(search ? { query: plan.query } : { pageId: plan.pageId }),
         },
       ];
