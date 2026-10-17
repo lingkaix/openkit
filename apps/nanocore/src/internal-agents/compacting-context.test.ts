@@ -313,6 +313,31 @@ describe('bounded current-run compaction', () => {
     expect(summaries(f)).toEqual([]);
   });
 
+  it('rechecks authority before summary dispatch when source assembly revokes it', async () => {
+    const f = fixture();
+    let allowed = true;
+    const provider = vi.fn(async () => inspect('call-1'));
+    const result = await runInternalAgentLoop(
+      loopInput(),
+      createCompactingInternalAgentProvider({
+        ...f,
+        compactThreshold: threshold,
+        limits,
+        assertCurrent: () => {
+          if (!allowed) throw new Error('Audience revoked.');
+        },
+        readEvidence: (items) => {
+          if (items.some((item) => item.type === 'tool-call')) allowed = false;
+          return internalContextDigest([]);
+        },
+        callProvider: provider,
+      })
+    );
+    expect(result).toMatchObject({ kind: 'failed' });
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(summaries(f)).toEqual([]);
+  });
+
   it('withholds a summary when current audience authority changes during production', async () => {
     const f = fixture();
     let allowed = true;
