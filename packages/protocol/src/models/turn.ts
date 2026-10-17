@@ -19,7 +19,7 @@ import { ItemSchema } from './item.js';
 import { KnowledgeOwnerScopeSchema } from './knowledge-notebook.js';
 
 /** Pinned choices and admitted inputs of an existing internal-role Turn, never an execution store. */
-export const InternalAgentExecutionSchema = z.object({
+const InternalAgentExecutionSchema = z.object({
   roleId: z.string().min(1),
   logicalModelId: z.string().min(1),
   contextStrategy: z.enum(['rolling', 'compaction']),
