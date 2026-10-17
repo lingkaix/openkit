@@ -1,32 +1,48 @@
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import { join } from 'node:path';
-
 import {
   type CreateLightAppResponse,
   type GetLightAppResponse,
+  LIGHT_APP_KERNEL_FORMAT_VERSION,
   type LightAppAdmittedCollection,
   type LightAppAdmittedSchema,
   LightAppAdmittedSchemaSchema,
   type LightAppBatchRequest,
   type LightAppBatchResponse,
   type LightAppCatalogItem,
+  type LightAppDefinitionSource,
+  LightAppDefinitionSourceSchema,
   type LightAppRecord,
   type LightAppSchemaInput,
+  type LightAppSnapshot,
   type ListLightAppRecordsResponse,
   type ListLightAppsResponse,
   type UpdateLightAppRecordRequest,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 
 import { recordAppAuditEvent } from '../audit-events.js';
 import type { CommandRequestName, CommandRequestRecord, FsStore } from '../lib/store.js';
 import {
+  commandInputHash,
+  IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import {
   type AppDb,
+  assertAppDefinitionMatches,
   createAppDb,
   isSqliteBusy,
   lightAppDbPath,
@@ -35,6 +51,7 @@ import {
   openExistingAppDb,
   writeDurableFile,
 } from '../storage/app-db.js';
+import { applyAppMigrations } from '../storage/migrate.js';
 import { KernelCommandError } from './errors.js';
 import { compileRecordFilter } from './filter.js';
 import {
@@ -45,6 +62,12 @@ import {
   quoteIdent,
 } from './native.js';
 import { admitLightAppSchema } from './schema.js';
+import {
+  assertSnapshotIntegrity,
+  readLightAppSnapshot,
+  readLightAppSnapshots,
+  snapshotLightApp,
+} from './snapshots.js';
 import { allocateAppId, allocateRecordId } from './uuid.js';
 import { encodeSqlValue, normalizeLightAppFieldValue } from './values.js';
 
@@ -88,6 +111,15 @@ export interface KernelCommandContext {
   readonly requestId: string;
 }
 
+/** Raw explicit catalog request bound by the existing app-local receipt. */
+export interface LightAppRequestedDefinition {
+  /** Selected catalog entry. */
+  readonly entryId: string;
+  /** Exact requested version; omission selects the pin/default only for a fresh request. */
+  readonly digest?: string | undefined;
+}
+
+/** Current admitted app metadata stored with Kernel data. */
 type AppMetadataRow = {
   appId: string;
   workspaceId: string;
@@ -98,6 +130,8 @@ type AppMetadataRow = {
   schemaDigest: string;
   schemaJson: string;
   lifecycle: 'active' | 'retired';
+  kernelFormatVersion: number;
+  definitionSourceJson: string | null;
 };
 
 type KernelCommandSpec<T> = {
@@ -157,17 +191,22 @@ export function listLightApps(
  *
  * @param context Command context.
  * @param schema Schema proposal.
+ * @param sourceSelection Explicit exact catalog source, when selected.
+ * @param requestedDefinition Raw catalog selector bound on fresh execution and replay.
  * @returns Created app.
  */
 export async function createLightApp(
   context: KernelCommandContext,
-  schema: LightAppSchemaInput
+  schema: LightAppSchemaInput,
+  sourceSelection?: LightAppDefinitionSource,
+  requestedDefinition?: LightAppRequestedDefinition
 ): Promise<CreateLightAppResponse> {
+  if (sourceSelection) LightAppDefinitionSourceSchema.parse(sourceSelection);
   const appId = allocateAppId(context.workspaceId, context.requestId);
   const appRoot = lightAppRoot(context.dataRoot, context.workspaceId, appId);
   const admitted = admitLightAppSchema(schema, appId, 1);
   if (existsSync(appRoot)) {
-    return replayOrRecoverCreate(context, appId, schema);
+    return replayOrRecoverCreate(context, appId, schema, sourceSelection, requestedDefinition);
   }
   ensureLightAppsInventory(context.dataRoot, context.workspaceId);
   if (countAppDirectories(context.dataRoot, context.workspaceId) >= APP_DIRECTORY_LIMIT) {
@@ -180,7 +219,7 @@ export async function createLightApp(
     mkdirSync(appRoot);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      return replayOrRecoverCreate(context, appId, schema);
+      return replayOrRecoverCreate(context, appId, schema, sourceSelection, requestedDefinition);
     }
     throw error;
   }
@@ -191,12 +230,13 @@ export async function createLightApp(
     return await runKernelCommand(context, appDb, {
       command: 'kernel.apps.create',
       responseKind: 'light_app',
-      input: { schema },
+      input: requestedDefinition ? { requestedDefinition } : { schema, sourceSelection },
       execute: () =>
         commitNewApp(appDb, {
           admitted,
           schemaDigest,
           schemaJson,
+          ...(sourceSelection ? { sourceSelection } : {}),
           actor: context.actor,
           requestId: context.requestId,
         }),
@@ -206,7 +246,7 @@ export async function createLightApp(
   } catch (error) {
     throw mapSqliteError(error);
   } finally {
-    appDb.sqlite.close();
+    if (appDb.sqlite.open) appDb.sqlite.close();
   }
 }
 
@@ -231,7 +271,7 @@ export function getLightApp(
   try {
     return projectApp(appDb);
   } finally {
-    appDb.sqlite.close();
+    if (appDb.sqlite.open) appDb.sqlite.close();
   }
 }
 
@@ -243,6 +283,8 @@ export function getLightApp(
  * @param expectedAppRevision Expected app revision.
  * @param expectedSchemaRevision Expected schema revision.
  * @param schema Next schema proposal.
+ * @param sourceSelection Explicit exact catalog source; direct edits clear source selection.
+ * @param requestedDefinition Raw catalog selector bound independently of mutable selection pointers.
  * @returns Updated app.
  */
 export async function updateLightAppSchema(
@@ -250,13 +292,18 @@ export async function updateLightAppSchema(
   appId: string,
   expectedAppRevision: number,
   expectedSchemaRevision: number,
-  schema: LightAppSchemaInput
+  schema: LightAppSchemaInput,
+  sourceSelection?: LightAppDefinitionSource,
+  requestedDefinition?: LightAppRequestedDefinition
 ): Promise<GetLightAppResponse> {
+  if (sourceSelection) LightAppDefinitionSourceSchema.parse(sourceSelection);
   return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) => {
     return runKernelCommand(context, appDb, {
       command: 'kernel.schema.update',
       responseKind: 'light_app',
-      input: { expectedAppRevision, expectedSchemaRevision, schema },
+      input: requestedDefinition
+        ? { expectedAppRevision, expectedSchemaRevision, requestedDefinition }
+        : { expectedAppRevision, expectedSchemaRevision, schema, sourceSelection },
       execute: () => {
         const current = readMetadata(appDb);
         assertWritable(current);
@@ -277,15 +324,20 @@ export async function updateLightAppSchema(
           lightAppRoot(context.dataRoot, context.workspaceId, appId),
           schemaJson
         );
+        snapshotLightApp(appDb, 'definition-migration');
         for (const statement of additiveSchemaDdl(parseSchema(current), admitted)) {
           appDb.sqlite.exec(statement);
         }
+        // SQLite retains deferred counters for the dropped table even after its valid replacement exists.
+        // Check actual foreign keys before clearing those counters; later writes change only app metadata, audit and receipts.
+        assertSnapshotIntegrity(appDb.sqlite);
+        appDb.sqlite.pragma('defer_foreign_keys = OFF');
         const now = new Date().toISOString();
         appDb.sqlite
           .prepare(
             `UPDATE app_metadata SET
               title = ?, purpose = ?, app_revision = ?, schema_revision = ?,
-              schema_digest = ?, schema_json = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ?
+              schema_digest = ?, schema_json = ?, definition_source_json = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ?
              WHERE app_id = ?`
           )
           .run(
@@ -295,6 +347,7 @@ export async function updateLightAppSchema(
             admitted.schemaRevision,
             schemaDigest,
             schemaJson,
+            sourceSelection ? JSON.stringify(sourceSelection) : null,
             now,
             JSON.stringify(context.actor),
             context.requestId,
@@ -313,6 +366,271 @@ export async function updateLightAppSchema(
       responseId: (result) => result.appId,
     });
   });
+}
+
+/**
+ * Lists the consistent recovery copies retained by one app.
+ *
+ * @param dataRoot Data root.
+ * @param workspaceId Owning Workspace.
+ * @param appId App identity.
+ * @returns Published snapshot metadata.
+ */
+export function listLightAppSnapshots(
+  dataRoot: string,
+  workspaceId: string,
+  appId: string
+): { snapshots: LightAppSnapshot[] } {
+  return { snapshots: readLightAppSnapshots(dataRoot, workspaceId, appId) };
+}
+
+/**
+ * Explicitly upgrades an app through the existing native app migration journal.
+ *
+ * Journal DDL commits before the ordinary command revision and receipt.
+ * An interruption in that gap returns no success; retry inspects the actual journal and finishes the command without replaying completed DDL.
+ *
+ * @param context Authorized command context.
+ * @param appId App identity.
+ * @param expectedAppRevision Exact current app revision.
+ * @returns Current-format app authority.
+ */
+export async function upgradeLightAppFormat(
+  context: KernelCommandContext,
+  appId: string,
+  expectedAppRevision: number
+): Promise<GetLightAppResponse> {
+  const appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId, 'format-upgrade');
+  const input = { expectedAppRevision };
+  try {
+    if (hasCommandReplay(context, appDb, 'kernel.format.upgrade', input)) return projectApp(appDb);
+    const current = appDb.sqlite
+      .prepare('SELECT app_revision AS appRevision FROM app_metadata WHERE app_id = ?')
+      .get(appId) as { appRevision: number };
+    if (current.appRevision !== expectedAppRevision)
+      throw new KernelCommandError('conflict', 'App revision is stale.');
+    applyAppMigrations(appDb.sqlite, () => {
+      appDb.sqlite
+        .transaction(() => snapshotLightApp(appDb, 'kernel-format-migration'))
+        .immediate();
+    });
+    return runKernelCommand(context, appDb, {
+      command: 'kernel.format.upgrade',
+      responseKind: 'light_app',
+      input,
+      execute: () => {
+        const metadata = readMetadata(appDb);
+        if (metadata.kernelFormatVersion !== LIGHT_APP_KERNEL_FORMAT_VERSION)
+          throw new KernelCommandError('unavailable', 'App kernel format is unsupported.');
+        appDb.sqlite
+          .prepare(
+            'UPDATE app_metadata SET app_revision = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ? WHERE app_id = ?'
+          )
+          .run(
+            expectedAppRevision + 1,
+            new Date().toISOString(),
+            JSON.stringify(context.actor),
+            context.requestId,
+            appId
+          );
+        recordKernelAudit(
+          appDb,
+          context,
+          'kernel.format.upgrade',
+          `light-app:${appId}`,
+          expectedAppRevision + 1
+        );
+        return projectApp(appDb);
+      },
+      replay: () => projectApp(appDb),
+      responseId: (result) => result.appId,
+    });
+  } catch (error) {
+    throw mapSqliteError(error);
+  } finally {
+    if (appDb.sqlite.open) appDb.sqlite.close();
+  }
+}
+
+/**
+ * Restores a selected complete SQLite copy, intentionally discarding later data.
+ *
+ * The candidate carries the existing app-local receipt and audit before atomic placement.
+ * No application handle stays open across the replacement or an await.
+ * Old-format recovery copies remain unavailable until explicit format upgrade.
+ *
+ * @param context Authorized command context.
+ * @param appId App identity.
+ * @param expectedAppRevision Exact current app revision.
+ * @param snapshotId Explicit recovery copy.
+ * @returns Restored app or explicit old-format unavailable projection.
+ */
+export async function rollbackLightAppSnapshot(
+  context: KernelCommandContext,
+  appId: string,
+  expectedAppRevision: number,
+  snapshotId: string
+): Promise<GetLightAppResponse> {
+  const currentDb = openExistingAppDb(
+    context.dataRoot,
+    context.workspaceId,
+    appId,
+    'format-upgrade'
+  );
+  const input = { expectedAppRevision, snapshotId };
+  let candidatePath: string | undefined;
+  let candidate: AppDb | undefined;
+  try {
+    if (hasCommandReplay(context, currentDb, 'kernel.snapshots.rollback', input)) {
+      return projectRestoredApp(currentDb);
+    }
+    const current = currentDb.sqlite
+      .prepare('SELECT app_revision AS appRevision FROM app_metadata WHERE app_id = ?')
+      .get(appId) as { appRevision: number };
+    if (current.appRevision !== expectedAppRevision)
+      throw new KernelCommandError('conflict', 'App revision is stale.');
+    const selected = readLightAppSnapshot(context.dataRoot, context.workspaceId, appId, snapshotId);
+    candidatePath = join(
+      lightAppRoot(context.dataRoot, context.workspaceId, appId),
+      `restore-${randomUUID()}.sqlite`
+    );
+    writeDurableFile(candidatePath, selected.bytes);
+    const sqlite = new Database(candidatePath, { fileMustExist: true });
+    const candidateDb: AppDb = { ...currentDb, sqlite };
+    candidate = candidateDb;
+    sqlite.pragma('journal_mode = DELETE');
+    sqlite.pragma('synchronous = FULL');
+    sqlite.pragma('foreign_keys = ON');
+    assertSnapshotIntegrity(sqlite);
+    assertAppDefinitionMatches(candidate);
+    const identity = sqlite
+      .prepare(
+        'SELECT app_id AS appId, workspace_id AS workspaceId, schema_digest AS digest FROM app_metadata'
+      )
+      .get() as { appId: string; workspaceId: string; digest: string };
+    if (
+      identity.appId !== appId ||
+      identity.workspaceId !== context.workspaceId ||
+      identity.digest !== selected.metadata.definitionVersion
+    ) {
+      throw new KernelCommandError('unavailable', 'App snapshot identity does not match.');
+    }
+    // Release the original connection and its WAL before the synchronous replace.
+    currentDb.sqlite.close();
+    const completed = runKernelCommand(context, candidateDb, {
+      command: 'kernel.snapshots.rollback',
+      responseKind: 'light_app',
+      input,
+      execute: () => {
+        sqlite
+          .prepare(
+            'UPDATE app_metadata SET app_revision = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ? WHERE app_id = ?'
+          )
+          .run(
+            expectedAppRevision + 1,
+            new Date().toISOString(),
+            JSON.stringify(context.actor),
+            context.requestId,
+            appId
+          );
+        recordKernelAudit(
+          candidateDb,
+          context,
+          'kernel.snapshots.rollback',
+          `light-app:${appId}`,
+          expectedAppRevision + 1
+        );
+        return projectRestoredApp(candidateDb);
+      },
+      replay: () => projectRestoredApp(candidateDb),
+      responseId: (result) => result.appId,
+    });
+    // The command owner runs synchronously but reports failures as a rejected promise.
+    // Inspect its actual committed receipt before publishing the file.
+    const verified = new Database(candidatePath, { fileMustExist: true });
+    let committed: boolean;
+    try {
+      committed = hasCommandReplay(
+        context,
+        { ...candidate, sqlite: verified },
+        'kernel.snapshots.rollback',
+        input
+      );
+    } finally {
+      verified.close();
+    }
+    if (!committed) return completed;
+    renameSync(candidatePath, lightAppDbPath(context.dataRoot, context.workspaceId, appId));
+    candidatePath = undefined;
+    const directory = openSync(lightAppRoot(context.dataRoot, context.workspaceId, appId), 'r');
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+    return completed;
+  } catch (error) {
+    throw mapSqliteError(error);
+  } finally {
+    if (currentDb.sqlite.open) currentDb.sqlite.close();
+    if (candidate?.sqlite.open) candidate.sqlite.close();
+    if (candidatePath) {
+      rmSync(candidatePath, { force: true });
+      rmSync(`${candidatePath}-journal`, { force: true });
+    }
+  }
+}
+
+/** Checks the existing app-local receipt before a synchronous migration or restore. */
+function hasCommandReplay(
+  context: KernelCommandContext,
+  appDb: AppDb,
+  command: CommandRequestName,
+  input: Record<string, unknown>
+): boolean {
+  const receipt = context.store.getCommandRequest(
+    command,
+    context.requestId,
+    {
+      workspaceId: context.workspaceId,
+      appId: appDb.appId,
+      actorId: actorScopeId(context.actor),
+    },
+    appDb
+  );
+  if (!receipt) return false;
+  if (receipt.inputHash !== commandInputHash({ actor: context.actor, ...input }))
+    throw new IdempotencyKeyConflictError();
+  return true;
+}
+
+/** Projects a restored migration base without admitting old-format data operations. */
+function projectRestoredApp(appDb: AppDb): GetLightAppResponse {
+  const hasMarker = (
+    appDb.sqlite.pragma('table_info(app_metadata)') as Array<{ name: string }>
+  ).some((column) => column.name === 'kernel_format_version');
+  if (hasMarker) return projectApp(appDb);
+  const row = appDb.sqlite
+    .prepare(
+      'SELECT title, purpose, app_revision AS appRevision, schema_revision AS schemaRevision, schema_digest AS schemaDigest FROM app_metadata WHERE app_id = ?'
+    )
+    .get(appDb.appId) as {
+    title: string;
+    purpose: string;
+    appRevision: number;
+    schemaRevision: number;
+    schemaDigest: string;
+  };
+  return {
+    appId: appDb.appId,
+    ...row,
+    lifecycle: 'unavailable',
+    kernelFormatVersion: 1,
+    definitionVersion: row.schemaDigest,
+    definitionSource: null,
+    schema: null,
+    capabilities: LIGHT_APP_CAPABILITIES,
+  };
 }
 
 /**
@@ -426,7 +744,7 @@ export function listRecords(
   } catch (error) {
     throw mapSqliteError(error);
   } finally {
-    appDb.sqlite.close();
+    if (appDb.sqlite.open) appDb.sqlite.close();
   }
 }
 
@@ -458,7 +776,7 @@ export function getRecord(
     const collection = resolveCollection(schema, collectionSelector);
     return readProjectedRecord(appDb, collection, schema.schemaRevision, recordId, fields);
   } finally {
-    appDb.sqlite.close();
+    if (appDb.sqlite.open) appDb.sqlite.close();
   }
 }
 
@@ -599,7 +917,7 @@ async function withAppDb<T>(
   } catch (error) {
     throw mapSqliteError(error);
   } finally {
-    appDb.sqlite.close();
+    if (appDb.sqlite.open) appDb.sqlite.close();
   }
 }
 
@@ -611,29 +929,35 @@ async function withAppDb<T>(
  * @param spec Command spec.
  * @returns Command result.
  */
-async function runKernelCommand<T>(
+function runKernelCommand<T>(
   context: KernelCommandContext,
   appDb: AppDb,
   spec: KernelCommandSpec<T>
 ): Promise<T> {
-  return runIdempotentCommand({
-    store: context.store,
-    inflightCommands: context.inflightCommands,
-    command: spec.command,
-    requestId: context.requestId,
-    scope: {
-      workspaceId: context.workspaceId,
-      appId: appDb.appId,
-      actorId: actorScopeId(context.actor),
-    },
-    input: { actor: context.actor, ...asObject(spec.input) },
-    responseKind: spec.responseKind,
-    appDb,
-    appTransaction: true,
-    execute: spec.execute,
-    replay: spec.replay,
-    responseId: spec.responseId,
-  });
+  try {
+    return runIdempotentCommand({
+      store: context.store,
+      inflightCommands: context.inflightCommands,
+      command: spec.command,
+      requestId: context.requestId,
+      scope: {
+        workspaceId: context.workspaceId,
+        appId: appDb.appId,
+        actorId: actorScopeId(context.actor),
+      },
+      input: { actor: context.actor, ...asObject(spec.input) },
+      responseKind: spec.responseKind,
+      appDb,
+      appTransaction: true,
+      execute: spec.execute,
+      replay: spec.replay,
+      responseId: spec.responseId,
+    });
+  } finally {
+    // Transactional execute and replay complete before runIdempotentCommand yields.
+    // Close now so another synchronous command can replace the file.
+    if (appDb.sqlite.open) appDb.sqlite.close();
+  }
 }
 
 /**
@@ -642,12 +966,16 @@ async function runKernelCommand<T>(
  * @param context Command context.
  * @param appId Allocated app id.
  * @param schema Original schema input.
+ * @param sourceSelection Effective catalog source selected for a fresh command.
+ * @param requestedDefinition Raw catalog selector bound by the existing receipt.
  * @returns Replayed create result.
  */
 async function replayOrRecoverCreate(
   context: KernelCommandContext,
   appId: string,
-  schema: LightAppSchemaInput
+  schema: LightAppSchemaInput,
+  sourceSelection?: LightAppDefinitionSource,
+  requestedDefinition?: LightAppRequestedDefinition
 ): Promise<CreateLightAppResponse> {
   if (!existsSync(lightAppDbPath(context.dataRoot, context.workspaceId, appId))) {
     throw new KernelCommandError(
@@ -668,7 +996,7 @@ async function replayOrRecoverCreate(
     return await runKernelCommand(context, appDb, {
       command: 'kernel.apps.create',
       responseKind: 'light_app',
-      input: { schema },
+      input: requestedDefinition ? { requestedDefinition } : { schema, sourceSelection },
       execute: () => {
         throw new KernelCommandError(
           'recovery_required',
@@ -679,7 +1007,7 @@ async function replayOrRecoverCreate(
       responseId: (result) => result.appId,
     });
   } finally {
-    appDb.sqlite.close();
+    if (appDb.sqlite.open) appDb.sqlite.close();
   }
 }
 
@@ -696,6 +1024,7 @@ function commitNewApp(
     admitted: LightAppAdmittedSchema;
     schemaDigest: string;
     schemaJson: string;
+    sourceSelection?: LightAppDefinitionSource;
     actor: ActorRef;
     requestId: string;
   }
@@ -708,9 +1037,9 @@ function commitNewApp(
     .prepare(
       `INSERT INTO app_metadata (
         app_id, workspace_id, title, purpose, app_revision, schema_revision,
-        schema_digest, schema_json, lifecycle, created_at, updated_at,
+        schema_digest, schema_json, definition_source_json, lifecycle, created_at, updated_at,
         creator_json, last_mutator_json, create_request_id, last_request_id
-      ) VALUES (?, ?, ?, ?, 1, 1, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.admitted.appId,
@@ -719,6 +1048,7 @@ function commitNewApp(
       input.admitted.purpose,
       input.schemaDigest,
       input.schemaJson,
+      input.sourceSelection ? JSON.stringify(input.sourceSelection) : null,
       now,
       now,
       JSON.stringify(input.actor),
@@ -1312,6 +1642,8 @@ function readMetadata(appDb: AppDb): AppMetadataRow {
         schema_revision AS schemaRevision,
         schema_digest AS schemaDigest,
         schema_json AS schemaJson,
+        kernel_format_version AS kernelFormatVersion,
+        definition_source_json AS definitionSourceJson,
         lifecycle
        FROM app_metadata WHERE app_id = ?`
     )
@@ -1552,9 +1884,25 @@ function inspectCatalogItem(
     try {
       return catalogItemFromMetadata(readMetadata(appDb));
     } finally {
-      appDb.sqlite.close();
+      if (appDb.sqlite.open) appDb.sqlite.close();
     }
   } catch {
+    // Migration inspection can expose the old marker and exact revision while ordinary Kernel data access remains closed until explicit upgrade.
+    try {
+      const migrationDb = openExistingAppDb(dataRoot, workspaceId, appId, 'format-upgrade');
+      try {
+        const {
+          schema: _schema,
+          capabilities: _capabilities,
+          ...item
+        } = projectRestoredApp(migrationDb);
+        return item;
+      } finally {
+        migrationDb.sqlite.close();
+      }
+    } catch {
+      /* Missing, corrupt, and unknown formats have no admitted projection. */
+    }
     return {
       appId,
       title: 'Unavailable app',
@@ -1562,6 +1910,9 @@ function inspectCatalogItem(
       appRevision: 1,
       schemaRevision: 1,
       schemaDigest: EMPTY_DIGEST,
+      kernelFormatVersion: null,
+      definitionVersion: null,
+      definitionSource: null,
       lifecycle: 'unavailable',
     };
   }
@@ -1581,6 +1932,11 @@ function catalogItemFromMetadata(metadata: AppMetadataRow): LightAppCatalogItem 
     appRevision: metadata.appRevision,
     schemaRevision: metadata.schemaRevision,
     schemaDigest: metadata.schemaDigest,
+    kernelFormatVersion: metadata.kernelFormatVersion,
+    definitionVersion: metadata.schemaDigest,
+    definitionSource: metadata.definitionSourceJson
+      ? LightAppDefinitionSourceSchema.parse(JSON.parse(metadata.definitionSourceJson))
+      : null,
     lifecycle: metadata.lifecycle,
   };
 }
