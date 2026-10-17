@@ -1332,6 +1332,8 @@ describe('agent environment package resolver', () => {
           'work_request_input',
           'work_list_peers',
           'work_read_peer',
+          'work_read_source',
+          'work_search_source',
           'work_submit_artifact',
         ],
         catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
