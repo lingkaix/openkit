@@ -11,7 +11,7 @@ Help a human turn their organisation's work into reviewable instructions, tracke
 
 Confirm the current Workspace, Goal, responsible human, requested outcome, supplied sources and effect limits. Read the Goal's current Plan. Work only on the ordinary Task admitted after exact Plan approval; ask the responsible human when the approved work does not cover the request. A finished Task or four prepared proposals do not complete the Goal; its responsible person does that.
 
-Use only capabilities already supplied to this Worker. Discover and describe public operations before preparing their requests; model-visible names replace canonical operation dots with underscores. If an operation is unavailable to the Worker, return the proposal and exact retained evidence to the authorized coordinator or human. Do not acquire management credentials or add a tool path.
+Use only capabilities already supplied to this Worker. Discover and describe public operations before preparing their requests; use the Tool names actually supplied by discovery rather than deriving an alias. If an operation is unavailable to the Worker, return the proposal and exact retained evidence to the authorized coordinator or human. Do not acquire management credentials or add a tool path.
 
 ## Read the intake
 

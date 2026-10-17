@@ -16,6 +16,8 @@ An actor with current launch authority can start two ordinary Worker Turns with 
 
 Keep comparison effects within the approved scope. Read/draft comparison is sufficient to inspect a correction; do not send or issue twice merely to compare versions. Sensitive calls still need their own captured human approval, and a run must not execute another run's pending effect. Report an existing deterministic draft or changed external state as a comparison limit rather than fabricated independent evidence.
 
+Where a compared output already has an Artifact Review, the human can record its exact choice through `artifact.review.select` using that Artifact id, version and content digest. The returned candidateSelections records actor, time and reason; it is neither a final Review decision nor catalog activation. Retain the actual choice reference with both compared outputs.
+
 Retain each actual Turn, AEP `supply.skills` digest and `selectionSource:run`, observed native Skill consumption, case inputs and output references. Keep the first adopted run's `selectionSource:pin` evidence separate. `catalog.skill-diff` proves byte differences only; it does not prove better case behavior. Show the human both outputs with their actual limitations, without selecting a winner on the human's behalf.
 
 ## Apply the human choice
@@ -24,4 +26,4 @@ If the human chooses v2, an authorized actor promotes its proposed candidate thr
 
 If rollback is requested after promotion, `catalog.skill-select` chooses the retained v1 default and `catalog.skill-pin` independently restores the desired pin using their current compare-and-set values. Neither operation undoes an external effect, restores a Light App snapshot or reverses Knowledge publication. Retain the actual selection audit and the human's decision reference where available.
 
-There is no single candidate-set comparison/selection operation. Report that missing primitive when the requested proof depends on it; do not pretend that two Turns create such a record. The available evidence is the two ordinary runs, their exact versions, their outputs, the human decision and the existing catalog decision/pin records. An unavailable next-case run, human decision or evidence join remains explicitly unverified.
+There is no aggregate Skill candidate-set comparison operation. This bounded loop uses ordinary exact-version runs, output choice evidence, human review and catalog decisions; do not claim that these create an aggregate comparison record or an evaluation result. The available evidence is the two ordinary runs, their exact versions, their outputs, any existing Artifact choice, the human decision and the existing catalog decision/pin records. An unavailable next-case run, human decision or evidence join remains explicitly unverified.
