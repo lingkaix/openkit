@@ -317,6 +317,14 @@ Use the Artifact screen to import an arbitrary file as an immutable original. Th
 
 The raw App API binding for `artifact.import` sends bounded query metadata with the original byte body and `X-OpenKit-Request-Id`. `artifact.download` streams one exact id and version. Binary bodies do not belong in JSON operation or model Tool payloads. Use the Web screen or the Core Client `artifactFiles` methods for this binding. `server.fileReserveBytes` in server configuration sets the shared Data Root free-space reserve, default 1,000,000,000 bytes. Current uploads, publication and pending file writes share that reserve. Reducing it changes later admission only and does not remove accepted originals.
 
+## Inspect and publish Artifact versions
+
+Open an Artifact and select a version in Version history. Inspect its parent, actor, publication conversation, time and digest. Download original returns that exact version. Selecting an older version keeps its content visible when a newer head appears.
+
+To publish a revision, inspect the current head and select Create next version. Edit the text or choose a replacement file. Select an eligible idle publishing conversation, then select Save new version. Saving starts no Agent work and preserves the earlier versions. If another version wins first, refresh the current head and explicitly choose the new parent before saving the retained draft. If the result is uncertain, inspect it or use the offered same-request retry.
+
+Discover `artifact.version-list`, `artifact.version-read`, `artifact.version-commit` and `artifact.version-file-commit` for the corresponding API operations. Use the streamed-file binding for arbitrary original bytes. Current access and source availability apply to every read and publication.
+
 ## Give exact Review feedback and use a candidate
 
 Open an Artifact Review to inspect its exact version, digest and provenance. For a binary original, use Download original; the metadata is not a text comparison. For a Markdown or plain-text Material proposal, select text from the recorded base and check the displayed revision, digest and original range. Include that range with your Review feedback. Accept still applies the complete reviewed revision; range feedback does not apply a partial edit or relocate text after another edit.
