@@ -225,12 +225,22 @@ export async function dispatchOpenkitWorkTool(
     input.requireAdmission?.();
     if (!input.knowledgeAgent || !input.knowledgeCallId)
       throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+    const admission = findSchedulerAdmissionForWorkerLineage(input.coreDb, {
+      workspaceId: scope.workspaceId, threadId: scope.threadId, turnId: scope.turnId,
+      agentSessionId: scope.agentSessionId, packageSnapshotId: input.environmentPackage.snapshotId,
+    });
+    // Reuse the admitted real bearer lineage; Workspace authority alone cannot grant Server access.
+    const serverKnowledgeActor = admission?.serverAdminTokenId && admission.triggerActor.kind === 'user'
+      ? { kind: 'token' as const, userId: admission.triggerActor.id,
+          tokenId: admission.serverAdminTokenId, tokenScope: 'server-admin' as const }
+      : undefined;
     const signal = input.signal ?? new AbortController().signal;
     const result = toolName === operationToolName('knowledge.ask')
       ? await input.knowledgeAgent.ask({
           ...KnowledgeAskRequestSchema.omit({ workspaceId: true }).parse(args),
           workspaceId: scope.workspaceId, caller: 'worker', capabilityCallId: input.knowledgeCallId,
           access: { store: input.store, coreDb: input.coreDb, actor: scope.triggerActor,
+            ...(serverKnowledgeActor ? { serverKnowledgeActor } : {}),
             outputThreadId: scope.threadId, outputTurnId: scope.turnId }, signal,
           assertCurrent: () => { input.requireAdmission?.(); },
         })
