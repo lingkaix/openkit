@@ -1,15 +1,17 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { allocateEntityId } from '@openkit/protocol';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import * as packageOwner from '../context/worker-context-package.js';
+import * as visionProcessor from '../context/vision-view.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -876,6 +878,56 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string) {
   onTestFinished(() => proof.mockRestore());
   return { ...fixture, artifactId, source, packagePath: source.packagePath, proof };
 }
+
+it('returns an actual cropped selected image through standard MCP carriage and withholds it after post-process revocation', async () => {
+  const original = createCanvas(16, 8);
+  const drawing = original.getContext('2d');
+  drawing.fillStyle = '#ff0000';
+  drawing.fillRect(0, 0, 8, 8);
+  drawing.fillStyle = '#0000ff';
+  drawing.fillRect(8, 0, 8, 8);
+  const bytes = await original.encode('png');
+  const f = await sourceToolFixture(bytes, 'image/png');
+  const args = { path: f.packagePath, crop: { left: 8, top: 0, width: 8, height: 8 } };
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
+  expect(result).not.toHaveProperty('structuredContent');
+  expect(result.isError).toBe(false);
+  const image = result.content.find((block) => block.type === 'image');
+  const text = result.content.find((block) => block.type === 'text');
+  if (!image || image.type !== 'image' || !text || text.type !== 'text') throw new Error('Expected standard text and image carrier.');
+  expect(image.mimeType).toBe('image/jpeg');
+  const delivered = Buffer.from(image.data, 'base64');
+  const metadata = JSON.parse(text.text);
+  expect(metadata).toMatchObject({
+    status: 'available', source: { originalDigest: f.source.originalDigest, byteLength: bytes.length },
+    originalDimensions: { width: 16, height: 8, frames: 1 }, crop: args.crop, page: null, coordinateSpace: 'image-pixels',
+    delivered: { width: 8, height: 8, digest: `sha256:${createHash('sha256').update(delivered).digest('hex')}` },
+    processor: { id: 'node-canvas-vision-v1' },
+  });
+  const decoded = await loadImage(delivered);
+  const viewed = createCanvas(8, 8);
+  viewed.getContext('2d').drawImage(decoded, 0, 0);
+  const pixel = viewed.getContext('2d').getImageData(4, 4, 1, 1).data;
+  expect(pixel[2]).toBeGreaterThan(240);
+  expect(pixel[0]).toBeLessThan(15);
+  expect(delivered.length).toBeLessThanOrEqual(262_144);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
+  expect(readdirSync(join(f.dataRoot, 'workspaces', '.staging'))).toEqual([]);
+  const processActual = visionProcessor.processVisionView;
+  const revoke = vi.spyOn(visionProcessor, 'processVisionView').mockImplementation(async (input) => {
+    const view = await processActual(input);
+    expect(view.status).toBe('available');
+    disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
+    return view;
+  });
+  onTestFinished(() => revoke.mockRestore());
+  const denied = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
+  expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(denied.content.some((block) => block.type === 'image')).toBe(false);
+  expect(JSON.stringify(denied)).not.toContain(f.artifactId);
+  expect(JSON.stringify(denied)).not.toContain(f.source.originalDigest);
+  expect(readdirSync(join(f.dataRoot, 'workspaces', '.staging'))).toEqual([]);
+}, 45_000);
 
 it('reads retained bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
   const fixture = await sourceToolFixture(Buffer.from('Finished report\n'), 'text/plain');

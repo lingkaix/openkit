@@ -562,6 +562,7 @@ describe('worker MCP routes', () => {
         'work_read_peer',
         'work_read_source',
         'work_search_source',
+        'work_view_source',
         'work_submit_artifact',
       ]);
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
@@ -1153,6 +1154,7 @@ describe('worker MCP routes', () => {
         'work_read_peer',
         'work_read_source',
         'work_search_source',
+        'work_view_source',
         'work_submit_artifact',
       ]);
       const sourceSchema = tools.find((tool) => tool.name === 'work_read_source')!.inputSchema;
@@ -1161,6 +1163,9 @@ describe('worker MCP routes', () => {
       const searchSchema = tools.find((tool) => tool.name === 'work_search_source')!.inputSchema;
       expect(searchSchema.required).toEqual(['path', 'query']);
       expect(searchSchema.additionalProperties).not.toBe(false);
+      const viewSchema = tools.find((tool) => tool.name === 'work_view_source')!.inputSchema;
+      expect(viewSchema.required).toEqual(['path']);
+      expect(viewSchema.additionalProperties).not.toBe(false);
       const readSchema = tools.find((tool) => tool.name === 'work_read_peer')!.inputSchema;
       expect(readSchema.required).toEqual(['handle']);
       expect(readSchema.additionalProperties).not.toBe(false);

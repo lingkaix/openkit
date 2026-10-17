@@ -6,13 +6,30 @@ import { dirname, join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { WorkerContextPackageSourceFile } from './worker-context-package.js';
-import { readWorkerSourceSnapshot } from './worker-source-read.js';
+import { readWorkerSourceSnapshot, workerSourceOriginal } from './worker-source-read.js';
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+
+it('supplies only exact retained original bytes in bounded chunks and rechecks current access during consumption', async () => {
+  const f = fixture(Buffer.from(Array.from({ length: 70_000 }, (_, index) => index % 256)));
+  f.source.mediaType = 'image/png';
+  const original = workerSourceOriginal(f.input);
+  expect(original.originalDigest).toBe(digest(f.bytes));
+  const chunks: Buffer[] = [];
+  for await (const chunk of original.open(new AbortController().signal)) {
+    expect(chunk.byteLength).toBeLessThanOrEqual(65_536);
+    chunks.push(Buffer.from(chunk));
+  }
+  expect(Buffer.concat(chunks)).toEqual(f.bytes);
+  const reader = original.open(new AbortController().signal)[Symbol.asyncIterator]();
+  expect((await reader.next()).done).toBe(false);
+  f.input.assertCurrent.mockImplementation(() => { throw new Error('Revoked.'); });
+  await expect(reader.next()).rejects.toThrow('Revoked.');
+});
 
 /** Real immutable files; only the caller's current authorization predicate is controlled. */
 function fixture(bytes = Buffer.from('界'.repeat(40_000))) {

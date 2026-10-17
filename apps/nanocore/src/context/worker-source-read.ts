@@ -32,6 +32,7 @@ import {
   type SourceViewUnavailableReason,
 } from './bounded-source-view.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
+import type { MediaByteSource } from './media-process.js';
 import {
   readWorkerContextPackageTrace,
   type WorkerContextPackageSourceFile,
@@ -295,6 +296,50 @@ export async function readWorkerSourceSnapshot(input: {
           : 'unavailable'
     );
   }
+}
+
+/**
+ * Supplies the retained exact original only to the bounded vision consumer. Each open and chunk rechecks current authority; the staging owner verifies the complete original digest before processing.
+ * @param input Accepted selected source, canonical Turn root and fresh authority callback.
+ * @returns A private bounded byte supplier, never a model-visible path or retained grant.
+ */
+export function workerSourceOriginal(input: {
+  readonly workspaceRoot: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly source: WorkerContextPackageSourceFile;
+  readonly assertCurrent: () => void;
+}): MediaByteSource {
+  const source = structuredClone(input.source);
+  return {
+    sourceKey: `${source.source.reference.scopeId}/${source.source.reference.objectId}`,
+    revision: source.projection.sourceRevision,
+    originalDigest: source.originalDigest,
+    byteLength: source.byteLength,
+    async *open(signal) {
+      signal.throwIfAborted();
+      input.assertCurrent();
+      const path = sourceSnapshotPath(input, source.originalSnapshotPath);
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const pinned = await file.stat({ bigint: true });
+        if (!pinned.isFile() || pinned.nlink !== 1n || pinned.size !== BigInt(source.byteLength)) throw new BoundedSourceError('corrupt');
+        let offset = 0;
+        while (offset < source.byteLength) {
+          signal.throwIfAborted();
+          input.assertCurrent();
+          const buffer = Buffer.alloc(Math.min(65_536, source.byteLength - offset));
+          const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+          if (bytesRead < 1) throw new BoundedSourceError('corrupt');
+          offset += bytesRead;
+          yield buffer.subarray(0, bytesRead);
+        }
+        signal.throwIfAborted();
+        if (!sameFile(pinned, await file.stat({ bigint: true })) || !sameFile(pinned, await lstat(path, { bigint: true }))) throw new BoundedSourceError('stale');
+        input.assertCurrent();
+      } finally { await file.close(); }
+    },
+  };
 }
 
 /** Resolves only one inventory-owned snapshot path through canonical no-link directories. */

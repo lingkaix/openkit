@@ -16,6 +16,7 @@ import {
 import { z } from 'zod';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { searchPdfSourceSnapshot } from '../context/pdf-source-representation.js';
+import { viewWorkerSourceSnapshot } from '../context/worker-source-vision.js';
 import {
   readWorkerSourceSnapshot,
   resolveCurrentWorkerSource,
@@ -132,6 +133,16 @@ const WorkSearchSourceArgsSchema = z
   .strip();
 
 const WorkListPeersArgsSchema = z.object({}).strip();
+const WorkViewSourceArgsSchema = z.object({
+  path: z.string().min(1).max(4096),
+  page: z.number().int().positive().safe().optional(),
+  crop: z.object({
+    left: z.number().int().nonnegative().safe(),
+    top: z.number().int().nonnegative().safe(),
+    width: z.number().int().positive().safe(),
+    height: z.number().int().positive().safe(),
+  }).strip().optional(),
+}).strip();
 const WorkReadPeerArgsSchema = z
   .object({
     handle: z.string().min(1),
@@ -188,6 +199,12 @@ export const OPENKIT_WORK_TOOLS = [
     description:
       'Search one retained PDF text representation selected by its exact source inventory packagePath. Use lexical, exact or line-bounded regex mode. At most 20 bounded snippets return original identity, representation digest, processor and page coordinates. Partial text-layer coverage cannot prove absence in images or unprocessed pages. No unselected source or host path is accepted.',
     inputSchema: mcpInputSchema(WorkSearchSourceArgsSchema),
+  },
+  {
+    name: 'work_view_source',
+    description:
+      'View one selected PNG/JPEG image or one explicitly selected PDF page as a bounded JPEG. Use the exact source inventory packagePath. PDF requires a one-based page; image inputs must omit page. Optional crop uses integer original-image pixels or rotated selected-page raster pixels at 72 dpi. Result text identifies the original, page, crop, processor and delivered JPEG digest; the image is a standard MCP image block. Current access is checked again before disclosure. No host path, URL or unselected source is accepted.',
+    inputSchema: mcpInputSchema(WorkViewSourceArgsSchema),
   },
   {
     name: 'work_submit_artifact',
@@ -259,6 +276,7 @@ export async function dispatchOpenkitWorkTool(
   }
   if (toolName === 'work_read_source') return readSource(input, args);
   if (toolName === 'work_search_source') return searchSource(input, args);
+  if (toolName === 'work_view_source') return viewSource(input, args);
   if (toolName === 'work_submit_artifact') {
     try {
       return await submitArtifact(input, args);
@@ -467,6 +485,38 @@ function sourceToolResult(projection: Record<string, unknown>) {
   if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024)
     throw new WorkerControlGatewayError('mcp-result-too-large', MCP_RESULT_TOO_LARGE_MESSAGE, 413);
   return result;
+}
+
+/** Returns one explicit view through standard MCP image carriage, without metadata-only structuredContent that can hide the image in stock carriers. */
+async function viewSource(
+  input: Parameters<typeof dispatchOpenkitWorkTool>[0],
+  args: Record<string, unknown>
+) {
+  const parsed = WorkViewSourceArgsSchema.safeParse(args);
+  if (!parsed.success)
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', { code: 'mcp-call-failed' });
+  try {
+    if (!input.fileAdmission) return sourceToolResult({ status: 'unavailable', reason: 'unavailable' });
+    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    const view = await viewWorkerSourceSnapshot({ ...selected, admission: input.fileAdmission, page: parsed.data.page, crop: parsed.data.crop, signal: input.signal });
+    selected.assertCurrent();
+    if (view.status === 'unavailable') return sourceToolResult({ ...view });
+    const { bytes, ...metadata } = view;
+    const result: {
+      isError: boolean;
+      structuredContent?: Record<string, unknown>;
+      content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: 'image/jpeg' }>;
+    } = {
+      isError: false,
+      content: [ { type: 'text', text: JSON.stringify(metadata) }, { type: 'image', data: bytes.toString('base64'), mimeType: 'image/jpeg' } ],
+    };
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024) return sourceToolResult({ status: 'unavailable', reason: 'resource_limited' });
+    input.signal?.throwIfAborted();
+    selected.assertCurrent();
+    return result;
+  } catch {
+    return sourceToolResult({ status: 'unavailable', reason: input.signal?.aborted ? 'cancelled' : 'unavailable' });
+  }
 }
 
 /** Reads one accepted source snapshot through existing current Worker and source authority. */
