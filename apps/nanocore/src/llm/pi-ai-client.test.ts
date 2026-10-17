@@ -1360,7 +1360,7 @@ describe('PiAiGatewayClient', () => {
     expect(faux.state.callCount).toBe(1);
   });
 
-  it('refuses uncatalogued xAI Responses before authentication instead of guessing Chat admission', async () => {
+  it('serves configured uncatalogued xAI Responses through the existing Chat conversion and exact pair', async () => {
     const stock = xaiProvider();
     const modelId = 'xai/grok-openkit-uncatalogued-test';
     const credential: OAuthCredential = {
@@ -1378,16 +1378,24 @@ describe('PiAiGatewayClient', () => {
       },
       read,
       async modify() {
-        throw new Error('Refused Responses must not refresh credentials.');
+        throw new Error('The unexpired test credential must not refresh.');
       },
       async delete() {},
     };
+    let seenModel: Model<string> | undefined;
+    let seenOptions: StreamOptions | undefined;
     const faux = fauxProvider({
-      api: 'openai-responses',
+      api: 'openai-completions',
       provider: 'xai',
       models: [{ id: 'grok-4.3' }],
     });
-    faux.setResponses([fauxAssistantMessage('Grok response')]);
+    faux.setResponses([
+      (_context, options, _state, model) => {
+        seenModel = model;
+        seenOptions = options;
+        return fauxAssistantMessage('Grok response');
+      },
+    ]);
     const pairModels = createModels({ credentials });
     pairModels.setProvider({
       ...faux.provider,
@@ -1414,20 +1422,29 @@ describe('PiAiGatewayClient', () => {
     });
 
     expect(pairModels.getModel('xai', 'grok-openkit-uncatalogued-test')).toBeUndefined();
-    const pending = new PiAiGatewayClient().createResponses(
+    const response = await new PiAiGatewayClient().createResponses(
       config,
       { model: modelId, input: 'Hello' },
       undefined,
       {},
       pairModels
     );
-    await expect(pending).rejects.toBeInstanceOf(GatewayUnsupportedFeatureError);
-    await expect(pending).rejects.toMatchObject({
-      code: 'unsupported_gateway_feature',
-      status: 400,
+    expect(response).toMatchObject({
+      model: modelId,
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'Grok response' }] }],
     });
-    expect(read).not.toHaveBeenCalled();
-    expect(faux.state.callCount).toBe(0);
+    expect(seenModel).toMatchObject({
+      api: 'openai-completions',
+      id: 'grok-openkit-uncatalogued-test',
+      provider: 'xai',
+      baseUrl: stock.baseUrl,
+      contextWindow: 360_000,
+    });
+    expect(seenOptions?.apiKey).toBe('work-pair-access');
+    expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
+    expect(faux.state.callCount).toBe(1);
+    expect(pairModels.getModel('xai', 'grok-openkit-uncatalogued-test')).toBeUndefined();
   });
 
   it('clones a subscription pair model without mutating nested pair objects', async () => {
