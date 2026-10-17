@@ -48,11 +48,16 @@ import { resolveDataRoot } from '../config/data-root.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { KnowledgeNotebook, validateNotebookFiles } from '../knowledge/notebook.js';
 import {
   initializeWorkspaceNotebook,
   type NotebookInitialization,
 } from '../knowledge/notebook-initialization.js';
+import {
+  attributedNotebookPageBytes,
+  type NotebookEdit,
+} from '../knowledge/notebook-publication.js';
+import { validateNotebookCandidate } from '../knowledge/notebook-validation.js';
 import { importedWorkspaceNotebookReferences } from '../knowledge/notebook-workspace-portability.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -460,6 +465,15 @@ export interface CreateKnowledgeProposalInput extends KnowledgeManagerDraftPropo
   createdAt: string;
 }
 
+/** Native exact multi-page candidate; caller supplies current Source and scope admission. */
+export interface CreateNotebookProposalInput extends NotebookEdit {
+  workspaceId: string;
+  sourceReferences: readonly string[];
+  verifiedExternalReferences: readonly string[];
+  producer: ActorRef;
+  createdAt: string;
+}
+
 /** Input used to append one human Knowledge Proposal decision. */
 export interface RecordKnowledgeProposalReviewDecisionInput
   extends SubmitKnowledgeProposalDecisionRequest {
@@ -570,6 +584,8 @@ export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
 };
 
 interface CreateTurnOptions {
+  /** Native internal-role admission facts retained on the existing Turn. */
+  internalExecution?: Turn['internalExecution'];
   /** Exact ordered metadata and verified private payload sources published with this Turn. */
   fileInputs?: Turn['fileInputs'];
   /** Private same-filesystem sources; never serialized into protocol records. */
@@ -1585,7 +1601,7 @@ export class FsStore {
   private assertValidKnowledgeProposal(
     proposal: KnowledgeProposalRecord,
     verifiedExternalReferences: readonly string[]
-  ): KnowledgeEntry {
+  ): KnowledgeEntry | undefined {
     let scopeSchemaText: string | undefined;
     try {
       KnowledgeProposalRecordSchema.parse(proposal);
@@ -1603,6 +1619,67 @@ export class FsStore {
     } catch {
       throw new KnowledgePageValidationError();
     }
+
+    if (proposal.changes) {
+      if (
+        proposal.knowledgePageId !== undefined ||
+        proposal.canonicalPageBytes !== undefined ||
+        proposal.confidence !== undefined ||
+        proposal.contentDigest !== contentDigest(JSON.stringify(proposal.changes)) ||
+        new Set(proposal.changes.map((change) => change.path)).size !== proposal.changes.length
+      )
+        throw new KnowledgePageValidationError();
+      const notebook = this.proposalNotebook(proposal.workspaceId);
+      const base = notebook.readRevision(proposal.baseRevision);
+      const files = { ...base.files };
+      for (const { path, content } of proposal.changes) {
+        if (content === null) delete files[path];
+        else files[path] = content;
+      }
+      validateNotebookFiles(
+        Object.fromEntries(
+          proposal.changes
+            .filter((change) => change.content !== null)
+            .map((change) => [change.path, change.content!])
+        ),
+        true
+      );
+      const resolved = this.resolveKnowledgePageSourceReferences(
+        proposal.workspaceId,
+        proposal.sourceReferences,
+        verifiedExternalReferences
+      );
+      const result = validateNotebookCandidate({
+        ownerScope: proposal.ownerScope,
+        base,
+        candidate: { files },
+        scopeSchemaText: scopeSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+        registeredSources: new Map(
+          [...this.knowledgeSources.values()]
+            .filter((source) => source.workspaceId === proposal.workspaceId)
+            .map((source) => [source.id, source.contentDigest])
+        ),
+        resolvedReferences: new Map(
+          proposal.changes.map(({ path }) => [path.slice(0, -3), resolved])
+        ),
+      });
+      if (
+        result.errors.length ||
+        !isDeepStrictEqual(
+          result.changedPaths,
+          proposal.changes.map(({ path }) => path)
+        ) ||
+        !isDeepStrictEqual(result.sourceReferences, proposal.sourceReferences)
+      )
+        throw new KnowledgePageValidationError();
+      return;
+    }
+    if (
+      proposal.knowledgePageId === undefined ||
+      proposal.canonicalPageBytes === undefined ||
+      proposal.confidence === undefined
+    )
+      throw new KnowledgePageValidationError();
 
     const candidatePath = `knowledge/pages/${proposal.knowledgePageId}.md`;
     const parsed = parseOkfDocument({ path: candidatePath, content: proposal.canonicalPageBytes });
@@ -1763,7 +1840,9 @@ export class FsStore {
    */
   private assertNoUnresolvedKnowledgeProposalConflict(proposal: KnowledgeProposalRecord): void {
     const relevantReferences = new Set<string>([
-      `knowledge:${proposal.knowledgePageId}`,
+      ...(proposal.changes
+        ? proposal.changes.map(({ path }) => `knowledge:${path.slice(0, -3)}`)
+        : [`knowledge:${proposal.knowledgePageId}`]),
       ...proposal.sourceReferences,
     ]);
     for (const reference of proposal.sourceReferences) {
@@ -1810,14 +1889,22 @@ export class FsStore {
       }
       const notebook = this.proposalNotebook(proposal.workspaceId);
       const candidate = notebook.retainedCandidate(proposal.id);
-      const content = notebook.readRevision(proposal.candidateRevision).files[
-        `${proposal.knowledgePageId}.md`
-      ];
+      const candidateFiles = notebook.readRevision(proposal.candidateRevision).files;
+      const content = proposal.canonicalPageBytes;
+      const baseFiles = notebook.readRevision(proposal.baseRevision).files;
+      const changes = [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateFiles)])]
+        .sort()
+        .filter((path) => baseFiles[path] !== candidateFiles[path])
+        .map((path) => ({ path, content: candidateFiles[path] ?? null }));
       if (
         candidate.revision !== proposal.candidateRevision ||
         candidate.parentRevision !== proposal.baseRevision ||
-        content !== proposal.canonicalPageBytes ||
-        contentDigest(content) !== proposal.contentDigest ||
+        (proposal.changes
+          ? !isDeepStrictEqual(changes, proposal.changes) ||
+            contentDigest(JSON.stringify(changes)) !== proposal.contentDigest
+          : content !== candidateFiles[`${proposal.knowledgePageId}.md`] ||
+            content === undefined ||
+            contentDigest(content) !== proposal.contentDigest) ||
         candidate.metadata.authority.kind !== 'proposal' ||
         candidate.metadata.authority.proposalId !== proposal.id ||
         !isDeepStrictEqual(candidate.metadata.producer, proposal.producer) ||
@@ -1865,6 +1952,10 @@ export class FsStore {
       review.proposalDigest !== contentDigest(proposalBytes) ||
       review.knowledgePageId !== proposal.knowledgePageId ||
       review.contentDigest !== proposal.contentDigest ||
+      !isDeepStrictEqual(
+        review.changedPageIds,
+        proposal.changes?.map(({ path }) => path.slice(0, -3))
+      ) ||
       review.baseRevision !== proposal.baseRevision ||
       review.candidateRevision !== proposal.candidateRevision ||
       !isDeepStrictEqual(review.ownerScope, proposal.ownerScope)
@@ -2700,6 +2791,9 @@ export class FsStore {
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
+      ...(options.internalExecution !== undefined
+        ? { internalExecution: options.internalExecution }
+        : {}),
       ...(options.fileInputs?.length ? { fileInputs: options.fileInputs } : {}),
       ...(options.reasoningEffort !== undefined
         ? { reasoningEffort: options.reasoningEffort }
@@ -2879,6 +2973,7 @@ export class FsStore {
         | 'error'
         | 'status'
         | 'triggerSource'
+        | 'internalExecution'
       >
     >,
     admission?: TerminalTurnWriteAdmission
@@ -2901,6 +2996,7 @@ export class FsStore {
           'error',
           'status',
           'triggerSource',
+          'internalExecution',
         ].includes(field)
     );
     if (unsupportedField) {
@@ -3721,27 +3817,64 @@ export class FsStore {
    * @param input Validated proposal request and server-owned attribution.
    * @returns Stored knowledge proposal.
    */
-  public createKnowledgeProposal(input: CreateKnowledgeProposalInput): KnowledgeProposalRecord {
+  public createKnowledgeProposal(
+    input: CreateKnowledgeProposalInput | CreateNotebookProposalInput
+  ): KnowledgeProposalRecord {
     this.getWorkspace(input.workspaceId);
-    const request = KnowledgeManagerDraftProposalRequestSchema.parse({
-      requestId: input.requestId,
-      baseRevision: input.baseRevision,
-      knowledgePageId: input.knowledgePageId,
-      canonicalPageBytes: input.canonicalPageBytes,
-      contentDigest: input.contentDigest,
-      sourceReferences: input.sourceReferences,
-      rationale: input.rationale,
-      confidence: input.confidence,
-    });
+    const notebook = this.proposalNotebook(input.workspaceId);
+    if (notebook.publishedRevision() !== input.baseRevision)
+      throw knowledgeProposalAuthorityError('conflict');
+    const base = notebook.readRevision(input.baseRevision);
+    if (
+      'changes' in input &&
+      ['knowledgePageId', 'canonicalPageBytes', 'confidence', 'rationale'].some((key) =>
+        Object.hasOwn(input, key)
+      )
+    )
+      throw new KnowledgePageValidationError();
+    const changes =
+      'changes' in input
+        ? [...input.changes]
+            .map(({ path, content }) => ({
+              path,
+              content:
+                content === null || base.files[path] === content
+                  ? content
+                  : attributedNotebookPageBytes(
+                      path,
+                      content,
+                      { kind: 'workspace', workspaceId: input.workspaceId },
+                      input.producer.kind === 'agent' ? 'delegated' : 'user-authored'
+                    ),
+            }))
+            .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+        : undefined;
+    const request =
+      'changes' in input
+        ? {
+            requestId: input.requestId,
+            baseRevision: input.baseRevision,
+            changes: changes!,
+            contentDigest: contentDigest(JSON.stringify(changes)),
+            sourceReferences: [...input.sourceReferences],
+            rationale: input.summary,
+          }
+        : KnowledgeManagerDraftProposalRequestSchema.parse({
+            requestId: input.requestId,
+            baseRevision: input.baseRevision,
+            knowledgePageId: input.knowledgePageId,
+            canonicalPageBytes: input.canonicalPageBytes,
+            contentDigest: input.contentDigest,
+            sourceReferences: input.sourceReferences,
+            rationale: input.rationale,
+            confidence: input.confidence,
+          });
     const id = knowledgeAuthorityId('kp_', {
       workspaceId: input.workspaceId,
       requestId: request.requestId,
     });
     const existing = this.knowledgeProposals.get(id);
     if (existing) throw knowledgeProposalAuthorityError('conflict');
-    const notebook = this.proposalNotebook(input.workspaceId);
-    if (notebook.publishedRevision() !== request.baseRevision)
-      throw knowledgeProposalAuthorityError('conflict');
     const proposal = KnowledgeProposalRecordSchema.parse({
       ...request,
       id,
@@ -3755,7 +3888,10 @@ export class FsStore {
     this.assertValidKnowledgeProposal(proposal, input.verifiedExternalReferences);
     const candidateRevision = notebook.prepare({
       baseRevision: request.baseRevision,
-      changes: { [`${request.knowledgePageId}.md`]: request.canonicalPageBytes },
+      changes:
+        'changes' in request
+          ? Object.fromEntries(request.changes.map(({ path, content }) => [path, content]))
+          : { [`${request.knowledgePageId}.md`]: request.canonicalPageBytes },
       metadata: {
         summary: request.rationale,
         changeRequest: {
@@ -3887,11 +4023,14 @@ export class FsStore {
       decision: command.decision,
       actor: input.actor,
       proposalDigest: contentDigest(bytes),
-      knowledgePageId: proposal.knowledgePageId,
+      ...(proposal.changes
+        ? { changedPageIds: proposal.changes.map(({ path }) => path.slice(0, -3)) }
+        : { knowledgePageId: proposal.knowledgePageId }),
       contentDigest: proposal.contentDigest,
-      targetAbsentAtDecision: accepted
-        ? !Object.hasOwn(base.files, `${proposal.knowledgePageId}.md`)
-        : null,
+      targetAbsentAtDecision:
+        accepted && !proposal.changes
+          ? !Object.hasOwn(base.files, `${proposal.knowledgePageId}.md`)
+          : null,
       decidedAt: input.decidedAt,
     });
     this.knowledgeProposalReviews.set(proposal.id, [...decisions, review]);
@@ -3900,7 +4039,9 @@ export class FsStore {
       review,
       application: accepted
         ? {
-            knowledgePageId: proposal.knowledgePageId,
+            ...(proposal.changes
+              ? { changedPageIds: proposal.changes.map(({ path }) => path.slice(0, -3)) }
+              : { knowledgePageId: proposal.knowledgePageId }),
             contentDigest: proposal.contentDigest,
             present: true,
             notebookRevision: proposal.candidateRevision,
@@ -3942,12 +4083,16 @@ export class FsStore {
         `${proposal.knowledgePageId}.md`
       ];
       if (
-        pageBytes !== proposal.canonicalPageBytes ||
-        contentDigest(pageBytes) !== proposal.contentDigest
+        !proposal.changes &&
+        (pageBytes !== proposal.canonicalPageBytes ||
+          pageBytes === undefined ||
+          contentDigest(pageBytes) !== proposal.contentDigest)
       )
         throw knowledgeProposalAuthorityError('recovery_required');
       application = {
-        knowledgePageId: proposal.knowledgePageId,
+        ...(proposal.changes
+          ? { changedPageIds: proposal.changes.map(({ path }) => path.slice(0, -3)) }
+          : { knowledgePageId: proposal.knowledgePageId }),
         contentDigest: proposal.contentDigest,
         present: true,
         notebookRevision: proposal.candidateRevision,
@@ -3977,6 +4122,7 @@ export class FsStore {
       throw knowledgeProposalAuthorityError('recovery_required');
     }
     this.assertValidKnowledgeProposal(proposal, verifiedExternalReferences);
+    if (!proposal.knowledgePageId) throw knowledgeProposalAuthorityError('invalid_request');
     return {
       contentDigest: proposal.contentDigest,
       knowledgePageId: proposal.knowledgePageId,
