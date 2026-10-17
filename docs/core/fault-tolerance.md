@@ -19,7 +19,7 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 **Report only what the evidence establishes.** A timeout, disconnect or crash establishes that a result is unavailable, not that an effect did not happen. Unknown is a valid, visible outcome. A later attempt keeps the earlier attempt's result and uncertainty.
 
-**Collect valuable information while it exists.** Harness, Sandbox and native state are temporary and may become unreadable or be deleted. OpenKit collects the information it needs to understand admitted work and its result while the work runs. It does not depend on teardown-time recovery or on native history.
+**Collect valuable information while it exists.** Harness, Sandbox and native state are temporary and may become unreadable or be deleted. OpenKit collects the information it needs to understand admitted work and its result while the work runs. It does not depend on teardown-time recovery or on native history. The decision and its reason are recorded in [Fault Tolerance And Work Collection](../decisions/20261017-fault_tolerance_and_work_collection.md).
 
 **Prefer interruption and a deliberate new attempt.** When a failure breaks an operation, OpenKit stops it with a truthful state and lets an authorized actor start a new attempt. Transparent recovery is an optional optimization; it never adds a second workflow and never guesses.
 
@@ -65,7 +65,7 @@ These are observable properties of the whole system. They add no status values.
 
 [Storage](storage.md) owns the acknowledgement point for each canonical store: an ordinary transaction, an atomic file publication with the required synchronization, or the existing append discipline. A mutation that spans files and SQLite records has one owner that states which committed state readers accept; incomplete state returns that owner's error, never a guessed repair. OpenKit uses no distributed transaction.
 
-Damaged, missing or unreadable authority-bearing storage fails closed and is preserved in place. Recovery never replaces it with a fresh empty store. Derived indexes and caches are rebuilt only from intact authority; an index never substitutes for missing canonical content. A storage failure stops the affected writes and keeps readable history readable. A backup reports the Worker volumes and external references it does not cover.
+Damaged or unreadable authority-bearing storage fails closed. Missing authority-bearing storage that a durable record expects also fails closed. Recovery preserves what remains in place and never replaces lost authority with a fresh empty store. Derived indexes and caches are rebuilt only from intact authority; an index never substitutes for missing canonical content. A storage failure stops the affected writes and keeps readable history readable. A backup reports the Worker volumes and external references it does not cover.
 
 ### Network
 
@@ -75,7 +75,7 @@ Damaged, missing or unreadable authority-bearing storage fails closed and is pre
 
 [Runtime Model](runtime-model.md) owns collection: messages, accepted instructions and decisions, meaningful tool and effect outcomes, output files and Artifacts, and errors are collected through admitted interfaces while the work runs, and stored through existing Item, Artifact, evidence and Workspace owners. Complete means the information needed to understand the admitted work and its result; it does not mean every native event, private reasoning trace or temporary file. A lossy summary does not replace content its owner requires. When required collection fails, OpenKit keeps what arrived and reports the missing part; it never claims complete capture. A scan of changing files is not a consistent snapshot. Planned disposal collects first; urgent revocation does not wait for collection.
 
-[AgentSession](agent-session.md) owns native continuity. Native resume is an optimization. A failed resume is explicit and keeps the old Thread, its history and its truthful Turn outcomes. Work continues only through a new Thread that an authorized actor starts with the old Thread as its parent, and whose context comes from authorized Core records, such as a context compact. Pending requests and their approvals stay with the old Thread and its owners; the new Thread receives no executable approval from it. OpenKit never reconstructs native continuity or presents a new conversation as resumed. Harness protocol or format drift fails at its compatibility check, and unknown required semantics fail closed under [Contract Evolution](contract-evolution.md).
+[AgentSession](agent-session.md) owns native continuity. Native resume is an optimization. A failed resume is explicit and keeps the old Thread, its history and its truthful Turn outcomes. Work continues only through a new Thread that an authorized actor starts with the old Thread as its parent, and whose context comes from authorized Core records, such as a context compact. Pending requests and their approvals stay with the old Thread and its owners; the new Thread receives no executable approval from it. OpenKit never reconstructs native continuity or presents a new conversation as resumed. The collection and continuation decision is recorded in [Fault Tolerance And Work Collection](../decisions/20261017-fault_tolerance_and_work_collection.md). Harness protocol or format drift fails at its compatibility check, and unknown required semantics fail closed under [Contract Evolution](contract-evolution.md).
 
 ### External services
 
@@ -88,7 +88,7 @@ This document adds no entity, record, status value, ledger or recovery service. 
 ## Invariants
 
 - A success MUST NOT be reported before the content it describes reaches its owner's acknowledgement point.
-- Missing, damaged or unreadable authority-bearing storage MUST fail closed and MUST NOT be replaced by an empty store.
+- An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed. Recovery MUST preserve what remains and MUST NOT replace lost authority with an empty store.
 - A timeout, disconnect, crash or interruption MUST NOT be reported as proof that an effect did or did not happen.
 - An effect with an unknown outcome MUST NOT be repeated automatically.
 - Required collection that fails MUST be reported as incomplete, never as complete success.
@@ -106,7 +106,7 @@ OpenKit does not guarantee:
 - persistence after power loss when the disk or file system does not honor synchronization requests
 - survival of accepted content after the loss of the storage medium without a usable backup; a local retained volume is not an off-host backup
 - that restore reverses external effects; restore returns only the consistency point its backup covers
-- reproducible LLM output; OpenKit records model output and does not replay it
+- reproducible LLM output from a new inference request; retained output remains available through its owner's history and replay rules
 
 Before `v0.1.0`, release resets are explicit operator actions under [Contract Evolution](contract-evolution.md), never automatic fault recovery.
 
@@ -123,4 +123,4 @@ Before `v0.1.0`, release resets are explicit operator actions under [Contract Ev
 
 ## Abstract Realization Notes
 
-Each owner realizes these rules with its existing mechanism and one focused failure regression per changed behavior. A fault matrix across every component is not required. Repeated restart, retry and failure text in other aspects should refer to this document and keep only the owner's concrete predicate.
+Each owner realizes these rules with its existing mechanism. A fault matrix across every component is not required. Repeated restart, retry and failure text in other aspects should refer to this document and keep only the owner's concrete predicate.
