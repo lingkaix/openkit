@@ -691,10 +691,7 @@ fn execute_effect_command(
             )
         }
         RuntimeEffectKind::ImportReference => {
-            // The session owner has already verified `content-length` and the
-            // `x-openkit-request-id`, `x-openkit-slot`,
-            // `x-openkit-relative-path`, `x-openkit-sha256`, and
-            // `x-openkit-byte-length` headers before exposing these bytes.
+            // The session owner verifies `content-length`, `x-openkit-request-id`, `x-openkit-relative-path`, `x-openkit-entry-kind`, file-only metadata, and the complete body before exposing this entry to the Sandbox helper.
             let file_data = command
                 .file_data
                 .as_ref()
@@ -703,9 +700,7 @@ fn execute_effect_command(
                 &command.request_id,
                 &file_data.slot,
                 &file_data.relative_path,
-                &file_data.sha256,
-                file_data.byte_length,
-                &file_data.file,
+                &file_data.entry,
             )?;
             let result: Result<serde_json::Value, &'static str> = Ok(serde_json::json!({
                 "byteLength": carriage.byte_length(),

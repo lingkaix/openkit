@@ -1,13 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  constants,
-  copyFileSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import {
   parseWorkspaceDataSourceCatalog,
@@ -33,7 +25,13 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
+import {
+  assertWorkspaceDeletionRecoveryExportAuthority,
+  type WorkspaceDeletionRecoveryExportContext,
+} from '../workspace-deletion-request.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
+import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
   RECURRING_PORTABLE_FEATURE,
   RECURRING_PORTABLE_PATHS,
@@ -60,6 +58,7 @@ import {
   readCanonicalTextFile,
   turnFilePayloadPath,
   verifyTurnFileInputs,
+  writeFileAtomic,
 } from './workspace-file-records.js';
 import {
   parseWorkspaceRetrievalTraceFile,
@@ -168,7 +167,7 @@ export interface VerifiedWorkspaceExportTree {
   fileContents: ReadonlyMap<string, string>;
   /** Exact restricted original bytes, kept separate from canonical UTF-8 records. */
   binaryFileContents: ReadonlyMap<string, Uint8Array>;
-  /** Verified original payload paths for Artifacts and Turn inputs; never loaded into UTF-8 or binary body maps. */
+  /** Verified original payload paths for Artifacts, Turn inputs and Context Packages; never loaded into UTF-8 or binary body maps. */
   artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Digest of the exact manifest bytes parsed by this verification. */
   manifestDigest: string;
@@ -180,6 +179,8 @@ export interface WriteWorkspaceExportTreeInput {
   sourceWorkspaceRoot?: string;
   /** Trusted current administrator eligibility for including private project history; never caller input. */
   administratorEligible?: boolean;
+  /** Exact internal deletion owner, revalidated before preserving private history. */
+  deletionRecoveryContext?: WorkspaceDeletionRecoveryExportContext;
   /** Export root directory to populate. */
   exportRoot: string;
   /** Stable export record id. */
@@ -343,6 +344,18 @@ export interface WorkspaceImportDryRunReport {
 export function writeWorkspaceExportTree(
   input: WriteWorkspaceExportTreeInput
 ): VerifiedWorkspaceExportTree {
+  let deletionRecoveryAuthorized = false;
+  if (input.deletionRecoveryContext) {
+    if (
+      input.deletionRecoveryContext.workspaceId !== input.workspace.id ||
+      input.deletionRecoveryContext.exportId !== input.exportId
+    ) {
+      throw new Error('Workspace deletion recovery export target is inconsistent.');
+    }
+    deletionRecoveryAuthorized = assertWorkspaceDeletionRecoveryExportAuthority(
+      input.deletionRecoveryContext
+    );
+  }
   const history = parseCanonicalWorkspaceHistory({
     workspace: input.workspace,
     threads: input.threads,
@@ -355,6 +368,7 @@ export function writeWorkspaceExportTree(
   });
   if (
     !input.administratorEligible &&
+    !deletionRecoveryAuthorized &&
     history.threads.some((thread) => thread.visibility === 'private')
   ) {
     throw new Error('Private Thread history requires a separately authorized export.');
@@ -448,10 +462,10 @@ export function writeWorkspaceExportTree(
       for (const ordinal of turn.fileInputs.keys()) {
         const target = turnFilePayloadPath(input.exportRoot, turn.threadId, turn.id, ordinal);
         mkdirSync(dirname(target), { recursive: true });
-        copyFileSync(
+        copyPortableOriginal(
           turnFilePayloadPath(input.sourceWorkspaceRoot, turn.threadId, turn.id, ordinal),
           target,
-          constants.COPYFILE_EXCL
+          turn.fileInputs[ordinal]!.sizeBytes
         );
       }
     }
@@ -484,7 +498,7 @@ export function writeWorkspaceExportTree(
         'observations.jsonl'
       );
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, rows.length ? text.slice(0, text.lastIndexOf('\n') + 1) : '');
+      writeFileAtomic(path, rows.length ? text.slice(0, text.lastIndexOf('\n') + 1) : '');
     }
     writeJsonl(join(recordsRoot, 'knowledge.jsonl'), knowledge);
     writeJsonl(join(recordsRoot, 'item-revisions.jsonl'), history.itemRevisions, true);
@@ -505,6 +519,28 @@ export function writeWorkspaceExportTree(
       history.turnEvents.flatMap(([, events]) => events)
     );
     writeWorkspacePortableExportState(input.exportRoot, portableFileState);
+    for (const [path, text] of portableFileState?.workerContextPackageFiles ?? []) {
+      if (!path.endsWith('/context-package/package.json')) continue;
+      const manifest = WorkerContextPackageManifestSchema.parse(JSON.parse(text));
+      const packageRoot = path.slice(0, -'/package.json'.length);
+      for (const original of manifest.sourceFiles ?? []) {
+        if (!input.sourceWorkspaceRoot)
+          throw new Error('Context Package original source is unavailable.');
+        const relativePath = `${packageRoot}/${original.originalSnapshotPath}`;
+        assertWorkspaceArchiveFilePath(relativePath);
+        const sourcePath = join(input.sourceWorkspaceRoot, relativePath);
+        const measured = measureCanonicalFile(sourcePath);
+        if (
+          measured.byteLength !== original.byteLength ||
+          measured.contentDigest !== original.originalDigest
+        )
+          throw new Error('Context Package original source integrity is inconsistent.');
+        const target = join(input.exportRoot, 'workspace-files', relativePath);
+        mkdirSync(dirname(target), { recursive: true });
+        copyPortableOriginal(sourcePath, target, original.byteLength);
+      }
+    }
+
     for (const artifact of history.artifacts) {
       const artifactRoot = join(input.exportRoot, 'artifacts', artifact.id);
       if (artifact.content.format === 'file') {
@@ -518,10 +554,10 @@ export function writeWorkspaceExportTree(
         });
         const target = artifactFilePayloadPath(input.exportRoot, artifact.id, artifact.version);
         mkdirSync(dirname(target), { recursive: true });
-        copyFileSync(
+        copyPortableOriginal(
           artifactFilePayloadPath(input.sourceWorkspaceRoot, artifact.id, artifact.version),
           target,
-          constants.COPYFILE_EXCL
+          artifact.content.byteLength
         );
         writeJson(join(artifactRoot, 'artifact.json'), artifact);
         continue;
@@ -533,7 +569,7 @@ export function writeWorkspaceExportTree(
         ...artifact,
         content: { format: artifact.content.format },
       });
-      writeFileSync(
+      writeFileAtomic(
         join(filesRoot, artifactContentFileName(artifact.content.format)),
         artifact.content.body
       );
@@ -561,7 +597,7 @@ export function writeWorkspaceExportTree(
         }
 
         mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, material.content);
+        writeFileAtomic(path, material.content);
         const derivedPath = join(
           input.exportRoot,
           'sources',
@@ -617,7 +653,7 @@ export function writeWorkspaceExportTree(
       }
       const target = join(input.exportRoot, 'workspace-files', 'evidence', 'backend', path);
       mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, bytes);
+      writeFileAtomic(target, bytes);
     }
     if (input.runtimeEvidence?.length) {
       writeJsonl(join(recordsRoot, 'runtime-evidence.jsonl'), input.runtimeEvidence);
@@ -647,7 +683,7 @@ export function writeWorkspaceExportTree(
         'runtime-origin-index.jsonl'
       );
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, text);
+      writeFileAtomic(path, text);
     }
     if (input.usageRecords?.length) {
       writeJsonl(join(recordsRoot, 'usage-records.jsonl'), input.usageRecords);
@@ -1012,6 +1048,9 @@ export function verifyWorkspaceExportTree(
   for (const entry of manifest.contentInventory) {
     if (
       /^artifacts\/[^/]+\/versions\/[1-9][0-9]*\/payload$/.test(entry.path) ||
+      /^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\/.+/.test(
+        entry.path
+      ) ||
       /^threads\/[^/]+\/turns\/[^/]+\/inputs\/(0|[1-9][0-9]*)\/payload$/.test(entry.path)
     ) {
       const path = join(input.exportRoot, entry.path);
@@ -1091,6 +1130,23 @@ export function verifyWorkspaceExportTree(
     artifactPayloadFiles,
     manifestDigest: digestText(manifestText),
   };
+}
+
+/** Copies an original only into this export's unpublished tree, retaining admission if cleanup fails. */
+function copyPortableOriginal(source: string, target: string, byteLength: number): void {
+  const reservation = reserveCanonicalFileWrite(byteLength);
+  let release = false;
+  try {
+    copyFileSync(source, target, constants.COPYFILE_EXCL);
+    reservation?.recordWritten(byteLength);
+    release = true;
+  } catch (error) {
+    rmSync(target, { force: true });
+    release = true;
+    throw error;
+  } finally {
+    if (release) reservation?.release();
+  }
 }
 
 /** Validates every query-owned trace path against the exported canonical Thread and Turn graph. */
@@ -1209,7 +1265,7 @@ function listRegularExportFiles(root: string, directory: string = root): string[
 
 /** Writes one JSON file with a trailing newline. */
 function writeJson(path: string, value: unknown): void {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 /**
@@ -1232,7 +1288,7 @@ function writeJsonl(path: string, records: readonly unknown[], preserveOrder = f
     ? records
     : [...records].sort((left, right) => recordSortKey(left).localeCompare(recordSortKey(right)));
   const lines = ordered.map((record) => JSON.stringify(record));
-  writeFileSync(path, lines.length > 0 ? `${lines.join('\n')}\n` : '');
+  writeFileAtomic(path, lines.length > 0 ? `${lines.join('\n')}\n` : '');
 }
 
 /** Returns a stable-enough sort key for exported JSONL records. */

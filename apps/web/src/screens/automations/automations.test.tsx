@@ -80,7 +80,7 @@ function fixture(overrides: Partial<CoreClient['operations']> = {}, initial = [o
     'workspace.list': vi.fn<CoreClient['operations']['workspace.list']>().mockResolvedValue({
       items: [workspace, { ...workspace, id: 'ws2', name: 'Other' }].map((record) => ({
         workspace: record,
-        effectiveRole: 'owner',
+        isOwner: true,
         membershipStatus: 'active',
         accessCause: 'membership',
         membershipRevision: 1,

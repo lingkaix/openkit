@@ -136,7 +136,7 @@ empty_context_path='image-smoke/context/openkit-file-effect-smoke-empty'
 empty_context_digest='sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 mkdir -p /openkit/sessions/image-smoke/context
 trap 'rm -rf /openkit/sessions/image-smoke' EXIT
-test "$(printf '' | openkit-file-effect reference.import --slot context --path "${empty_context_path}" --length 0 --sha256 "${empty_context_digest}")" = "${empty_context_digest} 0"
+test "$(printf '' | openkit-file-effect reference.import --slot context --path "${empty_context_path}" --length 0 --sha256 "${empty_context_digest}" --entry-kind file --executable false)" = "${empty_context_digest} 0"
 test -f "/openkit/sessions/${empty_context_path}"
 test "$(stat -c '%a' "/openkit/sessions/${empty_context_path}")" = '600'
 test ! -s "/openkit/sessions/${empty_context_path}"

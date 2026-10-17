@@ -40,7 +40,8 @@
       "type": "string",
       "enum": [
         "conversation",
-        "administration"
+        "administration",
+        "knowledge-manager"
       ]
     },
     "threadSource": {

@@ -30,6 +30,7 @@ import {
   useWorkspaces,
 } from './data';
 import { LightAppDefinitions } from './LightAppDefinitions';
+import { SharedMcpPanel } from './SharedMcpPanel';
 import { SkillHistory } from './SkillHistory';
 
 /**
@@ -752,6 +753,8 @@ export function CatalogScreen() {
               ) : null}
             </div>
           </Card>
+
+          <SharedMcpPanel key={workspaceId} workspaceId={workspaceId} blocked={writeBlocked} />
 
           <Card>
             <h2 className="text-sm font-bold text-fg">Agent Plugins</h2>

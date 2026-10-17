@@ -1,5 +1,4 @@
 import type {
-  KnowledgeManagerAnswerResponse,
   KnowledgeManagerCallerSchema,
   KnowledgeManagerDraftProposalResponse,
   KnowledgeManagerHealthCheckResponse,
@@ -10,34 +9,13 @@ import type { KnowledgeEntrySchema, RetrievalTraceReference } from '@openkit/pro
 import { allocateEntityId } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { KnowledgeProposalRecord } from './lib/store.js';
-import { analyzeKnowledgePage } from './retrieval-knowledge-adapter.js';
-import type { RetrievalAnalysis } from './retrieval-service.js';
 import {
   type KnowledgeRetrievalAccess,
-  resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 
 /** Workspace Knowledge Page projection consumed by request-scoped Knowledge operations. */
 export type WorkspaceKnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
-
-/** Input for one deterministic Knowledge Manager answer operation. */
-export interface AnswerKnowledgeManagerInput {
-  /** File-backed NanoCore data root that owns the governed retrieval trace. */
-  dataRoot: string;
-  /** Operation id assigned by NanoCore. */
-  operationId: string;
-  /** Workspace that owns the query. */
-  workspaceId: string;
-  /** Caller that requested the answer. */
-  caller: 'assistant' | 'app-api';
-  /** Current trusted actor, source, and output-audience authority. */
-  access: KnowledgeRetrievalAccess;
-  /** User or coordinator query. */
-  query: string;
-  /** Maximum number of selected Knowledge Pages. */
-  limit?: number | undefined;
-}
 
 /** Input for one deterministic Knowledge Manager context-material operation. */
 export interface PrepareKnowledgeContextInput {
@@ -117,118 +95,6 @@ export interface CheckKnowledgeHealthInput {
   entries: readonly WorkspaceKnowledgeEntry[];
   /** Maximum number of repair suggestions to include. */
   limit: number;
-}
-
-/**
- * Answers one bounded knowledge question from workspace knowledge entries.
- *
- * @param input Answer operation input.
- * @returns Source-traceable answer or an insufficient-evidence response.
- */
-export async function answerKnowledgeManager(
-  input: AnswerKnowledgeManagerInput
-): Promise<KnowledgeManagerAnswerResponse> {
-  const retrieval = await retrieveWorkspaceKnowledge({
-    access: input.access,
-    dataRoot: input.dataRoot,
-    workspaceId: input.workspaceId,
-    caller: input.caller,
-    query: input.query,
-    limit: input.limit ?? 5,
-    pinnedReferences: [],
-    traceId: allocateEntityId('krt'),
-  });
-  const pages = resolveWorkspaceKnowledgeRetrievalPages({
-    access: input.access,
-    caller: input.caller,
-    dataRoot: input.dataRoot,
-    selection: retrieval,
-    workspaceId: input.workspaceId,
-  });
-  if (!pages) {
-    throw new Error('Knowledge retrieval selected an unavailable page.');
-  }
-  const analyzedPages = await Promise.all(
-    pages.map(async (page) => ({
-      id: page.knowledgePageId,
-      reference: page.reference,
-      content: page.body,
-      kind: page.kind,
-      sourceReferences: page.sourceRefs,
-      title: page.title,
-      analysis: await analyzeKnowledgePage({
-        body: page.body,
-        content: page.content,
-        dataRoot: input.dataRoot,
-        query: input.query,
-        title: page.title,
-        workspaceId: input.workspaceId,
-      }),
-    }))
-  );
-  const pagesAfterAnalysis = resolveWorkspaceKnowledgeRetrievalPages({
-    access: input.access,
-    caller: input.caller,
-    dataRoot: input.dataRoot,
-    selection: retrieval,
-    workspaceId: input.workspaceId,
-  });
-  if (
-    !pagesAfterAnalysis ||
-    pagesAfterAnalysis.length !== analyzedPages.length ||
-    pagesAfterAnalysis.some((page, index) => {
-      const analyzed = analyzedPages[index];
-      return (
-        !analyzed ||
-        analyzed.id !== page.knowledgePageId ||
-        analyzed.content !== page.body ||
-        analyzed.title !== page.title
-      );
-    })
-  ) {
-    throw new Error('Knowledge retrieval authority changed during answer analysis.');
-  }
-  const matches = analyzedPages.filter((page) => knowledgeAnswerCoversAnalysis(page.analysis));
-
-  if (matches.length === 0) {
-    return {
-      operationId: input.operationId,
-      operation: 'answer',
-      workspaceId: input.workspaceId,
-      caller: input.caller,
-      ...(retrieval.retrievalTraceRef ? { retrievalTraceRef: retrieval.retrievalTraceRef } : {}),
-      query: input.query,
-      outcome: 'insufficient-evidence',
-      answer: 'I do not have enough source-traceable workspace knowledge to answer that.',
-      citations: [],
-      confidence: 0,
-      uncertainty:
-        pages.length === 0
-          ? 'No matching workspace knowledge entries were found.'
-          : 'Retrieved workspace knowledge does not sufficiently cover the query.',
-    };
-  }
-
-  const citations = matches.map((entry) => ({
-    reference: entry.reference,
-    kind: entry.kind,
-    title: entry.title,
-    excerpt: excerpt(entry.content),
-  }));
-
-  return {
-    operationId: input.operationId,
-    operation: 'answer',
-    workspaceId: input.workspaceId,
-    caller: input.caller,
-    ...(retrieval.retrievalTraceRef ? { retrievalTraceRef: retrieval.retrievalTraceRef } : {}),
-    query: input.query,
-    outcome: 'answered',
-    answer: matches[0]?.content ?? citations[0]?.excerpt ?? 'Knowledge matched the query.',
-    citations,
-    confidence: Math.min(0.9, 0.55 + citations.length * 0.1),
-    uncertainty: null,
-  };
 }
 
 /**
@@ -397,42 +263,6 @@ export function checkKnowledgeHealth(
     ],
     repairSuggestions: repairReport.suggestions,
   };
-}
-
-/**
- * Returns whether kernel term evidence is sufficient for one selected page to answer.
- *
- * @param analysis Terms produced by the kernel's selected analyzer for the query, title, and body.
- * @returns True when two distinct query terms appear on the page, or a one-term query matches its title.
- */
-function knowledgeAnswerCoversAnalysis(analysis: RetrievalAnalysis): boolean {
-  const queryTerms = new Set(analysis.query_terms);
-  if (queryTerms.size === 0) {
-    return false;
-  }
-  const titleTerms = new Set(analysis.title_terms);
-  if (queryTerms.size === 1) {
-    return [...queryTerms].every((term) => titleTerms.has(term));
-  }
-  const pageTerms = new Set([...titleTerms, ...analysis.body_terms]);
-  let covered = 0;
-  for (const term of queryTerms) {
-    if (pageTerms.has(term)) {
-      covered += 1;
-    }
-  }
-  return covered >= 2;
-}
-
-/**
- * Builds a compact citation excerpt.
- *
- * @param content Knowledge entry body.
- * @returns Single-line citation excerpt.
- */
-function excerpt(content: string): string {
-  const normalized = content.replace(/\s+/g, ' ').trim();
-  return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
 }
 
 /**

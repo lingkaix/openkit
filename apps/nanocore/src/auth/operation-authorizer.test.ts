@@ -20,6 +20,7 @@ import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -100,12 +101,12 @@ function createFixture() {
   coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
-        workspace_id, user_id, status, access_level, invitation_id,
+        workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
       ) VALUES
-        (?, 'usr_00000000-0000-7171-af76-f9d024000442', 'removed', 'viewer', NULL, ?, ?, 2, ?, ?),
-        (?, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
-        (?, 'usr_00000000-0000-7e63-b85a-c188de8ee1c3', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        (?, 'usr_00000000-0000-7171-af76-f9d024000442', 'removed', NULL, ?, ?, 2, ?, ?),
+        (?, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'active', NULL, ?, NULL, 1, ?, ?),
+        (?, 'usr_00000000-0000-7e63-b85a-c188de8ee1c3', 'active', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(
       workspace.id,
@@ -156,6 +157,7 @@ function createFixture() {
 
   registerOperationJsonRoutes({
     app,
+    fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n),
     coreDb,
     store,
     automationStore,
@@ -269,7 +271,7 @@ describe('central Workspace operation authorizer', () => {
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
       effectAuthority: true,
-      expectedRole: 'owner',
+      expectedAuthority: 'member',
       name: 'active human owner',
       operation: 'runtime.launch',
     },
@@ -280,63 +282,63 @@ describe('central Workspace operation authorizer', () => {
         responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       } as const,
       effectAuthority: true,
-      expectedRole: 'owner',
+      expectedAuthority: 'member',
       name: 'responsible non-human actor',
       operation: 'runtime.launch',
     },
     {
       actor: { kind: 'system', id: 'system_worker', responsibleUserId: null } as const,
       effectAuthority: true,
-      expectedRole: null,
+      expectedAuthority: null,
       name: 'actor without a responsible user',
       operation: 'runtime.launch',
     },
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7241-80d8-0d46cb74b40d' } as const,
       effectAuthority: true,
-      expectedRole: null,
+      expectedAuthority: null,
       name: 'missing membership',
       operation: 'runtime.launch',
     },
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7171-af76-f9d024000442' } as const,
       effectAuthority: true,
-      expectedRole: null,
+      expectedAuthority: null,
       name: 'removed membership',
       operation: 'runtime.launch',
     },
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7e63-b85a-c188de8ee1c3' } as const,
       effectAuthority: true,
-      expectedRole: null,
+      expectedAuthority: null,
       name: 'disabled responsible user',
       operation: 'runtime.launch',
     },
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8' } as const,
       effectAuthority: true,
-      expectedRole: null,
-      name: 'insufficient fixed role',
+      expectedAuthority: 'member',
+      name: 'active non-owner member',
       operation: 'runtime.launch',
     },
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
       effectAuthority: true,
-      expectedRole: null,
+      expectedAuthority: null,
       name: 'unknown policy operation',
       operation: 'runtime.unregistered',
     },
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
       effectAuthority: false,
-      expectedRole: null,
+      expectedAuthority: null,
       name: 'missing effect authority',
       operation: 'runtime.launch',
     },
   ])('composes current authority for $name', ({
     actor,
     effectAuthority,
-    expectedRole,
+    expectedAuthority,
     operation,
   }) => {
     expect(
@@ -347,7 +349,7 @@ describe('central Workspace operation authorizer', () => {
         operation,
         effectAuthority
       )
-    ).toBe(expectedRole);
+    ).toBe(expectedAuthority);
   });
 
   it('binds a presented admin bearer to its active human owner without member fallback', () => {
@@ -374,7 +376,7 @@ describe('central Workspace operation authorizer', () => {
         requestActor
       );
     expect(authority({ kind: 'user', id: 'usr_00000000-0000-7241-80d8-0d46cb74b40d' })).toBe(
-      'owner'
+      'administrator'
     );
     expect(authority({ kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' })).toBeNull();
     expect(
@@ -433,7 +435,7 @@ describe('central Workspace operation authorizer', () => {
     };
     expect(
       currentSchedulerAdmissionWorkspaceAuthority(fixture.coreDb, admission, 'runtime.launch', true)
-    ).toBe('owner');
+    ).toBe('administrator');
     expect(
       currentSchedulerAdmissionWorkspaceAuthority(
         fixture.coreDb,
@@ -457,7 +459,7 @@ describe('central Workspace operation authorizer', () => {
         'runtime.launch',
         true
       )
-    ).toBe('owner');
+    ).toBe('member');
     fixture.coreDb.sqlite
       .prepare(
         "UPDATE openkit_access_tokens SET status = 'active', revoked_at = NULL, scope = 'workspace' WHERE token_id = ?"
@@ -554,7 +556,7 @@ describe('central Workspace operation authorizer', () => {
     };
     expect(
       currentScheduledTurnWorkspaceAuthority(fixture.coreDb, turnLineage, 'tool.use', true)
-    ).toBe('owner');
+    ).toBe('administrator');
     expect(
       currentScheduledTurnWorkspaceAuthority(
         fixture.coreDb,
@@ -584,7 +586,7 @@ describe('central Workspace operation authorizer', () => {
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7241-80d8-0d46cb74b40d' } as const,
     };
     expect(currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true)).toBe(
-      'owner'
+      'administrator'
     );
     expect(
       currentWorkerLineageWorkspaceAuthority(
@@ -721,7 +723,7 @@ describe('central Workspace operation authorizer', () => {
     await expect(unattributed.json()).resolves.toBeNull();
     expect(attributed.status).toBe(200);
     await expect(attributed.json()).resolves.toEqual({
-      effectiveRole: 'owner',
+      isOwner: true,
       kind: 'workspace',
       policyOperation: 'llm.gateway.use',
       workspaceId: fixture.workspace.id,
@@ -736,7 +738,7 @@ describe('central Workspace operation authorizer', () => {
     });
     expect(adminAttributed.status).toBe(200);
     await expect(adminAttributed.json()).resolves.toEqual({
-      effectiveRole: 'owner',
+      isOwner: true,
       kind: 'workspace',
       policyOperation: 'llm.gateway.use',
       workspaceId: fixture.workspace.id,
@@ -920,7 +922,7 @@ describe('central Workspace operation authorizer', () => {
     await expect(mutation.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
   });
 
-  it('lets usable server-admin bearer tokens act as Workspace owner authority', async () => {
+  it('lets usable server-admin bearer tokens receive Workspace administrator eligibility', async () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -946,7 +948,7 @@ describe('central Workspace operation authorizer', () => {
     });
   });
 
-  it('grants usable server-admin bearer tokens owner access without membership and lists all active Workspaces', async () => {
+  it('grants usable server-admin bearer tokens administrator eligibility without membership and lists all active Workspaces', async () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
@@ -1076,7 +1078,7 @@ describe('central Workspace operation authorizer', () => {
     expect(afterRevocation.status).toBe(403);
   });
 
-  it('requires a presented admin Token to remain usable and grants owner without membership', async () => {
+  it('requires a presented admin Token to remain usable and grants administrator eligibility without membership', async () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1265,9 +1267,9 @@ describe('central Workspace operation authorizer', () => {
     fixture.coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, 'usr_00000000-0000-7241-80d8-0d46cb74b40d', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+        ) VALUES (?, 'usr_00000000-0000-7241-80d8-0d46cb74b40d', 'removed', NULL, ?, ?, 2, ?, ?)`
       )
       .run(actorQuickChatId, now, now, now, now);
     presentServerAdmin('usr_00000000-0000-7241-80d8-0d46cb74b40d', 'token_admin_removed_qc');
@@ -1369,6 +1371,7 @@ describe('central Workspace operation authorizer', () => {
     const record = createWorkspaceDeletionRequest(fixture.dataRoot, {
       workspaceId: fixture.workspace.id,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       expectedRegistryRevision: 2,
       confirmation: `permanently-delete-workspace:${fixture.workspace.id}:2`,
       requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
@@ -1394,6 +1397,7 @@ describe('central Workspace operation authorizer', () => {
     const record = createWorkspaceDeletionRequest(fixture.dataRoot, {
       workspaceId: fixture.workspace.id,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       expectedRegistryRevision: 2,
       confirmation: `permanently-delete-workspace:${fixture.workspace.id}:2`,
       requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',

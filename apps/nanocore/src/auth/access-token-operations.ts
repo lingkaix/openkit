@@ -4,7 +4,7 @@ import type { CoreMode } from '../config/mode.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
-import { resolveWorkspaceRole } from '../workspace-membership.js';
+import { resolveWorkspaceMembershipRelation } from '../workspace-membership.js';
 import { AccessTokenScopeError } from './access-token.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -154,7 +154,9 @@ export function createAccessTokenOperationImplementations({
         );
       if (
         input.scope !== 'server-admin' &&
-        input.workspaceIds.some((id) => resolveWorkspaceRole(db, id, ownerUserId) === null)
+        input.workspaceIds.some(
+          (id) => resolveWorkspaceMembershipRelation(db, id, ownerUserId) === null
+        )
       )
         throw new OperationError(
           'core.auth.scope_forbidden',

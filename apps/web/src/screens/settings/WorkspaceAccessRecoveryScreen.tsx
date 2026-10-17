@@ -43,8 +43,9 @@ export function WorkspaceAccessRecoveryScreen() {
             ...operation.request,
           })
         : await client.operations['workspace.access-recovery-read']({ workspaceId: target });
-      const { workspaceId, ownerUserId, administratorRole, registryRevision } = response.recovery;
-      return { workspaceId, ownerUserId, administratorRole, registryRevision };
+      const { workspaceId, ownerUserId, administratorMembershipStatus, registryRevision } =
+        response.recovery;
+      return { workspaceId, ownerUserId, administratorMembershipStatus, registryRevision };
     },
     retry: false,
   });
@@ -152,15 +153,15 @@ export function WorkspaceAccessRecoveryScreen() {
                 <dt>Owner user ID</dt>
                 <dd>{summary.ownerUserId}</dd>
                 <dt>Administrator role</dt>
-                <dd>{summary.administratorRole ?? 'No active membership'}</dd>
+                <dd>{summary.administratorMembershipStatus ?? 'No active membership'}</dd>
                 <dt>Registry revision</dt>
                 <dd>{summary.registryRevision}</dd>
               </dl>
             </Card>
           ) : null}
           <Card className="flex flex-col gap-4">
-            <Button isDisabled={!canRecover} onPress={() => recover('add-self-as-editor')}>
-              Add myself as editor
+            <Button isDisabled={!canRecover} onPress={() => recover('add-self-as-member')}>
+              Add myself as member
             </Button>
             <TextField
               label="Confirm workspace ID"

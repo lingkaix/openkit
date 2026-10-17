@@ -16,6 +16,8 @@ export interface RecurringScheduleServiceInput {
   readonly store: FsStore;
   /** Resolve or revalidate exact selections; never launch workers, call providers or mutate repositories. */
   readonly prepare: (occurrence: RecurringOccurrence) => Promise<RecurringPreparation>;
+  /** Finite local KM admission after Worker candidates; detach Provider execution and retain visible outcomes through its Turn owner. */
+  readonly prepareKnowledgeMaintenance?: (instant: string) => void | Promise<void>;
   readonly now?: () => string;
   readonly onError?: (error: unknown) => void;
   readonly setInterval?: (callback: () => void, intervalMs: number) => unknown;
@@ -109,6 +111,7 @@ export function startRecurringScheduleService(
         release();
       }
     }
+    if (!stopped) await input.prepareKnowledgeMaintenance?.(now());
   };
   const runOnce = (): Promise<void> => {
     if (stopped) return Promise.resolve();

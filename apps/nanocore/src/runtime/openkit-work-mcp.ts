@@ -1,6 +1,12 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
-import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
+import {
+  KNOWLEDGE_OPERATION_DEFINITIONS,
+  KnowledgeAskRequestSchema,
+  KnowledgeTellRequestSchema,
+  ListThreadItemsResponseSchema,
+  operationToolName,
+} from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   ArtifactMediaTypeSchema,
@@ -17,13 +23,26 @@ import { z } from 'zod';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
+import { searchPdfSourceSnapshot } from '../context/pdf-source-representation.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from '../context/worker-context-package.js';
+import {
+  readWorkerSourceSnapshot,
+  resolveCurrentWorkerSource,
+  type WorkerSourceReadResult,
+} from '../context/worker-source-read.js';
+import { viewWorkerSourceSnapshot } from '../context/worker-source-vision.js';
+import { uuidv5 } from '../generative-kernel/uuid.js';
+import type {
+  NotebookPublicationAdmission,
+  NotebookUpdate,
+} from '../knowledge/notebook-publication.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
   type FsStore,
 } from '../lib/store.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
 import {
@@ -94,7 +113,53 @@ const WorkSubmitArtifactArgsSchema = z
   })
   .strip();
 
+const WorkReadSourceArgsSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    mode: z.enum(['preview', 'read']).default('preview'),
+    cursor: z
+      .object({
+        version: z.literal(1),
+        mode: z.literal('read'),
+        binding: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        range: z
+          .object({
+            start: z.number().int().nonnegative().safe(),
+            end: z.number().int().nonnegative().safe(),
+          })
+          .strip(),
+      })
+      .strip()
+      .optional(),
+  })
+  .strip()
+  .refine((args) => !args.cursor || args.mode === 'read');
+
+const WorkSearchSourceArgsSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    mode: z.enum(['lexical', 'exact', 'regex']).default('lexical'),
+    query: z.string().min(1).max(4096),
+    limit: z.number().int().min(1).max(20).default(10),
+  })
+  .strip();
+
 const WorkListPeersArgsSchema = z.object({}).strip();
+const WorkViewSourceArgsSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    page: z.number().int().positive().safe().optional(),
+    crop: z
+      .object({
+        left: z.number().int().nonnegative().safe(),
+        top: z.number().int().nonnegative().safe(),
+        width: z.number().int().positive().safe(),
+        height: z.number().int().positive().safe(),
+      })
+      .strip()
+      .optional(),
+  })
+  .strip();
 const WorkReadPeerArgsSchema = z
   .object({
     handle: z.string().min(1),
@@ -122,6 +187,15 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
 
 /** Fixed built-in work tools; their schemas ignore inert additive input members. */
 export const OPENKIT_WORK_TOOLS = [
+  ...(['knowledge.ask', 'knowledge.tell'] as const).map((id) => ({
+    name: operationToolName(id),
+    description: KNOWLEDGE_OPERATION_DEFINITIONS[id].description,
+    inputSchema: mcpInputSchema(
+      id === 'knowledge.ask'
+        ? KnowledgeAskRequestSchema.omit({ workspaceId: true })
+        : KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true })
+    ),
+  })),
   {
     name: 'work_request_input',
     description:
@@ -139,6 +213,24 @@ export const OPENKIT_WORK_TOOLS = [
     description:
       'Read recent product Turns and Items for one current peer. Results are newest first; use nextCursor for older records. This does not control or change the peer.',
     inputSchema: mcpInputSchema(WorkReadPeerArgsSchema),
+  },
+  {
+    name: 'work_read_source',
+    description:
+      'Preview or read one selected source or Knowledge page from this Turn Context Package. Use its exact sourceFiles or knowledgeSelections packagePath as path. Knowledge reads stay pinned to the selected Notebook commit and current source access. Preview is at most 2048 UTF-8 bytes or 50 lines; read is at most 51200 bytes or 2000 lines, also bounded by the complete result envelope. Continue with mode read and the returned cursor. EOF describes the named representation only; PDF coverage may be incomplete. No host path or unselected source is accepted.',
+    inputSchema: mcpInputSchema(WorkReadSourceArgsSchema),
+  },
+  {
+    name: 'work_search_source',
+    description:
+      'Search one retained PDF text representation selected by its exact source inventory packagePath. Use lexical, exact or line-bounded regex mode. At most 20 bounded snippets return original identity, representation digest, processor and page coordinates. Partial text-layer coverage cannot prove absence in images or unprocessed pages. No unselected source or host path is accepted.',
+    inputSchema: mcpInputSchema(WorkSearchSourceArgsSchema),
+  },
+  {
+    name: 'work_view_source',
+    description:
+      'View one selected PNG/JPEG image or one explicitly selected PDF page as a bounded JPEG. Use the exact source inventory packagePath. PDF requires a one-based page; image inputs must omit page. Optional crop uses integer original-image pixels or rotated selected-page raster pixels at 72 dpi. Result text identifies the original, page, crop, processor and delivered JPEG digest; the image is a standard MCP image block. Current access is checked again before disclosure. No host path, URL or unselected source is accepted.',
+    inputSchema: mcpInputSchema(WorkViewSourceArgsSchema),
   },
   {
     name: 'work_submit_artifact',
@@ -193,6 +285,11 @@ export async function dispatchOpenkitWorkTool(
     readonly fileAdmission?: FileStorageAdmission;
     readonly signal?: AbortSignal;
     readonly requireAdmission?: () => void;
+    readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
+    readonly knowledgeCallId?: string;
+    readonly knowledgePublicationAdmission?: (
+      request: NotebookUpdate
+    ) => NotebookPublicationAdmission;
   },
   toolName: string,
   args: Record<string, unknown>
@@ -207,6 +304,81 @@ export async function dispatchOpenkitWorkTool(
     turn.status !== 'running'
   ) {
     throw new WorkerControlGatewayError('turn_not_active', 'The Turn is not running.', 409);
+  }
+  if (toolName === 'work_read_source') return readSource(input, args);
+  if (toolName === 'work_search_source') return searchSource(input, args);
+  if (toolName === 'work_view_source') return viewSource(input, args);
+  if (
+    toolName === operationToolName('knowledge.ask') ||
+    toolName === operationToolName('knowledge.tell')
+  ) {
+    input.requireAdmission?.();
+    if (!input.knowledgeAgent || !input.knowledgeCallId)
+      throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
+    const admission = findSchedulerAdmissionForWorkerLineage(input.coreDb, {
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      agentSessionId: scope.agentSessionId,
+      packageSnapshotId: input.environmentPackage.snapshotId,
+    });
+    // Reuse the admitted real bearer lineage; Workspace authority alone cannot grant Server access.
+    const serverKnowledgeActor =
+      admission?.serverAdminTokenId && admission.triggerActor.kind === 'user'
+        ? {
+            kind: 'token' as const,
+            userId: admission.triggerActor.id,
+            tokenId: admission.serverAdminTokenId,
+            tokenScope: 'server-admin' as const,
+          }
+        : undefined;
+    const signal = input.signal ?? new AbortController().signal;
+    const result =
+      toolName === operationToolName('knowledge.ask')
+        ? await input.knowledgeAgent.ask({
+            ...KnowledgeAskRequestSchema.omit({ workspaceId: true }).parse(args),
+            workspaceId: scope.workspaceId,
+            caller: 'worker',
+            capabilityCallId: input.knowledgeCallId,
+            access: {
+              store: input.store,
+              coreDb: input.coreDb,
+              actor: scope.triggerActor,
+              ...(serverKnowledgeActor
+                ? { serverKnowledgeActor, requestActor: serverKnowledgeActor }
+                : {}),
+              outputThreadId: scope.threadId,
+              outputTurnId: scope.turnId,
+            },
+            signal,
+            assertCurrent: () => {
+              input.requireAdmission?.();
+            },
+          })
+        : await input.knowledgeAgent.maintain({
+            ...KnowledgeTellRequestSchema.omit({ workspaceId: true, requestId: true }).parse(args),
+            workspaceId: scope.workspaceId,
+            requestId: uuidv5(JSON.stringify(['knowledge.tell', input.knowledgeCallId])),
+            instructions:
+              'Integrate the supplied information and keep the notebook overview current.',
+            trigger: 'request',
+            actor: scope.triggerActor,
+            signal,
+            ...(serverKnowledgeActor ? { requestActor: serverKnowledgeActor } : {}),
+            askingThreadId: scope.threadId,
+            askingTurnId: scope.turnId,
+            currentAdmission: input.knowledgePublicationAdmission,
+            tellContent: KnowledgeTellRequestSchema.omit({
+              workspaceId: true,
+              requestId: true,
+            }).parse(args).content,
+          });
+    input.requireAdmission?.();
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+      structuredContent: result as Record<string, unknown>,
+      isError: false,
+    };
   }
   if (toolName === 'work_submit_artifact') {
     try {
@@ -376,6 +548,129 @@ export async function dispatchOpenkitWorkTool(
     });
   }
   return pendingToolResult('pending-input', raised.requestId);
+}
+
+/** Searches only an accepted retained PDF representation under current source authority. */
+async function searchSource(
+  input: Parameters<typeof dispatchOpenkitWorkTool>[0],
+  args: Record<string, unknown>
+) {
+  const parsed = WorkSearchSourceArgsSchema.safeParse(args);
+  if (!parsed.success)
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+      code: 'mcp-call-failed',
+    });
+  try {
+    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    if (!selected.source) throw new Error('Selected PDF is unavailable.');
+    const projection = await searchPdfSourceSnapshot({
+      ...selected,
+      source: selected.source,
+      dataRoot: input.workspaceDb.dataRoot,
+      query: { mode: parsed.data.mode, query: parsed.data.query, limit: parsed.data.limit },
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    selected.assertCurrent();
+    return sourceToolResult({ ...projection });
+  } catch {
+    return sourceToolResult({
+      status: 'unavailable',
+      reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
+    });
+  }
+}
+
+/** Serializes bounded source facts without exposing private exceptions or a fabricated handle. */
+function sourceToolResult(projection: Record<string, unknown>) {
+  const result = {
+    isError: false,
+    structuredContent: projection,
+    content: [{ type: 'text' as const, text: JSON.stringify(projection) }],
+  };
+  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024)
+    throw new WorkerControlGatewayError('mcp-result-too-large', MCP_RESULT_TOO_LARGE_MESSAGE, 413);
+  return result;
+}
+
+/** Returns one explicit view through standard MCP image carriage, without metadata-only structuredContent that can hide the image in stock carriers. */
+async function viewSource(
+  input: Parameters<typeof dispatchOpenkitWorkTool>[0],
+  args: Record<string, unknown>
+) {
+  const parsed = WorkViewSourceArgsSchema.safeParse(args);
+  if (!parsed.success)
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+      code: 'mcp-call-failed',
+    });
+  try {
+    if (!input.fileAdmission)
+      return sourceToolResult({ status: 'unavailable', reason: 'unavailable' });
+    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    if (!selected.source) return sourceToolResult({ status: 'unavailable', reason: 'unsupported' });
+    const view = await viewWorkerSourceSnapshot({
+      ...selected,
+      source: selected.source,
+      admission: input.fileAdmission,
+      page: parsed.data.page,
+      crop: parsed.data.crop,
+      signal: input.signal,
+    });
+    selected.assertCurrent();
+    if (view.status === 'unavailable') return sourceToolResult({ ...view });
+    const { bytes, ...metadata } = view;
+    const result: {
+      isError: boolean;
+      structuredContent?: Record<string, unknown>;
+      content: Array<
+        { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: 'image/jpeg' }
+      >;
+    } = {
+      isError: false,
+      content: [
+        { type: 'text', text: JSON.stringify(metadata) },
+        { type: 'image', data: bytes.toString('base64'), mimeType: 'image/jpeg' },
+      ],
+    };
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024)
+      return sourceToolResult({ status: 'unavailable', reason: 'resource_limited' });
+    input.signal?.throwIfAborted();
+    selected.assertCurrent();
+    return result;
+  } catch {
+    return sourceToolResult({
+      status: 'unavailable',
+      reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
+    });
+  }
+}
+
+/** Reads one accepted source snapshot through existing current Worker and source authority. */
+async function readSource(
+  input: Parameters<typeof dispatchOpenkitWorkTool>[0],
+  args: Record<string, unknown>
+) {
+  const parsed = WorkReadSourceArgsSchema.safeParse(args);
+  if (!parsed.success)
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'MCP tool arguments are invalid.', {
+      code: 'mcp-call-failed',
+    });
+  let projection: WorkerSourceReadResult;
+  try {
+    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    projection = await readWorkerSourceSnapshot({
+      ...selected,
+      mode: parsed.data.mode,
+      cursor: parsed.data.cursor,
+      signal: input.signal,
+    });
+    selected.assertCurrent();
+  } catch {
+    projection = {
+      status: 'unavailable',
+      reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
+    };
+  }
+  return sourceToolResult({ ...projection });
 }
 
 function workRaiseInput(

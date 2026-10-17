@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { type BigIntStats, constants } from 'node:fs';
 import { lstat, open, readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -27,6 +27,7 @@ import {
 } from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { CapturedWorkerFile } from '../storage/artifacts/worker-file-transfer.js';
+import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
@@ -320,19 +321,40 @@ export interface WorkerGovernanceMaterializationContext {
   workspaceRoots: MaterializedWorkspaceRoot[];
 }
 
-/** One verified regular file from the immutable generated Context Package. */
-export interface NanoHostContextPackageImport {
-  /** Exact source bytes retained only until the raw import completes. */
-  readonly body: Buffer;
-  /** Exact source byte length from the recomputed inventory. */
-  readonly byteLength: number;
-  /** Lowercase SHA-256 identity from the recomputed inventory. */
-  readonly contentDigest: string;
-  /** Path relative to the declared Context Package slot. */
+/** A private bounded source factory opened only for the accepted raw import. It never enters the control wire or durable records. */
+export interface NanoHostFileImportSource {
+  open(signal: AbortSignal): AsyncIterable<Uint8Array>;
+}
+
+/** One verified file or directory from the immutable AEP, Skill or Context inputs. */
+export type NanoHostContextPackageImport = {
+  /** Path relative to the declared package slot. */
   readonly relativePath: string;
   /** Exact declared package slot. */
   readonly slot: string;
-}
+} & (
+  | {
+      /** A retained directory carries no file metadata or bytes. */
+      readonly entryKind: 'directory';
+      readonly body?: never;
+      readonly source?: never;
+      readonly byteLength?: never;
+      readonly contentDigest?: never;
+      readonly executable?: never;
+    }
+  | ({
+      /** A regular file carries its exact normalized executable flag. */
+      readonly entryKind: 'file';
+      readonly executable: boolean;
+      /** Exact source byte length from the recomputed inventory. */
+      readonly byteLength: number;
+      /** Lowercase SHA-256 identity from the recomputed inventory. */
+      readonly contentDigest: string;
+    } & (
+      | { readonly body: Buffer; readonly source?: never }
+      | { readonly source: NanoHostFileImportSource; readonly body?: never }
+    ))
+);
 
 /** Product-private result returned after one raw export is atomically staged. */
 export interface NanoHostStagedExportResult {
@@ -344,11 +366,11 @@ export interface NanoHostStagedExportResult {
 }
 
 /**
- * Prepares the canonical AEP, then declared worker-supply files, then Context Package imports.
+ * Captures verified immutable inputs and returns AEP, worker-supply, then Context imports.
  *
  * @param environmentPackage Immutable AEP containing the exact generated input and root digest.
  * @param context NanoCore-private roots available to the selected backend.
- * @returns Canonical package-config first, then worker-supply files, then sorted Context Package files.
+ * @returns Canonical package-config first, then complete worker-supply entries, then sorted Context Package files.
  * @throws Error when the AEP, worker-supply snapshot, or Context Package lineage, bytes, or root proof is invalid.
  */
 export async function prepareNanoHostContextPackageImports(
@@ -396,18 +418,19 @@ export async function prepareNanoHostContextPackageImports(
   }
   const canonicalPackage = serializeCanonicalAgentEnvironmentPackage(environmentPackage);
   const packageConfigImport: NanoHostContextPackageImport = {
+    entryKind: 'file',
+    executable: false,
     body: canonicalPackage.body,
     byteLength: canonicalPackage.body.byteLength,
     contentDigest: `sha256:${createHash('sha256').update(canonicalPackage.body).digest('hex')}`,
     relativePath: inputPaths.packageRelativePath,
     slot: 'package-config',
   };
-  const workerSupplyImports = await prepareWorkerSupplyImports(
-    environmentPackage,
-    context.dataRoot
-  );
   if (candidates.length === 0) {
-    return [packageConfigImport, ...workerSupplyImports];
+    return [
+      packageConfigImport,
+      ...(await prepareWorkerSupplyImports(environmentPackage, context.dataRoot)),
+    ];
   }
   const input = canonicalPackage.environmentPackage.workspace.inputs.find(
     (candidate) => candidate.id === expectedInputId
@@ -429,7 +452,7 @@ export async function prepareNanoHostContextPackageImports(
     if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
       throw new Error('invalid root');
     }
-    files = await readWorkspaceBundleRegularFiles(root.sourcePath);
+    files = await readWorkspaceBundleRegularFiles(resolve(root.sourcePath));
   } catch {
     throw openShellContextPackageSourceUnavailableError();
   }
@@ -437,29 +460,34 @@ export async function prepareNanoHostContextPackageImports(
   if (workspaceBundleFileInventoryDigest(fileInventory) !== expectedRootDigest) {
     throw new Error('NanoHost Context Package root digest does not match its file inventory.');
   }
+  // Capture Context first so the existing eligibility check for all selected Skills follows every Context read.
+  const workerSupplyImports = await prepareWorkerSupplyImports(
+    environmentPackage,
+    context.dataRoot
+  );
   return [
     packageConfigImport,
     ...workerSupplyImports,
-    ...files.map((file, index) => ({
-      body: file.body,
-      byteLength: fileInventory[index]?.byteLength ?? file.body.byteLength,
-      contentDigest:
-        fileInventory[index]?.contentDigest ??
-        `sha256:${createHash('sha256').update(file.body).digest('hex')}`,
-      relativePath: `${inputPaths.contextRelativePath}/${file.path}`,
-      slot: 'context',
-    })),
+    ...files.map(
+      (file): NanoHostContextPackageImport => ({
+        entryKind: 'file',
+        executable: false,
+        source: file.source,
+        byteLength: file.byteLength,
+        contentDigest: file.contentDigest,
+        relativePath: `${inputPaths.contextRelativePath}/${file.path}`,
+        slot: 'context',
+      })
+    ),
   ];
 }
 
 /**
  * Projects the catalog's verified retained entry collection into worker-supply imports.
  *
- * Directory and executable facts remain in the AEP inventory; the existing import contract carries file bytes only.
- *
  * @param environmentPackage Admitted AEP whose exact selection must match retained catalog authority.
  * @param dataRoot Workspace data root holding catalog snapshots.
- * @returns Sorted regular-file imports, or an empty list when no Skills are supplied.
+ * @returns Sorted directory and regular-file imports, or an empty list when no Skills are supplied.
  * @throws CatalogNotFoundError or CatalogIntegrityError when retained supply or its AEP claims are unavailable or changed.
  */
 async function prepareWorkerSupplyImports(
@@ -529,20 +557,25 @@ async function prepareWorkerSupplyImports(
         `Skill version changed during Worker supply admission: ${skill.id}/${digest}`
       );
     }
-    const files = entries
-      .filter((entry) => entry.kind !== 0)
-      .sort((left, right) => left.path.localeCompare(right.path));
-    for (const file of files) {
-      // The shared reader proved both this captured body and its exact inventory row.
-      const body = file.content!;
-      const contentDigest = version.inventory.find((row) => row.path === file.path)!.sha256!;
-      imports.push({
-        body,
-        byteLength: body.byteLength,
-        contentDigest,
-        relativePath: `${inputPaths.supplyRelativePath}/${skill.id}/${file.path}`,
+    for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
+      const destination = {
+        relativePath: `${inputPaths.supplyRelativePath}/${skill.id}/${entry.path}`,
         slot: 'worker-supply',
-      });
+      };
+      if (entry.kind === 0) {
+        imports.push({ ...destination, entryKind: 'directory' });
+      } else {
+        // The shared reader proved this captured body, executable flag and exact inventory row.
+        const body = entry.content!;
+        imports.push({
+          ...destination,
+          entryKind: 'file',
+          executable: entry.kind === 2,
+          body,
+          byteLength: body.byteLength,
+          contentDigest: version.inventory.find((row) => row.path === entry.path)!.sha256!,
+        });
+      }
     }
   }
   return imports;
@@ -1172,46 +1205,132 @@ function openShellContextPackageRootDigest(
   return contentDigest;
 }
 
-/** One regular file and its exact bytes read from a prepared workspace bundle. */
+/** One private immutable regular file. The inventory retains identities, never a whole-file buffer. */
 interface PreparedWorkspaceBundleRegularFile {
-  readonly body: Buffer;
+  readonly byteLength: number;
+  readonly contentDigest: string;
   readonly path: string;
+  readonly source: NanoHostFileImportSource;
 }
 
-/** Reads every regular file under one prepared root while rejecting non-regular entries. */
+/** Measures exact bytes in bounded reads, then reopens the same pinned file only for accepted carriage. */
 async function readWorkspaceBundleRegularFiles(
   root: string,
   directory: string = root
 ): Promise<PreparedWorkspaceBundleRegularFile[]> {
   const files: PreparedWorkspaceBundleRegularFile[] = [];
-
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     const relativePath = relative(root, path).split(sep).join('/');
-
     if (entry.isDirectory()) {
+      const metadata = await lstat(path);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw openShellContextPackageSourceUnavailableError();
       files.push(...(await readWorkspaceBundleRegularFiles(root, path)));
       continue;
     }
-    if (!entry.isFile()) {
-      throw new Error(`OpenShell Context Package contains an unsupported file: ${relativePath}`);
+    if (!entry.isFile()) throw openShellContextPackageSourceUnavailableError();
+    assertPreparedSourceParents(root, path);
+    const descriptor = await open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
+    let pinned: BigIntStats;
+    let contentDigest: string;
+    try {
+      pinned = await descriptor.stat({ bigint: true });
+      if (
+        !pinned.isFile() ||
+        pinned.nlink !== 1n ||
+        pinned.size < 0n ||
+        pinned.size > BigInt(Number.MAX_SAFE_INTEGER)
+      )
+        throw openShellContextPackageSourceUnavailableError();
+      const hash = createHash('sha256');
+      const bytes = Buffer.alloc(65_536);
+      let position = 0;
+      while (position < Number(pinned.size)) {
+        const { bytesRead } = await descriptor.read(
+          bytes,
+          0,
+          Math.min(bytes.length, Number(pinned.size) - position),
+          position
+        );
+        if (!bytesRead) throw openShellContextPackageSourceUnavailableError();
+        hash.update(bytes.subarray(0, bytesRead));
+        position += bytesRead;
+      }
+      const after = await descriptor.stat({ bigint: true });
+      if (!sameInputFile(pinned, after)) throw openShellContextPackageSourceUnavailableError();
+      contentDigest = `sha256:${hash.digest('hex')}`;
+    } finally {
+      await descriptor.close();
     }
-
-    files.push({ body: await readFile(path), path: relativePath });
+    const source: NanoHostFileImportSource = {
+      async *open(signal) {
+        signal.throwIfAborted();
+        assertPreparedSourceParents(root, path);
+        const held = await open(
+          path,
+          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+        );
+        try {
+          if (!sameInputFile(pinned, await held.stat({ bigint: true })))
+            throw openShellContextPackageSourceUnavailableError();
+          let position = 0;
+          while (position < Number(pinned.size)) {
+            signal.throwIfAborted();
+            const bytes = Buffer.allocUnsafe(Math.min(65_536, Number(pinned.size) - position));
+            const { bytesRead } = await held.read(bytes, 0, bytes.length, position);
+            if (!bytesRead) throw openShellContextPackageSourceUnavailableError();
+            position += bytesRead;
+            signal.throwIfAborted();
+            yield bytes.subarray(0, bytesRead);
+          }
+          signal.throwIfAborted();
+          if (!sameInputFile(pinned, await held.stat({ bigint: true })))
+            throw openShellContextPackageSourceUnavailableError();
+        } finally {
+          await held.close();
+        }
+      },
+    };
+    files.push({ path: relativePath, byteLength: Number(pinned.size), contentDigest, source });
   }
-
   return files.sort((left, right) => left.path.localeCompare(right.path));
 }
 
-/** Projects exact regular-file bytes into the existing sorted inventory identity. */
+/** Rejects replacement, metadata drift, links and special files before or after streaming. */
+function sameInputFile(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    right.isFile() &&
+    right.nlink === 1n &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+/** The immutable package root and every retained parent remain real directories. */
+function assertPreparedSourceParents(root: string, path: string): void {
+  const suffix = relative(root, path);
+  if (!suffix || suffix.startsWith(`..${sep}`) || suffix === '..')
+    throw openShellContextPackageSourceUnavailableError();
+  let parent = dirname(path);
+  while (parent !== root) {
+    assertCanonicalDirectory(parent);
+    parent = dirname(parent);
+  }
+  assertCanonicalDirectory(root);
+}
+
+/** Projects the exact measured regular-file inventory without rereading or retaining bodies. */
 function workspaceBundleFileInventory(
   files: readonly PreparedWorkspaceBundleRegularFile[]
 ): OpenShellWorkspaceBundleFileInventoryEntry[] {
-  return files.map((file) => ({
-    byteLength: file.body.byteLength,
-    contentDigest: `sha256:${createHash('sha256').update(file.body).digest('hex')}`,
-    path: file.path,
-  }));
+  return files.map(({ path, byteLength, contentDigest }) => ({ byteLength, contentDigest, path }));
 }
 
 /** Computes the package-root digest over one sorted exact file inventory. */

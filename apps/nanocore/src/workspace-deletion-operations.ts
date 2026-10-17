@@ -21,7 +21,12 @@ import {
   listSqliteAuditEvents,
   recordServerAuditEvent,
 } from './audit-events.js';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import type { Actor } from './auth/identity.js';
+import {
+  hasWorkspaceDeletionRetryAuthority,
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { FsStore } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
@@ -30,6 +35,8 @@ import { OperationError } from './operation-error.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { hasUnprovedNanoHostWorkspaceCleanup } from './runtime/nanohost-attempt-records.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
+import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
@@ -58,6 +65,7 @@ import {
   workspaceDeletionStagingRelativePath,
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
+import { resolveWorkspaceMembershipRelation } from './workspace-membership.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
   beginWorkspaceDeletion,
@@ -73,6 +81,7 @@ export function createWorkspaceDeletionOperationImplementations(
     OperationInvocationDependencies,
     | 'coreDb'
     | 'dataRoot'
+    | 'fileAdmission'
     | 'workspaceMutationAdmission'
     | 'closeWorkspaceMcpSessions'
     | 'repositoryWorkspaceDb'
@@ -83,7 +92,8 @@ export function createWorkspaceDeletionOperationImplementations(
     'workspace.delete': async (value, context) => {
       const coreDb = input.coreDb;
       const dataRoot = input.dataRoot;
-      if (!coreDb || !dataRoot)
+      const fileAdmission = input.fileAdmission;
+      if (!coreDb || !dataRoot || !fileAdmission)
         throw new OperationError(
           'workspace_deletion_unavailable',
           'Workspace deletion is unavailable.',
@@ -106,11 +116,13 @@ export function createWorkspaceDeletionOperationImplementations(
           async () => {
             const result = await advanceWorkspaceDeletion({
               actorId: context.actor.userId,
+              actor: context.actor,
               administratorEligible: isCurrentDeploymentAdministrator(coreDb, context.actor),
               closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions!,
               coreDb,
               dataRoot,
               mutationAdmission: input.workspaceMutationAdmission!,
+              fileAdmission,
               repositoryWorkspaceDb: input.repositoryWorkspaceDb!,
               request: {
                 confirmation: value.confirmation,
@@ -132,7 +144,8 @@ export function createWorkspaceDeletionOperationImplementations(
     'workspace.deleted-recover': (value, context) => {
       const coreDb = input.coreDb;
       const dataRoot = input.dataRoot;
-      if (!coreDb || !dataRoot)
+      const fileAdmission = input.fileAdmission;
+      if (!coreDb || !dataRoot || !fileAdmission)
         throw new OperationError(
           'workspace_recovery_unavailable',
           'Deleted Workspace recovery is unavailable.',
@@ -171,15 +184,17 @@ export function createWorkspaceDeletionOperationImplementations(
         requireTerminalWorkspaceStorage(dataRoot, request);
         requireTerminalDeletionTruth({ coreDb, store: input.store!, workspaceId }, request);
         const verified = verifyDeletionArtifacts(dataRoot, request);
-        const imported = importVerifiedWorkspace({
-          authorityUserId: actor.userId,
-          recoveryOwnerUserId: registry.ownerUserId,
-          coreDb,
-          dataRoot,
-          requestId: value.requestId,
-          store: input.store!,
-          verified,
-        });
+        const imported = withCanonicalFileWriteAdmission(fileAdmission, () =>
+          importVerifiedWorkspace({
+            authorityUserId: actor.userId,
+            recoveryOwnerUserId: registry.ownerUserId,
+            coreDb,
+            dataRoot,
+            requestId: value.requestId,
+            store: input.store!,
+            verified,
+          })
+        );
         return RecoverDeletedWorkspaceResponseSchema.parse({
           recovery: {
             sourceWorkspaceId: workspaceId,
@@ -204,11 +219,13 @@ export function createWorkspaceDeletionOperationImplementations(
 /** Advances only the exact request-owned deletion phases; no ordinary Workspace content authority survives fencing. */
 async function advanceWorkspaceDeletion(input: {
   actorId: string;
+  actor: Actor;
   administratorEligible: boolean;
   closeWorkspaceMcpSessions: (workspaceId: string) => Promise<void>;
   coreDb: CoreDb;
   dataRoot: string;
   mutationAdmission: WorkspaceMutationAdmission;
+  fileAdmission: FileStorageAdmission;
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   request: { confirmation: string; expectedRegistryRevision: number; requestId: string };
   store: FsStore;
@@ -227,6 +244,34 @@ async function advanceWorkspaceDeletion(input: {
   }
   await input.mutationAdmission.close(input.workspaceId);
   await input.closeWorkspaceMcpSessions(input.workspaceId);
+  // Cleanup can yield to revocation, so check authority before advancing the request.
+  if (request.phase === 'requested' || request.phase === 'fenced') {
+    const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+    const activeActor =
+      registry?.status === 'active' &&
+      registry.ownerUserId === request.originalOwnerUserId &&
+      registry.registryRevision === request.expectedRegistryRevision &&
+      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'workspace.lifecycle',
+      });
+    const retryActor =
+      request.phase === 'fenced' &&
+      registry?.status === 'deleting' &&
+      registry.ownerUserId === request.originalOwnerUserId &&
+      registry.registryRevision === request.expectedRegistryRevision + 1 &&
+      hasWorkspaceDeletionRetryAuthority(input.coreDb, input.actor, input.workspaceId, {
+        dataRoot: input.dataRoot,
+        requestId: request.requestId,
+      });
+    if (!activeActor && !retryActor) throw recoveryRequired();
+  } else if (
+    !hasWorkspaceDeletionRetryAuthority(input.coreDb, input.actor, input.workspaceId, {
+      dataRoot: input.dataRoot,
+      requestId: request.requestId,
+    })
+  )
+    throw recoveryRequired();
   if (!isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)) {
     if (['requested', 'fenced'].includes(request.phase)) {
       request = persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
@@ -319,16 +364,21 @@ async function advanceWorkspaceDeletion(input: {
       ? verifyWorkspaceExportTree({
           exportRoot: existingWorkspaceExportRoot(input.dataRoot, input.workspaceId, exportId),
         })
-      : createVerifiedWorkspaceExport({
-          authorityUserId: request.originalOwnerUserId,
-          coreDb: input.coreDb,
-          dataRoot: input.dataRoot,
-          deletionRecoveryRequestId: request.requestId,
-          exportId,
-          repositoryWorkspaceDb: input.repositoryWorkspaceDb,
-          store: input.store,
-          workspaceId: input.workspaceId,
-        }).verified;
+      : withCanonicalFileWriteAdmission(
+          input.fileAdmission,
+          () =>
+            createVerifiedWorkspaceExport({
+              authorityUserId: request.originalOwnerUserId,
+              authorityActor: { kind: 'user', id: input.actorId },
+              coreDb: input.coreDb,
+              dataRoot: input.dataRoot,
+              deletionRecoveryRequestId: request.requestId,
+              exportId,
+              repositoryWorkspaceDb: input.repositoryWorkspaceDb,
+              store: input.store,
+              workspaceId: input.workspaceId,
+            }).verified
+        );
     if (exported.manifest.id !== exportId || exported.manifest.workspaceId !== input.workspaceId) {
       throw recoveryRequired();
     }
@@ -514,7 +564,7 @@ function selectDeletionRequest(input: {
   const existing = records.find((record) => record.requestId === input.request.requestId);
   if (existing) {
     if (
-      (!input.administratorEligible && existing.originalOwnerUserId !== input.actorId) ||
+      (!input.administratorEligible && existing.initiatingUserId !== input.actorId) ||
       existing.expectedRegistryRevision !== input.request.expectedRegistryRevision ||
       existing.confirmation !== input.request.confirmation
     ) {
@@ -538,7 +588,8 @@ function selectDeletionRequest(input: {
   if (
     !registry ||
     registry.status !== 'active' ||
-    (!input.administratorEligible && registry.ownerUserId !== input.actorId) ||
+    (!input.administratorEligible &&
+      !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorId)) ||
     registry.registryRevision !== input.request.expectedRegistryRevision
   ) {
     throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
@@ -557,6 +608,7 @@ function selectDeletionRequest(input: {
     createdAt: new Date().toISOString(),
     expectedRegistryRevision: input.request.expectedRegistryRevision,
     originalOwnerUserId: registry.ownerUserId,
+    initiatingUserId: input.actorId,
     requestId: input.request.requestId,
     workspaceId: input.workspaceId,
   });

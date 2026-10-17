@@ -25,7 +25,14 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
+import {
+  createMcpConfig,
+  importWorkspaceSkill,
+  loadResourceCatalog,
+  setSharedMcpDisabled,
+  setWorkspaceSkillPin,
+  updateMcpBinding,
+} from '../catalog/resource-catalog.js';
 import { loadAgentManifests } from '../config/agents-loader.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -1320,9 +1327,14 @@ describe('agent environment package resolver', () => {
       }),
       expect.objectContaining({
         allowedTools: [
+          'knowledge_ask',
+          'knowledge_tell',
           'work_request_input',
           'work_list_peers',
           'work_read_peer',
+          'work_read_source',
+          'work_search_source',
+          'work_view_source',
           'work_submit_artifact',
         ],
         catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -2469,6 +2481,116 @@ describe('public network AEP admission', () => {
       publicAccess: { kind: 'credential-free-non-llm' as const },
     },
   ];
+
+  it('classifies canonical shared MCP destinations before admitting public network access', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-shared-mcp-public-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const turn = createTurnFixture('Shared managed destination', coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: USER_TRIGGER_ACTOR.id,
+        workspaceId: turn.workspaceId,
+      });
+      const agentSetup = createTestSetup({ network, mcpIds: ['shared'] });
+      const current = createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        openKitConfig: { mode: 'local' },
+        agentManifests: [agentSetup.manifest],
+        gatewayConfig: createTestGatewayConfig({
+          logicalModelId: 'reasoning',
+          privateRoute: { providerProfileId: 'agent-openrouter', providerModel: 'openai/gpt-5.1' },
+        }),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            vendor: 'openrouter',
+            kind: 'gateway',
+            displayName: 'Gateway',
+            baseUrl: 'https://provider.example.com/v1',
+            models: ['openai/gpt-5.1'],
+          },
+        ]),
+      });
+      const created = createMcpConfig({
+        dataRoot,
+        owner: { kind: 'server' },
+        id: 'shared',
+        displayName: 'Shared',
+        selectCurrent: true,
+        declaration: { kind: 'http', endpoint: 'https://shared.example.com/mcp' },
+        allowedTools: ['echo'],
+        expectedRevision: 0,
+        createdAt: new Date().toISOString(),
+      });
+      updateMcpBinding({
+        dataRoot,
+        owner: { kind: 'server' },
+        entryId: 'shared',
+        expectedRevision: created.catalog.revision,
+        binding: { ...created.catalog.mcp.bindings[0]!, enabled: true },
+      });
+      const input = {
+        coreDb,
+        agentSetup,
+        agentSessionId: testEntityId('as', 'session_shared_public'),
+        backend: { kind: 'openshell' as const },
+        captureCoverage: { scope: 'server' as const, value: 'off' as const },
+        turn,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+        readRuntimeConfig: () => current,
+      };
+      expect(resolveAgentEnvironmentPackageMetadata(input).supply.mcpServers).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'shared' })])
+      );
+      const overlap = createTestSetup({
+        network: [{ ...network[0]!, host: 'shared.example.com' }],
+        mcpIds: ['shared'],
+      });
+      current.agentManifests = [overlap.manifest];
+      expect(() =>
+        resolveAgentEnvironmentPackageMetadata({ ...input, agentSetup: overlap })
+      ).toThrow(/managed/i);
+      current.agentManifests = [agentSetup.manifest];
+      setSharedMcpDisabled({
+        dataRoot,
+        workspaceId: turn.workspaceId,
+        mcpId: 'shared',
+        disabled: true,
+        expectedRevision: 0,
+      });
+      expect(() => resolveAgentEnvironmentPackageMetadata(input)).toThrow(
+        /managed destination metadata/i
+      );
+      setSharedMcpDisabled({
+        dataRoot,
+        workspaceId: turn.workspaceId,
+        mcpId: 'shared',
+        disabled: false,
+        expectedRevision: 1,
+      });
+      createMcpConfig({
+        dataRoot,
+        owner: { kind: 'workspace', workspaceId: turn.workspaceId },
+        id: 'shared',
+        displayName: 'Local collision',
+        declaration: { kind: 'http', endpoint: 'https://local.example.com/mcp' },
+        allowedTools: ['echo'],
+        expectedRevision: 2,
+        createdAt: new Date().toISOString(),
+      });
+      expect(() => resolveAgentEnvironmentPackageMetadata(input)).toThrow(
+        /managed destination metadata/i
+      );
+      expect(loadResourceCatalog(dataRoot, { kind: 'server' }).revision).toBe(2);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 
   it('admits public grants through the boot-supplied runtime and observes active configuration reload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-public-boot-'));

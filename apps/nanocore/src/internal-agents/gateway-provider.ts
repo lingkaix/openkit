@@ -1,4 +1,3 @@
-import { Buffer } from 'node:buffer';
 import { operationToolName } from '@openkit/app-api-schemas';
 
 import {
@@ -7,6 +6,10 @@ import {
   type GatewayCallContext,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import {
+  admitModelRequest,
+  ModelRequestAdmissionError,
+} from '../context/model-request-admission.js';
 import { LogicalModelRoutesExhaustedError } from '../llm/gateway-execution.js';
 import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
@@ -68,7 +71,7 @@ export interface InternalAgentGatewayProviderOptions {
 /**
  * Creates the private Gateway projection used by one pinned internal Agent run.
  *
- * Trusted role owners assemble the rolling window. Every route attempt checks the complete serialized request against current Gateway-owned physical context and known output reserve before inference. This projection neither compacts nor truncates history. Internal cache and usage lineage stay on `promptCacheScope` and `usageEndpoint`; they are not authored onto the provider payload.
+ * Trusted role owners assemble the rolling window. Every route attempt checks the complete text request estimate against current Gateway-owned physical context and known output reserve before inference. This projection neither compacts nor truncates history. Internal cache and usage lineage stay on `promptCacheScope` and `usageEndpoint`; they are not authored onto the provider payload.
  *
  * @param options Existing logical-model routing, provider, cache, and usage context.
  * @returns Effect injected into the role-agnostic loop.
@@ -136,13 +139,16 @@ export function createInternalAgentGatewayProvider(
             providerModel
           ).limit;
           const maxOutputTokens = options.logicalModel.contract?.output ?? limits?.output;
-          assertPhysicalContextFits(
-            { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
+          const contextWindowTokens =
             limits?.context === undefined
               ? undefined
-              : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context),
+              : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context);
+          assertPhysicalContextFits(
+            { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
+            contextWindowTokens,
             maxOutputTokens
           );
+          let admissionFailure: InternalAgentProviderError | undefined;
           // A late callback from a settled member cannot replace a later attempt's diagnostics.
           let observedHttpRejection: number | undefined;
           const response = await options.dispatcher
@@ -181,6 +187,20 @@ export function createInternalAgentGatewayProvider(
                     );
                 },
                 transport: {
+                  finalRequestAdmission: (final) => {
+                    try {
+                      assertPhysicalContextFits(
+                        final.payload,
+                        contextWindowTokens,
+                        final.outputReserveTokens,
+                        final.codexTurnState
+                      );
+                    } catch (error) {
+                      // Stock can flatten hook errors; preserve this trusted refusal for loop closeout.
+                      if (error instanceof InternalAgentProviderError) admissionFailure = error;
+                      throw error;
+                    }
+                  },
                   signal: execution.signal,
                   deadline: execution.deadline,
                   onModelEvent: (event) => {
@@ -199,6 +219,11 @@ export function createInternalAgentGatewayProvider(
               }
             )
             .catch((error: unknown) => {
+              if (admissionFailure) {
+                failurePhase = 'pre-transport';
+                observedStatus = undefined;
+                throw admissionFailure;
+              }
               const failure = (error as { failure?: PiAiFailure } | null)?.failure;
               const status = failure?.status;
               observedStatus =
@@ -498,31 +523,19 @@ function projectInternalAgentRequest(
   return { canonicalToAlias, aliasToCanonical, providerInput, providerTools };
 }
 
-/** Checks assembled input conservatively without changing canonical history or adding a loop fuse. */
+/** Uses the same local estimate for rolling-window preparation and final serialized text dispatch. */
 function assertPhysicalContextFits(
-  value: unknown,
-  contextLimit: number | undefined,
-  outputReserve: number | undefined
+  payload: unknown,
+  contextWindowTokens: number | undefined,
+  outputReserveTokens: number | undefined,
+  continuity?: string
 ): void {
-  if (
-    contextLimit === undefined ||
-    !Number.isSafeInteger(contextLimit) ||
-    contextLimit <= 0 ||
-    (outputReserve !== undefined && (!Number.isSafeInteger(outputReserve) || outputReserve <= 0))
-  ) {
-    throw new InternalAgentProviderError(
-      'internal_agent_context_unavailable',
-      'The selected model has no usable physical context bounds.'
-    );
-  }
-  // Retain the existing UTF-8 serialization allowance; it includes fixed instructions and Tool schemas.
-  // This is conservative admission, not exact Provider token usage. Upstream overflow remains explicit.
-  const conservativeTokenUpperBound = Buffer.byteLength(JSON.stringify(value), 'utf8') + 4_096;
-  if (conservativeTokenUpperBound + (outputReserve ?? 0) > contextLimit) {
-    throw new InternalAgentProviderError(
-      'internal_agent_context_exceeded',
-      'The assembled internal Agent context exceeds the selected model capacity.'
-    );
+  try {
+    admitModelRequest({ payload, contextWindowTokens, outputReserveTokens, continuity });
+  } catch (error) {
+    if (error instanceof ModelRequestAdmissionError)
+      throw new InternalAgentProviderError(error.code, error.message);
+    throw error;
   }
 }
 
