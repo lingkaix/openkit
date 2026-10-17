@@ -872,12 +872,7 @@ export function createNanoHostSessionDispatch(
       if (carriesFailureCode && !isExactEffectFailure) {
         throw effectTransportError(409, 'NanoHost effect failure result is invalid.');
       }
-      if (
-        isExactEffectFailure &&
-        (operation === 'bridge.open' ||
-          operation === 'reference.import' ||
-          operation === 'file.export')
-      ) {
+      if (isExactEffectFailure && (operation === 'bridge.open' || operation === 'file.export')) {
         throw effectTransportError(409, 'NanoHost special effect has no JSON failure result.');
       }
       const isExactFileRefusal =
