@@ -5078,6 +5078,50 @@ describe('Knowledge (board 14)', () => {
     ]);
   });
 
+  it('shows answer uncertainty and citation scopes without linking Server pages to Workspace content', async () => {
+    const user = userEvent.setup();
+    const uncertainty = 'Server guidance does not cover the current Workspace deadline.';
+    const serverCitation = {
+      ...KNOWLEDGE_ANSWER.citations[0],
+      reference: { scopeId: 'page/server', objectId: KNOWLEDGE_ENTRY.id },
+      title: 'Server update guidance',
+      excerpt: 'Keep updates brief across all Workspaces.',
+    };
+    renderApp(
+      '/knowledge',
+      makeClient({
+        app: {
+          'knowledge.answer': vi.fn().mockResolvedValue({
+            ...KNOWLEDGE_ANSWER,
+            citations: [...KNOWLEDGE_ANSWER.citations, serverCitation],
+            uncertainty,
+          }),
+          'knowledge.list': vi.fn().mockResolvedValue({
+            notebookRevision: 'notebook-fixture-revision',
+            items: [KNOWLEDGE_ENTRY],
+          }),
+        },
+      })
+    );
+
+    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+    const manager = knowledgePanel('Manager');
+    await fillKnowledgeFields(user, manager, [['Question', MANAGER_QUESTION]]);
+    await user.click(within(manager).getByRole('button', { name: 'Answer' }));
+    const citations = await within(manager).findByRole('list', { name: 'Citations' });
+    expect(within(manager).getByText(uncertainty)).toBeVisible();
+    const [workspaceCitationRow, serverCitationRow] = within(citations).getAllByRole('listitem');
+    expect(within(workspaceCitationRow).getByText('Workspace Knowledge')).toBeVisible();
+    expect(within(serverCitationRow).getByText('Server Knowledge')).toBeVisible();
+    expect(within(workspaceCitationRow).getByRole('link')).toHaveAttribute(
+      'href',
+      `#${encodeURIComponent(`knowledge-content-${encodeURIComponent(WORKSPACE_A.id)}-${encodeURIComponent(KNOWLEDGE_ENTRY.id)}`)}`
+    );
+    expect(within(citations).getAllByRole('link')).toHaveLength(1);
+    expect(within(serverCitationRow).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(serverCitationRow).getByText('Current content unavailable.')).toBeVisible();
+  });
+
   it('answers, suggests repairs, and inspects health from the Manager panel', async () => {
     const user = userEvent.setup();
     const answerKnowledgeManager = vi.fn().mockResolvedValue(KNOWLEDGE_ANSWER);

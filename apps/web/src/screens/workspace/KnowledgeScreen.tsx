@@ -1865,6 +1865,9 @@ function KnowledgeManagerPanel({
       {answerResult ? (
         <Card className="flex flex-col gap-2">
           <p className="text-sm text-fg">{answerResult.answer}</p>
+          {answerResult.uncertainty !== null ? (
+            <p className="text-sm text-fg">{answerResult.uncertainty}</p>
+          ) : null}
           {answerResult.citations.length ? (
             <ol aria-label="Citations" className="flex flex-col gap-2">
               {answerResult.citations.map((citation) => {
@@ -1877,6 +1880,13 @@ function KnowledgeManagerPanel({
                 return (
                   <li key={`${citation.reference.scopeId}:${citation.reference.objectId}`}>
                     <p className="text-sm font-bold text-fg-strong">{citation.title}</p>
+                    <p className="text-xs text-fg-muted">
+                      {citation.reference.scopeId === `page/workspace/${workspaceId}`
+                        ? 'Workspace Knowledge'
+                        : citation.reference.scopeId === 'page/server'
+                          ? 'Server Knowledge'
+                          : citation.reference.scopeId}
+                    </p>
                     <p className="text-sm text-fg">{citation.excerpt}</p>
                     {entry ? (
                       <Link
