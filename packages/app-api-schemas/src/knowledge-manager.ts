@@ -4,6 +4,7 @@ import {
   KnowledgeClaimIdSchema,
   KnowledgeConflictIdSchema,
   KnowledgeObservationIdSchema,
+  KnowledgeOwnerScopeSchema,
   KnowledgeSourceIdSchema,
   PageReferenceSchema,
   RequestIdSchema,
@@ -298,7 +299,7 @@ export const KnowledgeConformanceSchema = z.enum([
   'invalid',
   'OKF-compatible',
   'OpenKit-profile-valid',
-  'Workspace-schema-valid',
+  'scope-schema-valid',
 ]);
 
 /** Validation error returned for one file-backed Knowledge Store page. */
@@ -575,6 +576,7 @@ const knowledgeProposalSourceReferenceSchema = z.string().refine((reference) => 
 export const KnowledgeManagerDraftProposalRequestSchema = z
   .object({
     requestId: RequestIdSchema,
+    baseRevision: z.string().min(1),
     knowledgePageId: KnowledgeProposalPageIdSchema,
     canonicalPageBytes: KnowledgeProposalSafeTextSchema,
     contentDigest: KnowledgeProposalContentDigestSchema,
@@ -596,12 +598,15 @@ export const KnowledgeManagerDraftProposalRequestSchema = z
   })
   .strict();
 
-/** Pending immutable create-only Knowledge Proposal projected after drafting. */
+/** Pending immutable fixed-base Notebook Proposal projected after drafting. */
 export const KnowledgeManagerDraftedProposalSchema = z
   .object({
     id: z.string().min(1),
     workspaceId: WorkspaceIdSchema,
-    operation: z.literal('create'),
+    operation: z.literal('notebook-change'),
+    ownerScope: KnowledgeOwnerScopeSchema,
+    baseRevision: z.string().min(1),
+    candidateRevision: z.string().min(1),
     knowledgePageId: KnowledgeProposalPageIdSchema,
     canonicalPageBytes: KnowledgeProposalSafeTextSchema,
     contentDigest: KnowledgeProposalContentDigestSchema,
@@ -617,7 +622,7 @@ export const KnowledgeManagerDraftedProposalSchema = z
 /** Deterministic validation result for one Knowledge Manager proposal draft. */
 export const KnowledgeManagerProposalValidationSchema = z
   .object({
-    conformance: z.literal('Workspace-schema-valid'),
+    conformance: z.literal('scope-schema-valid'),
     generatedFromCompletedWorkHistory: z.boolean(),
   })
   .strict();

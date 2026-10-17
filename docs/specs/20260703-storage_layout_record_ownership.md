@@ -540,6 +540,7 @@ Private project Threads and their Item/Artifact material remain in their existin
 `user.sqlite` owns:
 
 - per-user idempotency receipts
+- User-owned AuditEvent records, including content-free notebook publication admission facts
 - its migration ledger
 
 User files remain under `users/<userId>/files`. Workspace ownership and visibility do not create any Workspace storage below the user tree; all canonical Workspace data lives under `workspaces/<workspaceId>` and is resolved through Core identity and policy state.

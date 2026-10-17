@@ -1281,6 +1281,10 @@ describe('SimulatedTurnExecutor', () => {
       }
       expect(store.getTurnById(workerTurn.id).status).toBe('completed');
       expect(
+        store.getTurnById(deliveringTurn.id),
+        JSON.stringify(store.getTurnById(deliveringTurn.id))
+      ).toMatchObject({ status: 'completed' });
+      expect(
         store.getArtifact(
           'ws_00000000-0000-7000-8000-000000000001',
           deriveEntityId('ar', deliveringTurn.id)

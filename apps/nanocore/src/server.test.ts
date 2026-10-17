@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import {
@@ -84,6 +85,7 @@ import {
 } from './config/runtime-config.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import * as workerCoordinator from './internal-agents/worker-coordinator.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -190,6 +192,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -414,6 +417,7 @@ function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
     return;
   } catch {
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
       workspace: demo.workspace,
       threads: [demo.thread],
       knowledge: demo.knowledge,
@@ -619,15 +623,83 @@ function createApp(
   });
 }
 
+/** Opens the actual published Git owner for one disk-backed server fixture. */
+function fixtureNotebook(store: FsStore): KnowledgeNotebook {
+  const dataRoot = store.getDataRoot();
+  if (!dataRoot) throw new Error('Notebook fixture requires a disk-backed store.');
+  return new KnowledgeNotebook({
+    repositoryPath: join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'knowledge',
+      'notebook.git'
+    ),
+  });
+}
+
+/** Reads exact current page bytes from Git, with no materialized-file authority. */
+function fixtureKnowledgeBytes(store: FsStore, pageId: string): string | undefined {
+  const notebook = fixtureNotebook(store);
+  return notebook.readRevision(notebook.publishedRevision()).files[`${pageId}.md`];
+}
+
+/** Creates authored fixture content through the native publisher and current fixed base. */
+async function createKnowledgeFixture(
+  app: ReturnType<typeof createNanoCoreApp>,
+  store: FsStore,
+  input: { kind: 'project-context' | 'preference'; title: string; content: string }
+) {
+  const response = await app.request(
+    ...knowledgeOperationRequest(
+      'knowledge.create',
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      {
+        body: JSON.stringify({
+          ...input,
+          requestId: knowledgeProposalRequestId(input.title),
+          knowledgePageId: 'mem_2',
+          baseRevision: fixtureNotebook(store).publishedRevision(),
+          sourceReferences: [],
+        }),
+      }
+    )
+  );
+  expect(response.status, await response.clone().text()).toBe(200);
+  return (await response.json()) as ReturnType<FsStore['createKnowledgeEntry']>;
+}
+
+/** Removes one actual Git blob to exercise unavailable retained content without a repair path. */
+function removeKnowledgeFixtureBlob(store: FsStore, revision: string, pageId: string): string {
+  const repositoryPath = join(
+    store.getDataRoot()!,
+    'workspaces',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'knowledge',
+    'notebook.git'
+  );
+  const oid = execFileSync(
+    'git',
+    ['--git-dir', repositoryPath, 'rev-parse', `${revision}:pages/${pageId}.md`],
+    { encoding: 'utf8' }
+  ).trim();
+  const blobPath = join(repositoryPath, 'objects', oid.slice(0, 2), oid.slice(2));
+  expect(existsSync(blobPath)).toBe(true);
+  rmSync(blobPath);
+  return blobPath;
+}
+
 /**
  * Drafts one source-backed create-only Knowledge Proposal through its public route.
  *
  * @param app Test NanoCore app.
+ * @param store Actual disk-backed Notebook owner.
  * @param suffix Safe unique suffix for the proposal fixture.
  * @returns Exact proposal and candidate page tuple used by decision and reversal tests.
  */
 async function draftKnowledgeProposalFixture(
   app: ReturnType<typeof createNanoCoreApp>,
+  store: FsStore,
   suffix: string
 ) {
   const sourceResponse = await app.request(
@@ -657,10 +729,11 @@ async function draftKnowledgeProposalFixture(
     '---',
     'type: "KnowledgePage"',
     `title: "Proposal ${suffix}"`,
-    'schema_version: "openkit-workspace-knowledge-schema-v2"',
+    'schema_version: "openkit-scope-knowledge-schema-v4"',
+    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_status: "active"',
     'status: "stable"',
-    'scope: "workspace"',
+    `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })}`,
     `openkit_entry_id: "${knowledgePageId}"`,
     'openkit_entry_kind: "project-context"',
     `source_refs: ${JSON.stringify([sourceReference])}`,
@@ -684,6 +757,7 @@ async function draftKnowledgeProposalFixture(
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           requestId,
+          baseRevision: fixtureNotebook(store).publishedRevision(),
           knowledgePageId,
           canonicalPageBytes,
           contentDigest,
@@ -717,27 +791,10 @@ function knowledgeProposalRequestId(label: string): string {
 }
 
 /**
- * Returns the authoritative file path for one Knowledge Page fixture.
- *
- * @param dataRoot Data root that owns the fixture.
- * @param knowledgePageId Safe Knowledge Page identity.
- * @returns Absolute authoritative page path.
- */
-function knowledgeProposalPagePath(dataRoot: string, knowledgePageId: string): string {
-  return join(
-    dataRoot,
-    'workspaces',
-    'ws_00000000-0000-7000-8000-000000000001',
-    'knowledge',
-    'pages',
-    `${knowledgePageId}.md`
-  );
-}
-
-/**
  * Submits one exact Knowledge Proposal decision through the public route.
  *
  * @param app Test NanoCore app.
+ * @param store Actual disk-backed Proposal owner.
  * @param proposalId Addressed Proposal identity.
  * @param requestId Decision command identity.
  * @param decision Human decision to submit.
@@ -745,10 +802,24 @@ function knowledgeProposalPagePath(dataRoot: string, knowledgePageId: string): s
  */
 function submitKnowledgeProposalDecision(
   app: ReturnType<typeof createNanoCoreApp>,
+  store: FsStore,
   proposalId: string,
   requestId: string,
   decision: 'accepted' | 'rejected' | 'deferred'
 ): Promise<Response> {
+  const proposal = store.getKnowledgeProposal(proposalId);
+  if (!proposal) throw new Error('Proposal fixture is unavailable.');
+  const proposalBytes = readFileSync(
+    join(
+      store.getDataRoot()!,
+      'workspaces',
+      proposal.workspaceId,
+      'knowledge',
+      'proposals',
+      `${proposalId}.md`
+    ),
+    'utf8'
+  );
   return app.request(
     ...knowledgeOperationRequest(
       'knowledge.proposal.decide',
@@ -756,7 +827,13 @@ function submitKnowledgeProposalDecision(
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ requestId, decision }),
+        body: JSON.stringify({
+          requestId,
+          decision,
+          proposalDigest: artifactDigest(proposalBytes),
+          baseRevision: proposal.baseRevision,
+          candidateRevision: proposal.candidateRevision,
+        }),
       }
     )
   );
@@ -778,6 +855,8 @@ function submitKnowledgeProposalReversal(
     reviewId: string;
     knowledgePageId: string;
     expectedContentDigest: string;
+    baseRevision: string;
+    confirmRemoval: true;
   }
 ): Promise<Response> {
   return app.request(
@@ -1764,14 +1843,15 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-route-'));
     const store = createDemoStore({ dataRoot });
     store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Export route thread');
-    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const app = createApp({ coreDb, dataRoot, store });
+    await createKnowledgeFixture(app, store, {
       kind: 'project-context',
       title: 'Export route knowledge',
       content: 'Export this note.',
     });
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const app = createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
       ...operationRequest(
@@ -1785,11 +1865,13 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      fileCount: 26,
+      fileCount: 29,
       checkedFiles: [
         'records/agent-resource-catalog.json',
         'records/agent-sessions.jsonl',
         'records/artifact-reviews.jsonl',
+        'records/audit-events.jsonl',
+        'records/capability-calls.jsonl',
         'records/goal-state.json',
         'records/item-revisions.jsonl',
         'records/knowledge-claims.jsonl',
@@ -1803,6 +1885,7 @@ describe('nanocore server', () => {
         'records/threads.jsonl',
         'records/turn-events.jsonl',
         'records/turns.jsonl',
+        'records/usage-records.jsonl',
         'records/vault-injection-plans.jsonl',
         'records/vault-injection-receipts.jsonl',
         'records/workspace-material-revisions.jsonl',
@@ -1812,7 +1895,7 @@ describe('nanocore server', () => {
         'workspace-files/knowledge/pages/index.md',
         'workspace-files/knowledge/pages/mem_2.md',
         'workspace-files/knowledge/pages/mem_project.md',
-        'workspace-files/knowledge/schema/workspace-schema.yaml',
+        'workspace-files/knowledge/schema/scope-schema.yaml',
       ],
       manifest: {
         recordType: 'workspace-export',
@@ -1872,7 +1955,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       collision: { status: 'collides', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      verification: { fileCount: 25 },
+      verification: { fileCount: 26 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -1885,12 +1968,13 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Import source thread');
-    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
+
+    const app = createApp({ coreDb, dataRoot, store });
+    await createKnowledgeFixture(app, store, {
       kind: 'project-context',
       title: 'Import source knowledge',
       content: 'Import this knowledge.',
     });
-    const app = createApp({ coreDb, dataRoot, store });
     const sourceDeploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
     const exportRes = await app.request(
       ...operationRequest(
@@ -2037,7 +2121,7 @@ describe('nanocore server', () => {
         )
         .all() as Array<Record<string, unknown>>;
 
-      expect(auditRows).toHaveLength(3);
+      expect(auditRows).toHaveLength(7);
       expect(auditRows).toEqual(
         expect.arrayContaining([
           {
@@ -2442,11 +2526,7 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Round trip thread');
-    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
-      title: 'Round trip knowledge',
-      content: 'Keep this entry through import.',
-    });
+
     store.createKnowledgeSource({
       id: 'ks_00000000-0000-763c-8bd1-03db28758e4d',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2490,6 +2570,11 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
+    await createKnowledgeFixture(app, store, {
+      kind: 'project-context',
+      title: 'Round trip knowledge',
+      content: 'Keep this entry through import.',
+    });
 
     const exportRes = await app.request(
       ...operationRequest(
@@ -3895,15 +3980,19 @@ describe('nanocore server', () => {
     const payload = ListWorkspaceAuditEventsResponseSchema.parse(await res.json());
     expect(payload).toMatchObject({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      auditEvents: [
-        {
+      auditEvents: expect.arrayContaining([
+        expect.objectContaining({
           action: 'goal.create',
           id: 'aud_00000000-0000-7e8d-b758-7296df892762',
           resource: 'goal:goal_route_1',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-      ],
+        }),
+      ]),
     });
+    expect(payload.auditEvents).toHaveLength(3);
+    expect(payload.auditEvents.map((event) => event.action)).toEqual(
+      expect.arrayContaining(['knowledge.notebook.admit', 'knowledge.notebook.initialize'])
+    );
     expect(JSON.stringify(payload)).not.toContain('usr_00000000-0000-74f0-b0cf-c47434bd7f49');
     coreDb.sqlite.close();
   });
@@ -4981,6 +5070,8 @@ describe('nanocore server', () => {
           method: 'POST',
           body: JSON.stringify({
             requestId: '0190f4c8-0000-7000-8000-000000000201',
+            knowledgePageId: 'usage-preference',
+            baseRevision: fixtureNotebook(store).publishedRevision(),
             kind: 'preference',
             title: 'Temporary preference',
             content: 'Remove this after the test.',
@@ -4989,6 +5080,7 @@ describe('nanocore server', () => {
         }
       )
     );
+    expect(createRes.status, await createRes.clone().text()).toBe(200);
     const knowledge = (await createRes.json()) as { id: string };
 
     const updateRes = await app.request(
@@ -4999,6 +5091,7 @@ describe('nanocore server', () => {
           method: 'PATCH',
           body: JSON.stringify({
             requestId: '0190f4c8-0000-7000-8000-000000000213',
+            baseRevision: fixtureNotebook(store).publishedRevision(),
             title: 'Updated preference',
           }),
           headers: { 'content-type': 'application/json' },
@@ -5015,6 +5108,9 @@ describe('nanocore server', () => {
           method: 'DELETE',
           body: JSON.stringify({
             requestId: '0190f4c8-0000-7000-8000-000000000214',
+            baseRevision: fixtureNotebook(store).publishedRevision(),
+            expectedContentDigest: artifactDigest(fixtureKnowledgeBytes(store, knowledge.id)!),
+            confirmRemoval: true,
           }),
           headers: { 'content-type': 'application/json' },
         }
@@ -5262,11 +5358,7 @@ describe('nanocore server', () => {
   it('starts Task Mode through the worker coordinator and one bounded worker turn', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const knowledge = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
-      content: 'Implement the focused Task Mode fix with the existing worker path.',
-      kind: 'project-context',
-      title: 'Focused Task Mode fix',
-    });
+
     const executor = new FakeTurnExecutor();
     let launchedContextAssembly: ReturnType<typeof parseWorkerCheckpointContextAssembly> = null;
     const executionFinished = Promise.withResolvers<void>();
@@ -5307,6 +5399,11 @@ describe('nanocore server', () => {
       coreDb,
       store,
       turnExecutor: executor,
+    });
+    const knowledge = await createKnowledgeFixture(app, store, {
+      content: 'Implement the focused Task Mode fix with the existing worker path.',
+      kind: 'project-context',
+      title: 'Focused Task Mode fix',
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-repository-'));
     const requestId = '0190f4c8-0000-7000-8000-000000000301';
@@ -7927,6 +8024,8 @@ describe('nanocore server', () => {
 
     const knowledgeBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000503',
+      knowledgePageId: 'idempotent-preference',
+      baseRevision: fixtureNotebook(store).publishedRevision(),
       kind: 'preference',
       title: 'Idempotent knowledge',
       content: 'Store this once.',
@@ -7953,6 +8052,8 @@ describe('nanocore server', () => {
         }
       )
     );
+    expect(knowledgeFirst.status, await knowledgeFirst.clone().text()).toBe(200);
+    expect(knowledgeSecond.status, await knowledgeSecond.clone().text()).toBe(200);
     const knowledge = (await knowledgeFirst.json()) as { id: string };
     const duplicateKnowledge = (await knowledgeSecond.json()) as { id: string };
 
@@ -7965,6 +8066,7 @@ describe('nanocore server', () => {
 
     const knowledgeUpdateBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000504',
+      baseRevision: fixtureNotebook(store).publishedRevision(),
       title: 'Idempotent knowledge updated',
     };
     const knowledgeUpdateFirst = await app.request(
@@ -8001,6 +8103,9 @@ describe('nanocore server', () => {
 
     const knowledgeDeleteBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000514',
+      baseRevision: fixtureNotebook(store).publishedRevision(),
+      expectedContentDigest: artifactDigest(fixtureKnowledgeBytes(store, knowledge.id)!),
+      confirmRemoval: true,
     };
     const knowledgeDeleteFirst = await app.request(
       ...knowledgeOperationRequest(
@@ -8013,6 +8118,7 @@ describe('nanocore server', () => {
         }
       )
     );
+    const deletedRevision = fixtureNotebook(store).publishedRevision();
     const knowledgeDeleteSecond = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.delete',
@@ -8031,6 +8137,7 @@ describe('nanocore server', () => {
         {
           method: 'DELETE',
           body: JSON.stringify({
+            ...knowledgeDeleteBody,
             requestId: '0190f4c8-0000-7000-8000-000000000515',
           }),
           headers: jsonHeaders(),
@@ -8040,10 +8147,11 @@ describe('nanocore server', () => {
 
     expect(knowledgeDeleteFirst.status).toBe(200);
     expect(knowledgeDeleteSecond.status).toBe(200);
-    expect(knowledgeDeleteNewRequest.status).toBe(403);
-    await expect(knowledgeDeleteNewRequest.json()).resolves.toMatchObject({
-      code: 'workspace_access_denied',
-    });
+    expect(await knowledgeDeleteSecond.json()).toEqual(await knowledgeDeleteFirst.json());
+    expect(knowledgeDeleteNewRequest.status).toBe(409);
+    await expect(knowledgeDeleteNewRequest.json()).resolves.toMatchObject({ code: 'conflict' });
+    expect(fixtureNotebook(store).publishedRevision()).toBe(deletedRevision);
+    expect(fixtureKnowledgeBytes(store, knowledge.id)).toBeUndefined();
 
     const threadBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000505',
@@ -8433,6 +8541,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
+              baseRevision: fixtureNotebook(store).publishedRevision(),
+              knowledgePageId: 'missing-request-preference',
               kind: 'preference',
               title: 'Missing request id',
               content: 'Should fail.',
@@ -8450,7 +8560,10 @@ describe('nanocore server', () => {
           },
           {
             method: 'PATCH',
-            body: JSON.stringify({ title: 'Missing request id' }),
+            body: JSON.stringify({
+              baseRevision: fixtureNotebook(store).publishedRevision(),
+              title: 'Missing request id',
+            }),
             headers: jsonHeaders(),
           }
         )
@@ -8464,7 +8577,11 @@ describe('nanocore server', () => {
           },
           {
             method: 'DELETE',
-            body: JSON.stringify({}),
+            body: JSON.stringify({
+              baseRevision: fixtureNotebook(store).publishedRevision(),
+              expectedContentDigest: artifactDigest(fixtureKnowledgeBytes(store, 'mem_project')!),
+              confirmRemoval: true,
+            }),
             headers: jsonHeaders(),
           }
         )
@@ -9971,16 +10088,17 @@ describe('nanocore server', () => {
 
     expect(response.status).toBe(404);
   });
-  it('applies only accepted fixed proposals and resumes only their missing page effect', async () => {
+  it('applies only accepted fixed proposals and refuses unavailable published evidence', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store });
 
     try {
-      const accepted = await draftKnowledgeProposalFixture(app, 'accepted');
+      const accepted = await draftKnowledgeProposalFixture(app, store, 'accepted');
       const acceptedRequestId = knowledgeProposalRequestId('decision-accepted');
       const firstRes = await submitKnowledgeProposalDecision(
         app,
+        store,
         accepted.proposalId,
         acceptedRequestId,
         'accepted'
@@ -10014,11 +10132,13 @@ describe('nanocore server', () => {
           present: true,
         },
       });
-      const acceptedPagePath = knowledgeProposalPagePath(coreDb.dataRoot, accepted.knowledgePageId);
-      expect(readFileSync(acceptedPagePath, 'utf8')).toBe(accepted.canonicalPageBytes);
+      expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBe(
+        accepted.canonicalPageBytes
+      );
 
       const replayRes = await submitKnowledgeProposalDecision(
         app,
+        store,
         accepted.proposalId,
         acceptedRequestId,
         'accepted'
@@ -10028,6 +10148,7 @@ describe('nanocore server', () => {
 
       const conflictRes = await submitKnowledgeProposalDecision(
         app,
+        store,
         accepted.proposalId,
         acceptedRequestId,
         'rejected'
@@ -10038,9 +10159,10 @@ describe('nanocore server', () => {
       });
 
       for (const decision of ['rejected', 'deferred'] as const) {
-        const fixture = await draftKnowledgeProposalFixture(app, decision);
+        const fixture = await draftKnowledgeProposalFixture(app, store, decision);
         const response = await submitKnowledgeProposalDecision(
           app,
+          store,
           fixture.proposalId,
           knowledgeProposalRequestId(`decision-${decision}`),
           decision
@@ -10054,25 +10176,25 @@ describe('nanocore server', () => {
           },
           application: null,
         });
-        expect(
-          existsSync(knowledgeProposalPagePath(coreDb.dataRoot, fixture.knowledgePageId))
-        ).toBe(false);
+        expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBeUndefined();
       }
 
-      const interrupted = await draftKnowledgeProposalFixture(app, 'interrupted');
+      const interrupted = await draftKnowledgeProposalFixture(app, store, 'interrupted');
       const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
       const completed = await submitKnowledgeProposalDecision(
         app,
+        store,
         interrupted.proposalId,
         interruptedRequestId,
         'accepted'
       );
       expect(completed.status, await completed.clone().text()).toBe(200);
-      const interruptedPagePath = knowledgeProposalPagePath(
-        coreDb.dataRoot,
+      const publishedRevision = fixtureNotebook(store).publishedRevision();
+      const missingBlobPath = removeKnowledgeFixtureBlob(
+        store,
+        publishedRevision,
         interrupted.knowledgePageId
       );
-      rmSync(interruptedPagePath);
       const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       workspaceDb.sqlite
         .prepare(
@@ -10087,12 +10209,18 @@ describe('nanocore server', () => {
 
       const resumed = await submitKnowledgeProposalDecision(
         app,
+        store,
         interrupted.proposalId,
         interruptedRequestId,
         'accepted'
       );
-      expect(resumed.status, await resumed.clone().text()).toBe(200);
-      expect(readFileSync(interruptedPagePath, 'utf8')).toBe(interrupted.canonicalPageBytes);
+      expect(resumed.status, await resumed.clone().text()).toBe(409);
+      await expect(resumed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(existsSync(missingBlobPath)).toBe(false);
+      expect(fixtureNotebook(store).publishedRevision()).toBe(publishedRevision);
+      expect(store.getKnowledgeProposalReviewDecision(interrupted.proposalId)?.decision).toBe(
+        'accepted'
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -10105,10 +10233,15 @@ describe('nanocore server', () => {
 
     try {
       for (const missingEvidence of ['receipt', 'audit'] as const) {
-        const fixture = await draftKnowledgeProposalFixture(app, `missing-${missingEvidence}`);
+        const fixture = await draftKnowledgeProposalFixture(
+          app,
+          store,
+          `missing-${missingEvidence}`
+        );
         const requestId = knowledgeProposalRequestId(`decision-missing-${missingEvidence}`);
         const completed = await submitKnowledgeProposalDecision(
           app,
+          store,
           fixture.proposalId,
           requestId,
           'accepted'
@@ -10132,15 +10265,16 @@ describe('nanocore server', () => {
 
         const replay = await submitKnowledgeProposalDecision(
           app,
+          store,
           fixture.proposalId,
           requestId,
           'accepted'
         );
         expect(replay.status).toBe(409);
         await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
-        expect(
-          readFileSync(knowledgeProposalPagePath(coreDb.dataRoot, fixture.knowledgePageId), 'utf8')
-        ).toBe(fixture.canonicalPageBytes);
+        expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBe(
+          fixture.canonicalPageBytes
+        );
 
         const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
         const remaining =
@@ -10163,8 +10297,9 @@ describe('nanocore server', () => {
   });
 
   it('rejects host-path-bearing proposal text without durable mutation', async () => {
-    const store = createDemoStore();
-    const app = createApp({ store }, true);
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = createApp({ coreDb, store }, true);
     const sourceResponse = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
@@ -10205,10 +10340,11 @@ describe('nanocore server', () => {
         '---',
         'type: "KnowledgePage"',
         `title: "Unsafe proposal ${index}"`,
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'schema_version: "openkit-scope-knowledge-schema-v4"',
+        'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'openkit_status: "active"',
         'status: "stable"',
-        'scope: "workspace"',
+        `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })}`,
         `openkit_entry_id: "${knowledgePageId}"`,
         'openkit_entry_kind: "project-context"',
         `source_refs: ${JSON.stringify([sourceReference])}`,
@@ -10230,6 +10366,7 @@ describe('nanocore server', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId: knowledgeProposalRequestId(`unsafe-proposal-${index}`),
+              baseRevision: fixtureNotebook(store).publishedRevision(),
               knowledgePageId,
               canonicalPageBytes,
               contentDigest: artifactDigest(canonicalPageBytes),
@@ -10248,6 +10385,7 @@ describe('nanocore server', () => {
     }
 
     expect(store.listKnowledgeProposals('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
+    coreDb.sqlite.close();
   });
 
   it('reverses only the unchanged proposal-created page and replays without another effect', async () => {
@@ -10256,9 +10394,10 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, store });
 
     try {
-      const accepted = await draftKnowledgeProposalFixture(app, 'reverse');
+      const accepted = await draftKnowledgeProposalFixture(app, store, 'reverse');
       const decisionResponse = await submitKnowledgeProposalDecision(
         app,
+        store,
         accepted.proposalId,
         knowledgeProposalRequestId('decision-reverse'),
         'accepted'
@@ -10270,6 +10409,8 @@ describe('nanocore server', () => {
         reviewId: decision.review.reviewId,
         knowledgePageId: accepted.knowledgePageId,
         expectedContentDigest: accepted.contentDigest,
+        baseRevision: fixtureNotebook(store).publishedRevision(),
+        confirmRemoval: true as const,
       };
       const firstRes = await submitKnowledgeProposalReversal(
         app,
@@ -10285,11 +10426,10 @@ describe('nanocore server', () => {
           knowledgePageId: accepted.knowledgePageId,
           contentDigest: accepted.contentDigest,
           present: false,
+          notebookRevision: fixtureNotebook(store).publishedRevision(),
         },
       });
-      expect(existsSync(knowledgeProposalPagePath(coreDb.dataRoot, accepted.knowledgePageId))).toBe(
-        false
-      );
+      expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBeUndefined();
 
       const replayRes = await submitKnowledgeProposalReversal(
         app,
@@ -10308,45 +10448,73 @@ describe('nanocore server', () => {
         code: 'idempotency_key_conflict',
       });
 
-      const changed = await draftKnowledgeProposalFixture(app, 'reverse-changed');
+      const changed = await draftKnowledgeProposalFixture(app, store, 'reverse-changed');
       const changedDecision = await submitKnowledgeProposalDecision(
         app,
+        store,
         changed.proposalId,
         knowledgeProposalRequestId('decision-reverse-changed'),
         'accepted'
       );
       expect(changedDecision.status, await changedDecision.clone().text()).toBe(200);
       const changedReview = (await changedDecision.json()) as { review: { reviewId: string } };
-      const changedPagePath = knowledgeProposalPagePath(coreDb.dataRoot, changed.knowledgePageId);
-      const changedBytes = `${changed.canonicalPageBytes}Intervening edit.\n`;
-      writeFileSync(changedPagePath, changedBytes, 'utf8');
+      const changedBytes = `${changed.canonicalPageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
+      const editResponse = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.notebook.update',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          {
+            body: JSON.stringify({
+              requestId: knowledgeProposalRequestId('human-intervening-edit'),
+              baseRevision: fixtureNotebook(store).publishedRevision(),
+              changes: [{ path: `${changed.knowledgePageId}.md`, content: changedBytes }],
+              summary: 'Explicit human edit after Review',
+            }),
+          }
+        )
+      );
+      expect(editResponse.status, await editResponse.clone().text()).toBe(200);
+      const publishedChangedBytes = fixtureKnowledgeBytes(store, changed.knowledgePageId);
+      expect(publishedChangedBytes).toBe(changedBytes);
       const changedReversal = await submitKnowledgeProposalReversal(app, changed.proposalId, {
         requestId: knowledgeProposalRequestId('reversal-changed'),
         reviewId: changedReview.review.reviewId,
         knowledgePageId: changed.knowledgePageId,
         expectedContentDigest: changed.contentDigest,
+        baseRevision: fixtureNotebook(store).publishedRevision(),
+        confirmRemoval: true,
       });
       expect(changedReversal.status).toBe(409);
       await expect(changedReversal.json()).resolves.toMatchObject({ code: 'conflict' });
-      expect(readFileSync(changedPagePath, 'utf8')).toBe(changedBytes);
+      expect(fixtureKnowledgeBytes(store, changed.knowledgePageId)).toBe(publishedChangedBytes);
 
-      const missing = await draftKnowledgeProposalFixture(app, 'reverse-missing');
+      const missing = await draftKnowledgeProposalFixture(app, store, 'reverse-missing');
       const missingDecision = await submitKnowledgeProposalDecision(
         app,
+        store,
         missing.proposalId,
         knowledgeProposalRequestId('decision-reverse-missing'),
         'accepted'
       );
       expect(missingDecision.status, await missingDecision.clone().text()).toBe(200);
       const missingReview = (await missingDecision.json()) as { review: { reviewId: string } };
-      rmSync(knowledgeProposalPagePath(coreDb.dataRoot, missing.knowledgePageId));
+      const missingBase = fixtureNotebook(store).publishedRevision();
+      const missingBlobPath = removeKnowledgeFixtureBlob(
+        store,
+        missingBase,
+        missing.knowledgePageId
+      );
       const missingReversal = await submitKnowledgeProposalReversal(app, missing.proposalId, {
         requestId: knowledgeProposalRequestId('reversal-missing'),
         reviewId: missingReview.review.reviewId,
         knowledgePageId: missing.knowledgePageId,
         expectedContentDigest: missing.contentDigest,
+        baseRevision: missingBase,
+        confirmRemoval: true,
       });
       expect(missingReversal.status).toBe(409);
+      expect(existsSync(missingBlobPath)).toBe(false);
+      expect(fixtureNotebook(store).publishedRevision()).toBe(missingBase);
       await expect(missingReversal.json()).resolves.toMatchObject({
         code: 'recovery_required',
       });

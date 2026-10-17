@@ -4,6 +4,7 @@ import { DeploymentIdSchema, UserIdSchema } from '@openkit/protocol';
 
 import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Exact HTTP or HTTPS origin accepted by browser-facing server configuration. */
@@ -313,6 +314,7 @@ export type WorkerGitReadMaintenanceAssignment = z.infer<
 /** File-backed NanoCore configuration schema. */
 export const OpenKitConfigSchema = z
   .object({
+    knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     appUpdate: OpenKitAppUpdateConfigSchema.optional(),
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),

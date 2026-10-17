@@ -8,6 +8,9 @@ import * as coreClientExports from './index.js';
 
 const timestamp = '2026-05-28T00:00:00.000Z';
 const requestId = '00000000-0000-4000-8000-000000000001';
+const notebookBaseRevision = '1'.repeat(40);
+const notebookCandidateRevision = '2'.repeat(40);
+const notebookReverseRevision = '3'.repeat(40);
 
 interface RecordedRequest {
   readonly body: unknown;
@@ -1725,7 +1728,12 @@ describe('createCoreClient', () => {
         },
       },
       'POST /api/app/operations/workspace.update': { body: workspace() },
-      'POST /api/app/operations/knowledge.list': { body: { items: [knowledge] } },
+      'POST /api/app/operations/knowledge.list': {
+        body: {
+          notebookRevision: notebookBaseRevision,
+          items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
+        },
+      },
       'POST /api/app/operations/knowledge.create': { body: knowledge },
       'POST /api/app/operations/knowledge.update': { body: knowledge },
       'POST /api/app/operations/knowledge.delete': { body: null },
@@ -2010,11 +2018,14 @@ describe('createCoreClient', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).resolves.toEqual({
-      items: [knowledge],
+      notebookRevision: notebookBaseRevision,
+      items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
     });
     await expect(
       client.operations['knowledge.create']({
+        baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        knowledgePageId: knowledge.id,
         kind: knowledge.kind,
         title: knowledge.title,
         content: knowledge.content,
@@ -2022,6 +2033,7 @@ describe('createCoreClient', () => {
     ).resolves.toEqual(knowledge);
     await expect(
       client.operations['knowledge.update']({
+        baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         knowledgeEntryId: 'mem_demo',
         ...{ title: 'Updated' },
@@ -2029,8 +2041,11 @@ describe('createCoreClient', () => {
     ).resolves.toEqual(knowledge);
     await expect(
       client.operations['knowledge.delete']({
+        baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         knowledgeEntryId: 'mem_demo',
+        expectedContentDigest: `sha256:${'a'.repeat(64)}`,
+        confirmRemoval: true,
       })
     ).resolves.toBeNull();
     await expect(
@@ -2251,6 +2266,9 @@ describe('createCoreClient', () => {
     expect(requests[6]?.body).toEqual({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       knowledgeEntryId: 'mem_demo',
+      baseRevision: notebookBaseRevision,
+      expectedContentDigest: `sha256:${'a'.repeat(64)}`,
+      confirmRemoval: true,
     });
     expect(requests[6]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
   });
@@ -3183,7 +3201,7 @@ describe('createCoreClient', () => {
                 conceptId: 'alpha',
                 path: 'knowledge/pages/alpha.md',
                 title: 'Alpha',
-                conformance: 'Workspace-schema-valid',
+                conformance: 'scope-schema-valid',
                 active: true,
                 indexed: true,
                 errors: [],
@@ -3455,7 +3473,13 @@ describe('createCoreClient', () => {
           proposal: {
             id: 'kp_demo',
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            operation: 'create',
+            operation: 'notebook-change',
+            ownerScope: {
+              kind: 'workspace',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+            baseRevision: notebookBaseRevision,
+            candidateRevision: notebookCandidateRevision,
             knowledgePageId: 'lessons/release-review',
             canonicalPageBytes: proposalPageBytes,
             contentDigest: proposalPageDigest,
@@ -3471,7 +3495,7 @@ describe('createCoreClient', () => {
             createdAt: timestamp,
           },
           validation: {
-            conformance: 'Workspace-schema-valid',
+            conformance: 'scope-schema-valid',
             generatedFromCompletedWorkHistory: false,
           },
         },
@@ -4008,6 +4032,7 @@ describe('createCoreClient', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
           requestId: '00000000-0000-4000-8000-000000000621',
+          baseRevision: notebookBaseRevision,
           knowledgePageId: 'lessons/release-review',
           canonicalPageBytes: proposalPageBytes,
           contentDigest: proposalPageDigest,
@@ -4413,6 +4438,12 @@ describe('createCoreClient', () => {
             proposalId: 'kp_demo',
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             decision: 'accepted',
+            ownerScope: {
+              kind: 'workspace',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+            baseRevision: notebookBaseRevision,
+            candidateRevision: notebookCandidateRevision,
             actor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
             proposalDigest,
             decidedAt: timestamp,
@@ -4425,6 +4456,7 @@ describe('createCoreClient', () => {
             knowledgePageId: 'lessons/release-review',
             contentDigest: proposalPageDigest,
             present: true,
+            notebookRevision: notebookCandidateRevision,
           },
         },
       },
@@ -4436,6 +4468,7 @@ describe('createCoreClient', () => {
             knowledgePageId: 'lessons/release-review',
             contentDigest: proposalPageDigest,
             present: false,
+            notebookRevision: notebookReverseRevision,
           },
         },
       },
@@ -4475,6 +4508,9 @@ describe('createCoreClient', () => {
         proposalId: 'kp_demo',
         ...{
           requestId: '00000000-0000-4000-8000-000000000622',
+          proposalDigest,
+          baseRevision: notebookBaseRevision,
+          candidateRevision: notebookCandidateRevision,
           decision: 'accepted',
         },
       })
@@ -4484,6 +4520,9 @@ describe('createCoreClient', () => {
         proposalId: 'kp_demo',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         decision: 'accepted',
+        ownerScope: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        baseRevision: notebookBaseRevision,
+        candidateRevision: notebookCandidateRevision,
         actor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
         proposalDigest,
         decidedAt: timestamp,
@@ -4496,6 +4535,7 @@ describe('createCoreClient', () => {
         knowledgePageId: 'lessons/release-review',
         contentDigest: proposalPageDigest,
         present: true,
+        notebookRevision: notebookCandidateRevision,
       },
     });
     await expect(
@@ -4504,6 +4544,8 @@ describe('createCoreClient', () => {
         proposalId: 'kp_demo',
         ...{
           requestId: '00000000-0000-4000-8000-000000000623',
+          baseRevision: notebookCandidateRevision,
+          confirmRemoval: true,
           reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
           knowledgePageId: 'lessons/release-review',
           expectedContentDigest: proposalPageDigest,
@@ -4516,6 +4558,7 @@ describe('createCoreClient', () => {
         knowledgePageId: 'lessons/release-review',
         contentDigest: proposalPageDigest,
         present: false,
+        notebookRevision: notebookReverseRevision,
       },
     });
     await expect(client.operations['diagnostics.setup']({})).resolves.toEqual(setupDiagnostics());
@@ -4558,6 +4601,9 @@ describe('createCoreClient', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       proposalId: 'kp_demo',
       decision: 'accepted',
+      proposalDigest,
+      baseRevision: notebookBaseRevision,
+      candidateRevision: notebookCandidateRevision,
     });
     expect(
       requests.find((request) =>
@@ -4569,6 +4615,8 @@ describe('createCoreClient', () => {
       reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
       knowledgePageId: 'lessons/release-review',
       expectedContentDigest: proposalPageDigest,
+      baseRevision: notebookCandidateRevision,
+      confirmRemoval: true,
     });
   });
 

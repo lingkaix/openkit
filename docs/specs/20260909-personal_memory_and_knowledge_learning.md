@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: concept
 ---
 # Personal Memory And Scoped Knowledge Learning
@@ -115,11 +115,11 @@ An ordinary Workspace bundle contains Workspace Knowledge and shared admissible 
 
 ## Current Implementation Projection
 
-The existing Workspace Knowledge store supports OKF pages, registered sources, create-only reviewed proposals, bounded create reversal and governed retrieval. The existing Skill catalog supplies independent candidate/version design and partial implementation. User/Server Knowledge ownership, project-private Memory extraction, multi-page notebook publication, automatic consolidation and AI assessment described here are Not Started. Existing direct user page edits are reused; old workspace `memory` aliases remain retired and are not restored by the intentional User Memory product name.
+Workspace Knowledge supports registered Sources, fixed-base human notebook publication, source-linked Proposal and Review, bounded reversal and confirmed removal, current authorized pinned retrieval, and history/diff/restore through the common Git publisher. Its current Workspace clone initializes a fresh target Notebook from the admitted published tree; same-deployment backup retains Git history and separate authority records. User/Server notebook operations, private Memory recall and extraction, forgetting suppression, scoped virtual Agent editing, automatic consolidation, and AI assessment remain unimplemented. The independent Skill catalog retains its own candidate/version lifecycle. Old Workspace `memory` aliases remain retired; intentional User Memory does not restore them. This partial Workspace implementation does not establish full Memory or learning acceptance.
 
 ## Rollout / Migration Plan
 
-Implement personal scope, explicit save/read/edit/forget and visibility enforcement first; then bounded source registration and candidate creation; then exact replacement and optional assessment. Enable automatic capture only after the same operations work explicitly and their source/audience checks pass. Convert existing owned Workspace pages to profile v4 and retained Git history under the coordinated notebook cutover, preserving bytes/source lineage and reporting invalid pages rather than silently making them active. A separate implementation plan must retain these stages; acceptance of the full design does not claim every stage ships in the first release.
+Implement personal scope, explicit save/read/edit/forget and visibility enforcement first; then bounded source registration and candidate creation; then exact replacement and optional assessment. Enable automatic capture only after the same operations work explicitly and their source/audience checks pass. Initialize new notebooks directly in profile v4 with Git-owned history. Current prerelease data follows the accepted pre-stable reset boundary; add no offline conversion, predecessor reader or synthesized authority. A separate implementation plan must retain these stages; acceptance of the full design does not claim every stage ships in the first release.
 
 ## Testing Strategy / Acceptance Criteria
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 
@@ -25,10 +26,11 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
     '---',
     'type: "KnowledgePage"',
     'title: "Canonical proposal"',
-    'schema_version: "openkit-workspace-knowledge-schema-v2"',
+    'schema_version: "openkit-scope-knowledge-schema-v4"',
     'openkit_status: "active"',
     'status: "stable"',
-    'scope: "workspace"',
+    `scope: {kind: workspace, workspaceId: ${workspaceId}}`,
+    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_entry_id: "canonical-proposal"',
     'openkit_entry_kind: "project-context"',
     `source_refs: ${JSON.stringify([VERIFIED_EXTERNAL_REFERENCE])}`,
@@ -45,6 +47,15 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
   return store.createKnowledgeProposal({
     workspaceId,
     requestId: PROPOSAL_REQUEST_ID,
+    baseRevision: new KnowledgeNotebook({
+      repositoryPath: join(
+        store.getDataRoot()!,
+        'workspaces',
+        workspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    }).publishedRevision(),
     knowledgePageId: 'canonical-proposal',
     canonicalPageBytes,
     contentDigest: `sha256:${createHash('sha256').update(canonicalPageBytes).digest('hex')}`,
@@ -133,6 +144,11 @@ describe('workspace canonical record schemas', () => {
       workspaceId: workspace.id,
       decision: 'rejected',
       requestId: REVIEW_REQUEST_ID,
+      baseRevision: proposal.baseRevision,
+      candidateRevision: proposal.candidateRevision,
+      proposalDigest: `sha256:${createHash('sha256')
+        .update(readFileSync(join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`)))
+        .digest('hex')}`,
       verifiedExternalReferences: [VERIFIED_EXTERNAL_REFERENCE],
       actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       decidedAt: TIMESTAMP,

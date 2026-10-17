@@ -35,6 +35,14 @@ describe('nanocore e2e workspace portability', () => {
     harnesses.push(target);
     const localRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-archive-'));
     try {
+      const sourceNotebook = await expectJson(
+        await fetch(`${source.baseUrl}/api/app/operations/knowledge.list`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${sourceToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
+        }),
+        {}
+      );
       const content = 'Exact archive round trip: café, 日本語, and trailing newline.\n';
       await expectJson(
         await fetch(`${source.baseUrl}/api/app/operations/knowledge.create`, {
@@ -46,6 +54,8 @@ describe('nanocore e2e workspace portability', () => {
           },
           body: JSON.stringify({
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            baseRevision: sourceNotebook.notebookRevision,
+            knowledgePageId: 'archive-bytes',
             title: 'Archive bytes',
             kind: 'project-context',
             content,
@@ -119,9 +129,15 @@ describe('nanocore e2e workspace portability', () => {
     harnesses.push(sourceHarness);
 
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const sourceNotebook = await expectJson(
+      await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.list`, { workspaceId }),
+      {}
+    );
     await expectJson(
       await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.create`, {
         workspaceId,
+        baseRevision: sourceNotebook.notebookRevision,
+        knowledgePageId: 'l3-portability',
         content: 'L3 workspace portability knowledge survives import.',
         kind: 'project-context',
         requestId: randomUUID(),

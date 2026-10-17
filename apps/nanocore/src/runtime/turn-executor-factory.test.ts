@@ -46,6 +46,7 @@ import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -259,6 +260,10 @@ function authorizeNanoHostPackage(
   } catch {
     const fixture = createDemoWorkspaceForUser(ownerUserId);
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({
+        workspaceId: environmentPackage.scope.workspaceId,
+        knowledge: [],
+      }),
       agentSessions: [],
       artifacts: [],
       itemRevisions: [],

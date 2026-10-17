@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   constants,
   copyFileSync,
@@ -69,6 +69,11 @@ import {
 } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
 import { assertConversationRetrievalTraceReadable } from '../internal-agents/assistant-history.js';
+import {
+  assertPortableWorkspaceNotebookDisclosure,
+  bindImportedWorkspaceNotebookTraces,
+  importedWorkspaceNotebookFiles,
+} from '../knowledge/notebook-workspace-portability.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -842,6 +847,7 @@ function importWorkspaceDatabaseRows({
  * @param ownerUserId Importing user or verified deleted-resource tombstone owner.
  * @param snapshot Verified and reminted import snapshot.
  * @param stageWorkspace Staged file and workspace-database writer.
+ * @param initialization Actual current importer and command attribution for the new Notebook.
  * @returns Imported workspace record.
  * @throws Error when staged publication or transactional Core replay fails.
  */
@@ -850,12 +856,22 @@ function publishImportedWorkspace(
   store: FsStore,
   ownerUserId: string,
   snapshot: WorkspaceImportSnapshot,
-  stageWorkspace: (stage: ImportWorkspaceStage) => void
+  stageWorkspace: (stage: ImportWorkspaceStage) => void,
+  initialization: NonNullable<
+    Parameters<FsStore['importWorkspaceSnapshot']>[0]['notebookInitialization']
+  >
 ): ReturnType<FsStore['importWorkspaceSnapshot']> {
   const importWorkspaceState = () =>
     store.importWorkspaceSnapshot({
       ...snapshot,
       stageWorkspace,
+      notebookInitialization: initialization,
+      initialNotebookFiles: importedWorkspaceNotebookFiles(
+        snapshot.portableFileState.nativeKnowledgePages
+      ),
+      ...(snapshot.portableFileState.workspaceSchema === null
+        ? {}
+        : { initialNotebookSchemaText: snapshot.portableFileState.workspaceSchema }),
     });
   if (!coreDb) {
     return importWorkspaceState();
@@ -924,7 +940,14 @@ export function importVerifiedWorkspace({
     targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
-    writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
+    writeWorkspacePortableFileState(workspaceRoot, {
+      ...snapshot.portableFileState,
+      retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
+        workspaceRoot,
+        workspaceId: importedWorkspaceId,
+        traces: snapshot.portableFileState.retrievalTraceFiles,
+      }),
+    });
     for (const [turnId, text] of snapshot.turnObservations) {
       const turn = snapshot.turns.find((candidate) => candidate.id === turnId);
       if (!turn) throw new Error('Imported work observations have no Turn owner.');
@@ -1014,7 +1037,12 @@ export function importVerifiedWorkspace({
     store,
     recoveryOwnerUserId ?? authorityUserId,
     snapshot,
-    stageWorkspace
+    stageWorkspace,
+    {
+      requestId: requestId ?? randomUUID(),
+      producer: { kind: 'user', id: authorityUserId },
+      instructionReference: `workspace.import:${verified.manifest.id}${verified.manifest.knowledgeNotebookRevision ? `:notebook:${verified.manifest.knowledgeNotebookRevision}` : ''}`,
+    }
   );
 
   return WorkspaceImportResponseSchema.parse({
@@ -1252,6 +1280,22 @@ export function createVerifiedWorkspaceExport({
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
   const portableFileState = retainedPortableState;
+  if (!deletionRecoveryAuthorized) {
+    if (!requestActor || !portableFileState.notebookRevision)
+      throw new Error('Notebook export requires current source disclosure authority.');
+    assertPortableWorkspaceNotebookDisclosure({
+      dataRoot,
+      workspaceId,
+      notebookRevision: portableFileState.notebookRevision,
+      pages: portableFileState.nativeKnowledgePages,
+      access: {
+        store,
+        coreDb,
+        actor: authorityActor ?? { kind: 'user', id: authorityUserId },
+        requestActor,
+      },
+    });
+  }
   // A missing current file cannot establish that a reserved Turn was never published.
   if (coreDb) {
     const accepted = coreDb.sqlite

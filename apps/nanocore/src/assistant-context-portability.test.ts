@@ -32,6 +32,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -442,6 +443,7 @@ describe('Assistant conversation context portability', () => {
     const target = deployment();
     // P14 uses independent Workspace identities; explicitly occupy the exported id to test reminting.
     target.store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: source.workspace.id, knowledge: [] }),
       workspace: source.workspace,
       threads: [],
       knowledge: [],
