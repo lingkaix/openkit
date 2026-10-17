@@ -9540,6 +9540,7 @@ describe('createConfiguredTurnExecutor', () => {
     'materialization-forced-retirement-guard',
   ] as const)('keeps an independent Task queued until one-Sandbox release: %s', async (scenario) => {
     const coreDb = createFactoryCoreDb();
+    const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 0n);
     const effects: NanoHostSessionEffectRequest[] = [];
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -9567,6 +9568,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission,
       coreDb,
       env: {},
       store,
@@ -9626,6 +9628,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
     }
     const executor = new CapacityBoundaryExecutor({
+      fileAdmission,
       backend,
       coreDb,
       awaitWorkerCompletion: async (aep) => {
