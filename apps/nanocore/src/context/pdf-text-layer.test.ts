@@ -453,4 +453,3 @@ describe('isolated PDF text-layer representation', () => {
     });
   });
 });
-

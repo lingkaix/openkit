@@ -380,6 +380,6 @@ function validLimits(limits: PdfTextLayerLimits): boolean {
   return Object.entries(PDF_TEXT_LAYER_LIMITS).every(([key, ceiling]) => {
     const value = limits[key as keyof PdfTextLayerLimits];
     return Number.isSafeInteger(value) && value > 0 && value <= ceiling &&
-      (key !== 'heapBytes' || value >= 1_048_576); 
+      (key !== 'heapBytes' || value >= 1_048_576);
   });
 }
