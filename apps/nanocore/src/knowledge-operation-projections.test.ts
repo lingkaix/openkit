@@ -13,9 +13,9 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { createApp } from './test-support/app.js';
 import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -91,7 +91,7 @@ function notebook(f: ReturnType<typeof fixture>) {
   });
 }
 
-/** Accepted public inventory; the same definitions must drive each concrete projection. */
+/** Retained entry/governance projection cohort; native role operations have their own query and command proofs. */
 const governedIds = [
   'knowledge.answer',
   'knowledge.source.list',
@@ -270,7 +270,7 @@ describe('Knowledge operation definition cutover', () => {
   it('declares the accepted governed and Notebook operation inventory without handwritten projection catalogs', () => {
     const tables = schemas as unknown as Record<string, Record<string, unknown>>;
     expect(Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
-      [...governedIds].sort()
+      [...governedIds, 'knowledge.ask', 'knowledge.tell', 'knowledge.maintain'].sort()
     );
     expect(Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
       [...entryIds].sort()
@@ -462,7 +462,7 @@ describe('Knowledge operation definition cutover', () => {
     }
   }, 120_000);
 
-  it('keeps unauthorized Workspace refusal on every definition, scoped source denial and readonly refusal on every mutation before effects', async () => {
+  it('keeps unauthorized Workspace refusal on every retained definition, scoped source denial and readonly refusal on every retained mutation before effects', async () => {
     const f = fixture();
     try {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {

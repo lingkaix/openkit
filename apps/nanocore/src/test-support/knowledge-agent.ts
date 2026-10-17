@@ -49,14 +49,10 @@ export function createKnowledgeAnswerApp(
     providerRegistry: new ProviderRegistry([
       {
         id: 'agent-openrouter',
-        adapter: 'openai-compatible',
         displayName: 'Fake transport',
         kind: 'custom',
-        enabled: true,
         baseUrl: 'https://provider.invalid/v1',
         models: ['openai/gpt-5.2'],
-        credential: { kind: 'none' },
-        capabilities: { llm: { responses: 'supported', chatCompletions: 'supported' } },
         modelMetadata: {
           'openai/gpt-5.2': { tool_call: true, limit: { context: 64_000, output: 2_000 } },
         },
