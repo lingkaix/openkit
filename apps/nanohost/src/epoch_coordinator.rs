@@ -2315,6 +2315,26 @@ impl EpochCoordinator {
         Ok(())
     }
 
+    /// Exempts expected task completion before deleting the exact current Sandbox.
+    ///
+    /// File-effect cleanup can delete a Sandbox with its bridge still live. Reuse
+    /// explicit-close admission under the task lock, but retain the bootstrap
+    /// monitor until native deletion proves absence.
+    fn begin_sandbox_deletion(&mut self, name: &str) -> Result<(), EpochFault> {
+        if !self
+            .current_sandbox_name()
+            .is_ok_and(|current| current == name)
+        {
+            return self.settle(Err(EpochFault::IdentityMismatch));
+        }
+        if self.bridge.is_some() {
+            let close = self.monitor.begin_bridge_close();
+            self.settle(close)?;
+            self.bridge = None;
+        }
+        Ok(())
+    }
+
     /// Deletes a sandbox and invalidates the epoch unless absence is proved.
     ///
     /// # Errors
@@ -2326,6 +2346,7 @@ impl EpochCoordinator {
         name: &str,
         deletion_timeout: Duration,
     ) -> Result<(), EpochFault> {
+        self.begin_sandbox_deletion(name)?;
         let result = tokio::task::block_in_place(|| {
             self.runtime
                 .block_on(self.client.delete_sandbox(name, deletion_timeout))
@@ -3902,6 +3923,105 @@ mod tests {
             observed.expect("Harness completion must reach the fence during a local effect");
         assert_eq!(fault, observed_harness_response());
         assert_failed_member(&fault, "subject=harness-response;observation=finished");
+    }
+
+    /// Expected task completion during exact deletion must not replace its absence proof.
+    #[tokio::test]
+    async fn sandbox_deletion_exempts_expected_harness_completion_and_retains_monitor() {
+        let root =
+            std::env::temp_dir().join(format!("nanohost-delete-exemption-{}", std::process::id()));
+        let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
+        coordinator.monitor = liveness_test_member_monitor();
+        let (bridge, route) = liveness_test_bridge();
+        let (bootstrap, abort) = liveness_test_bootstrap(route);
+        coordinator.monitor.watch_harness(&bootstrap).unwrap();
+        coordinator.bridge = Some(bridge);
+        coordinator.worker_bootstrap_monitor = Some(bootstrap);
+
+        coordinator
+            .begin_sandbox_deletion("sandbox-one")
+            .expect("admit exact current deletion");
+        abort.abort();
+        wait_for_liveness_test_bootstrap(coordinator.worker_bootstrap_monitor.as_ref().unwrap())
+            .await;
+        coordinator
+            .check_member_liveness()
+            .expect("intentional Sandbox deletion must not become member loss");
+        assert!(coordinator.bridge.is_none(), "deletion closes its route");
+        assert!(
+            coordinator.worker_bootstrap_monitor.is_some(),
+            "response proof stays retained until exact absence"
+        );
+        assert!(
+            coordinator.monitor.worker.is_some(),
+            "healthy epoch retains its member monitor"
+        );
+
+        // Failure to prove native absence must still use the existing whole-epoch fence.
+        assert_eq!(
+            coordinator.settle::<()>(Err(EpochFault::DeleteOutcomeUncertain)),
+            Err(EpochFault::DeleteOutcomeUncertain)
+        );
+        assert!(
+            coordinator.monitor.worker.is_none(),
+            "uncertain deletion joins the epoch fence"
+        );
+        assert!(
+            coordinator.worker_bootstrap_monitor.is_some(),
+            "uncertain deletion does not manufacture absence"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A task already finished before deletion intent is a real failure, not expected cleanup.
+    #[tokio::test]
+    async fn sandbox_deletion_rejects_prior_harness_completion_and_wrong_identity() {
+        for prior_completion in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "nanohost-delete-refusal-{}-{prior_completion}",
+                std::process::id()
+            ));
+            let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
+            coordinator.monitor = liveness_test_member_monitor();
+            let (bridge, route) = liveness_test_bridge();
+            let (bootstrap, abort) = liveness_test_bootstrap(route);
+            coordinator.monitor.watch_harness(&bootstrap).unwrap();
+            coordinator.bridge = Some(bridge);
+            coordinator.worker_bootstrap_monitor = Some(bootstrap);
+            if prior_completion {
+                abort.abort();
+                wait_for_liveness_test_bootstrap(
+                    coordinator.worker_bootstrap_monitor.as_ref().unwrap(),
+                )
+                .await;
+            }
+            let result = coordinator.begin_sandbox_deletion(if prior_completion {
+                "sandbox-one"
+            } else {
+                "another-sandbox"
+            });
+            assert_eq!(
+                result,
+                Err(if prior_completion {
+                    observed_harness_response()
+                } else {
+                    EpochFault::IdentityMismatch
+                })
+            );
+            assert!(
+                coordinator.bridge.is_some(),
+                "refused deletion retains bridge ownership"
+            );
+            assert!(coordinator.worker_bootstrap_monitor.is_some());
+            assert!(
+                coordinator.monitor.worker.is_none(),
+                "refused teardown remains fail closed"
+            );
+            abort.abort();
+            drop(coordinator);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[tokio::test]
