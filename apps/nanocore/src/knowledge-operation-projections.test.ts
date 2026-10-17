@@ -14,7 +14,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -44,7 +44,7 @@ function fixture(member = true, citedAnswer = false) {
   const plan = citedAnswer
     ? {
         query: 'cutover lesson',
-        pageId: 'cutover-lesson',
+        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/cutover-lesson`,
         answer: 'Source traced cutover lesson.',
         uncertainty: null,
       }
