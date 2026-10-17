@@ -37,9 +37,9 @@ import {
 } from './workspace-git.js';
 
 const WORKER_MCP_CAPABILITY_ROUTES = [
-  'mcp.list_servers',
-  'mcp.list_tools',
-  'mcp.call_tool',
+  'mcp.list-servers',
+  'mcp.list-tools',
+  'mcp.call-tool',
 ] as const;
 
 /** Safe image environment of the Harness process. */
