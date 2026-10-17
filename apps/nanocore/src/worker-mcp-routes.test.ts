@@ -339,7 +339,7 @@ describe('worker MCP routes', () => {
       const abort = new AbortController();
       call = client.callTool(
         {
-          name: 'work_submit_artifact',
+          name: 'work_artifact_submit',
           arguments: {
             requestId: 'capture-wait',
             path: '/workspace/output/report.md',
@@ -424,7 +424,7 @@ describe('worker MCP routes', () => {
       }
       admission.reopen('ws_00000000-0000-7000-8000-000000000001');
       expect(
-        (await client.listTools()).tools.some((tool) => tool.name === 'work_submit_artifact')
+        (await client.listTools()).tools.some((tool) => tool.name === 'work_artifact_submit')
       ).toBe(true);
     } finally {
       vi.useRealTimers();
@@ -557,10 +557,10 @@ describe('worker MCP routes', () => {
       expect(sessionTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect(statelessTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect((await workClient.listTools()).tools.map((tool) => tool.name)).toEqual([
-        'work_request_input',
-        'work_list_peers',
-        'work_read_peer',
-        'work_submit_artifact',
+        'work_input_request',
+        'work_peer_list',
+        'work_peer_read',
+        'work_artifact_submit',
       ]);
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
@@ -588,7 +588,7 @@ describe('worker MCP routes', () => {
         });
         await expect(
           statelessClient.callTool({
-            name: 'generative_ui_action',
+            name: 'generative-ui_action',
             arguments: {
               presentationId: missingPresentationId,
               version: 'v0.9',
@@ -623,17 +623,17 @@ describe('worker MCP routes', () => {
           SELECT capability_id, status, error_code, turn_id, package_snapshot_id
           FROM capability_calls WHERE capability_id IN (?, ?) ORDER BY capability_id
         `)
-            .all('mcp.call_tool.generative_ui_action', 'mcp.call_tool.kernel_apps_retire')
+            .all('mcp.call-tool.generative-ui_action', 'mcp.call-tool.kernel_apps_retire')
         ).toEqual([
           {
-            capability_id: 'mcp.call_tool.generative_ui_action',
+            capability_id: 'mcp.call-tool.generative-ui_action',
             status: 'failed',
             error_code: 'not_found',
             turn_id: turn.id,
             package_snapshot_id: environmentPackage.snapshotId,
           },
           {
-            capability_id: 'mcp.call_tool.kernel_apps_retire',
+            capability_id: 'mcp.call-tool.kernel_apps_retire',
             status: 'failed',
             error_code: 'unavailable',
             turn_id: turn.id,
@@ -743,7 +743,7 @@ describe('worker MCP routes', () => {
         data: { note: 'After Worker update' },
       });
       const pending = await workClient.callTool({
-        name: 'work_request_input',
+        name: 'work_input_request',
         arguments: {
           requestId: '00000000-0000-4000-8000-000000000144',
           prompt: 'Choose a direction.',
@@ -783,7 +783,7 @@ describe('worker MCP routes', () => {
         expect(
           (
             await workClient.callTool({
-              name: 'work_request_input',
+              name: 'work_input_request',
               arguments: questionArgs(index),
             })
           ).isError
@@ -796,7 +796,7 @@ describe('worker MCP routes', () => {
         }
       ).count;
       await expect(
-        workClient.callTool({ name: 'work_request_input', arguments: questionArgs(16) })
+        workClient.callTool({ name: 'work_input_request', arguments: questionArgs(16) })
       ).rejects.toMatchObject({ data: { code: 'request_limit_reached' } });
       expect(
         (
@@ -806,7 +806,7 @@ describe('worker MCP routes', () => {
         ).count
       ).toBe(beforeCalls);
       const duplicate = await workClient.callTool({
-        name: 'work_request_input',
+        name: 'work_input_request',
         arguments: questionArgs(15),
       });
       expect(duplicate.structuredContent).toMatchObject({ requestId: questionArgs(15).requestId });
@@ -1093,7 +1093,7 @@ describe('worker MCP routes', () => {
       await client.connect(transport);
       environmentPackage = packages[1]!;
       await client.callTool({
-        name: 'work_request_input',
+        name: 'work_input_request',
         arguments: {
           requestId: '00000000-0000-4000-8000-000000000255',
           prompt: 'Keep this pending.',
@@ -1146,16 +1146,16 @@ describe('worker MCP routes', () => {
       expect(workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toHaveLength(1);
       const tools = (await client.listTools()).tools;
       expect(tools.map((tool) => tool.name)).toEqual([
-        'work_request_input',
-        'work_list_peers',
-        'work_read_peer',
-        'work_submit_artifact',
+        'work_input_request',
+        'work_peer_list',
+        'work_peer_read',
+        'work_artifact_submit',
       ]);
-      const readSchema = tools.find((tool) => tool.name === 'work_read_peer')!.inputSchema;
+      const readSchema = tools.find((tool) => tool.name === 'work_peer_read')!.inputSchema;
       expect(readSchema.required).toEqual(['handle']);
       expect(readSchema.additionalProperties).not.toBe(false);
       const listed = await client.callTool({
-        name: 'work_list_peers',
+        name: 'work_peer_list',
         arguments: {
           future: 'additive-canary',
           agentSessionId: testEntityId('as', 'as_native_foreign'),
@@ -1191,12 +1191,12 @@ describe('worker MCP routes', () => {
       );
       const callsBefore = workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all().length;
       const defaultRead = await client.callTool({
-        name: 'work_read_peer',
+        name: 'work_peer_read',
         arguments: { handle: readable.handle },
       });
       expect(defaultRead.structuredContent!.items).toHaveLength(20);
       const read = await client.callTool({
-        name: 'work_read_peer',
+        name: 'work_peer_read',
         arguments: { handle: readable.handle, limit: 2, future: 'additive-canary' },
       });
       expect(read.structuredContent).toMatchObject({
@@ -1208,7 +1208,7 @@ describe('worker MCP routes', () => {
         nextCursor: '2',
       });
       const next = await client.callTool({
-        name: 'work_read_peer',
+        name: 'work_peer_read',
         arguments: { handle: readable.handle, cursor: '2', limit: 50 },
       });
       expect(
@@ -1220,12 +1220,12 @@ describe('worker MCP routes', () => {
       );
       for (const hiddenPeer of hiddenPeers) {
         await expect(
-          client.callTool({ name: 'work_read_peer', arguments: { handle: hiddenPeer.handle } })
+          client.callTool({ name: 'work_peer_read', arguments: { handle: hiddenPeer.handle } })
         ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
       }
       await expect(
         client.callTool({
-          name: 'work_read_peer',
+          name: 'work_peer_read',
           arguments: { handle: testEntityId('as', 'as_native_peer') },
         })
       ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
@@ -1255,7 +1255,7 @@ describe('worker MCP routes', () => {
       ]) {
         await expect(
           client.callTool({
-            name: 'work_read_peer',
+            name: 'work_peer_read',
             arguments: { handle: readable.handle, ...argumentsOverride },
           })
         ).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
@@ -1276,14 +1276,14 @@ describe('worker MCP routes', () => {
       });
       expect(after).toBe(before);
       store.updateTurn(peer.id, { status: 'pending' });
-      const pendingPeers = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+      const pendingPeers = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
       expect(pendingPeers.find((entry) => entry.handle === readable.handle)).toMatchObject({
         activeTurn: true,
       });
       store.updateTurn(peer.id, { status: 'running' });
       environmentPackage = packages[1]!;
-      const reverse = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+      const reverse = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
       expect(reverse.map((entry) => entry.title)).toContain('caller');
       expect(reverse.map((entry) => entry.title)).not.toContain('peer');
@@ -1293,9 +1293,9 @@ describe('worker MCP routes', () => {
         privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       });
       await expect(
-        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
       ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      const relisted = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+      const relisted = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
       expect(
         Object.keys(relisted.find((entry) => entry.handle === readable.handle)!).sort()
@@ -1312,7 +1312,7 @@ describe('worker MCP routes', () => {
         text: 'x'.repeat(524_288),
       });
       await expect(
-        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
       ).rejects.toMatchObject({
         data: { code: 'mcp-result-too-large' },
         message: expect.stringContaining('Route bulk output through artifacts or the data plane.'),
@@ -1321,7 +1321,7 @@ describe('worker MCP routes', () => {
         .prepare('DELETE FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
         .run(testEntityId('as', 'as_native_peer'));
       await expect(
-        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
       ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
       // Restore the same binding; a later Turn still cannot use its predecessor's handle.
       openNanoHostAgentSessionBinding(coreDb, {
@@ -1401,9 +1401,9 @@ describe('worker MCP routes', () => {
       });
       recordMcpWorkerLineage(coreDb, environmentPackage, adminToken.tokenId);
       await expect(
-        client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
+        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
       ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      const adminPeers = (await client.callTool({ name: 'work_list_peers', arguments: {} }))
+      const adminPeers = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
       const adminPeer = adminPeers.find((entry) => entry.title === 'peer');
       expect(adminPeer).toMatchObject({
@@ -1426,7 +1426,7 @@ describe('worker MCP routes', () => {
       });
       expect.soft(adminPeers.filter((entry) => !('title' in entry))).toHaveLength(0);
       const adminRead = await client.callTool({
-        name: 'work_read_peer',
+        name: 'work_peer_read',
         arguments: { handle: adminPeer!.handle, cursor: '1', limit: 1 },
       });
       expect(adminRead.structuredContent!.items).toHaveLength(1);
@@ -2610,7 +2610,7 @@ describe('worker MCP routes', () => {
       );
       const discovery = await work.listTools();
       expect(
-        discovery.tools.find((tool) => tool.name === 'work_submit_artifact')?.description
+        discovery.tools.find((tool) => tool.name === 'work_artifact_submit')?.description
       ).toContain(environmentPackage.workspace.outputs[0]!.path);
       const submission = {
         requestId: `capture-${environmentPackage.scope.turnId}`,
@@ -2622,7 +2622,7 @@ describe('worker MCP routes', () => {
       const beforeRefusal = liveCaptureCount;
       await expect(
         work.callTool({
-          name: 'work_submit_artifact',
+          name: 'work_artifact_submit',
           arguments: {
             ...submission,
             requestId: `path-refusal-${environmentPackage.scope.turnId}`,
@@ -2635,7 +2635,7 @@ describe('worker MCP routes', () => {
       writeFileSync(liveFilePath, capabilityToken);
       await expect(
         work.callTool({
-          name: 'work_submit_artifact',
+          name: 'work_artifact_submit',
           arguments: {
             ...submission,
             requestId: `credential-refusal-${environmentPackage.scope.turnId}`,
@@ -2651,7 +2651,7 @@ describe('worker MCP routes', () => {
       writeFileSync(liveFilePath, originalBytes);
       const capturesBefore = liveCaptureCount;
       const submitted = await work.callTool({
-        name: 'work_submit_artifact',
+        name: 'work_artifact_submit',
         arguments: submission,
       });
       expect(submitted.isError).toBe(false);
@@ -2690,7 +2690,7 @@ describe('worker MCP routes', () => {
       const publishedBytes = readFileSync(liveFilePath);
       writeFileSync(liveFilePath, 'A later edit cannot mutate the committed output.');
       expect(
-        (await work.callTool({ name: 'work_submit_artifact', arguments: submission }))
+        (await work.callTool({ name: 'work_artifact_submit', arguments: submission }))
           .structuredContent!.artifactId
       ).toBe(artifactId);
       expect(liveCaptureCount).toBe(capturesBefore + 1);
@@ -3420,7 +3420,7 @@ describe('worker MCP routes', () => {
         .prepare(
           `SELECT call_id, item_id
            FROM capability_calls
-           WHERE operation = 'mcp.call_tool'
+           WHERE operation = 'mcp.call-tool'
            ORDER BY rowid`
         )
         .all() as Array<{ call_id: string; item_id: string }>;
@@ -3430,7 +3430,7 @@ describe('worker MCP routes', () => {
             'mcp',
             environmentPackage.snapshotId,
             'echo',
-            'mcp.call_tool',
+            'mcp.call-tool',
             requestId,
           ]),
           item_id: deriveEntityId('it', [
@@ -3674,7 +3674,7 @@ describe('worker MCP routes', () => {
         .prepare(
           `SELECT call_id, item_id, status
            FROM capability_calls
-           WHERE operation = 'mcp.call_tool'
+           WHERE operation = 'mcp.call-tool'
            ORDER BY rowid DESC
            LIMIT 1`
         )
@@ -3735,7 +3735,7 @@ describe('worker MCP routes', () => {
           workspaceDb.sqlite
             .prepare(
               `SELECT error_code, status FROM capability_calls
-               WHERE operation = 'mcp.call_tool'
+               WHERE operation = 'mcp.call-tool'
                ORDER BY rowid`
             )
             .all()
@@ -3812,7 +3812,7 @@ describe('worker MCP routes', () => {
           .prepare(
             `SELECT error_code, status
              FROM capability_calls
-             WHERE operation = 'mcp.list_tools'
+             WHERE operation = 'mcp.list-tools'
              ORDER BY rowid DESC
              LIMIT 1`
           )
@@ -3838,7 +3838,7 @@ describe('worker MCP routes', () => {
           .prepare(
             `SELECT error_code, status
              FROM capability_calls
-             WHERE operation = 'mcp.call_tool'
+             WHERE operation = 'mcp.call-tool'
              ORDER BY rowid DESC
              LIMIT 1`
           )
@@ -3927,11 +3927,11 @@ describe('worker MCP routes', () => {
           agentSessionId: environmentPackage.scope.agentSessionId,
           authorityActor: turn.triggerActor,
           callId: testEntityId('cap', `cap_mcp_${suffix}`),
-          capabilityId: 'mcp.call_tool',
+          capabilityId: 'mcp.call-tool',
           family: 'mcp',
           itemId: testEntityId('it', `it_mcp_${suffix}`),
           now: new Date(timestamp),
-          operation: 'mcp.call_tool',
+          operation: 'mcp.call-tool',
           packageSnapshotId: environmentPackage.snapshotId,
           providerRef: 'echo',
           redactionClass: 'metadata-only',
@@ -4098,10 +4098,10 @@ describe('worker MCP routes', () => {
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: turn.triggerActor,
         callId: testEntityId('cap', 'cap_mcp_recovery'),
-        capabilityId: 'mcp.call_tool',
+        capabilityId: 'mcp.call-tool',
         family: 'mcp',
         itemId: testEntityId('it', 'it_mcp_recovery'),
-        operation: 'mcp.call_tool',
+        operation: 'mcp.call-tool',
         packageSnapshotId: environmentPackage.snapshotId,
         providerRef: 'echo',
         redactionClass: 'metadata-only',

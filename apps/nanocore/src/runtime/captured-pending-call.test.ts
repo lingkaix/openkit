@@ -342,8 +342,10 @@ describe('captured pending MCP schema identity at grant', () => {
     );
     await expect(f.grant()).rejects.toMatchObject({ code: 'request_not_pending' });
     expect(f.callTool).toHaveBeenCalledTimes(1);
-    expect(f.db.sqlite.prepare('SELECT status FROM capability_calls').all()).toEqual([
-      { status: 'succeeded' },
+    expect(
+      f.db.sqlite.prepare('SELECT status,operation,capability_id FROM capability_calls').all()
+    ).toEqual([
+      { status: 'succeeded', operation: 'mcp.call-tool', capability_id: 'mcp.call-tool' },
     ]);
     expect(f.db.sqlite.prepare('SELECT quantity FROM usage_records').all()).toEqual([
       { quantity: 1 },

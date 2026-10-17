@@ -131,11 +131,11 @@ function seedMcpBootItem(input: {
       agentSessionId: environmentPackage.scope.agentSessionId,
       authorityActor: turn.triggerActor,
       callId: input.callId,
-      capabilityId: input.capabilityId ?? 'mcp.call_tool',
+      capabilityId: input.capabilityId ?? 'mcp.call-tool',
       family: 'mcp',
       itemId: input.itemId,
       now: ledgerNow,
-      operation: 'mcp.call_tool',
+      operation: 'mcp.call-tool',
       packageSnapshotId: environmentPackage.snapshotId,
       providerRef: 'echo',
       redactionClass: 'metadata-only',
@@ -344,10 +344,10 @@ describe('post-terminal write admission', () => {
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: turn.triggerActor,
         callId: 'cap_00000000-0000-7093-9d26-a0fb6e745bde',
-        capabilityId: 'mcp.call_tool',
+        capabilityId: 'mcp.call-tool',
         family: 'mcp',
         itemId: 'it_00000000-0000-7716-8602-110ce91c304f',
-        operation: 'mcp.call_tool',
+        operation: 'mcp.call-tool',
         packageSnapshotId: environmentPackage.snapshotId,
         providerRef: 'echo',
         redactionClass: 'metadata-only',
@@ -383,10 +383,10 @@ describe('post-terminal write admission', () => {
         agentSessionId: 'as_00000000-0000-775f-b465-57ce886fa280',
         authorityActor: conflictTurn.triggerActor,
         callId: 'cap_00000000-0000-7e5e-b47c-e8154829070d',
-        capabilityId: 'mcp.call_tool',
+        capabilityId: 'mcp.call-tool',
         family: 'mcp',
         itemId: 'it_00000000-0000-7585-88a1-d483d1404105',
-        operation: 'mcp.call_tool',
+        operation: 'mcp.call-tool',
         packageSnapshotId: 'aepsnap_conflict',
         providerRef: 'echo',
         redactionClass: 'metadata-only',
@@ -701,10 +701,10 @@ describe('post-terminal write admission', () => {
   });
 
   it('leaves a generative MCP call row alone because it published no tool-call Item', () => {
-    // Generative rows carry capability_id 'mcp.call_tool.<name>' and store the parent Item in item_id.
+    // Generative rows carry capability_id 'mcp.call-tool.<name>' and store the parent Item in item_id.
     const { dataRoot, store } = seedMcpBootItem({
       callId: 'cap_00000000-0000-7bae-80ab-e61aec7becb8',
-      capabilityId: 'mcp.call_tool.openkit_generative_present',
+      capabilityId: 'mcp.call-tool.openkit_generative_present',
       createdAt: COMPLETED_AT,
       itemId: 'it_00000000-0000-7ab4-86dd-d5511a0d438e',
       skipExistingItem: true,

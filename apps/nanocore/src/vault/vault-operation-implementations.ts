@@ -1056,7 +1056,7 @@ export function createVaultOperationImplementations(
             input.constraints.targetCapabilityId !== undefined ||
             source.targetCapabilityId !== null)) ||
         (source.targetCapabilityId !== null &&
-          !['mcp.list_tools', 'mcp.call_tool'].includes(source.targetCapabilityId))
+          !['mcp.list-tools', 'mcp.call-tool'].includes(source.targetCapabilityId))
       )
         return vaultFailure('Grant shape is not supported for narrowing.', 'invalid_request', 400);
       try {

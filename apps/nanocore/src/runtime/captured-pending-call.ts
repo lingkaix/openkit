@@ -76,7 +76,7 @@ export async function prepareCapturedPendingCall(input: {
         workerMcpGateway: input.workerMcpGateway,
         ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
       },
-      operation: 'mcp.call_tool',
+      operation: 'mcp.call-tool',
       resolved,
       workspaceDb: input.workspaceDb,
     });
@@ -136,8 +136,8 @@ export function admitCapturedPendingCall(
     authorityActor: { kind: 'user', id: record.responsibleUserId },
     requestId: commandRequestId,
     family: 'mcp',
-    operation: 'mcp.call_tool',
-    capabilityId: 'mcp.call_tool',
+    operation: 'mcp.call-tool',
+    capabilityId: 'mcp.call-tool',
     itemId: null,
     providerRef: record.serverId,
     serviceRef: `mcp-tool:${record.toolName}`,
@@ -396,7 +396,7 @@ function credentialsStillValid(
             scope: { workspaceId: record.workspaceId, agentSessionId: record.agentSessionId ?? '' },
             agent: { agentId: record.agentId ?? '' },
           },
-          operation: 'mcp.call_tool',
+          operation: 'mcp.call-tool',
         },
         grant,
         reference
