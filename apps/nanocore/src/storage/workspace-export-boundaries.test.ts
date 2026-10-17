@@ -281,7 +281,7 @@ function tarHeaderWithDeclaredSize(header: Buffer, size: number): Buffer {
 
 /** Creates one compressed tar fixture without touching a filesystem. */
 async function archiveWithEntry(
-  header: { name: string; type: 'file' | 'symlink'; linkname?: string },
+  header: { name: string; type: 'file' | 'symlink'; linkname?: string; prefix?: string },
   content = Buffer.alloc(0)
 ): Promise<Buffer> {
   const rawHeader = Buffer.alloc(512);
@@ -294,6 +294,7 @@ async function archiveWithEntry(
   if (header.linkname) rawHeader.write(header.linkname, 157, 100, 'utf8');
   rawHeader.write('ustar\0', 257, 6, 'ascii');
   rawHeader.write('00', 263, 2, 'ascii');
+  if (header.prefix) rawHeader.write(header.prefix, 345, 155, 'utf8');
   const canonicalHeader = tarHeaderWithDeclaredSize(rawHeader, content.byteLength);
   const padding = Buffer.alloc((512 - (content.byteLength % 512)) % 512);
   return zstdCompressSync(Buffer.concat([canonicalHeader, content, padding, Buffer.alloc(1024)]));
@@ -597,7 +598,7 @@ describe('workspace export route boundaries', () => {
       dataRoot: sourceDataRoot,
       store: sourceStore,
     });
-    const pagePath = `knowledge/pages/分类/${'a'.repeat(90)}.md`;
+    const pagePath = `knowledge/pages/${'a'.repeat(60)}/${'b'.repeat(60)}.md`;
     const notebookResponse = await sourceApp.request(
       ...operationRequest('knowledge.list', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -648,6 +649,33 @@ describe('workspace export route boundaries', () => {
     });
 
     expect(targetResponse.status, await targetResponse.clone().text()).toBe(200);
+
+    // Archive intake owns UTF-8 paths; Notebook pages retain their narrower S61 grammar.
+    const unicodePrefix = 'attachments/分类';
+    const unicodeName = `${'c'.repeat(90)}.bin`;
+    const unicodePath = `${unicodePrefix}/${unicodeName}`;
+    const exactBytes = Buffer.from([0, 255, 128, 13, 10, 65]);
+    const unicodeArchive = await archiveWithEntry(
+      { name: unicodeName, prefix: unicodePrefix, type: 'file' },
+      exactBytes
+    );
+    expect(Buffer.byteLength(unicodePath)).toBeGreaterThan(100);
+    expect(readTarRegularFiles(zstdDecompressSync(unicodeArchive)).get(unicodePath)).toEqual(
+      exactBytes
+    );
+    const staged = await stageWorkspaceArchive(
+      new Request('http://localhost/archive', {
+        method: 'POST',
+        headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+        body: unicodeArchive,
+      }),
+      targetDataRoot
+    );
+    try {
+      expect(readFileSync(join(staged.exportRoot, unicodePath))).toEqual(exactBytes);
+    } finally {
+      staged.remove();
+    }
   });
 
   it('fails closed when a worker-backed Turn has no S39 trace', async () => {
