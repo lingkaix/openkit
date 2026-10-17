@@ -114,7 +114,7 @@ describe('stock xAI Worker tool adaptation', () => {
       baseUrl: null,
       displayName: 'Synthetic xAI fixture',
       gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-      id: 'xai',
+      id: 'xai-work',
       models: [model.id],
       requiresApiKey: true,
     };
