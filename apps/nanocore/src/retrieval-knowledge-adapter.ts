@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { KnowledgeQueryContextSchema } from '@openkit/app-api-schemas';
 import {
@@ -8,6 +9,7 @@ import {
   RetrievalTraceReferenceSchema,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { parseDocument } from 'yaml';
 import type { Actor } from './auth/identity.js';
 import {
@@ -16,15 +18,25 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
+import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
+import { admitMemoryContext, memoryPageFacts } from './knowledge/memory-lifecycle.js';
+import { readMemorySuppressions } from './knowledge/memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   type KnowledgePageReferenceProof,
   parseOkfDocument,
+  parseScopeKnowledgeSchema,
   resolveRegisteredKnowledgeSourceReference,
   stringFrontmatterField,
   stringListFrontmatterField,
+  validateScopeKnowledgeSchema,
 } from './knowledge/okf.js';
+import { admitUserMemorySources } from './knowledge/scoped-knowledge-sources.js';
+import {
+  pinScopedNotebook,
+  resolveScopedNotebookOwner,
+} from './knowledge/scoped-notebook-owner.js';
 import {
   resolveWorkspaceKnowledgeReferenceProofs,
   verifyKnowledgeProposalWorkHistory,
@@ -36,8 +48,9 @@ import {
   type RetrievalDocument,
   type RetrievalScope,
 } from './retrieval-service.js';
-import { type CoreDb, openWorkspaceDb } from './storage/db.js';
-import { readDataRootLayoutMarker } from './storage/fs-layout.js';
+import { type CoreDb, openWorkspaceDb, type UserDb } from './storage/db.js';
+import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
+import { assertCanonicalDirectory } from './storage/workspace-file-records.js';
 import { readWorkspaceKnowledgeConflictLedger } from './storage/workspace-portable-file-state.js';
 
 /** Current source and destination authority supplied by trusted operation assembly. */
@@ -49,7 +62,16 @@ export interface KnowledgeRetrievalAccess {
   outputThreadId?: string | undefined;
   /** Existing querying Turn, supplied only by trusted execution assembly. */
   outputTurnId?: string | undefined;
+  /** Existing authenticated-self database, supplied by native Memory assembly when available. */
+  userDb?: UserDb | undefined;
 }
+/** Memory search requires current self authority and an actual private Assistant output Timeline. */
+export type UserMemoryRetrievalAccess = KnowledgeRetrievalAccess & {
+  coreDb: CoreDb;
+  userDb: UserDb;
+  requestActor: Actor;
+  outputThreadId: string;
+};
 interface Target {
   dataRoot: string;
   workspaceId: string;
@@ -58,6 +80,155 @@ interface Target {
   notebookRevision?: string | undefined;
   /** Restricts proof reads to exact selected identities when the caller already has a selection. */
   pageIds?: readonly string[] | undefined;
+}
+
+/** Current User/private Timeline admission precedes all Memory inventory, Kernel and trace access. */
+export function admitUserMemoryRetrieval(input: Target): void {
+  const { access } = input;
+  try {
+    if (
+      !access.coreDb ||
+      !access.requestActor ||
+      access.actor.kind !== 'user' ||
+      access.actor.id !== access.requestActor.userId ||
+      !access.outputThreadId ||
+      resolve(access.coreDb.dataRoot) !== resolve(input.dataRoot) ||
+      !access.store.getDataRoot() ||
+      resolve(access.store.getDataRoot()!) !== resolve(input.dataRoot)
+    )
+      throw new Error('Memory owner unavailable.');
+    resolveScopedNotebookOwner({
+      coreDb: access.coreDb,
+      actor: access.requestActor,
+      target: { kind: 'user' },
+    });
+    if (access.userDb)
+      admitMemoryContext({
+        coreDb: access.coreDb,
+        actor: access.requestActor,
+        userDb: access.userDb,
+      });
+    ReferenceScopeIdSchema.parse(`page/user/${access.requestActor.userId}`);
+    const timeline = findAssistantTimeline(
+      access.store,
+      input.workspaceId,
+      access.requestActor.userId
+    );
+    if (!timeline || timeline.id !== access.outputThreadId)
+      throw new Error('Private Timeline unavailable.');
+    admitKnowledgeRetrieval(input);
+    resolveKnowledgeQueryContext(input);
+  } catch {
+    throw new OperationError('memory_access_denied', 'Memory retrieval access denied.', 403);
+  }
+}
+
+/** Reads exact published User pages after current self, private audience, schema, Source integrity and page-id suppression admission. */
+export function readAuthorizedUserMemoryPages(input: Target) {
+  admitUserMemoryRetrieval(input);
+  const coreDb = input.access.coreDb!;
+  const actor = input.access.requestActor!;
+  const owner = resolveScopedNotebookOwner({ coreDb, actor, target: { kind: 'user' } });
+  const userRoot = join(input.dataRoot, 'users', actor.userId);
+  let sqlite: Database.Database | undefined;
+  try {
+    let userDb = input.access.userDb;
+    for (const path of [
+      input.dataRoot,
+      join(input.dataRoot, 'users'),
+      userRoot,
+      join(userRoot, 'db'),
+    ])
+      assertCanonicalDirectory(path);
+    const path = userDbPath(input.dataRoot, actor.userId);
+    const file = lstatSync(path);
+    if (!file.isFile() || file.isSymbolicLink() || (userDb && !userDb.sqlite.open))
+      throw new NotebookError('recovery_required');
+    if (!userDb) {
+      // Existing trace consumers open read-only authority and never initialize or migrate a User store.
+      sqlite = new Database(path, { readonly: true, fileMustExist: true });
+      userDb = { scope: 'user', dataRoot: input.dataRoot, userId: actor.userId, sqlite };
+    }
+    const context = { coreDb, userDb, actor };
+    admitMemoryContext(context);
+    const pin = pinScopedNotebook({ coreDb, actor, target: { kind: 'user' } });
+    const current = pin.read().files;
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(owner.notebookRoot, 'notebook.git'),
+    });
+    const notebookRevision = input.notebookRevision ?? pin.notebookRevision;
+    if (input.notebookRevision) notebook.history({ revision: notebookRevision, limit: 1 });
+    const files =
+      notebookRevision === pin.notebookRevision
+        ? current
+        : notebook.readRevision(notebookRevision).files;
+    const scopeSchemaText = readFileSync(
+      join(owner.notebookRoot, 'schema', 'scope-schema.yaml'),
+      'utf8'
+    );
+    const schema = parseScopeKnowledgeSchema(scopeSchemaText);
+    if (!schema.ok) throw new NotebookError('recovery_required');
+    // No User Conflict producer is joined. Never reinterpret Workspace rows as User authority.
+    const conflicts = join(owner.notebookRoot, 'conflicts');
+    if (lstatSync(conflicts, { throwIfNoEntry: false })) {
+      assertCanonicalDirectory(conflicts);
+      if (readdirSync(conflicts).length) throw new NotebookError('recovery_required');
+    }
+    const suppressed = new Set(
+      readMemorySuppressions(owner.notebookRoot, actor.userId).map(({ payload }) => payload.pageId)
+    );
+    const registeredSources = new Map<string, string | null>();
+    const eligible = (id: string, content: string) => {
+      if (suppressed.has(id) || !memoryPageFacts(`${id}.md`, content)) return false;
+      const parsed = parseOkfDocument({ path: `${id}.md`, content });
+      if (!parsed.ok) throw new NotebookError('recovery_required');
+      const report = validateScopeKnowledgeSchema(parsed.document, schema.schema, owner.ownerScope);
+      if (report.conformance !== 'scope-schema-valid' || report.errors.length)
+        throw new NotebookError('recovery_required');
+      try {
+        const admitted = admitUserMemorySources(context, { [`${id}.md`]: content });
+        for (const [sourceId, sourceDigest] of admitted.registeredSources)
+          registeredSources.set(sourceId, sourceDigest);
+      } catch (error) {
+        if (error instanceof NotebookError && error.code === 'invalid_request') return false;
+        throw error;
+      }
+      return true;
+    };
+    const ids =
+      input.pageIds ??
+      Object.keys(files)
+        .filter((path) => !['index.md', 'log.md'].includes(basename(path)))
+        .map((path) => path.slice(0, -3))
+        .sort();
+    const pages: AuthorizedWorkspaceNotebookPage[] = [];
+    for (const id of ids) {
+      const content = files[`${id}.md`];
+      if (
+        content === undefined ||
+        !eligible(id, content) ||
+        (current[`${id}.md`] !== undefined && !eligible(id, current[`${id}.md`]!))
+      ) {
+        if (input.pageIds)
+          throw new OperationError('memory_access_denied', 'Memory page is unavailable.', 403);
+        continue;
+      }
+      pages.push({ id, path: `${id}.md`, content, contentDigest: digest(content) });
+    }
+    admitUserMemoryRetrieval(input);
+    return {
+      notebookRevision,
+      pages,
+      scopeSchemaText,
+      registeredSources,
+      referenceProofs: new Map<string, KnowledgePageReferenceProof>(),
+    };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof NotebookError) throw error;
+    throw new NotebookError('recovery_required');
+  } finally {
+    sqlite?.close();
+  }
 }
 /** Resolves trusted query lineage before any source inventory or kernel access. */
 export function resolveKnowledgeQueryContext(input: Target) {
@@ -551,6 +722,36 @@ export function collectKnowledgeInventory(input: Target): {
     },
     notebookRevision,
     referenceProofs,
+  };
+}
+/** Enumerates only admitted self pages in the existing Kernel, separately from Workspace Knowledge and raw Sources. */
+export function collectUserMemoryInventory(input: Target) {
+  const admitted = readAuthorizedUserMemoryPages(input);
+  const userId = input.access.requestActor!.userId;
+  const documents: RetrievalDocument[] = admitted.pages.map(({ id, content }) => {
+    const doc = parseOkfDocument({ path: `${id}.md`, content }).document!;
+    const language = stringFrontmatterField(doc, 'language');
+    return {
+      key: { namespace: 'memory', id },
+      revision: admitted.notebookRevision,
+      digest: digest(content).slice(7),
+      size: Buffer.byteLength(content),
+      name: `${id}.md`,
+      title: stringFrontmatterField(doc, 'title') ?? id,
+      media_type: 'text/markdown',
+      text_ranges: textRanges(content, doc.body),
+      ...(language === 'zh' || language === 'ja' || language === 'unicode' ? { language } : {}),
+      metadata: { userId, workspaceId: input.workspaceId, knowledgePageId: id },
+      locator: `memory/pages/${id}.md`,
+      content: { kind: 'inline-text', text: content },
+    };
+  });
+  return {
+    ...admitted,
+    view: {
+      scope: JSON.stringify(['memory', userId, input.workspaceId, input.access.outputThreadId]),
+      documents,
+    },
   };
 }
 /** Exact SHA-256 page identity, independent of the retained Git commit identity. */
