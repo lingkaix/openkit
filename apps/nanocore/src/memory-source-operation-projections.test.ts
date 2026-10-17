@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
-import { userMemoryRoot } from './storage/fs-layout.js';
+import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -93,6 +93,28 @@ describe('public explicit self Source intake', () => {
       [first.body.source.id, second.body.source.id].sort()
     );
     expect(existsSync(userMemoryRoot(f.dataRoot, f.userId))).toBe(false);
+  });
+
+  it('refuses to replace a missing User database while established Source bytes remain', async () => {
+    const f = fixture();
+    const input = {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'A retained Source',
+      content: 'Keep the original Source and its command authority.',
+    };
+    const first = await f.call('memory.source.register', input);
+    expect(first.status).toBe(200);
+    const registry = join(f.dataRoot, 'users', f.userId, 'sources', 'registry');
+    const database = userDbPath(f.dataRoot, f.userId);
+    rmSync(database);
+    const refused = await f.call('memory.source.register', {
+      ...input,
+      requestId: randomUUID(),
+    });
+    expect(refused).toMatchObject({ status: 503, body: { code: 'recovery_required' } });
+    expect(existsSync(database)).toBe(false);
+    expect(readdirSync(registry)).toEqual([`${first.body.source.id}.json`]);
   });
 
   it('refuses another owner and unjoined transcript provenance without capturing them', async () => {
