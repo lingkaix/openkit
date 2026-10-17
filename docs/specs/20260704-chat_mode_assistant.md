@@ -128,7 +128,7 @@ The ordinary conversational entry path has this complete Core Tool set in stable
 
 1. `workspace.dashboard`: bounded Workspace/work-state read for the exact selected resource.
 2. `thread.history.read`: bounded authorized Item search through the conversation-history adapter, including eligible past Threads in the current Workspace.
-3. `knowledge.retrieval`: governed current-scope Knowledge/Memory query through Knowledge Manager.
+3. `knowledge.ask`, then `knowledge.tell`: query the current admitted scope through Knowledge Manager, then send supplied information and admitted provenance to that scope's maintenance Thread. Internal-agent admission keeps Memory and Knowledge queries separate. A tell is not publication or approval, as [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md#query-and-maintenance-execution) defines.
 4. `workspace.create`: create the empty project Workspace required by an accepted handoff.
 5. `task.start`: explicit Task handoff through its mode owner.
 6. Goal create, revise intent, and card operations: the same operations the Coordinator calls, used when the handoff creates a Goal or when the user delegates that work.

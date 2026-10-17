@@ -26,7 +26,7 @@ export function ServerVaultSecretsPanel() {
   const [rotating, setRotating] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
   const [sessionId, setSessionId] = useState('');
-  const [capabilityId, setCapabilityId] = useState<'' | 'mcp.list_tools' | 'mcp.call_tool'>('');
+  const [capabilityId, setCapabilityId] = useState<'' | 'mcp.list-tools' | 'mcp.call-tool'>('');
   const [expiresAt, setExpiresAt] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const constraints: OperationInput<'vault.server-mcp-grant-narrow'>['constraints'] = {
@@ -304,12 +304,12 @@ export function ServerVaultSecretsPanel() {
             selectedKey={capabilityId || 'unrestricted'}
             items={[
               { id: 'unrestricted', label: 'No new capability restriction' },
-              { id: 'mcp.list_tools', label: 'MCP tool discovery' },
-              { id: 'mcp.call_tool', label: 'MCP tool call' },
+              { id: 'mcp.list-tools', label: 'MCP tool discovery' },
+              { id: 'mcp.call-tool', label: 'MCP tool call' },
             ]}
             isDisabled={disabled}
             onSelectionChange={(key) =>
-              setCapabilityId(key === 'mcp.list_tools' || key === 'mcp.call_tool' ? key : '')
+              setCapabilityId(key === 'mcp.list-tools' || key === 'mcp.call-tool' ? key : '')
             }
           />
           <TextField
