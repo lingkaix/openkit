@@ -126,7 +126,7 @@ describe('Server-owned canonical history', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
-  it('preserves retained additions and refuses corrupt owner or transcript lineage', () => {
+  it('preserves retained additions and refuses corrupt owner or terminal facts', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-threads-'));
     try {
       const store = new FsStore({ dataRoot });
@@ -173,6 +173,18 @@ describe('Server-owned canonical history', () => {
         },
       });
       expect(new FsStore({ dataRoot }).getServerTurnTranscript(turn.id)).toHaveLength(1);
+      expect(() =>
+        reopened.emitServerTurnEvent(turn.id, {
+          event: 'turn.completed',
+          threadId: thread.id,
+          turnId: turn.id,
+          data: {
+            type: 'turn-completed',
+            stopReason: 'error',
+            turn: reopened.getServerTurnById(turn.id),
+          },
+        })
+      ).toThrow('is terminal and does not admit this write');
       rawThread.owner.kind = 'workspace';
       writeFileSync(threadPath, JSON.stringify(rawThread));
       expect(() => new FsStore({ dataRoot })).toThrow();

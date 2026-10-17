@@ -44,7 +44,6 @@ const ServerItemReaderSchema = z.preprocess((value) => {
 /** Canonical Server Turn metadata including the existing immutable capture declaration. */
 export const ServerTurnReaderSchema = ServerTurnSchema.safeExtend({
   triggerActor: ActorRefReaderSchema,
-  items: z.array(ServerItemReaderSchema),
   error: ServerTurnSchema.shape.error
     .unwrap()
     .extend({ explanation: GitFailureExplanationReaderSchema.optional() })
@@ -52,6 +51,18 @@ export const ServerTurnReaderSchema = ServerTurnSchema.safeExtend({
   captureCoverage: CaptureCoverageBindingSchema.optional(),
   requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
 });
+
+/** Normalizes retained Item attribution before the exact Server Turn snapshot validator. */
+const ServerTurnSnapshotReaderSchema = z.preprocess((value) => {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('items' in value) ||
+    !Array.isArray(value.items)
+  )
+    return value;
+  return { ...value, items: value.items.map((item) => ServerItemReaderSchema.parse(item)) };
+}, ServerTurnReaderSchema);
 
 /** Reads canonical Server Turn metadata for current capture and recovery owners. */
 export function readServerTurnRecord(
@@ -175,7 +186,7 @@ export function readServerTurnEvents(
       data && 'item' in data
         ? { ...data, item: ServerItemReaderSchema.parse(data.item) }
         : data && 'turn' in data
-          ? { ...data, turn: ServerTurnReaderSchema.parse(data.turn) }
+          ? { ...data, turn: ServerTurnSnapshotReaderSchema.parse(data.turn) }
           : data;
     const event = ServerTurnEventEnvelopeSchema.parse({ ...(value as object), data: normalized });
     assertServerTurnEventLineage(event, turn);
