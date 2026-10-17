@@ -286,7 +286,9 @@ export function admitUserMemorySources(
     if (
       references.length &&
       (parsed.document.reserved ||
-        stringFrontmatterField(parsed.document, 'review_state') !== 'user-authored')
+        !['user-authored', 'delegated', 'accepted'].includes(
+          stringFrontmatterField(parsed.document, 'review_state') ?? ''
+        ))
     )
       throw new NotebookError('invalid_request');
     for (const reference of references) {

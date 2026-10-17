@@ -7,6 +7,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { z } from 'zod';
 import { authorizeWorkspace } from './auth/operation-authorizer.js';
+import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
 import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { applyMemoryForget, prepareMemoryForgetCommand } from './knowledge/memory-forget.js';
 import {
@@ -40,6 +41,12 @@ import {
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
 } from './knowledge/scoped-notebook-owner.js';
+import { readUserMemoryNotebookAdmission } from './knowledge/user-memory-agent-maintenance.js';
+import {
+  decideUserMemoryProposal,
+  readUserMemoryProposal,
+  readUserMemoryProposalPreview,
+} from './knowledge/user-memory-proposals.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import {
   type AdmittedOperationContext,
@@ -47,6 +54,7 @@ import {
   publicOperationActor,
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import { admitUserMemoryRetrieval } from './retrieval-knowledge-adapter.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
 import { openUserDb } from './storage/db.js';
@@ -227,7 +235,170 @@ export function createMemoryOperationImplementations(
         workspaceDb.sqlite.close();
       }
     });
+  const queryAccess = (
+    writer: MemoryWriter,
+    context: AdmittedOperationContext,
+    workspaceId: string
+  ) => {
+    if (
+      !authorizeWorkspace(writer.coreDb, writer.actor!, workspaceId, {
+        policyOperation: 'knowledge.read',
+        mutating: false,
+      })
+    )
+      throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+    const threadId =
+      context.queryContext?.threadId ??
+      findAssistantTimeline(writer.store, workspaceId, writer.userDb.userId)?.id;
+    if (!threadId)
+      throw new OperationError(
+        'memory_access_denied',
+        'Memory needs a private Assistant Timeline.',
+        403
+      );
+    return {
+      store: writer.store,
+      coreDb: writer.coreDb,
+      userDb: writer.userDb,
+      actor: context.actorRef,
+      requestActor: writer.actor!,
+      outputThreadId: threadId,
+      outputTurnId: context.queryContext?.turnId,
+    };
+  };
+  const proposalContext = (writer: MemoryWriter) => ({
+    ...writer,
+    actor: writer.actor!,
+    revalidate: (files: Readonly<Record<string, string>>, changedPaths: readonly string[] = []) =>
+      readUserMemoryNotebookAdmission(writer, files, changedPaths),
+  });
+  const maintain = (
+    input: OperationInput<'memory.maintain'> | OperationInput<'memory.tell'>,
+    context: AdmittedOperationContext
+  ) =>
+    self(
+      context,
+      async (writer) => {
+        if (context.queryContext) {
+          const access = queryAccess(writer, context, input.workspaceId);
+          // An existing shared caller cannot substitute a private Timeline for User-scoped effects.
+          admitUserMemoryRetrieval({
+            dataRoot: writer.coreDb.dataRoot,
+            workspaceId: input.workspaceId,
+            access,
+          });
+        } else if (
+          !authorizeWorkspace(writer.coreDb, writer.actor!, input.workspaceId, {
+            policyOperation: 'knowledge.read',
+            mutating: false,
+          })
+        ) {
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        }
+        if (!dependencies.knowledgeAgent?.maintainMemory)
+          throw new OperationError('memory_unavailable', 'Memory maintenance is unavailable.', 503);
+        return dependencies.knowledgeAgent.maintainMemory(
+          {
+            requestId: input.requestId,
+            requestActor: writer.actor!,
+            trigger: 'request',
+            instructions:
+              'content' in input
+                ? 'Integrate this explicit personal information and keep the Memory overview current.'
+                : input.instruction,
+            sources: 'content' in input ? input.sources : (input.sourceIds ?? []),
+            ...('content' in input ? { tellContent: input.content } : {}),
+            ...('pageIds' in input && input.pageIds ? { pageIds: input.pageIds } : {}),
+            askingThreadId: context.queryContext?.threadId,
+            askingTurnId: context.queryContext?.turnId,
+            signal: context.signal ?? new AbortController().signal,
+          },
+          writer.userDb
+        );
+      },
+      true
+    );
   return {
+    'memory.ask': (input, context) =>
+      self(context, async (writer) => {
+        if (!dependencies.knowledgeAgent)
+          throw new OperationError('memory_unavailable', 'Memory query is unavailable.', 503);
+        const access = queryAccess(writer, context, input.workspaceId);
+        admitUserMemoryRetrieval({
+          dataRoot: writer.coreDb.dataRoot,
+          workspaceId: input.workspaceId,
+          access,
+        });
+        if (!dependencies.repositoryWorkspaceDb)
+          throw new OperationError('memory_unavailable', 'Memory delivery is unavailable.', 503);
+        const db = dependencies.repositoryWorkspaceDb(input.workspaceId);
+        const call = startCapabilityCall({
+          workspaceDb: db,
+          workspaceId: input.workspaceId,
+          authorityActor: context.actorRef,
+          family: 'knowledge',
+          operation: 'memory.ask',
+          capabilityId: 'memory.ask',
+          requestId: null,
+          providerRef: null,
+          serviceRef: 'knowledge-manager',
+          redactionClass: 'metadata-only',
+          summary: 'Memory question.',
+          threadId: access.outputThreadId,
+          turnId: access.outputTurnId ?? null,
+        });
+        try {
+          const result = await dependencies.knowledgeAgent.ask({
+            workspaceId: input.workspaceId,
+            question: input.question,
+            source: 'memory',
+            caller: 'internal-agent',
+            access,
+            signal: context.signal ?? new AbortController().signal,
+            capabilityCallId: call.id,
+          });
+          finishCapabilityCall({
+            workspaceDb: db,
+            callId: call.id,
+            status: 'succeeded',
+            deliveredKnowledgeAnswer: JSON.stringify(result),
+          });
+          return result;
+        } catch (error) {
+          finishCapabilityCall({
+            workspaceDb: db,
+            callId: call.id,
+            status: 'failed',
+            errorCode: 'knowledge_query_failed',
+          });
+          throw error;
+        } finally {
+          db.sqlite.close();
+        }
+      }),
+    'memory.tell': maintain,
+    'memory.maintain': maintain,
+    'memory.proposal.read': (input, context) =>
+      self(context, (writer) => readUserMemoryProposalPreview(proposalContext(writer), input)),
+    'memory.proposal.decide': (input, context) =>
+      self(context, async (writer) => {
+        const owner = proposalContext(writer);
+        const { proposal } = readUserMemoryProposal(owner, input.proposalId);
+        const result = await decideUserMemoryProposal(owner, input);
+        return {
+          proposalId: input.proposalId,
+          status: input.decision,
+          review: result.review,
+          application: result.notebookRevision
+            ? {
+                changedPageIds: proposal.changes!.map(({ path }) => path.slice(0, -3)),
+                contentDigest: proposal.contentDigest,
+                present: proposal.changes!.some(({ content }) => content !== null),
+                notebookRevision: result.notebookRevision,
+              }
+            : null,
+        };
+      }),
     'memory.search': (input, context) =>
       self(context, async (writer) => {
         if (

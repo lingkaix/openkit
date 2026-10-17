@@ -369,6 +369,16 @@ export function readAuthorizedUserMemoryPages(input: Target) {
     );
     const registeredSources = new Map<string, string | null>();
     const eligible = (id: string, content: string) => {
+      if (id === 'index' && input.pageIds?.includes('index')) {
+        // The existing User overview is navigation only. Until explicitly cleaned, a forgotten
+        // page can still have prose in that root; withhold it rather than leak suppressed content.
+        const parsed = parseOkfDocument({ path: 'index.md', content });
+        if (suppressed.size || !parsed.ok || !parsed.document.reserved) return false;
+        const refs = stringListFrontmatterField(parsed.document, 'source_refs');
+        return refs === null
+          ? !Object.hasOwn(parsed.document.frontmatter, 'source_refs')
+          : refs.length === 0;
+      }
       if (suppressed.has(id) || !memoryPageFacts(`${id}.md`, content)) return false;
       const parsed = parseOkfDocument({ path: `${id}.md`, content });
       if (!parsed.ok) throw new NotebookError('recovery_required');

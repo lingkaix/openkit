@@ -8,10 +8,24 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  KnowledgeProposalApplicationSchema,
+  KnowledgeProposalReviewSchema,
+  SubmitKnowledgeProposalDecisionRequestSchema,
+} from './action-center.js';
+import {
+  KnowledgeAskRequestSchema,
+  KnowledgeAskResponseSchema,
+  KnowledgeMaintainRequestSchema,
+  KnowledgeMaintenanceResponseSchema,
+  KnowledgeTellRequestSchema,
+} from './knowledge-agent.js';
+import {
+  KnowledgeManagerDraftedProposalSchema,
   KnowledgeRetrievalResponseSchema,
   KnowledgeSourceSchema,
   RegisterKnowledgeSourceRequestSchema,
   RetrieveKnowledgeRequestSchema,
+  validKnowledgeProposalShape,
 } from './knowledge-manager.js';
 import {
   KnowledgeNotebookPathSchema,
@@ -24,12 +38,41 @@ import {
   KnowledgeNotebookHistoryResponseSchema,
   RestoreKnowledgeNotebookRequestSchema,
 } from './knowledge-notebook-history.js';
+import {
+  ReadKnowledgeProposalRequestSchema,
+  ReadKnowledgeProposalResponseSchema,
+} from './knowledge-proposal-preview.js';
 import type { OperationDefinition } from './operation-contract.js';
 
 /** User ownership is resolved by current authentication, never selected by a Memory request. */
 export const MemoryOwnerSchema = z
   .object({ kind: z.literal('user'), userId: UserIdSchema })
   .strict();
+/** Same fixed-base Proposal and append-only Review families at the authenticated User owner. */
+const { workspaceId: _proposalWorkspace, ...proposalShape } =
+  KnowledgeManagerDraftedProposalSchema.shape;
+const { workspaceId: _reviewWorkspace, ...reviewShape } = KnowledgeProposalReviewSchema.shape;
+export const MemoryNotebookProposalSchema = z
+  .object({ ...proposalShape, ownerScope: MemoryOwnerSchema })
+  .strict()
+  .refine(validKnowledgeProposalShape, 'Expected exactly one complete candidate shape.');
+export const MemoryNotebookReviewSchema = z
+  .object({ ...reviewShape, ownerScope: MemoryOwnerSchema })
+  .strict()
+  .refine(
+    (value) => (value.knowledgePageId !== undefined) !== (value.changedPageIds !== undefined),
+    'Expected exactly one complete candidate identity.'
+  );
+/** Review applies only the exact displayed candidate and retains the original Agent producer. */
+export const MemoryProposalDecisionResponseSchema = z
+  .object({
+    proposalId: z.string().min(1),
+    status: z.enum(['accepted', 'rejected', 'deferred']),
+    review: MemoryNotebookReviewSchema,
+    application: KnowledgeProposalApplicationSchema.nullable(),
+  })
+  .strict();
+
 const PageIdSchema = z
   .string()
   .refine((id) => KnowledgeNotebookPathSchema.safeParse(`${id}.md`).success);
@@ -122,6 +165,55 @@ const self = {
 
 /** Explicit self Memory and literal Source management; no Worker, automatic capture or caller-selected owner is admitted. */
 export const MEMORY_OPERATION_DEFINITIONS = {
+  'memory.ask': {
+    ...self,
+    description: 'Ask the current User Memory Knowledge Manager from a private Assistant Timeline.',
+    inputSchema: KnowledgeAskRequestSchema,
+    outputSchema: KnowledgeAskResponseSchema,
+    mutating: false,
+  },
+  'memory.tell': {
+    ...self,
+    description: 'Send explicit personal information to one bounded User Memory maintenance run.',
+    inputSchema: KnowledgeTellRequestSchema,
+    outputSchema: KnowledgeMaintenanceResponseSchema,
+    mutating: true,
+  },
+  'memory.maintain': {
+    ...self,
+    description:
+      'Request bounded maintenance of current self Memory without learning from other Workspaces.',
+    inputSchema: KnowledgeMaintainRequestSchema,
+    outputSchema: KnowledgeMaintenanceResponseSchema,
+    mutating: true,
+  },
+  'memory.proposal.read': {
+    ...self,
+    description:
+      'Inspect the exact current self Memory candidate and its bounded diff before Review.',
+    inputSchema: z
+      .object({
+        proposalId: ReadKnowledgeProposalRequestSchema.shape.proposalId,
+        path: ReadKnowledgeProposalRequestSchema.shape.path,
+        offset: ReadKnowledgeProposalRequestSchema.shape.offset,
+      })
+      .strict()
+      .refine(
+        ({ path, offset }) => path !== undefined || offset === 0,
+        'An offset requires a path.'
+      ),
+    outputSchema: ReadKnowledgeProposalResponseSchema,
+    mutating: false,
+  },
+  'memory.proposal.decide': {
+    ...self,
+    description: 'Record the current User decision on an exact fixed-base Memory candidate.',
+    inputSchema: SubmitKnowledgeProposalDecisionRequestSchema.extend({
+      proposalId: z.string().min(1),
+    }),
+    outputSchema: MemoryProposalDecisionResponseSchema,
+    mutating: true,
+  },
   'memory.search': {
     ...self,
     description:
