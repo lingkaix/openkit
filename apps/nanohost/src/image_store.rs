@@ -20,6 +20,7 @@ const EPOCH_ROOT: &str = "/var/lib/openkit/nanohost";
 const CREDENTIAL_ROOT: &str = "/var/lib/openkit/nanohost-credentials";
 const COPY_CHUNK_BYTES: usize = 64 * 1024;
 const INDEX_MAX_BYTES: u64 = 512 * 1024;
+const INDEX_FORMAT_VERSION: &str = "1";
 
 /// Local, non-authoritative acquisition lineage retained with one entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +118,7 @@ impl StoreEntry {
     /// Serializes one entry into the private line-oriented index format.
     fn encode(&self) -> Result<String, StoreError> {
         Ok(format!(
-            "digest={}\nsize={}\nacquired_at={}\nlineage={}\nverification=oci-manifest\n",
+            "format_version={INDEX_FORMAT_VERSION}\ndigest={}\nsize={}\nacquired_at={}\nlineage={}\nverification=oci-manifest\n",
             self.digest,
             self.size,
             self.acquired_at,
@@ -125,8 +126,9 @@ impl StoreEntry {
         ))
     }
 
-    /// Parses and strictly validates one private index entry.
+    /// Validates the version and closed core while ignoring descriptive additions.
     fn decode(contents: &str) -> Result<Self, StoreError> {
+        let mut format_version = None;
         let mut digest = None;
         let mut size = None;
         let mut acquired_at = None;
@@ -135,6 +137,12 @@ impl StoreEntry {
         for line in contents.lines() {
             let (key, value) = line.split_once('=').ok_or(StoreError::InvalidMetadata)?;
             match key {
+                "format_version" if format_version.is_none() => {
+                    if value != INDEX_FORMAT_VERSION {
+                        return Err(StoreError::InvalidMetadata);
+                    }
+                    format_version = Some(());
+                }
                 "digest" if digest.is_none() => digest = Some(value.to_string()),
                 "size" if size.is_none() => {
                     size = Some(value.parse().map_err(|_| StoreError::InvalidMetadata)?);
@@ -149,9 +157,14 @@ impl StoreEntry {
                     }
                     verification = Some(());
                 }
-                _ => return Err(StoreError::InvalidMetadata),
+                "format_version" | "digest" | "size" | "acquired_at" | "lineage"
+                | "verification" => {
+                    return Err(StoreError::InvalidMetadata);
+                }
+                _ => {}
             }
         }
+        format_version.ok_or(StoreError::InvalidMetadata)?;
         let entry = Self {
             digest: digest.ok_or(StoreError::InvalidMetadata)?,
             size: size.ok_or(StoreError::InvalidMetadata)?,
@@ -1601,7 +1614,9 @@ mod tests {
             Err(StoreError::InvalidMetadata)
         );
         assert_eq!(
-            StoreEntry::decode(&encoded.replace("verification=oci-manifest", "verification=unknown")),
+            StoreEntry::decode(
+                &encoded.replace("verification=oci-manifest", "verification=unknown")
+            ),
             Err(StoreError::InvalidMetadata)
         );
     }
@@ -1610,7 +1625,7 @@ mod tests {
     fn malformed_first_numeric_metadata_field_cannot_be_replaced_by_a_duplicate() {
         let digest = format!("sha256:{:064x}", 9);
         let metadata = format!(
-            "digest={digest}\nsize=bad\nsize=10\nacquired_at=1\nlineage=local-archive:{digest}\nverification=oci-manifest\n"
+            "format_version=1\ndigest={digest}\nsize=bad\nsize=10\nacquired_at=1\nlineage=local-archive:{digest}\nverification=oci-manifest\n"
         );
         assert_eq!(
             StoreEntry::decode(&metadata),
