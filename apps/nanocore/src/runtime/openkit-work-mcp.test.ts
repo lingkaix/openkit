@@ -1,12 +1,18 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
+import * as packageOwner from '../context/worker-context-package.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -14,7 +20,10 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
@@ -751,3 +760,192 @@ describe('submission publication and handled rollback', () => {
     acknowledgedArtifactId(await fixture.submit('corrected-after-io'));
   });
 });
+
+/** Produces a small text PDF with exact xref offsets for the actual source consumer. */
+function createPdfFixture(pages: readonly string[]): Buffer {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Count ${pages.length} /Kids [${pages.map((_, i) => `${4 + i * 2} 0 R`).join(' ')}] >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  for (const page of pages) {
+    const stream = `BT /F1 12 Tf 72 720 Td (${page}) Tj ET\n`;
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${objects.length + 2} 0 R >>`
+    );
+    objects.push(`<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`);
+  }
+  let text = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(text));
+    text += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(text);
+  text += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`)
+    .join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(text);
+}
+
+it('dispatches bounded source reads and refuses a path outside the accepted Turn inventory', async () => {
+  const fixture = submissionFixture();
+  await expect(
+    dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+      path: 'sources/artifacts/not-selected/1.txt',
+      mode: 'read',
+    })
+  ).resolves.toMatchObject({
+    isError: false,
+    structuredContent: { status: 'unavailable' },
+  });
+  expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_read_source');
+  expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
+});
+
+/** Captures an actual Artifact, processes and publishes its real snapshot bytes, and supplies only S39's independently verified trace result. Current scheduler, actor, source and receiving-audience checks stay real. */
+async function sourceToolFixture(bytes: Buffer, mediaType: string) {
+  const fixture = submissionFixture();
+  ensureLocalUser(fixture.coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb: fixture.coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  fixture.captureArtifact.mockResolvedValue({
+    bytes: Buffer.from(bytes),
+    credentialCheckValues: fixture.credentialCheckValues,
+  });
+  const artifactId = acknowledgedArtifactId(await fixture.submit('req_source_tool', { mediaType }));
+  const artifact = fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId);
+  const workspaceRoot = join(fixture.dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
+  const sourceFiles = await prepareArtifactSourceInputs({
+    workspaceRoot,
+    artifacts: [artifact],
+    admission: fixture.fileAdmission,
+    assertCurrent: (selected) => {
+      expect(selected).toEqual(fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId));
+    },
+  });
+  const requestItemId = allocateEntityId('it');
+  const files = packageOwner.createWorkerContextPackageFiles({
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: fixture.turn.id,
+    workerRequestItemId: requestItemId,
+    workerRequestBytes: 'Inspect selected sources',
+    includedItemIds: [requestItemId],
+    contextBudgetTokens: 4096,
+    materialSelections: [],
+    sourceFiles,
+  });
+  await packageOwner.writeWorkerContextPackageFiles(workspaceRoot, files, {
+    admission: fixture.fileAdmission,
+  });
+  const source = files.sourceFiles![0]!;
+  const { scope } = fixture.environmentPackage;
+  const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'queue_source_read',
+    requestId: scope.requestId,
+    triggerActor: scope.triggerActor,
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    turnInput: 'Read source',
+    requestedAgentId: fixture.environmentPackage.agent.agentId,
+  });
+  recordTestExecutionAttempt(fixture.coreDb, {
+    entry,
+    attemptId: allocateEntityId('attempt'),
+    agentSessionId: scope.agentSessionId,
+    inputRef: fixture.environmentPackage.snapshotId,
+    bindingRef: 'binding_source_read',
+    sessionCompatibilityKey: 'fixture-compatibility',
+    now: () => new Date().toISOString(),
+  });
+  const proof = vi.spyOn(packageOwner, 'readWorkerContextPackageTrace').mockReturnValue({
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    agentSessionId: scope.agentSessionId,
+    packageSnapshotId: fixture.environmentPackage.snapshotId,
+    sourceFiles: [source],
+  } as packageOwner.WorkerContextPackageTrace);
+  onTestFinished(() => proof.mockRestore());
+  return { ...fixture, artifactId, source, packagePath: source.packagePath, proof };
+}
+
+it('reads retained bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
+  const fixture = await sourceToolFixture(Buffer.from('Finished report\n'), 'text/plain');
+  const { packagePath, proof, artifactId } = fixture;
+  const result = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+    path: packagePath,
+    mode: 'read',
+  });
+  expect(result.structuredContent).toMatchObject({
+    status: 'ready',
+    text: 'Finished report\n',
+    eof: true,
+  });
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
+  expect(proof).toHaveBeenCalledOnce();
+  const unselected = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+    path: `${packagePath}/not-selected`,
+    mode: 'read',
+  });
+  expect(unselected.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(JSON.stringify(unselected)).not.toContain('Finished report');
+  expect(proof).toHaveBeenCalledTimes(2);
+  fixture.coreDb.sqlite.transaction(() => {
+    disableCanonicalUser(fixture.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
+  })();
+  const denied = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+    path: packagePath,
+    mode: 'read',
+  });
+  expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(JSON.stringify(denied)).not.toContain(artifactId);
+  expect(JSON.stringify(denied)).not.toContain('Finished report');
+  expect(proof).toHaveBeenCalledTimes(2);
+});
+
+it(
+  'searches only the selected retained PDF text through the real Worker Tool and kernel',
+  async () => {
+    const f = await sourceToolFixture(
+      createPdfFixture(['first page', 'second needle']),
+      'application/pdf'
+    );
+    expect(f.source.projection.pdfTextLayer).toBeDefined();
+    const result = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+      path: f.packagePath,
+      mode: 'exact',
+      query: 'needle',
+    });
+    expect(result.structuredContent).toMatchObject({
+      status: 'ready',
+      result: {
+        hits: [
+          {
+            digest: f.source.originalDigest.slice(7),
+            representation_digest: f.source.projection.representationDigest.slice(7),
+            locator: {
+              kind: 'text',
+              original: `${JSON.stringify(f.source.source.reference)}#page=2`,
+            },
+          },
+        ],
+      },
+    });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
+    const denied = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+      path: `${f.packagePath}/unselected`,
+      query: 'needle',
+    });
+    expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+    expect(JSON.stringify(denied)).not.toContain(f.artifactId);
+  },
+  30_000
+);
