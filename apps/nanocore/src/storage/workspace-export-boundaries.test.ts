@@ -1407,15 +1407,14 @@ describe('workspace portable authority boundaries', () => {
       });
       const insertMember = sourceCoreDb.sqlite.prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, 1, ?, ?)`
+        ) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?)`
       );
       insertMember.run(
         sourceWorkspace.id,
         'usr_00000000-0000-7f91-bf04-0eeba702f745',
         'active',
-        'editor',
         timestamp,
         null,
         timestamp,
@@ -1425,7 +1424,6 @@ describe('workspace portable authority boundaries', () => {
         sourceWorkspace.id,
         'usr_00000000-0000-7a07-a29f-1a147d72df71',
         'removed',
-        'viewer',
         timestamp,
         timestamp,
         timestamp,
@@ -1434,10 +1432,10 @@ describe('workspace portable authority boundaries', () => {
       sourceCoreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
-            invitation_id, workspace_id, invitee_user_id, proposed_access_level,
+            invitation_id, workspace_id, invitee_user_id,
             inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
             revision, created_at, updated_at
-          ) VALUES (?, ?, ?, 'viewer', ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(
           'inv_00000000-0000-7a35-a611-d2ba2eb6fec6',
@@ -1557,15 +1555,13 @@ describe('workspace portable authority boundaries', () => {
       expect(
         targetCoreDb.sqlite
           .prepare(
-            `SELECT workspace_id AS workspaceId, user_id AS userId, status,
-                    access_level AS accessLevel
+            `SELECT workspace_id AS workspaceId, user_id AS userId, status
              FROM workspace_members
              ORDER BY workspace_id, user_id`
           )
           .all()
       ).toEqual([
         {
-          accessLevel: 'editor',
           status: 'active',
           userId: 'usr_00000000-0000-7dff-a6fb-e1fa9c56d0f0',
           workspaceId: imported.importedWorkspaceId,

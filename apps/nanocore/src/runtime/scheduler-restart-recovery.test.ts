@@ -2404,7 +2404,7 @@ function dispatchLease(
       .run(responsible, responsible, `${responsible}@restart.invalid`, at, at);
     coreDb.sqlite
       .prepare(
-        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)"
+        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', NULL, ?, NULL, 1, ?, ?)"
       )
       .run(
         responsible,

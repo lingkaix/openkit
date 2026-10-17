@@ -1,5 +1,4 @@
 import type {
-  WorkspaceAccessLevel,
   WorkspaceAccessRecoveryState,
   WorkspaceInvitation,
   WorkspaceMember,
@@ -8,7 +7,10 @@ import type {
 import { allocateEntityId } from '@openkit/protocol';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { CoreDb } from './storage/db.js';
-import { listActiveWorkspaceIdsForActor, resolveWorkspaceRole } from './workspace-membership.js';
+import {
+  listActiveWorkspaceIdsForActor,
+  resolveWorkspaceMembershipRelation,
+} from './workspace-membership.js';
 
 const INVITATION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -30,8 +32,8 @@ export interface WorkspaceRegistryLifecycleFact extends WorkspaceRegistryFact {
 
 /** Registry and membership facts needed to project one authorized Workspace. */
 export interface AuthorizedWorkspaceRegistryFact extends WorkspaceRegistryFact {
-  /** Current role derived from the registry and active membership. */
-  effectiveRole: 'owner' | 'editor' | 'viewer';
+  /** Whether the caller is the registry owner; this grants no higher operation eligibility. */
+  isOwner: boolean;
   /** Positive revision of the caller's active membership. */
   membershipRevision: number;
 }
@@ -50,12 +52,10 @@ interface WorkspaceMutationInput {
 
 /** Input for creating one registered-user invitation. */
 export interface CreateWorkspaceInvitationInput extends WorkspaceMutationInput {
-  /** Exact active owner creating the invitation. */
+  /** Exact active member creating the invitation. */
   inviterUserId: string;
   /** Exact email lookup input; it is never stored as invitation authority. */
   inviteeEmail: string;
-  /** Access level proposed by the owner. */
-  proposedAccessLevel: WorkspaceAccessLevel;
 }
 
 /** Input for one invitee-owned invitation transition. */
@@ -68,39 +68,27 @@ export interface InviteeInvitationTransitionInput extends WorkspaceMutationInput
   expectedRevision: number;
 }
 
-/** Input for revoking one owner-visible invitation. */
+/** Input for revoking one member-visible invitation. */
 export interface RevokeWorkspaceInvitationInput extends WorkspaceMutationInput {
   /** Stable invitation identifier. */
   invitationId: string;
-  /** Current active owner requesting revocation. */
-  ownerUserId: string;
+  /** Current active member requesting revocation. */
+  actorUserId: string;
   /** Positive invitation revision supplied by the caller. */
   expectedRevision: number;
 }
 
-/** Input for changing an active non-owner membership. */
-export interface ChangeWorkspaceMemberAccessInput extends WorkspaceMutationInput {
-  /** Current active owner requesting the access change. */
-  ownerUserId: string;
-  /** Canonical member whose stored access changes. */
-  memberUserId: string;
-  /** Current membership revision supplied by the caller. */
-  expectedRevision: number;
-  /** Replacement stored access level. */
-  accessLevel: WorkspaceAccessLevel;
-}
-
 /** Input for removing one active non-owner membership. */
 export interface RemoveWorkspaceMemberInput extends WorkspaceMutationInput {
-  /** Current active owner requesting removal. */
-  ownerUserId: string;
+  /** Current active member requesting removal. */
+  actorUserId: string;
   /** Canonical member being removed. */
   memberUserId: string;
   /** Current membership revision supplied by the caller. */
   expectedRevision: number;
 }
 
-/** Input for an editor or viewer leaving one Workspace. */
+/** Input for a non-owner member leaving one Workspace. */
 export interface LeaveWorkspaceInput extends WorkspaceMutationInput {
   /** Canonical active member leaving the Workspace. */
   memberUserId: string;
@@ -108,10 +96,10 @@ export interface LeaveWorkspaceInput extends WorkspaceMutationInput {
   expectedRevision: number;
 }
 
-/** Input for ordinary owner-controlled ownership transfer. */
+/** Input for member-authorized ownership transfer. */
 export interface TransferWorkspaceOwnershipInput extends WorkspaceMutationInput {
-  /** Current active Workspace owner. */
-  currentOwnerUserId: string;
+  /** Active member initiating the ownership transfer. */
+  actorUserId: string;
   /** Active member becoming owner. */
   targetUserId: string;
   /** Current registry revision supplied by the caller. */
@@ -121,7 +109,7 @@ export interface TransferWorkspaceOwnershipInput extends WorkspaceMutationInput 
 /** Input for one of the two bounded deployment-administrator recovery actions. */
 export interface RecoverWorkspaceAccessInput extends WorkspaceMutationInput {
   /** Closed recovery action selected by the deployment administrator. */
-  action: 'add-self-as-editor' | 'transfer-ownership-to-self';
+  action: 'add-self-as-member' | 'transfer-ownership-to-self';
   /** Active canonical user represented by the administrator credential. */
   administratorUserId: string;
   /** Current registry revision supplied by the caller. */
@@ -130,7 +118,7 @@ export interface RecoverWorkspaceAccessInput extends WorkspaceMutationInput {
 
 /** Input for the active-to-deleting Workspace registry transition. */
 export interface BeginWorkspaceDeletionInput extends WorkspaceMutationInput {
-  /** Exact active owner that created the deletion request. */
+  /** Original recovery owner bound by the deletion request. */
   originalOwnerUserId: string;
   /** Exact active registry revision bound by the deletion request. */
   expectedRegistryRevision: number;
@@ -184,7 +172,6 @@ interface WorkspaceInvitationRow {
   invitation_id: string;
   workspace_id: string;
   invitee_user_id: string;
-  proposed_access_level: WorkspaceAccessLevel;
   inviter_user_id: string;
   status: 'pending' | 'accepted' | 'declined' | 'revoked';
   expires_at: string;
@@ -201,7 +188,6 @@ interface WorkspaceMemberRow {
   workspace_id: string;
   user_id: string;
   status: 'active' | 'removed';
-  access_level: WorkspaceAccessLevel;
   invitation_id: string | null;
   joined_at: string;
   removed_at: string | null;
@@ -238,13 +224,13 @@ export function listAuthorizedWorkspaceRegistryFacts(
       .get(userId, workspaceId) as
       | { membership_revision: number; owner_user_id: string; registry_revision: number }
       | undefined;
-    const effectiveRole = resolveWorkspaceRole(coreDb, workspaceId, userId);
-    return row && effectiveRole
+    const membershipRelation = resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId);
+    return row && membershipRelation
       ? [
           {
             workspaceId,
             ownerUserId: row.owner_user_id,
-            effectiveRole,
+            isOwner: row.owner_user_id === userId,
             registryRevision: row.registry_revision,
             membershipRevision: row.membership_revision,
           },
@@ -276,7 +262,7 @@ export function listWorkspaceMembers(coreDb: CoreDb, workspaceId: string): Works
 }
 
 /**
- * Lists every durable invitation for one owner-authorized Workspace.
+ * Lists every durable invitation for one member-authorized Workspace.
  *
  * @param coreDb Core database containing invitation authority.
  * @param workspaceId Stable Workspace identifier already authorized by the caller.
@@ -352,7 +338,8 @@ export function getWorkspaceAccessRecoveryState(
   return {
     workspaceId,
     ownerUserId: registry.ownerUserId,
-    administratorRole: resolveWorkspaceRole(coreDb, workspaceId, administratorUserId),
+    administratorMembershipStatus:
+      getWorkspaceMember(coreDb, workspaceId, administratorUserId)?.status ?? null,
     registryRevision: registry.registryRevision,
   };
 }
@@ -360,7 +347,7 @@ export function getWorkspaceAccessRecoveryState(
 /**
  * Creates one fixed-seven-day registered-user invitation inside the caller's Core transaction.
  *
- * @param input Owner, target, Workspace, and proposed access facts.
+ * @param input Initiating member, target and Workspace facts.
  * @returns Created invitation or a product-safe closed denial.
  * @throws Error when called outside an outer Core transaction.
  */
@@ -370,7 +357,7 @@ export function createWorkspaceInvitation(
   requireOuterTransaction(input.coreDb);
   if (
     !input.administratorEligible &&
-    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.inviterUserId) !== 'owner'
+    !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.inviterUserId)
   ) {
     return { kind: 'workspace_access_denied' };
   }
@@ -385,7 +372,7 @@ export function createWorkspaceInvitation(
   if (!inviteeUserId) {
     return { kind: 'invitee_unavailable' };
   }
-  if (resolveWorkspaceRole(input.coreDb, input.workspaceId, inviteeUserId)) {
+  if (resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, inviteeUserId)) {
     return { kind: 'invitee_unavailable' };
   }
   const now = input.now ?? new Date();
@@ -401,15 +388,14 @@ export function createWorkspaceInvitation(
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_invitations (
-        invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+        invitation_id, workspace_id, invitee_user_id, inviter_user_id,
         status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+      ) VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
     )
     .run(
       invitationId,
       input.workspaceId,
       inviteeUserId,
-      input.proposedAccessLevel,
       input.inviterUserId,
       new Date(now.getTime() + INVITATION_LIFETIME_MS).toISOString(),
       nowIso,
@@ -457,27 +443,18 @@ export function acceptWorkspaceInvitation(
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
-        workspace_id, user_id, status, access_level, invitation_id,
+        workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, ?, 'active', ?, ?, ?, NULL, 1, ?, ?)
+      ) VALUES (?, ?, 'active', ?, ?, NULL, 1, ?, ?)
       ON CONFLICT(workspace_id, user_id) DO UPDATE SET
         status = 'active',
-        access_level = excluded.access_level,
         invitation_id = excluded.invitation_id,
         removed_at = NULL,
         revision = workspace_members.revision + 1,
         updated_at = excluded.updated_at
       WHERE workspace_members.status = 'removed'`
     )
-    .run(
-      invitation.workspaceId,
-      input.inviteeUserId,
-      invitation.proposedAccessLevel,
-      input.invitationId,
-      nowIso,
-      nowIso,
-      nowIso
-    );
+    .run(invitation.workspaceId, input.inviteeUserId, input.invitationId, nowIso, nowIso, nowIso);
   const member = getWorkspaceMember(input.coreDb, invitation.workspaceId, input.inviteeUserId);
   if (!member) {
     throw new Error('Accepted invitation did not produce an active membership.');
@@ -532,7 +509,7 @@ export function revokeWorkspaceInvitation(
   requireOuterTransaction(input.coreDb);
   if (
     !input.administratorEligible &&
-    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'
+    !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorUserId)
   ) {
     return { kind: 'workspace_access_denied' };
   }
@@ -557,62 +534,9 @@ export function revokeWorkspaceInvitation(
 }
 
 /**
- * Changes one active non-owner membership using its exact revision.
- *
- * @param input Owner, member, access, and expected revision facts.
- * @returns Changed member or a closed denial/conflict.
- * @throws Error when called outside an outer Core transaction.
- */
-export function changeWorkspaceMemberAccess(
-  input: ChangeWorkspaceMemberAccessInput
-): WorkspaceMemberMutationResult {
-  requireOuterTransaction(input.coreDb);
-  const registry = getWorkspaceRegistryFact(input.coreDb, input.workspaceId);
-  if (
-    !registry ||
-    (!input.administratorEligible &&
-      (registry.ownerUserId !== input.ownerUserId ||
-        resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'))
-  ) {
-    return { kind: 'workspace_access_denied' };
-  }
-  if (input.memberUserId === registry.ownerUserId) {
-    return { kind: 'owner_transfer_required' };
-  }
-  const member = getWorkspaceMember(input.coreDb, input.workspaceId, input.memberUserId);
-  if (!member) {
-    return { kind: 'workspace_access_denied' };
-  }
-  if (member.status === 'removed' || member.revision !== input.expectedRevision) {
-    return { kind: 'revision_conflict', member };
-  }
-  if (member.accessLevel === input.accessLevel) {
-    return { kind: 'unchanged', member };
-  }
-  const nowIso = (input.now ?? new Date()).toISOString();
-  const changed = input.coreDb.sqlite
-    .prepare(
-      `UPDATE workspace_members
-       SET access_level = ?, revision = revision + 1, updated_at = ?
-       WHERE workspace_id = ? AND user_id = ? AND status = 'active' AND revision = ?`
-    )
-    .run(input.accessLevel, nowIso, input.workspaceId, input.memberUserId, input.expectedRevision);
-  if (changed.changes === 0) {
-    return classifyMemberFailure(
-      getWorkspaceMember(input.coreDb, input.workspaceId, input.memberUserId),
-      input.expectedRevision
-    );
-  }
-  return {
-    kind: 'changed',
-    member: requireMember(input.coreDb, input.workspaceId, input.memberUserId),
-  };
-}
-
-/**
  * Tombstones one active non-owner membership using its exact revision.
  *
- * @param input Owner, member, and expected revision facts.
+ * @param input Initiating member, target and expected revision facts.
  * @returns Removed member or a closed denial/conflict.
  * @throws Error when called outside an outer Core transaction.
  */
@@ -624,8 +548,7 @@ export function removeWorkspaceMember(
   if (
     !registry ||
     (!input.administratorEligible &&
-      (registry.ownerUserId !== input.ownerUserId ||
-        resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'))
+      !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorUserId))
   ) {
     return { kind: 'workspace_access_denied' };
   }
@@ -636,7 +559,7 @@ export function removeWorkspaceMember(
 }
 
 /**
- * Tombstones the active editor or viewer membership of the current caller.
+ * Tombstones the active non-owner member membership of the current caller.
  *
  * @param input Caller membership and expected revision facts.
  * @returns Removed member or an owner, access, or revision denial.
@@ -655,17 +578,21 @@ export function leaveWorkspace(input: LeaveWorkspaceInput): WorkspaceMemberMutat
   if (member.status === 'removed' || member.revision !== input.expectedRevision) {
     return { kind: 'revision_conflict', member };
   }
-  const role = resolveWorkspaceRole(input.coreDb, input.workspaceId, input.memberUserId);
-  if (role !== 'editor' && role !== 'viewer') {
+  const role = resolveWorkspaceMembershipRelation(
+    input.coreDb,
+    input.workspaceId,
+    input.memberUserId
+  );
+  if (!role) {
     return { kind: 'workspace_access_denied' };
   }
   return tombstoneMember(input, input.memberUserId);
 }
 
 /**
- * Transfers ownership to one active member and promotes a viewer before the registry update.
+ * Transfers ownership to one active member while preserving both memberships.
  *
- * @param input Current owner, target member, and expected registry revision.
+ * @param input Initiating member, target member, and expected registry revision.
  * @returns Updated registry fact or a closed access/revision denial.
  * @throws Error when called outside an outer Core transaction or if a fenced update is contradicted.
  */
@@ -677,9 +604,7 @@ export function transferWorkspaceOwnership(
   if (
     !registry ||
     (!input.administratorEligible &&
-      (registry.ownerUserId !== input.currentOwnerUserId ||
-        resolveWorkspaceRole(input.coreDb, input.workspaceId, input.currentOwnerUserId) !==
-          'owner'))
+      !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorUserId))
   ) {
     return { kind: 'workspace_access_denied' };
   }
@@ -704,15 +629,6 @@ export function transferWorkspaceOwnership(
     };
   }
   const nowIso = (input.now ?? new Date()).toISOString();
-  if (target.accessLevel === 'viewer') {
-    input.coreDb.sqlite
-      .prepare(
-        `UPDATE workspace_members
-         SET access_level = 'editor', revision = revision + 1, updated_at = ?
-         WHERE workspace_id = ? AND user_id = ? AND status = 'active'`
-      )
-      .run(nowIso, input.workspaceId, input.targetUserId);
-  }
   const changed = input.coreDb.sqlite
     .prepare(
       `UPDATE workspace_registry
@@ -760,7 +676,7 @@ export function recoverWorkspaceAccess(
   const alreadyRecovered =
     input.action === 'transfer-ownership-to-self'
       ? recovery.ownerUserId === input.administratorUserId
-      : recovery.administratorRole === 'owner' || recovery.administratorRole === 'editor';
+      : recovery.administratorMembershipStatus === 'active';
   if (alreadyRecovered) {
     return { kind: 'unchanged', recovery };
   }
@@ -781,12 +697,11 @@ export function recoverWorkspaceAccess(
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO workspace_members (
-        workspace_id, user_id, status, access_level, invitation_id,
+        workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)
+      ) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)
       ON CONFLICT(workspace_id, user_id) DO UPDATE SET
         status = 'active',
-        access_level = 'editor',
         invitation_id = CASE
           WHEN workspace_members.status = 'removed' THEN NULL
           ELSE workspace_members.invitation_id
@@ -794,7 +709,7 @@ export function recoverWorkspaceAccess(
         removed_at = NULL,
         revision = workspace_members.revision + 1,
         updated_at = excluded.updated_at
-      WHERE workspace_members.status = 'removed' OR workspace_members.access_level = 'viewer'`
+      WHERE workspace_members.status = 'removed'`
     )
     .run(input.workspaceId, input.administratorUserId, nowIso, nowIso, nowIso);
   const ownerUserId =
@@ -848,7 +763,11 @@ export function beginWorkspaceDeletion(
     registry.ownerUserId !== input.originalOwnerUserId ||
     registry.registryRevision !== input.expectedRegistryRevision ||
     !isCanonicalUserActive(input.coreDb, input.originalOwnerUserId) ||
-    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.originalOwnerUserId) !== 'owner'
+    resolveWorkspaceMembershipRelation(
+      input.coreDb,
+      input.workspaceId,
+      input.originalOwnerUserId
+    ) !== 'owner'
   ) {
     throw new Error('Workspace deletion active-owner predicate failed.');
   }
@@ -1045,7 +964,6 @@ function projectInvitation(row: WorkspaceInvitationRow, now: Date): WorkspaceInv
     invitationId: row.invitation_id,
     workspaceId: row.workspace_id,
     inviteeUserId: row.invitee_user_id,
-    proposedAccessLevel: row.proposed_access_level,
     inviterUserId: row.inviter_user_id,
     effectiveStatus,
     expiresAt: row.expires_at,
@@ -1112,18 +1030,11 @@ function requireMember(coreDb: CoreDb, workspaceId: string, userId: string): Wor
 
 /** Projects one membership row into the closed public variant. */
 function projectMember(row: WorkspaceMemberRow): WorkspaceMember {
-  const effectiveRole =
-    row.status === 'removed'
-      ? null
-      : row.user_id === row.owner_user_id
-        ? 'owner'
-        : row.access_level;
   return {
     workspaceId: row.workspace_id,
     userId: row.user_id,
     status: row.status,
-    accessLevel: row.access_level,
-    effectiveRole,
+    isOwner: row.status === 'active' && row.user_id === row.owner_user_id,
     invitationId: row.invitation_id,
     joinedAt: row.joined_at,
     removedAt: row.removed_at,
