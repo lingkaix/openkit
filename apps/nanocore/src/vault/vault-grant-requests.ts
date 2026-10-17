@@ -32,6 +32,7 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { evaluateEffectPolicy } from '../policy/effect-policy.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
@@ -848,24 +849,27 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
         const policyDecisionId = allocateEntityId('pd');
         let coreAttempted = false;
         try {
-          const access = authorizeWorkspace(
-            coreDb!,
-            record.decidingActorContext!,
-            input.workspaceId,
-            { policyOperation: 'vault.admin', mutating: true }
-          );
-          if (!access) throw new Error('Current Policy refusal.');
+          const access = authorizeWorkspace(coreDb!, actor, input.workspaceId, {
+            policyOperation: 'vault.admin',
+            mutating: true,
+          });
+          const effect = evaluateEffectPolicy({
+            subjectId: actor.userId,
+            operation: 'vault.admin',
+            resourceId: terms.referenceId,
+            authorityAllowed: access !== null,
+          });
           // Administrator eligibility does not create a Workspace membership fact.
           recordProductPermissionDecision({
             workspaceDb: db,
             ownerScope: 'workspace',
             workspaceId: input.workspaceId,
             decisionId: policyDecisionId,
-            result: 'allow',
-            reasonCode: 'reviewed_vault_grant_administrator_authorized',
-            policyEngineVersion: 'nanocore-vault-policy:v1',
-            policySnapshotId: 'reviewed_vault_grant_issue',
-            subjectSummary: { kind: 'user', id: record.decidingActorContext!.userId },
+            result: effect.result,
+            reasonCode: `effect_policy_${effect.result}`,
+            policyEngineVersion: 'policy-kernel:v1',
+            policySnapshotId: effect.policySnapshotId,
+            subjectSummary: { kind: 'user', id: actor.userId },
             action: 'vault.admin',
             resourceSummary: {
               kind: 'vault-reference',
@@ -878,12 +882,24 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
               turnId: record.raisingTurnId,
               approvalRequestId: record.requestId,
               issuingActorId: actor.userId,
+              decidingActorId: record.decidingActor!.id,
               requesterId: record.responsibleUserId,
+              kernelEffect: effect.policyDecision.effect,
+              kernelReasonCodes: effect.policyDecision.reasons.map((reason) => reason.code),
             },
             enforcementPoint: 'vault.grant-issue',
             approvalId: record.requestId,
+            ...(effect.result === 'require_approval'
+              ? { requiredApprovalKind: 'vault.grant-issue' }
+              : {}),
             auditActor: { kind: 'user', id: actor.userId },
           });
+          if (effect.result !== 'allow')
+            throw new PendingRequestCommandError(
+              'vault_effect_policy_refused',
+              'Current Policy does not allow credential issuance.',
+              403
+            );
           coreAttempted = true;
           coreDb!.sqlite.transaction(() => {
             createVaultGrant(coreDb!, {
@@ -926,15 +942,22 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
           );
           if (!finished) throw new Error('Missing execution settlement.');
           return view(dependencies, finished, actor);
-        } catch {
+        } catch (error) {
+          const refused =
+            !coreAttempted &&
+            error instanceof PendingRequestCommandError &&
+            error.code === 'vault_effect_policy_refused';
           finishPendingExecution(
             db.sqlite,
             record.requestId,
             coreAttempted ? 'outcome-unknown' : 'execution-error',
-            'Grant issue requires inspection. Do not retry the effect.',
+            refused
+              ? 'Current Policy refused credential issuance. No grant was issued.'
+              : 'Grant issue requires inspection. Do not retry the effect.',
             null,
             new Date().toISOString()
           );
+          if (refused) throw error;
           throw new PendingRequestCommandError(
             'vault_issue_unknown',
             'Grant issue requires inspection of the request, grant inventory and Audit.',
