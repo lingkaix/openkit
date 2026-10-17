@@ -76,6 +76,19 @@ export interface KnowledgeMaintenanceDependencies {
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
 }
 
+/** Projects a complete UTF-8 prefix with its own delivered digest, distinct from canonical Source identity. */
+function excerpt(text: string, maxBytes: number) {
+  const bytes = Buffer.from(text);
+  let end = Math.min(bytes.length, maxBytes);
+  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+  const content = bytes.subarray(0, end).toString('utf8');
+  return {
+    content,
+    truncated: end < bytes.length,
+    deliveredDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+  };
+}
+
 /** Executes one fresh bounded Workspace run; only actual Tool outcomes can report publication. */
 export function prepareKnowledgeMaintenance(
   dependencies: KnowledgeMaintenanceDependencies,
@@ -181,7 +194,7 @@ export function prepareKnowledgeMaintenance(
       },
     }
   );
-  const status = (summary: string, failed = false) => {
+  const status = (summary: string, failed = false, result?: ReturnType<typeof response>) => {
     const timestamp = new Date().toISOString();
     store.createItem({
       id: allocateEntityId('it'),
@@ -189,6 +202,7 @@ export function prepareKnowledgeMaintenance(
       threadId: thread.id,
       turnId: turn.id,
       type: 'status',
+      ...(result ? { knowledgeMaintenanceResult: result } : {}),
       level: failed ? 'error' : 'info',
       title: 'Knowledge maintenance',
       summary,
@@ -237,21 +251,23 @@ export function prepareKnowledgeMaintenance(
     }
   };
   const fail = () => {
-    if (!isSealedTurnTerminal(store.getTurnById(turn.id).status)) {
-      status('Knowledge maintenance failed. Start a new request from current content.', true);
+    const current = store.getTurnById(turn.id);
+    const result =
+      outcome ??
+      response(
+        'failed',
+        current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
+      );
+    if (!isSealedTurnTerminal(current.status)) {
+      status(result.summary, true, result);
       store.updateTurn(turn.id, {
         status: input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
-        error: {
-          code: 'knowledge_maintenance_failed',
-          message: 'Knowledge maintenance failed. Inspect its retained Turn.',
-        },
+        error: { code: 'knowledge_maintenance_failed', message: result.summary },
       });
     }
     close();
-    return (
-      outcome ?? response('failed', 'Knowledge maintenance failed. Inspect its retained Turn.')
-    );
+    return result;
   };
   const settled = (result: ReturnType<typeof response>) => {
     close();
@@ -260,9 +276,10 @@ export function prepareKnowledgeMaintenance(
   try {
     admission(empty);
     if (maintenance.some((prior) => !isSealedTurnTerminal(prior.status))) {
-      status('Another notebook maintenance Turn is still active.');
+      const skipped = response('skipped', 'Another notebook maintenance Turn is still active.');
+      status(skipped.summary, false, skipped);
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
-      return settled(response('skipped', 'Another notebook maintenance Turn is still active.'));
+      return settled(skipped);
     }
     const files: Record<string, string> = {};
     const sourceFiles: Record<string, string> = {};
@@ -596,14 +613,12 @@ export function prepareKnowledgeMaintenance(
     const humanEdits = boundedNotebookDiff(humanChanges, false);
     let remaining = 64 * 1024;
     const selectedSources = [...sources.values()].map((source) => {
-      const content = sourceFiles[source.id]!;
-      const prefix = Buffer.from(content).subarray(0, remaining).toString('utf8');
-      remaining -= Buffer.byteLength(prefix);
+      const delivered = excerpt(sourceFiles[source.id]!, remaining);
+      remaining -= Buffer.byteLength(delivered.content);
       return {
         reference: `source:${source.id}@${source.contentDigest}`,
         file: `/sources/${source.id}`,
-        content: prefix,
-        truncated: prefix !== content,
+        ...delivered,
       };
     });
     const runInput: KnowledgeManagerAgentRun = {
@@ -633,7 +648,7 @@ export function prepareKnowledgeMaintenance(
                 notebookRevision: baseRevision,
                 files: Object.keys(files),
                 humanEdits,
-                overview: files['index.md'],
+                overview: excerpt(files['index.md'] ?? '', 16 * 1024),
                 sources: selectedSources,
                 omittedEligibleTurns: Math.max(0, eligible.length - 8),
               }),
@@ -645,7 +660,7 @@ export function prepareKnowledgeMaintenance(
       validateResult: () => {
         assertCurrent();
         if (!outcome) throw new NotebookError('invalid_request');
-        status(outcome.summary);
+        status(outcome.summary, false, outcome);
       },
     };
     dependencies.pin(runInput);

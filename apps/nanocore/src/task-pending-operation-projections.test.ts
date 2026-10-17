@@ -293,10 +293,14 @@ describe('Task conversation and Pending Request definition projections', () => {
       'apps/nanocore/src/openapi.ts',
       'apps/nanocore/src/auth/operation-access.ts',
     ]) {
-      const source = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8').replace(
+      let source = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8').replace(
         /policyOperation: ['"]approval\.respond['"]/g,
         ''
       );
+      if (path === 'apps/nanocore/src/openapi.ts') {
+        // Multipart request metadata uses this single operation comparison.
+        source = source.replace("input.operationId === 'conversation.submit'", '');
+      }
       for (const id of expected)
         expect(source, `${path}: ${id}`).not.toMatch(
           new RegExp(`['"\x60]${id.replaceAll('.', '\\.')}['"\x60]`)

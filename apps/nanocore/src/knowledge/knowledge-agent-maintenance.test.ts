@@ -145,7 +145,12 @@ function fixture(enabled = true, protectedPages: string[] = []) {
 describe('Workspace Knowledge Manager maintenance admission', () => {
   it('publishes through the existing owner with exact human edits and selected ordinary expressions as inputs', async () => {
     const f = fixture();
-    const result = await maintainKnowledgeAgent(f.dependencies, f.input);
+    const result = await maintainKnowledgeAgent(f.dependencies, {
+      ...f.input,
+      tellContent: '€'.repeat(22000),
+      askingThreadId: f.ordinaryTurn.threadId,
+      askingTurnId: f.ordinaryTurn.id,
+    });
     expect(result.outcome).toBe('published');
     const current = f.notebook.readRevision(result.notebookRevision);
     expect(current.parentRevision).toBe(f.humanRevision);
@@ -167,7 +172,24 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
       )
     ).toBe(true);
     expect(payload.sources[0].content).toContain('The project uses green labels.');
+    expect(
+      payload.sources.reduce(
+        (size: number, source: { content: string }) => size + Buffer.byteLength(source.content),
+        0
+      )
+    ).toBeLessThanOrEqual(64 * 1024);
+    expect(payload.sources[1].content).not.toContain('�');
+    expect(payload.sources[1].truncated).toBe(true);
     expect(f.store.getTurnById(result.turnId).status).toBe('completed');
+    expect(
+      f.store
+        .getTurnById(result.turnId)
+        .items.flatMap((item) =>
+          item.type === 'status' && item.knowledgeMaintenanceResult
+            ? [item.knowledgeMaintenanceResult]
+            : []
+        )[0]
+    ).toEqual(result);
   });
   it('saves the exact multi-page Proposal when publication is not delegated', async () => {
     const f = fixture(false);
@@ -227,6 +249,15 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     });
     const failed = await unavailable.execute();
     expect(failed.outcome).toBe('failed');
+    expect(
+      f.store
+        .getTurnById(unavailable.turnId)
+        .items.flatMap((item) =>
+          item.type === 'status' && item.knowledgeMaintenanceResult
+            ? [item.knowledgeMaintenanceResult]
+            : []
+        )[0]
+    ).toEqual(failed);
     expect(f.store.getTurnById(unavailable.turnId).internalExecution).toBeUndefined();
     expect(f.store.getTurnById(unavailable.turnId).triggerSource).toEqual({
       kind: 'automation',
