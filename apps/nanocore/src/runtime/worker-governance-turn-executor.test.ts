@@ -36,7 +36,7 @@ import {
   validateAgentEnvironmentPackageForBackend,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { deriveEntityId, RequestIdSchema } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, RequestIdSchema } from '@openkit/protocol';
 import {
   buildWorkerCanonicalTerminalEventRecord,
   type WorkerCanonicalEventRecord,
@@ -8494,8 +8494,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           updatedAt: recordedAt,
         })
       );
-    const selected = makeArtifact('ar_context_selected', original);
-    makeArtifact('ar_context_unselected', 'UNSELECTED PRIVATE MARKER');
+    const selected = makeArtifact(allocateEntityId('ar'), original);
+    makeArtifact(allocateEntityId('ar'), 'UNSELECTED PRIVATE MARKER');
     const request = JSON.parse(fixture.workerRequest);
     request.contextRefs.push({
       kind: 'artifact',
