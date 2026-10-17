@@ -35,14 +35,18 @@ import {
 import { OperationError } from '../operation-error.js';
 import {
   admitKnowledgeRetrieval,
+  admitUserMemoryRetrieval,
   collectKnowledgeInventory,
+  collectUserMemoryInventory,
   currentKnowledgeReferenceProofs,
   type KnowledgeRetrievalAccess,
   knowledgePageConflicted,
   knowledgePageReadable,
   knowledgeSourceReferencesReadable,
+  readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
   resolveKnowledgeQueryContext,
+  type UserMemoryRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
 import { resolveDataRootPath } from './fs-layout.js';
@@ -219,6 +223,13 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   traceId?: string | undefined;
   /** Optional timestamp source for deterministic tests. */
   now?: (() => string) | undefined;
+}
+
+/** Explicit User Memory selection; trusted self/private query facts cannot be supplied by request payloads. */
+export interface RetrieveUserMemoryInput
+  extends Omit<RetrieveWorkspaceKnowledgeInput, 'access' | 'sourceScope' | 'caller'> {
+  access: UserMemoryRetrievalAccess;
+  caller: 'app-api' | 'assistant';
 }
 
 /** Selected Knowledge Store retrieval candidate. */
@@ -564,8 +575,25 @@ export function readWorkspaceKnowledgeDerivedIndexes(
 export async function retrieveWorkspaceKnowledge(
   input: RetrieveWorkspaceKnowledgeInput
 ): Promise<KnowledgeRetrievalResponse> {
+  return retrieveNotebookSelection(input, false);
+}
+
+/** Selects current self Memory through the existing Kernel and trace owner, with a separate User corpus and limit. */
+export async function retrieveUserMemory(
+  input: RetrieveUserMemoryInput
+): Promise<KnowledgeRetrievalResponse> {
+  return retrieveNotebookSelection(input, true);
+}
+
+/** Shared governed selection for the two currently admitted notebook sources; it supplies facts, never an answer. */
+async function retrieveNotebookSelection(
+  input: RetrieveWorkspaceKnowledgeInput,
+  memory: boolean
+): Promise<KnowledgeRetrievalResponse> {
+  const admit = () => (memory ? admitUserMemoryRetrieval(input) : admitKnowledgeRetrieval(input));
+  if (memory) admit();
   const queryContext = resolveKnowledgeQueryContext(input);
-  admitKnowledgeRetrieval(input);
+  if (!memory) admit();
   const normalized = RetrieveKnowledgeRequestSchema.parse({
     query: input.query,
     limit: input.limit,
@@ -580,8 +608,16 @@ export async function retrieveWorkspaceKnowledge(
       'Automatic Knowledge retrieval requires active state.',
       400
     );
-  const sourceScope =
-    normalized.sourceScope === 'server' ? 'page/server' : `page/workspace/${input.workspaceId}`;
+  const sourceScope = memory
+    ? `page/user/${input.access.requestActor!.userId}`
+    : normalized.sourceScope === 'server'
+      ? 'page/server'
+      : `page/workspace/${input.workspaceId}`;
+  if (
+    memory &&
+    (normalized.sourceScope !== undefined || !['app-api', 'assistant'].includes(input.caller))
+  )
+    throw new OperationError('invalid_request', 'Invalid Memory retrieval caller or source.', 400);
   if (normalized.pinnedReferences.some((reference) => reference.scopeId !== sourceScope))
     throw new OperationError(
       'invalid_request',
@@ -613,28 +649,49 @@ export async function retrieveWorkspaceKnowledge(
   const createdAt = input.now?.() ?? new Date().toISOString();
   const traceId = input.traceId ?? allocateEntityId('krt');
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
-  const admittedPages = readAuthorizedWorkspaceNotebookPages(input);
+  const memoryPages = memory ? readAuthorizedUserMemoryPages(input) : undefined;
+  const admittedPages = memoryPages ?? readAuthorizedWorkspaceNotebookPages(input);
   const notebookRevision = admittedPages.notebookRevision;
   const pinnedInput = { ...input, notebookRevision };
   const pinnedPages = new Map(admittedPages.pages.map((page) => [page.id, page.content]));
-  const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
-  const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
+  const scopeSchemaText =
+    memoryPages?.scopeSchemaText ?? readScopeKnowledgeSchemaText(workspaceRoot);
+  const registeredSources =
+    memoryPages?.registeredSources ?? readRegisteredSources(workspaceRoot, input.workspaceId);
+  const expectedOwnerScope = memory
+    ? { kind: 'user' as const, userId: input.access.requestActor!.userId }
+    : undefined;
   const knowledgeIds = readKnowledgePageIds(pinnedPages);
-  const service = getRetrievalService(input.dataRoot, workspaceRoot);
+  const service = getRetrievalService(
+    input.dataRoot,
+    memory
+      ? resolveDataRootPath(input.dataRoot, 'users', input.access.requestActor!.userId)
+      : workspaceRoot
+  );
   await service.search({ mode: 'lexical', query: input.query, scopes: [], limit: 1 });
-  const indexes = readWorkspaceKnowledgeDerivedIndexes(pinnedInput);
+  const indexes = memory ? undefined : readWorkspaceKnowledgeDerivedIndexes(pinnedInput);
   const sourceReferencesByConcept = new Map<string, string[]>();
   const scores = new Map<string, number>();
   const addressedIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
 
-  for (const reference of indexes.sourceReferences.references) {
+  for (const reference of indexes?.sourceReferences.references ??
+    admittedPages.pages.flatMap(({ id, content }) =>
+      (
+        stringListFrontmatterField(
+          parseOkfDocument({ path: `${id}.md`, content }).document!,
+          'source_refs'
+        ) ?? []
+      ).map((reference) => ({ conceptId: id, reference }))
+    )) {
     const references = sourceReferencesByConcept.get(reference.conceptId) ?? [];
 
     references.push(reference.reference);
     sourceReferencesByConcept.set(reference.conceptId, references);
   }
 
-  const before = collectKnowledgeInventory(pinnedInput);
+  const collect = () =>
+    memory ? collectUserMemoryInventory(pinnedInput) : collectKnowledgeInventory(pinnedInput);
+  const before = collect();
   await service.publish(before.view, await service.inspect(before.view.scope));
   const matches = await service.search({
     mode: 'lexical',
@@ -648,7 +705,7 @@ export async function retrieveWorkspaceKnowledge(
       'Knowledge retrieval is incomplete.',
       503
     );
-  const after = collectKnowledgeInventory(pinnedInput);
+  const after = collect();
   if (canonicalJson(before.view) !== canonicalJson(after.view))
     throw new OperationError(
       'knowledge_retrieval_failed',
@@ -660,7 +717,7 @@ export async function retrieveWorkspaceKnowledge(
     const admitted = before.view.documents.find((document) => document.key.id === hit.key.id);
     if (
       !admitted ||
-      hit.key.namespace !== 'knowledge' ||
+      hit.key.namespace !== (memory ? 'memory' : 'knowledge') ||
       hit.revision !== admitted.revision ||
       hit.digest !== admitted.digest ||
       canonicalJson(hit.provenance) !== canonicalJson(admitted.metadata)
@@ -674,8 +731,37 @@ export async function retrieveWorkspaceKnowledge(
     scores.set(hit.key.id, Math.max(scores.get(hit.key.id) ?? 0, hit.score ?? 0));
   }
 
+  const validationRecords =
+    indexes?.validation.records ??
+    admittedPages.pages.map(({ id, content, contentDigest }) => {
+      const path = `memory/pages/${id}.md`;
+      const document = parseOkfDocument({ path, content }).document!;
+      const report = validateKnowledgePageCandidate({
+        path,
+        content,
+        scopeSchemaText: scopeSchemaText!,
+        expectedOwnerScope: expectedOwnerScope!,
+        registeredSources,
+        knowledgeIds,
+      });
+      const active = stringFrontmatterField(document, 'openkit_status') === 'active';
+      return {
+        conceptId: id,
+        path,
+        contentDigest,
+        title: stringFrontmatterField(document, 'title') ?? undefined,
+        conformance: report.conformance,
+        errors: report.errors,
+        active,
+        indexed:
+          active &&
+          stringFrontmatterField(document, 'review_state') === 'user-authored' &&
+          report.conformance === 'scope-schema-valid' &&
+          !report.errors.length,
+      };
+    });
   const validationByConcept = new Map(
-    indexes.validation.records.map((record) => [record.conceptId, record] as const)
+    validationRecords.map((record) => [record.conceptId, record] as const)
   );
   const candidates = [...addressedIds]
     .map((knowledgePageId) => ({
@@ -699,7 +785,7 @@ export async function retrieveWorkspaceKnowledge(
       continue;
     }
 
-    const expectedPath = `knowledge/pages/${candidate.knowledgePageId}.md`;
+    const expectedPath = `${memory ? 'memory' : 'knowledge'}/pages/${candidate.knowledgePageId}.md`;
 
     if (record.path !== expectedPath) {
       throw new OperationError(
@@ -728,6 +814,7 @@ export async function retrieveWorkspaceKnowledge(
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
+      ...(expectedOwnerScope ? { expectedOwnerScope } : {}),
     });
     const sourceReferences = document
       ? [...new Set(stringListFrontmatterField(document, 'source_refs') ?? [])].sort(
@@ -746,6 +833,7 @@ export async function retrieveWorkspaceKnowledge(
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
+      ...(expectedOwnerScope ? { expectedOwnerScope } : {}),
       ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
     });
     const projectedSourceReferences = [
@@ -780,7 +868,7 @@ export async function retrieveWorkspaceKnowledge(
 
     const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
 
-    if (sensitivity === 'restricted' || sensitivity === 'confidential') {
+    if (sensitivity === 'restricted' || (!memory && sensitivity === 'confidential')) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest: null,
@@ -792,15 +880,16 @@ export async function retrieveWorkspaceKnowledge(
     if (!parsed.ok || !document || validation.conformance !== 'scope-schema-valid') {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest: knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
-          ? contentDigest
-          : null,
+        contentDigest:
+          memory || knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
+            ? contentDigest
+            : null,
         reason: 'lower_conformance',
       });
       continue;
     }
 
-    if (!knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)) {
+    if (!memory && !knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest: null,
@@ -815,15 +904,16 @@ export async function retrieveWorkspaceKnowledge(
       !states.includes(
         stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
       ) ||
-      knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId) ||
+      (!memory && knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId)) ||
       (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
       (reviewState === 'accepted' && !referenceProof)
     ) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest: knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
-          ? contentDigest
-          : null,
+        contentDigest:
+          memory || knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
+            ? contentDigest
+            : null,
         reason: 'lower_conformance',
       });
       continue;
@@ -862,7 +952,7 @@ export async function retrieveWorkspaceKnowledge(
     limit,
     pinnedReferences: normalizedPinnedReferences,
     states,
-    sourceScope: normalized.sourceScope ?? 'workspace',
+    sourceScope: memory ? 'user' : (normalized.sourceScope ?? 'workspace'),
   };
   const referenceFor = (knowledgePageId: string): PageReference => ({
     scopeId: sourceScope,
@@ -880,7 +970,7 @@ export async function retrieveWorkspaceKnowledge(
       limit,
       pinnedReferences: normalizedPinnedReferences,
       states,
-      sourceScope: normalized.sourceScope ?? 'workspace',
+      sourceScope: memory ? 'user' : (normalized.sourceScope ?? 'workspace'),
     },
     createdAt,
   };
@@ -905,8 +995,8 @@ export async function retrieveWorkspaceKnowledge(
     })),
   });
 
-  admitKnowledgeRetrieval(input);
-  if (canonicalJson(before.view) !== canonicalJson(collectKnowledgeInventory(pinnedInput).view))
+  admit();
+  if (canonicalJson(before.view) !== canonicalJson(collect().view))
     throw new OperationError(
       'knowledge_retrieval_failed',
       'Knowledge eligibility changed during retrieval.',
@@ -963,10 +1053,22 @@ function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRe
     throw new OperationError('knowledge_retrieval_failed', 'Knowledge trace is unavailable.', 503);
   if (trace.queryContext.serverId !== context.serverId) throw knowledgeTraceUnavailable();
   const sourceScope =
-    trace.retrievalParameters.sourceScope === 'server'
-      ? 'page/server'
-      : `page/workspace/${trace.queryContext.workspaceId}`;
+    trace.retrievalParameters.sourceScope === 'user'
+      ? `page/user/${trace.queryContext.actor.kind === 'user' ? trace.queryContext.actor.id : ''}`
+      : trace.retrievalParameters.sourceScope === 'server'
+        ? 'page/server'
+        : `page/workspace/${trace.queryContext.workspaceId}`;
   if (trace.sourceScope !== sourceScope) throw knowledgeTraceUnavailable();
+  if (trace.retrievalParameters.sourceScope === 'user') {
+    // An ordinary Workspace export has no private output audience and cannot acquire one from retained evidence.
+    if (
+      input.access.outputThreadId !== scope.threadId ||
+      (scope.kind === 'turn' && input.access.outputTurnId !== scope.turnId) ||
+      sourceScope !== `page/user/${input.access.requestActor?.userId}`
+    )
+      throw knowledgeTraceUnavailable();
+    admitUserMemoryRetrieval(target);
+  }
   return trace;
 }
 
@@ -990,13 +1092,25 @@ function currentKnowledgeReferenceContent(
   reference: PageReference,
   serverId: string
 ): string | null {
+  if (reference.scopeId.startsWith('page/user/')) {
+    // Current self Memory is independent of Workspace import lineage; the trace reader still binds its Server.
+    if (reference.scopeId !== `page/user/${input.access.requestActor?.userId}`)
+      throw knowledgeTraceUnavailable();
+    try {
+      return (
+        readAuthorizedUserMemoryPages({ ...input, pageIds: [reference.objectId] }).pages[0]
+          ?.content ?? null
+      );
+    } catch (error) {
+      if (error instanceof OperationError && error.status === 403)
+        throw knowledgeTraceUnavailable();
+      throw error;
+    }
+  }
   const importedFrom = input.access.store.getWorkspace(input.workspaceId).importedFrom;
   const crossDeploymentImport =
     importedFrom !== undefined && importedFrom.sourceDeploymentId !== serverId;
-  if (
-    crossDeploymentImport &&
-    (reference.scopeId === 'page/server' || reference.scopeId.startsWith('page/user/'))
-  )
+  if (crossDeploymentImport && reference.scopeId === 'page/server')
     throw knowledgeTraceUnavailable();
   if (reference.scopeId !== `page/workspace/${input.workspaceId}`) {
     if (
@@ -1097,6 +1211,31 @@ export function assertKnowledgeRetrievalTraceReadable(
       );
   }
   for (const entry of [...trace.selected, ...trace.excluded]) {
+    if (trace.retrievalParameters.sourceScope === 'user') {
+      const content = currentKnowledgeReferenceContent(
+        target,
+        entry.reference,
+        trace.queryContext.serverId
+      );
+      const document =
+        content === null
+          ? null
+          : parseOkfDocument({ path: `${entry.reference.objectId}.md`, content }).document;
+      if (
+        content === null ||
+        !document ||
+        entry.revision !== trace.notebookRevision ||
+        (entry.contentDigest !== null && entry.contentDigest !== sha256Digest(content)) ||
+        !sameStrings(
+          entry.sourceReferences,
+          [...new Set(stringListFrontmatterField(document, 'source_refs') ?? [])].sort(
+            compareBytewise
+          )
+        )
+      )
+        throw knowledgeTraceUnavailable();
+      continue;
+    }
     if (
       !knowledgeSourceReferencesReadable(target, entry.reference.objectId, entry.sourceReferences)
     )
@@ -1157,6 +1296,54 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
   const notebookRevision = trace.notebookRevision;
   const pinnedInput = { ...input, notebookRevision };
+  if (trace.retrievalParameters.sourceScope === 'user') {
+    admitUserMemoryRetrieval(input);
+    if (
+      trace.sourceScope !== `page/user/${input.access.requestActor!.userId}` ||
+      trace.queryContext.threadId !== context.threadId
+    )
+      throw knowledgeTraceUnavailable();
+    const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
+    for (const selected of trace.selected) {
+      if (
+        selected.reference.scopeId !== trace.sourceScope ||
+        selected.revision !== notebookRevision
+      )
+        throw knowledgeTraceUnavailable();
+      const content = currentKnowledgeReferenceContent(
+        pinnedInput,
+        selected.reference,
+        context.serverId
+      );
+      if (content === null) return null;
+      const document = parseOkfDocument({ path: `${selected.reference.objectId}.md`, content })
+        .document!;
+      const sourceRefs = [
+        ...new Set(stringListFrontmatterField(document, 'source_refs') ?? []),
+      ].sort(compareBytewise);
+      if (
+        sha256Digest(content) !== selected.contentDigest ||
+        !sameStrings(sourceRefs, selected.sourceReferences) ||
+        stringFrontmatterField(document, 'openkit_status') !== 'active' ||
+        ['stale', 'expired'].includes(stringFrontmatterField(document, 'freshness') ?? '')
+      )
+        throw knowledgeTraceUnavailable();
+      const kind = stringFrontmatterField(document, 'openkit_entry_kind');
+      pages.push({
+        notebookRevision,
+        reference: selected.reference,
+        knowledgePageId: selected.reference.objectId,
+        contentDigest: selected.contentDigest,
+        sourceRefs,
+        content,
+        title: stringFrontmatterField(document, 'title')!,
+        body: document.body.trim(),
+        kind: kind === 'preference' || kind === 'task-summary' ? kind : 'project-context',
+      });
+    }
+    admitUserMemoryRetrieval(input);
+    return pages;
+  }
   const referenceProofs = currentKnowledgeReferenceProofs(pinnedInput);
   const pinnedPages = readWorkspaceNotebookIndexSource(workspaceRoot, notebookRevision).pages;
   const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
