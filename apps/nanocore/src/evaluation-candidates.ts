@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   type CandidateSetRecord,
   CandidateSetRecordSchema,
+  CandidateSetRecordReaderSchema,
   type CreateCandidateSetRequest,
   EVALUATION_OPERATION_DEFINITIONS,
   type EvaluationCandidate,
@@ -48,6 +49,7 @@ export type CandidateSetJudgementInput = {
   readonly candidateSetId: string;
   readonly requestId: string;
   readonly note?: string | null;
+  readonly extensions?: JudgementRecord['extensions'];
 } & (
   | { readonly kind: 'select'; readonly choice: EvaluationCandidate }
   | { readonly kind: 'accept' | 'reject'; readonly choice: null }
@@ -116,7 +118,7 @@ function parseRow(access: CandidateSetAccess, row: Row) {
   } catch {
     throw recovery();
   }
-  const parsed = CandidateSetRecordSchema.safeParse(raw);
+  const parsed = CandidateSetRecordReaderSchema.safeParse(raw);
   if (
     !parsed.success ||
     parsed.data.workspaceId !== access.workspaceDb.workspaceId ||
@@ -259,7 +261,7 @@ export function appendCandidateSetJudgement(
     target: { kind: 'candidate-set', candidateSetId: input.candidateSetId },
     choice: input.choice,
     note: input.note ?? null,
-    extensions: {},
+    extensions: input.extensions ?? {},
   });
   if (
     input.kind === 'select' &&

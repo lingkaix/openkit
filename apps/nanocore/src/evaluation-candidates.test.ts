@@ -190,6 +190,10 @@ describe('Workspace candidate set authority', () => {
       ).payloadJson
     );
     rawBeforeRating.descriptiveAnnotation = { retained: true };
+    rawBeforeRating.createdBy.displayName = 'Historical creator';
+    rawBeforeRating.candidates[0].description = 'Original description';
+    rawBeforeRating.judgements[0].actor.displayName = 'Historical reviewer';
+    rawBeforeRating.judgements[0].choice.description = 'Chosen original';
     state.workspaceDb.sqlite
       .prepare('UPDATE evaluation_candidate_sets SET payload_json = ? WHERE candidate_set_id = ?')
       .run(JSON.stringify(rawBeforeRating), original.candidateSetId);
@@ -212,8 +216,13 @@ describe('Workspace candidate set authority', () => {
             )
             .get(original.candidateSetId) as { payloadJson: string }
         ).payloadJson
-      ).descriptiveAnnotation
-    ).toEqual({ retained: true });
+      )
+    ).toMatchObject({
+      descriptiveAnnotation: { retained: true },
+      createdBy: { displayName: 'Historical creator' },
+      candidates: [{ description: 'Original description' }, {}],
+      judgements: [{ actor: { displayName: 'Historical reviewer' }, choice: { description: 'Chosen original' } }, {}, {}],
+    });
     expect(
       rated.judgements.filter((judgement) => judgement.kind === 'select').at(-1)?.choice
     ).toEqual(state.candidates[1]);
