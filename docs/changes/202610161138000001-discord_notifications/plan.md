@@ -137,3 +137,8 @@ The first Web disposition guard failed because Main added three Artifact operati
 ## Exact Review Feedback Main Join
 
 Main0a0c4f2aed7b73054b0a9768898ff76148565e6b adds exact Material range feedback and Artifact candidate choices. Preserve its complete schema, Web and browser changes, all existing Material save-response waits, and Workspace0003 migration alongside the unchanged channel Core0004 migration. Resolve the Web inventory to all277catalog entries and217included entries, retaining Main's new candidate-selection operation and the five channel operations. Preserve Main's ownership and align the retained-format summary with the actual Workspace journal. Regenerate OpenAPI and CLI from the combined definitions. Reuse complete unchanged Native and configuration proofs; check the changed shared schemas, client, CLI, complete Web, migration projections and mandatory browser boundary on the committed joined head.
+
+
+## Definition-Owned File Framing Repair Join
+
+Prepare the separately reviewed Main repair262012562ef3b0fb65fc9ebdc7719efad2281528 without modifying its owner's frozen checkout. Its existing binary framing is declared in OperationProjectionFacts and consumed by the existing HTTP and OpenAPI projections. Keep the strict Task and Pending projection guard unchanged. This preserves the current wire contract and removes the handwritten operation identifier condition. The smaller retained-Thread fixture retains its exact resource-refusal oracle and deadline. Regenerate the combined CLI, verify unchanged OpenAPI, and test the affected projections and shared consumers. The repair must land separately on Main and Main must become green before normal P23 publication; this preparation does not bundle P23 into a repair landing.
