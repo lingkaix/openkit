@@ -136,6 +136,8 @@ const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<
   workspace_sync_review: null,
   knowledge_proposal: null,
   knowledge_proposal_review: KnowledgeReviewIdSchema,
+  light_app_definition: null,
+  light_app_catalog: WorkspaceIdSchema,
   skill_version: null,
   skill_catalog: WorkspaceIdSchema,
   skill_candidate: ResourceCandidateIdSchema,
