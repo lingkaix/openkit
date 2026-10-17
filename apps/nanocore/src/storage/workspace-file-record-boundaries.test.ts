@@ -148,7 +148,9 @@ describe('workspace file-record write and load boundaries', () => {
     const corruptRef = `${'0'.repeat(40)}\n`;
     writeFileSync(publishedPath, corruptRef);
 
-    f.store.createThread(f.workspace.id, 'Do not repair the Notebook');
+    expect(() => f.store.createThread(f.workspace.id, 'Do not repair the Notebook')).toThrow(
+      'Notebook recovery required.'
+    );
 
     expect(() => f.notebook.publishedRevision()).toThrow('Notebook recovery required.');
     expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow('Notebook recovery required.');
