@@ -398,6 +398,59 @@ export function createAppOpenApiDocument() {
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
       ...operationPaths(),
+      '/api/app/operations/artifact.version-file-commit': {
+        post: {
+          operationId: 'artifact.version-file-commit',
+          tags: ['artifact'],
+          summary: OPERATION_DEFINITIONS['artifact.version-file-commit'].description,
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [
+            {
+              ...REQUEST_ID_HEADER,
+              schema: toJsonSchema(
+                OPERATION_DEFINITIONS['artifact.version-file-commit'].inputSchema.shape.requestId
+              ),
+            },
+            ...Object.entries(
+              OPERATION_DEFINITIONS['artifact.version-file-commit'].inputSchema.shape
+            )
+              .filter(([key]) => key !== 'requestId')
+              .map(([name, schema]) => ({
+                name,
+                in: 'query',
+                required: true,
+                // JSON query content preserves null separately from every authored summary string.
+                ...(name === 'summary'
+                  ? { content: { [JSON_CONTENT_TYPE]: { schema: toJsonSchema(schema) } } }
+                  : { schema: toJsonSchema(schema) }),
+              })),
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+            },
+          },
+          responses: {
+            '201': {
+              description: 'Accepted exact immutable Artifact version.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: toJsonSchema(
+                    OPERATION_DEFINITIONS['artifact.version-file-commit'].outputSchema
+                  ),
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
       '/api/app/operations/artifact.import': {
         post: {
           operationId: 'artifact.import',

@@ -1095,6 +1095,50 @@ describe('app api openapi projection', () => {
     ).toBe(true);
   });
 
+  it('projects a binary next-version upload with JSON-encoded nullable summary metadata', () => {
+    const upload =
+      createAppOpenApiDocument().paths['/api/app/operations/artifact.version-file-commit']?.post;
+    expect(upload).toMatchObject({
+      operationId: 'artifact.version-file-commit',
+      requestBody: {
+        required: true,
+        content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } },
+      },
+      responses: { '201': { content: { 'application/json': { schema: expect.any(Object) } } } },
+    });
+    expect(upload!.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'expectedArtifactVersion',
+          schema: expect.objectContaining({ type: 'integer', exclusiveMinimum: 0 }),
+        }),
+        expect.objectContaining({
+          name: 'x-openkit-request-id',
+          in: 'header',
+          schema: expect.objectContaining({ type: 'string', minLength: 1 }),
+        }),
+      ])
+    );
+    const summary = upload!.parameters!.find(
+      (parameter) => 'name' in parameter && parameter.name === 'summary'
+    );
+    expect(summary).toMatchObject({
+      name: 'summary',
+      in: 'query',
+      required: true,
+      content: { 'application/json': { schema: expect.any(Object) } },
+    });
+    expect(summary).not.toHaveProperty('schema');
+    const schema = jsonObject(
+      jsonObject(jsonObject(summary)?.content)?.['application/json']
+    )?.schema;
+    if (!schema || typeof schema !== 'object') throw new Error('Summary JSON schema is missing.');
+    const validate = new Ajv2020({ strict: false }).compile(schema);
+    expect(validate(null)).toBe(true);
+    expect(validate('Exact summary')).toBe(true);
+    expect(validate({ summary: 'not a nullable string' })).toBe(false);
+  });
+
   it('projects raw Artifact import metadata separately from its binary body and the exact download selector', () => {
     const document = createAppOpenApiDocument();
     const upload = document.paths['/api/app/operations/artifact.import']?.post;
@@ -2088,6 +2132,7 @@ describe('app api openapi projection', () => {
       'workspace.archive-download',
       'workspace.archive-import-dry-run',
       'workspace.archive-import',
+      'artifact.version-file-commit',
       'artifact.import',
       'artifact.download',
       ...Object.entries(OPERATION_DEFINITIONS)
