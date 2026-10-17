@@ -190,18 +190,22 @@ describe('search app API', () => {
       ),
     });
     const created = await app.request(
-      ...operationRequest('knowledge.create', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      }, {
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000201',
-          baseRevision: notebook.publishedRevision(),
-          knowledgePageId: 'segmented-search',
-          kind: 'project-context',
-          title: 'Unrelated',
-          content: '我们完成了测试，并修复了缺陷。',
-        }),
-      })
+      ...operationRequest(
+        'knowledge.create',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
+        {
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000201',
+            baseRevision: notebook.publishedRevision(),
+            knowledgePageId: 'segmented-search',
+            kind: 'project-context',
+            title: 'Unrelated',
+            content: '我们完成了测试，并修复了缺陷。',
+          }),
+        }
+      )
     );
     expect(created.status, await created.clone().text()).toBe(200);
     const page = (await created.json()) as { id: string };
@@ -255,19 +259,23 @@ describe('search app API', () => {
         repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
       });
       const created = await authoringApp.request(
-        ...operationRequest('knowledge.create', { workspaceId: workspace.id }, {
-          body: JSON.stringify({
-            requestId:
-              prefix === 'allowed'
-                ? '00000000-0000-4000-8000-000000000202'
-                : '00000000-0000-4000-8000-000000000203',
-            baseRevision: notebook.publishedRevision(),
-            knowledgePageId: `${prefix}-visibility`,
-            kind: 'project-context',
-            title: `${prefix} visibility needle knowledge`,
-            content: `${prefix} visibility needle content`,
-          }),
-        })
+        ...operationRequest(
+          'knowledge.create',
+          { workspaceId: workspace.id },
+          {
+            body: JSON.stringify({
+              requestId:
+                prefix === 'allowed'
+                  ? '00000000-0000-4000-8000-000000000202'
+                  : '00000000-0000-4000-8000-000000000203',
+              baseRevision: notebook.publishedRevision(),
+              knowledgePageId: `${prefix}-visibility`,
+              kind: 'project-context',
+              title: `${prefix} visibility needle knowledge`,
+              content: `${prefix} visibility needle content`,
+            }),
+          }
+        )
       );
       expect(created.status, await created.clone().text()).toBe(200);
       store.createArtifact({
