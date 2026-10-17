@@ -5031,14 +5031,15 @@ export function createTaskStartOperation({
             }
           }
           if (closeout && record.response.kind === 'turn' && record.response.id === turnId) {
-            try {
-              const turn = store.getTurnById(turnId);
-              if (turn.status !== 'pending' && turn.status !== 'running') {
-                joinedCloseout = true;
+            const turn = store.getTurnById(turnId);
+            if (turn.status !== 'pending' && turn.status !== 'running') {
+              joinedCloseout = true;
+              try {
                 await closeout;
+              } catch {
+                // Execution refusal also rejects this observer. Durable replay below still
+                // requires the complete terminal tuple, including proven backend cleanup.
               }
-            } catch {
-              throw directTaskModeRecoveryError('The original Task worker closeout failed.');
             }
           }
           return replayTaskModeCommand(
