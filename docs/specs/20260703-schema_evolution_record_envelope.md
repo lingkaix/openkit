@@ -226,6 +226,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 
 | Feature | Status | Description |
 | --- | --- | --- |
+| `openkit.workspace-resource-policy.v1` | active | Workspace configuration carries managed resource boundaries and exact associations and prohibitions across export and import. |
 | `openkit.memory-suppression.v1` | active | User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression. |
 | `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
