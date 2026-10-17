@@ -34,6 +34,7 @@ const CORE_TABLES = [
   'agent_session_runtime_bindings',
   'audit_events',
   'boot_audit_events',
+  'external_trigger_admissions',
   'harness_instance_records',
   'idempotency_requests',
   'nanohost_integration_identities',

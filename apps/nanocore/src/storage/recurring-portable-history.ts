@@ -5,7 +5,12 @@ import {
   AutomationOccurrenceSchema,
   AutomationRecordSchema,
 } from '@openkit/app-api-schemas';
-import { deriveEntityId, ReasoningEffortSchema } from '@openkit/protocol';
+import {
+  AutomationIdSchema,
+  deriveEntityId,
+  ReasoningEffortSchema,
+  TurnIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import {
   recurringNominalMatches,
@@ -13,6 +18,7 @@ import {
   validateRecurringRangeCoverage,
 } from '../lib/recurring-cadence.js';
 import type { CoreDb } from './db.js';
+import { listWorkspaceExternalTriggerAdmissions } from './external-trigger-admissions.js';
 import {
   ExpiredOccurrenceRangeSchema,
   RECURRING_DEADLINE_MS,
@@ -41,10 +47,18 @@ const portableSnapshot = AutomationDefinitionSnapshotSchema.omit({ actor: true }
   originActor,
   requiredFeatures,
 });
+/** Inert source-event join, nested under its already exported schedule definition. */
+const portableExternalAdmission = z.object({
+  scheduleId: AutomationIdSchema,
+  eventKey: z.string().min(1).max(1024),
+  sourceTurnId: TurnIdSchema,
+  queueEntryId: z.string().min(1),
+});
 const portableSchedule = z
   .object({
     ...scheduleFields,
     originScheduleId: AutomationRecordSchema.shape.id,
+    externalAdmissions: z.array(portableExternalAdmission).optional(),
     originActor,
     requiredFeatures,
   })
@@ -129,6 +143,14 @@ export function readRecurringPortableHistory(
     )
       throw new Error('Recurring portable definition contradicts its retained lifecycle.');
     requireThread(schedule.workspaceId, schedule.threadId);
+    const eventKeys = new Set<string>();
+    for (const admission of schedule.externalAdmissions ?? []) {
+      if (admission.scheduleId !== schedule.id || eventKeys.has(admission.eventKey))
+        throw new Error('External trigger history repeats or contradicts its schedule identity.');
+      eventKeys.add(admission.eventKey);
+      if (references && !references.turns.has(admission.sourceTurnId))
+        throw new Error('External trigger history has an unresolved source Turn reference.');
+    }
     schedules.set(schedule.id, schedule);
   }
   const requireSchedule = (
@@ -213,6 +235,19 @@ export function readRecurringPortableHistory(
     )
       throw new Error('Recurring portable history has an unresolved retained Turn reference.');
   }
+  for (const schedule of graph.schedules) {
+    for (const admission of schedule.externalAdmissions ?? []) {
+      if (
+        !graph.occurrences.some(
+          (occurrence) =>
+            occurrence.scheduleId === schedule.id &&
+            occurrence.turnId === admission.sourceTurnId &&
+            occurrence.state === 'admission-accepted'
+        )
+      )
+        throw new Error('External trigger history has no accepted source poll occurrence.');
+    }
+  }
   for (const range of graph.expiredRanges) {
     claimId(range.id);
     const first = Date.parse(range.firstScheduledAt);
@@ -279,10 +314,18 @@ export function exportRecurringPortableHistory(
     ).map((row) => row.record_json);
   const turns = new Map(retainedTurns.map((turn) => [turn.id, turn.threadId]));
   const sourceSchedules = readRows('recurring_schedules').map(readRecurringSchedule);
+  const externalAdmissions = listWorkspaceExternalTriggerAdmissions(coreDb, workspaceId);
   const schedules = sourceSchedules.map(({ actor, ...schedule }) => ({
     ...schedule,
     originScheduleId: schedule.id,
     originActor: actor,
+    ...(externalAdmissions.some((admission) => admission.scheduleId === schedule.id)
+      ? {
+          externalAdmissions: externalAdmissions.filter(
+            (admission) => admission.scheduleId === schedule.id
+          ),
+        }
+      : {}),
   }));
   const occurrences = readRows('recurring_occurrences')
     .map(readRecurringOccurrence)
@@ -380,6 +423,15 @@ export function remapRecurringPortableHistory(
     id: requireId(maps.scheduleIds, schedule.id, 'schedule'),
     workspaceId: maps.workspaceId,
     threadId: requireId(maps.threadIds, schedule.threadId, 'Thread'),
+    ...(schedule.externalAdmissions
+      ? {
+          externalAdmissions: schedule.externalAdmissions.map((admission) => ({
+            ...admission,
+            scheduleId: requireId(maps.scheduleIds, admission.scheduleId, 'schedule'),
+            sourceTurnId: requireId(maps.turnIds, admission.sourceTurnId, 'Turn'),
+          })),
+        }
+      : {}),
   }));
   const occurrences = graph.occurrences.map((occurrence) => ({
     ...occurrence,

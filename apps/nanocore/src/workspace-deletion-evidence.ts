@@ -23,13 +23,13 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-
 import { listSqliteAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import { listWorkspaceUsageRecords } from './capability/usage-ledger.js';
 import { listStoredWorkspaceEvidenceBundles } from './evidence-bundles.js';
 import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
 import { listWorkspaceQuarantineRecords } from './runtime/workspace-quarantine-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { listWorkspaceExternalTriggerAdmissions } from './storage/external-trigger-admissions.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import {
   ExpiredOccurrenceRangeSchema,
@@ -558,11 +558,12 @@ function captureRecurringClosureHistory(coreDb: CoreDb, workspaceId: string): st
   const schedules = readRows('recurring_schedules');
   const occurrences = readRows('recurring_occurrences');
   const expiredRanges = readRows('recurring_expired_ranges');
+  const externalAdmissions = listWorkspaceExternalTriggerAdmissions(coreDb, workspaceId);
   const text = JSON.stringify({
     historyVersion: 1,
     sources:
       schedules.length || occurrences.length || expiredRanges.length
-        ? [{ workspaceId, schedules, occurrences, expiredRanges }]
+        ? [{ workspaceId, schedules, occurrences, expiredRanges, externalAdmissions }]
         : [],
   });
   validateRecurringClosureHistory(text, workspaceId);

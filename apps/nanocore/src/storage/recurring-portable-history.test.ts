@@ -7,10 +7,17 @@ import { listSqliteAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
-import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type CoreDb, openCoreDb } from './db.js';
+import {
+  insertExternalTriggerAdmission,
+  listWorkspaceExternalTriggerAdmissions,
+} from './external-trigger-admissions.js';
 import { applyMigrations } from './migrate.js';
 import {
   exportRecurringPortableHistory,
@@ -219,6 +226,74 @@ describe('recurring portable history', () => {
           .prepare(`SELECT count(*) AS n FROM ${table} WHERE workspace_id = ?`)
           .get(testEntityId('ws', 'ws_target'))
       ).toEqual({ n: 0 });
+  });
+
+  it('preserves external event joins as remapped inert history without target queue authority', () => {
+    const { schedule, occurrence } = acceptedHistory();
+    const targetThread = files.createThread(
+      workspace.id,
+      'Isolated case',
+      undefined,
+      'conversation',
+      { visibility: 'workspace', threadSource: 'worker', parentThreadId: thread.id }
+    );
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'private-backend',
+      queueEntryId: 'external-case-queue',
+      requestedAgentId: 'historical-worker',
+      workspaceId: workspace.id,
+      threadId: targetThread.id,
+      turnId: testEntityId('tu', 'tu_external_case'),
+      triggerActor: schedule.actor,
+      turnInput: 'One explicit case brief',
+    });
+    const join = coreDb.sqlite.transaction(() =>
+      insertExternalTriggerAdmission(coreDb, {
+        scheduleId: schedule.id,
+        eventKey: 'source/message-1',
+        sourceTurnId: occurrence.turnId!,
+        queueEntryId: entry.queueEntryId,
+      })
+    )();
+    const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
+    expect(graph.schedules[0]!.externalAdmissions).toEqual([join]);
+    const targetScheduleId = testEntityId('auto', 'auto_external_imported');
+    const targetPollTurnId = testEntityId('tu', 'tu_external_poll_imported');
+    const targetPollThreadId = testEntityId('th', 'th_external_poll_imported');
+    const targetWorkspaceId = testEntityId('ws', 'ws_external_imported');
+    const imported = remapRecurringPortableHistory(graph, {
+      workspaceId: targetWorkspaceId,
+      scheduleIds: new Map([[schedule.id, targetScheduleId]]),
+      occurrenceIds: new Map([
+        [occurrence.id, deriveEntityId('occ', [targetScheduleId, occurrence.scheduledAt])],
+      ]),
+      rangeIds: new Map(),
+      threadIds: new Map([[thread.id, targetPollThreadId]]),
+      turnIds: new Map([[occurrence.turnId!, targetPollTurnId]]),
+    });
+    expect(imported.schedules[0]!.externalAdmissions).toEqual([
+      {
+        scheduleId: targetScheduleId,
+        eventKey: join.eventKey,
+        sourceTurnId: targetPollTurnId,
+        queueEntryId: entry.queueEntryId,
+      },
+    ]);
+    expect(
+      exportRecurringPortableHistory(undefined, targetWorkspaceId, JSON.stringify(imported), [])
+    ).toEqual(imported);
+    expect(listWorkspaceExternalTriggerAdmissions(coreDb, targetWorkspaceId)).toEqual([]);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT count(*) AS n FROM scheduler_admission_entries WHERE workspace_id = ?')
+        .get(targetWorkspaceId)
+    ).toEqual({ n: 0 });
+    expect(() =>
+      readRecurringPortableHistory({
+        ...graph,
+        schedules: [{ ...graph.schedules[0], externalAdmissions: [join, join] }],
+      })
+    ).toThrow('repeats or contradicts');
   });
 
   it('refuses a reserved accepted Turn without published canonical evidence', () => {
