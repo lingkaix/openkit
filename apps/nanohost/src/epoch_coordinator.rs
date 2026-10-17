@@ -2527,11 +2527,13 @@ impl EpochCoordinator {
             })
             .map_err(|error| error.report_effect_failure(&mut io::stderr().lock()))?
         };
-        import_attempt_image(&self.image_store, &digest, &mut self.image_backend).map_err(|error| {
-            // The closed enum has no path, content, or credential-bearing fields.
-            eprintln!("nanohost image import failure: kind={error:?}");
-            "image.acquire import failed"
-        })?;
+        import_attempt_image(&self.image_store, &digest, &mut self.image_backend).map_err(
+            |error| {
+                // The closed enum has no path, content, or credential-bearing fields.
+                eprintln!("nanohost image import failure: kind={error:?}");
+                "image.acquire import failed"
+            },
+        )?;
         let evidence = ImageEffectEvidence::new(request.request_id(), &digest);
         evidence
             .validate_result_identity(request_id)
