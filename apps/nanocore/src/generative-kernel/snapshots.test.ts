@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
@@ -15,6 +15,7 @@ import {
   type KernelCommandContext,
   listLightAppSnapshots,
   listRecords,
+  retireLightApp,
   rollbackLightAppSnapshot,
   updateLightAppSchema,
   upgradeLightAppFormat,
@@ -301,6 +302,57 @@ describe('Light App migration recovery', () => {
     expect(
       listRecords(ctx.dataRoot, ctx.workspaceId, app.appId, 'contacts', { schemaRevision: 1 }).items
     ).toEqual([]);
+  });
+
+  it('refuses fresh snapshot restore and format upgrade after retirement while preserving completed restore replay', async () => {
+    const ctx = context();
+    const app = await createLightApp(ctx, schema);
+    const next = proposal(app);
+    next.title = 'Updated contacts';
+    const updated = await updateLightAppSchema(request(ctx), app.appId, 1, 1, next);
+    const snapshot = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots[0]!;
+    const restore = request(ctx);
+    const restored = await rollbackLightAppSnapshot(
+      restore,
+      app.appId,
+      updated.appRevision,
+      snapshot.snapshotId
+    );
+    const retired = await retireLightApp(request(ctx), app.appId, restored.appRevision);
+    const path = lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId);
+    /** Reads the actual file and local mutation authority without changing them. */
+    const inspect = () => {
+      const sqlite = new Database(path, { fileMustExist: true, readonly: true });
+      try {
+        return {
+          file: readFileSync(path),
+          metadata: sqlite.prepare('SELECT * FROM app_metadata').all(),
+          receipts: sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all(),
+          audit: sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all(),
+        };
+      } finally {
+        sqlite.close();
+      }
+    };
+    const before = inspect();
+    await expect(
+      rollbackLightAppSnapshot(request(ctx), app.appId, retired.appRevision, snapshot.snapshotId)
+    ).rejects.toMatchObject({
+      code: 'unsupported_operation',
+      message: 'Retired apps reject writes.',
+    });
+    expect(inspect()).toEqual(before);
+    await expect(
+      upgradeLightAppFormat(request(ctx), app.appId, retired.appRevision)
+    ).rejects.toMatchObject({
+      code: 'unsupported_operation',
+      message: 'Retired apps reject writes.',
+    });
+    expect(inspect()).toEqual(before);
+    expect(
+      await rollbackLightAppSnapshot(restore, app.appId, updated.appRevision, snapshot.snapshotId)
+    ).toEqual(retired);
+    expect(inspect()).toEqual(before);
   });
 
   it('rejects unsupported changes and dangling references, and a snapshot publication failure preserves original data', async () => {

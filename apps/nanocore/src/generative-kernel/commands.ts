@@ -405,8 +405,9 @@ export async function upgradeLightAppFormat(
   try {
     if (hasCommandReplay(context, appDb, 'kernel.format.upgrade', input)) return projectApp(appDb);
     const current = appDb.sqlite
-      .prepare('SELECT app_revision AS appRevision FROM app_metadata WHERE app_id = ?')
-      .get(appId) as { appRevision: number };
+      .prepare('SELECT app_revision AS appRevision, lifecycle FROM app_metadata WHERE app_id = ?')
+      .get(appId) as Pick<AppMetadataRow, 'appRevision' | 'lifecycle'>;
+    assertWritable(current);
     if (current.appRevision !== expectedAppRevision)
       throw new KernelCommandError('conflict', 'App revision is stale.');
     applyAppMigrations(appDb.sqlite, () => {
@@ -485,8 +486,9 @@ export async function rollbackLightAppSnapshot(
       return projectRestoredApp(currentDb);
     }
     const current = currentDb.sqlite
-      .prepare('SELECT app_revision AS appRevision FROM app_metadata WHERE app_id = ?')
-      .get(appId) as { appRevision: number };
+      .prepare('SELECT app_revision AS appRevision, lifecycle FROM app_metadata WHERE app_id = ?')
+      .get(appId) as Pick<AppMetadataRow, 'appRevision' | 'lifecycle'>;
+    assertWritable(current);
     if (current.appRevision !== expectedAppRevision)
       throw new KernelCommandError('conflict', 'App revision is stale.');
     const selected = readLightAppSnapshot(context.dataRoot, context.workspaceId, appId, snapshotId);
@@ -1686,7 +1688,7 @@ function requireCurrentSchema(
  *
  * @param metadata Metadata row.
  */
-function assertWritable(metadata: AppMetadataRow): void {
+function assertWritable(metadata: Pick<AppMetadataRow, 'lifecycle'>): void {
   if (metadata.lifecycle !== 'active') {
     throw new KernelCommandError('unsupported_operation', 'Retired apps reject writes.');
   }
