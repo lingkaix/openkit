@@ -244,7 +244,13 @@ test('keeps a tall dialog action reachable by normal pointer interaction', async
   await page.getByRole('textbox', { name: 'Name' }).fill('Dialog Test User');
   await page.getByRole('textbox', { name: 'Email' }).fill('dialog@example.test');
   await page.getByLabel('Password').fill('OpenKit-dialog-test-password-2026!');
+  // Start the layout assertion after account creation, as in the account-sharing fixture.
+  const signUpResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/auth/sign-up/email') && response.request().method() === 'POST'
+  );
   await page.getByRole('button', { name: 'Sign up' }).last().click();
+  expect((await signUpResponse).status()).toBe(200);
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^Debug$/ }).click();

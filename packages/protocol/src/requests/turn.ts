@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '../common/ids.js';
 import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
-import { ProductTurnSchema, TurnRecordSchema } from '../models/turn.js';
+import { ProductTurnSchema, TurnRecordSchema, TurnSkillSelectionsSchema } from '../models/turn.js';
 
 /** Strict release-coupled Turn read with accepted package delivery evidence. */
 const StrictTurnReadProjectionSchema = TurnRecordSchema.omit({ agentSessionId: true })
@@ -33,6 +33,8 @@ const OrdinaryTurnInputRequestSchema = z
     modelId: z.string().min(1).optional(),
     /** Explicit effort included in canonical command identity. */
     reasoningEffort: ReasoningEffortSchema.optional(),
+    /** Exact versions for Skills already included by the composed Agent setup. */
+    skillSelections: TurnSkillSelectionsSchema.optional(),
   })
   .strict();
 
