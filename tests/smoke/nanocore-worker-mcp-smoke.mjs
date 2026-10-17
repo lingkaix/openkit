@@ -649,6 +649,9 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
   const { ensureLocalUser: ensureFixtureLocalUser } = await import(
     '../../apps/nanocore/dist/test-support/local-user.js'
   );
+  const { notebookImportFixture } = await import(
+    '../../apps/nanocore/dist/test-support/notebook-import.js'
+  );
   const { openCoreDb: openFixtureCoreDb } = await import('../../apps/nanocore/dist/storage/db.js');
   const { applyMigrations } = await import('../../apps/nanocore/dist/storage/migrate.js');
   const fixtureDb = openFixtureCoreDb(dataRoot);
@@ -662,6 +665,11 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
   store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
   const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   store.importWorkspaceSnapshot({
+    ...notebookImportFixture({
+      workspaceId: demo.workspace.id,
+      knowledge: demo.knowledge,
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+    }),
     workspace: demo.workspace,
     threads: [demo.thread],
     knowledge: demo.knowledge,
