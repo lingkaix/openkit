@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   constants,
   copyFileSync,
   existsSync,
@@ -7,6 +8,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -73,6 +75,7 @@ import {
   assertPortableWorkspaceNotebookDisclosure,
   bindImportedWorkspaceNotebookTraces,
   importedWorkspaceNotebookFiles,
+  readPortableWorkspaceNotebookPages,
 } from '../knowledge/notebook-workspace-portability.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -138,11 +141,15 @@ import {
   importVaultInjectionReceipts,
   listExportableVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
-import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
+import { assertWorkspaceDeletionRecoveryExportAuthority } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
-import { verifyArtifactFilePayload } from './artifacts/file-records.js';
+import { readArtifactVersionRecord } from './artifacts/artifact-version-records.js';
+import type { FileStorageAdmission } from './artifacts/file-admission.js';
+import {
+  reserveCanonicalFileWrite,
+  withCanonicalFileWriteAdmission,
+} from './canonical-write-capacity.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -368,7 +375,7 @@ export function canReadWorkspaceExport(
  * Checks whether an archive may cross the target deployment trust boundary.
  *
  * Foreign archives use the authenticated importer as target authority. Current or predecessor
- * archives still require the active source owner and workspace.export authority.
+ * archives still require current source Workspace eligibility and workspace.export authority.
  *
  * @param dataRoot Canonical target data root.
  * @param store Current user Store.
@@ -942,6 +949,7 @@ export function importVerifiedWorkspace({
     targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
+    snapshot.finalizeNotebookKnowledge?.(readPortableWorkspaceNotebookPages(workspaceRoot));
     writeWorkspacePortableFileState(workspaceRoot, {
       ...snapshot.portableFileState,
       retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
@@ -972,17 +980,33 @@ export function importVerifiedWorkspace({
       assertWorkspaceArchiveFilePath(path);
       const target = join(workspaceRoot, path);
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(source, target, constants.COPYFILE_EXCL);
+      const byteLength = lstatSync(source).size;
+      const reservation = reserveCanonicalFileWrite(byteLength);
+      let release = false;
+      try {
+        copyFileSync(source, target, constants.COPYFILE_EXCL);
+        reservation?.recordWritten(byteLength);
+        if (/^threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\//.test(path))
+          chmodSync(target, 0o444);
+        release = true;
+      } catch (error) {
+        rmSync(target, { force: true });
+        release = true;
+        throw error;
+      } finally {
+        if (release) reservation?.release();
+      }
+    }
+    for (const [path, text] of snapshot.artifactVersionRecords) {
+      assertWorkspaceArchiveFilePath(path);
+      const target = join(workspaceRoot, path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileAtomic(target, text);
     }
     for (const artifact of snapshot.artifacts) {
-      if (artifact.content.format !== 'file') continue;
-      verifyArtifactFilePayload({
-        workspaceRoot,
-        artifactId: artifact.id,
-        version: artifact.version,
-        byteLength: artifact.content.byteLength,
-        contentDigest: artifact.contentDigest,
-      });
+      for (let version = 1; version <= artifact.version; version += 1) {
+        readArtifactVersionRecord(workspaceRoot, artifact.id, version);
+      }
     }
     verifyImportedWorkerContextPackageSnapshot(snapshot, workspaceRoot);
     for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {
@@ -1062,36 +1086,6 @@ export function workspaceDeletionRecoveryExportId(requestId: string): string {
   return deriveEntityId('wsexp', ['delete', requestId]);
 }
 
-/** Proves the narrow durable authority for one deletion recovery export. */
-function assertDeletionRecoveryExportAuthority(input: {
-  readonly authorityUserId: string;
-  readonly coreDb: CoreDb | undefined;
-  readonly dataRoot: string;
-  readonly exportId: string;
-  readonly requestId: string;
-  readonly workspaceId: string;
-}): true {
-  if (!input.coreDb) {
-    throw new Error('Workspace deletion recovery export requires durable authority.');
-  }
-  const request = readWorkspaceDeletionRequest(input.dataRoot, input.workspaceId, input.requestId);
-  const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
-  if (
-    request.phase !== 'deleting' ||
-    request.workspaceId !== input.workspaceId ||
-    request.originalOwnerUserId !== input.authorityUserId ||
-    request.recoveryExportId !== null ||
-    request.recoveryExportManifestDigest !== null ||
-    input.exportId !== workspaceDeletionRecoveryExportId(request.requestId) ||
-    registry?.status !== 'deleting' ||
-    registry.ownerUserId !== request.originalOwnerUserId ||
-    registry.registryRevision !== request.expectedRegistryRevision + 1
-  ) {
-    throw new Error('Workspace deletion recovery export authority is inconsistent.');
-  }
-  return true;
-}
-
 /** Creates and verifies one server-managed portable Workspace export. */
 export function createVerifiedWorkspaceExport({
   authorityActor,
@@ -1122,21 +1116,29 @@ export function createVerifiedWorkspaceExport({
 }) {
   if (!isEntityId('wsexp', exportId))
     throw new Error('Workspace export requires a canonical wsexp identity.');
+  const deletionRecoveryContext =
+    deletionRecoveryRequestId !== undefined
+      ? {
+          authorityUserId,
+          coreDb,
+          dataRoot,
+          exportId,
+          requestId: deletionRecoveryRequestId,
+          workspaceId,
+        }
+      : undefined;
+  const deletionRecoveryAuthorized = deletionRecoveryContext
+    ? assertWorkspaceDeletionRecoveryExportAuthority(deletionRecoveryContext)
+    : false;
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
-  if (!administratorEligible && threads.some((thread) => thread.visibility === 'private')) {
+  if (
+    !administratorEligible &&
+    !deletionRecoveryAuthorized &&
+    threads.some((thread) => thread.visibility === 'private')
+  ) {
     throw new Error('Private Thread history requires a separately authorized export.');
   }
-  const deletionRecoveryAuthorized = deletionRecoveryRequestId
-    ? assertDeletionRecoveryExportAuthority({
-        authorityUserId,
-        coreDb,
-        dataRoot,
-        exportId,
-        requestId: deletionRecoveryRequestId,
-        workspaceId,
-      })
-    : false;
   assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   assertCanonicalDirectory(dataRoot);
@@ -1415,6 +1417,7 @@ export function createVerifiedWorkspaceExport({
   const exported = writeWorkspaceExportTree({
     sourceWorkspaceRoot: join(dataRoot, 'workspaces', workspaceId),
     administratorEligible,
+    ...(deletionRecoveryContext ? { deletionRecoveryContext } : {}),
     exportRoot,
     exportId,
     sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
@@ -1505,7 +1508,7 @@ export function createVerifiedWorkspaceExport({
 
     try {
       const call = startCapabilityCall({
-        authorityActor: { kind: 'user', id: authorityUserId },
+        authorityActor: authorityActor ?? { kind: 'user', id: authorityUserId },
         workspaceDb,
         callId: deriveEntityId('cap', ['storage_export', exportId]),
         workspaceId,
@@ -1567,11 +1570,13 @@ export function registerWorkspaceTransferRoutes({
   app,
   coreDb,
   dataRoot,
+  fileAdmission,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
+  readonly fileAdmission: FileStorageAdmission;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'workspace.archive-download', (c) => {
@@ -1640,7 +1645,7 @@ export function registerWorkspaceTransferRoutes({
 
     let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
     try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot);
+      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
       const store = requestStore(c);
       const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
       if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
@@ -1689,7 +1694,7 @@ export function registerWorkspaceTransferRoutes({
 
     let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
     try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot);
+      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
       const store = requestStore(c);
       const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
       if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
@@ -1700,14 +1705,16 @@ export function registerWorkspaceTransferRoutes({
         );
       }
       return c.json(
-        importVerifiedWorkspace({
-          authorityUserId: c.get('actor').userId,
-          coreDb,
-          dataRoot,
-          requestId,
-          store,
-          verified,
-        })
+        withCanonicalFileWriteAdmission(fileAdmission, () =>
+          importVerifiedWorkspace({
+            authorityUserId: c.get('actor').userId,
+            coreDb,
+            dataRoot,
+            requestId,
+            store,
+            verified,
+          })
+        )
       );
     } catch {
       return asApiError(

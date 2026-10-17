@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -61,6 +61,104 @@ function fixture() {
 }
 
 describe('Artifact immutable version authority', () => {
+  it('reloads exact selected immutable content when the disposable current body is absent', () => {
+    const state = fixture();
+    const artifactRoot = join(
+      state.dataRoot,
+      'workspaces',
+      state.workspace.id,
+      'artifacts',
+      state.artifact.id
+    );
+    rmSync(join(artifactRoot, 'files'), { recursive: true });
+    const reopened = new FsStore({ dataRoot: state.dataRoot });
+    expect(reopened.getArtifact(state.workspace.id, state.artifact.id)).toEqual(state.artifact);
+  });
+
+  it('refuses a contradictory selected descriptor instead of substituting its current body', () => {
+    const state = fixture();
+    const artifactRoot = join(
+      state.dataRoot,
+      'workspaces',
+      state.workspace.id,
+      'artifacts',
+      state.artifact.id
+    );
+    const path = join(artifactRoot, 'artifact.json');
+    const metadata = JSON.parse(readFileSync(path, 'utf8'));
+    metadata.title = 'Contradictory projection';
+    writeFileSync(path, JSON.stringify(metadata));
+    expect(() => new FsStore({ dataRoot: state.dataRoot })).toThrow(/contradictory/i);
+  });
+
+  it('validates actual staged import history before publication and fills the immediate cache', () => {
+    const source = fixture();
+    source.store.commitArtifactVersion({
+      workspaceId: source.workspace.id,
+      artifactId: source.artifact.id,
+      threadId: source.thread.id,
+      expectedArtifactVersion: 1,
+      actor,
+      requestId: 'import-version-two',
+      recordedAt: '2026-10-17T00:02:00.000Z',
+      title: 'Imported second',
+      summary: null,
+      content: { format: 'text', body: 'Second exact original\r\n' },
+    });
+    const sourceRoot = join(source.dataRoot, 'workspaces', source.workspace.id);
+    const createImport = (corrupt: boolean) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-versions-import-'));
+      roots.push(dataRoot);
+      const target = new FsStore({ dataRoot });
+      const input = {
+        workspace: source.store.getWorkspace(source.workspace.id),
+        threads: source.store.listThreads(source.workspace.id),
+        turns: source.store.listThreadTurns(source.workspace.id, source.thread.id),
+        knowledge: [],
+        itemRevisions: source.store.listWorkspaceItemRevisions(source.workspace.id),
+        artifacts: source.store.listArtifacts(source.workspace.id),
+        agentSessions: [],
+        turnEvents: [],
+        notebookInitialization: {
+          requestId: '00000000-0000-7000-8000-000000000003',
+          producer: actor,
+          instructionReference: 'Import exact history.',
+        },
+        stageWorkspace: ({ workspaceRoot }: { workspaceRoot: string }) => {
+          cpSync(join(sourceRoot, 'artifacts'), join(workspaceRoot, 'artifacts'), {
+            recursive: true,
+          });
+          if (corrupt) {
+            writeFileSync(
+              join(workspaceRoot, 'artifacts', source.artifact.id, 'versions', '1', 'payload'),
+              'Corrupt historical bytes while the selected head remains valid.'
+            );
+          }
+        },
+      };
+      return { dataRoot, target, input };
+    };
+    const refused = createImport(true);
+    expect(() => refused.target.importWorkspaceSnapshot(refused.input)).toThrow(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(existsSync(join(refused.dataRoot, 'workspaces', source.workspace.id))).toBe(false);
+    const accepted = createImport(false);
+    accepted.target.importWorkspaceSnapshot(accepted.input);
+    expect(
+      accepted.target.listArtifactVersions(source.workspace.id, source.artifact.id)
+    ).toHaveLength(2);
+    expect(
+      accepted.target.getArtifactVersion(source.workspace.id, source.artifact.id, 1).artifact
+    ).toEqual(source.artifact);
+    expect(
+      new FsStore({ dataRoot: accepted.dataRoot }).listArtifactVersions(
+        source.workspace.id,
+        source.artifact.id
+      )
+    ).toHaveLength(2);
+  });
+
   it('rejects absent and unknown physical version formats without a legacy reader', () => {
     const state = fixture();
     const root = join(state.dataRoot, 'workspaces', state.workspace.id);

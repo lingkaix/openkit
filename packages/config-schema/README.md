@@ -66,6 +66,8 @@ The session workspace planner declares `turn-output` for every package at `/open
 
 The NanoHost deployment schema admits optional positive `maxActiveTurnsPerSandbox`; the scheduling owner's current default is 20 when omitted. This schema field and its exported default do not themselves grant execution or prove adapter capacity. The native journal migration widens retained capacity constraints without raising retained declarations. NanoCore runtime consumption is not yet complete, so the schema addition alone does not remove its current single-active-Turn admission limit.
 
+`knowledgeMaintenance.enabled` delegates ordinary notebook publication. The separate `knowledgeMaintenance.schedule.enabled` selects fixed daily Knowledge Manager execution and defaults to `false`; the omitted schedule object also resolves to disabled. Server, User and Workspace settings use this same shape with independent authority. Scheduling grants no publication delegation or source access.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`
@@ -108,6 +110,10 @@ User, Workspace and Server settings may declare knowledgeMaintenance with an ena
 The identifier cutover projects the shared Protocol kind validators into unambiguous entity fields without changing authored or native selectors. Workspace export format V3 rejects predecessor formats and requires canonical export, Workspace and deployment identities; its portable grant records carry explicit issuance. Data-root backups retain their separate whole-root format and lifecycle.
 
 `server.jsonc.policy.workerGitReadMaintenance` is the closed optional finite assignment array for delegated Worker Git-read corrections. Each entry binds one responsible administrator, registered Server Agent, existing network grant, exact REST endpoint, canonical repository and binary bounds, explicit validity and enabled state. Duplicate responsible-user/Agent/grant tuples are invalid. Successful reload hot-swaps the loaded array; structural schema acceptance alone grants no effect. NanoCore owns current invocation, source/failure admission, Policy evaluation and the sole configuration writer. See [Policy Enforcement Mapping](../../docs/specs/20260703-policy_enforcement_mapping.md#finite-worker-git-read-maintenance-assignment).
+
+Resource catalogs require explicit closed `scope: workspace | server` in the existing document. Missing or unknown scope fails schema validation; NanoCore checks that it matches the trusted owner path. The reader and writer do not convert missing scope. Before `v0.1.0`, a release may require an authorized reset under [Pre-Stable Data Continuity](../../docs/decisions/20261014-pre_stable_data_continuity.md). Scope does not change immutable configuration/tree digests or Workspace effective digests. `mcp.disabledServerIds` defaults to empty and is validated as unique and Workspace-only by the catalog owner. Only canonical shared projections carry effective `scope: server`, which distinguishes their digest and supplies no caller-selected credential authority.
+
+The browser-safe `mcp-credentials` entry also exports `McpHttpEndpointSchema`, the single credential-free HTTP/HTTPS URL criterion used by effective MCP transport and retained declaration validation. URL userinfo and fragments fail before new catalog publication. Valid retained endpoints and their exact digest bytes remain unchanged; invalid credential-bearing declarations fail closed and require explicit administrator repair through protected Vault bindings. No credential extraction, rewrite or fallback is performed.
 
 Authored Worker Skill references in the base Agent, selected profile and Workspace Agent binding may include an exact digest. Setup rejects conflicting exact versions and preserves an exact version when another layer only repeats the ID. The AEP records setup selection separately from pin/default selection; metadata acceptance grants no additional launch authority.
 

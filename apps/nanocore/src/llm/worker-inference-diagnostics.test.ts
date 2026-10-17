@@ -297,30 +297,50 @@ it.each([
   expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
 });
 
-it('retains observed HTTP rejection when the stock Responses stream loses status', async () => {
+it('retains bounded provider rejection details without changing the public failure', async () => {
   const f = fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = Object.assign(new Error('exception-canary'), {
     failure: { kind: 'unknown', settled: false },
   });
+  const details = {
+    type: 'invalid_request_error',
+    code: 'bad_parameter',
+    param: 'max_output_tokens',
+    message: 'M'.repeat(250),
+    body: 'body-canary',
+    unknown: 'unknown-canary',
+  };
   f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
     context.transport?.onProviderHandoff?.();
-    context.transport?.onProviderHttpRejection?.(401);
+    context.transport?.onProviderHttpRejection?.(422, details);
     throw error;
   });
   const response = await f.post(true);
   expect(response.status).toBe(400);
-  expect(await response.text()).not.toContain('canary');
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'provider_error',
+      type: 'provider_error',
+      message: 'Provider request failed.',
+    },
+  });
   expect(f.dispatch).toHaveBeenCalledTimes(1);
   expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'worker_inference_failed' }]);
   expect(warn).toHaveBeenCalledTimes(1);
   const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
   expect(diagnostic).toMatchObject({
     failureKind: 'unknown',
-    httpStatus: 401,
+    httpStatus: 422,
     phase: 'dispatch',
     outputBegan: false,
     attempt: 0,
+  });
+  expect(diagnostic.providerError).toEqual({
+    type: 'invalid_request_error',
+    code: 'bad_parameter',
+    param: 'max_output_tokens',
+    message: 'M'.repeat(200),
   });
   expect(JSON.stringify(diagnostic)).not.toContain('canary');
   expect(error.failure).toEqual({ kind: 'unknown', settled: false });
@@ -351,7 +371,10 @@ it('clears observed rejection before a retry with no HTTP evidence', async () =>
   vi.useFakeTimers();
   f.dispatch
     .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
-      context.transport?.onProviderHttpRejection?.(429);
+      context.transport?.onProviderHttpRejection?.(429, {
+        code: 'prior-attempt-code',
+        message: 'prior-attempt-message',
+      });
       throw Object.assign(new Error('first-exception-canary'), {
         failure: { kind: 'rate_limited', settled: true, status: 429 },
       });
@@ -372,6 +395,7 @@ it('clears observed rejection before a retry with no HTTP evidence', async () =>
     attempt: 1,
   });
   expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
+  expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('providerError');
 });
 
 it('logs selection failure without inventing an attempt or upstream status', async () => {
@@ -689,4 +713,32 @@ it('keeps an indistinguishable ordinary native failure in its existing category'
     },
   });
   expect(f.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it('returns one actionable redacted context overflow after output begins', async () => {
+  const f = fixture();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockResolvedValue(
+    failedStream(
+      Object.assign(new Error('private-context-canary'), {
+        failure: { kind: 'context_overflow', settled: true, status: 400 },
+      })
+    )
+  );
+
+  const response = await f.post(true);
+  const body = await response.text();
+  const terminal = body
+    .split('\n')
+    .filter((line) => line.startsWith('data: {'))
+    .map((line) => JSON.parse(line.slice(6)))
+    .filter((frame) => frame.error || frame.response?.error);
+  expect(terminal).toHaveLength(1);
+  expect(terminal[0]?.error ?? terminal[0]?.response?.error).toMatchObject({
+    code: 'gateway_context_overflow',
+    message: 'Provider context limit exceeded. Reduce input or retrieve a smaller excerpt.',
+  });
+  expect(body).not.toContain('private-context-canary');
+  expect(f.dispatch).toHaveBeenCalledOnce();
+  expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'gateway_context_overflow' }]);
 });

@@ -10,12 +10,12 @@ export type AccountWorkspaceSummary = Awaited<
   ReturnType<CoreClient['operations']['workspace.list']>
 >['items'][number];
 
-/** One owner-visible Workspace member. */
+/** One member-visible Workspace member. */
 export type AccountWorkspaceMember = Awaited<
   ReturnType<CoreClient['operations']['workspace.member-list']>
 >['items'][number];
 
-/** One owner-visible Workspace invitation. */
+/** One member-visible Workspace invitation. */
 export type AccountWorkspaceInvitation = Awaited<
   ReturnType<CoreClient['operations']['workspace.invitation-list']>
 >['items'][number];
@@ -27,7 +27,7 @@ type InvitationMutationResponse = Awaited<
 
 /** Authoritative member mutation response. */
 type MemberMutationResponse = Awaited<
-  ReturnType<CoreClient['operations']['workspace.member-access-change']>
+  ReturnType<CoreClient['operations']['workspace.member-remove']>
 >;
 
 /** Authoritative ownership-transfer response. */
@@ -68,16 +68,6 @@ export interface CreateInvitationVariables {
   workspaceId: string;
   /** Exact live email input; cleared in place before TanStack retains settlement. */
   inviteeEmail: string;
-  /** Fixed V1 invitation access level. */
-  proposedAccessLevel: 'editor' | 'viewer';
-}
-
-/** Exact current member access-change command. */
-export interface ChangeMemberAccessVariables {
-  workspaceId: string;
-  userId: string;
-  accessLevel: 'editor' | 'viewer';
-  expectedRevision: number;
 }
 
 /** Exact current member removal command. */
@@ -119,8 +109,8 @@ export interface LeaveWorkspaceVariables {
   expectedRevision: number;
 }
 
-/** Owner-management collection keys, scoped to one exact Workspace. */
-export const ownerManagementKeys = {
+/** Member-management collection keys, scoped to one exact Workspace. */
+export const memberManagementKeys = {
   members: (workspaceId: string) => ['account', 'workspace-members', workspaceId] as const,
   invitations: (workspaceId: string) => ['account', 'workspace-invitations', workspaceId] as const,
 };
@@ -196,8 +186,8 @@ function useSelectedAccountWorkspace() {
   };
 }
 
-/** Owns the selected-Workspace owner reads and five exact owner mutations. */
-export function useWorkspaceOwnerManagement() {
+/** Owns the selected-Workspace member reads and four exact member mutations. */
+export function useWorkspaceMemberManagement() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   const { selectedWorkspace, selectedWorkspaceId } = useSelectedAccountWorkspace();
@@ -213,7 +203,6 @@ export function useWorkspaceOwnerManagement() {
         return await client.operations['workspace.invitation-create']({
           workspaceId: variables.workspaceId,
           inviteeEmail: variables.inviteeEmail,
-          proposedAccessLevel: variables.proposedAccessLevel,
         });
       } catch (error) {
         throw safeSharingFailure(error);
@@ -224,7 +213,7 @@ export function useWorkspaceOwnerManagement() {
     onSuccess: ({ invitation }, variables) => {
       queryClient.setQueryData<
         Awaited<ReturnType<CoreClient['operations']['workspace.invitation-list']>>
-      >(ownerManagementKeys.invitations(variables.workspaceId), (current) => ({
+      >(memberManagementKeys.invitations(variables.workspaceId), (current) => ({
         items: current
           ? current.items.some((item) => item.invitationId === invitation.invitationId)
             ? current.items.map((item) =>
@@ -256,7 +245,7 @@ export function useWorkspaceOwnerManagement() {
     onSuccess: ({ invitation }, variables) => {
       queryClient.setQueryData<
         Awaited<ReturnType<CoreClient['operations']['workspace.invitation-list']>>
-      >(ownerManagementKeys.invitations(variables.workspaceId), (current) =>
+      >(memberManagementKeys.invitations(variables.workspaceId), (current) =>
         current
           ? {
               items: current.items.map((item) =>
@@ -271,56 +260,12 @@ export function useWorkspaceOwnerManagement() {
       const invitation = error.current as AccountWorkspaceInvitation;
       queryClient.setQueryData<
         Awaited<ReturnType<CoreClient['operations']['workspace.invitation-list']>>
-      >(ownerManagementKeys.invitations(variables.workspaceId), (current) =>
+      >(memberManagementKeys.invitations(variables.workspaceId), (current) =>
         current
           ? {
               items: current.items.map((item) =>
                 item.invitationId === invitation.invitationId ? invitation : item
               ),
-            }
-          : current
-      );
-    },
-  });
-
-  const changeMemberAccess = useMutation<
-    MemberMutationResponse,
-    WorkspaceSharingFailure,
-    ChangeMemberAccessVariables
-  >({
-    retry: false,
-    mutationFn: async (variables: ChangeMemberAccessVariables) => {
-      try {
-        return await client.operations['workspace.member-access-change']({
-          workspaceId: variables.workspaceId,
-          targetUserId: variables.userId,
-          accessLevel: variables.accessLevel,
-          expectedRevision: variables.expectedRevision,
-        });
-      } catch (error) {
-        throw safeSharingFailure(error);
-      }
-    },
-    onSuccess: ({ member }, variables) => {
-      queryClient.setQueryData<
-        Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
-      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
-        current
-          ? {
-              items: current.items.map((item) => (item.userId === member.userId ? member : item)),
-            }
-          : current
-      );
-    },
-    onError: (error, variables) => {
-      if (error.resource !== 'membership' || !error.current) return;
-      const member = error.current as AccountWorkspaceMember;
-      queryClient.setQueryData<
-        Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
-      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
-        current
-          ? {
-              items: current.items.map((item) => (item.userId === member.userId ? member : item)),
             }
           : current
       );
@@ -347,7 +292,7 @@ export function useWorkspaceOwnerManagement() {
     onSuccess: ({ member }, variables) => {
       queryClient.setQueryData<
         Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
-      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
+      >(memberManagementKeys.members(variables.workspaceId), (current) =>
         current
           ? {
               items: current.items.map((item) => (item.userId === member.userId ? member : item)),
@@ -360,7 +305,7 @@ export function useWorkspaceOwnerManagement() {
       const member = error.current as AccountWorkspaceMember;
       queryClient.setQueryData<
         Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
-      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
+      >(memberManagementKeys.members(variables.workspaceId), (current) =>
         current
           ? {
               items: current.items.map((item) => (item.userId === member.userId ? member : item)),
@@ -425,10 +370,11 @@ export function useWorkspaceOwnerManagement() {
   const effectiveWorkspace =
     transferCurrent?.workspace.id === selectedWorkspaceId ? transferCurrent : selectedWorkspace;
   const canManage =
-    effectiveWorkspace?.effectiveRole === 'owner' &&
+    (effectiveWorkspace?.membershipStatus === 'active' ||
+      effectiveWorkspace?.accessCause === 'administrator') &&
     effectiveWorkspace.workspace.kind !== 'personal';
   const members = useQuery({
-    queryKey: ownerManagementKeys.members(selectedWorkspaceId ?? ''),
+    queryKey: memberManagementKeys.members(selectedWorkspaceId ?? ''),
     queryFn: () =>
       client.operations['workspace.member-list']({ workspaceId: selectedWorkspaceId as string }),
     enabled: Boolean(selectedWorkspaceId) && canManage,
@@ -436,7 +382,7 @@ export function useWorkspaceOwnerManagement() {
     structuralSharing: false,
   });
   const invitations = useQuery({
-    queryKey: ownerManagementKeys.invitations(selectedWorkspaceId ?? ''),
+    queryKey: memberManagementKeys.invitations(selectedWorkspaceId ?? ''),
     queryFn: () =>
       client.operations['workspace.invitation-list']({
         workspaceId: selectedWorkspaceId as string,
@@ -447,7 +393,6 @@ export function useWorkspaceOwnerManagement() {
   });
 
   return {
-    changeMemberAccess,
     createInvitation,
     effectiveWorkspace,
     invitations,
@@ -535,7 +480,7 @@ export function useSelfLeave() {
 
   /** Settles one exact membership into account admission and removes departed discovery projections. */
   function settleMembership(member: AccountWorkspaceMember) {
-    const departed = member.status === 'removed' || member.effectiveRole === null;
+    const departed = member.status === 'removed';
     queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['workspace.list']>>>(
       accountAdmissionKey,
       (current) =>
@@ -547,7 +492,8 @@ export function useSelfLeave() {
                     item.workspace.id === member.workspaceId
                       ? {
                           ...item,
-                          effectiveRole: member.effectiveRole,
+                          isOwner: member.isOwner,
+                          membershipStatus: member.status,
                           membershipRevision: member.revision,
                         }
                       : item
@@ -593,8 +539,7 @@ export function useSelfLeave() {
     },
   });
 
-  const canLeave =
-    selectedWorkspace?.effectiveRole === 'editor' || selectedWorkspace?.effectiveRole === 'viewer';
+  const canLeave = selectedWorkspace?.membershipStatus === 'active' && !selectedWorkspace.isOwner;
 
   return { canLeave, leave, selectedWorkspace, selectedWorkspaceId };
 }

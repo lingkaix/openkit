@@ -51,6 +51,8 @@ const FILE_CONTENT_TYPE: &str = "application/octet-stream";
 const REQUEST_ID_HEADER: &str = "x-openkit-request-id";
 const SLOT_HEADER: &str = "x-openkit-slot";
 const RELATIVE_PATH_HEADER: &str = "x-openkit-relative-path";
+const ENTRY_KIND_HEADER: &str = "x-openkit-entry-kind";
+const EXECUTABLE_HEADER: &str = "x-openkit-executable";
 const SHA256_HEADER: &str = "x-openkit-sha256";
 const BYTE_LENGTH_HEADER: &str = "x-openkit-byte-length";
 const SANDBOX_INTEGRATION_BINDING_HEADER: &str = "x-openkit-integration-binding";
@@ -377,24 +379,20 @@ pub struct PolledEffectCommand {
     pub request_id: String,
     /// Operation-specific bounded body with the selector removed from consideration.
     pub input: serde_json::Value,
-    /// Complete verified raw body for the one `reference.import` direction.
-    pub file_data: Option<RawImportFile>,
+    /// Complete verified entry for the one `reference.import` direction.
+    pub file_data: Option<RawImportEntry>,
     /// Ephemeral diagnostic parent, replaced by the ended local effect context.
     pub trace_context: opentelemetry::Context,
 }
 
-/// Complete canonical metadata and verified bytes from one raw import response.
-pub struct RawImportFile {
+/// Complete canonical metadata and verified content from one raw import response.
+pub struct RawImportEntry {
     /// Exact declared package slot.
     pub slot: String,
     /// Decoded normalized UTF-8 path relative to the declared slot.
     pub relative_path: PathBuf,
-    /// Exact lowercase source digest.
-    pub sha256: String,
-    /// Exact declared and observed length.
-    pub byte_length: u64,
-    /// Complete source bytes, admitted only after all metadata verifies.
-    pub file: crate::file_transfer::VerifiedFile,
+    /// Strict entry kind with verified file content or no directory payload.
+    pub entry: crate::sandbox_bridge::ImportEntry,
 }
 
 /// The exact twelve command/result pairs carried on the authoritative connection.
@@ -2352,71 +2350,107 @@ async fn poll_reference_import(
     }
     let encoded_path = required_header(headers, RELATIVE_PATH_HEADER).map_err(terminal)?;
     let relative_path = decode_relative_path(encoded_path).map_err(terminal)?;
-    let sha256 = required_header(headers, SHA256_HEADER)
-        .map_err(terminal)?
-        .to_string();
-    if !sha256
-        .strip_prefix("sha256:")
-        .is_some_and(|digest| is_lowercase_hex(digest, 64))
-    {
-        return Err(terminal("reference.import digest invalid"));
-    }
-    let byte_length_text = required_header(headers, BYTE_LENGTH_HEADER).map_err(terminal)?;
-    let byte_length = byte_length_text
-        .parse::<u64>()
-        .ok()
-        .filter(|length| {
-            length.to_string() == byte_length_text
-                && *length
-                    <= if matches!(slot.as_str(), "artifact-input" | "turn-inputs" | "context") {
-                        crate::file_transfer::FILE_BYTES
-                    } else {
-                        FILE_DATA_BODY_MAX_BYTES
-                    }
-        })
-        .ok_or_else(|| terminal("reference.import byte length invalid"))?;
+    let entry_kind = required_header(headers, ENTRY_KIND_HEADER).map_err(terminal)?;
     let content_length_text = required_header(headers, "content-length").map_err(terminal)?;
     let content_length = content_length_text
         .parse::<u64>()
         .ok()
         .filter(|length| length.to_string() == content_length_text)
         .ok_or_else(|| terminal("reference.import content length invalid"))?;
-    if content_length != byte_length {
-        return Err(terminal("reference.import length mismatch"));
-    }
-    let mut response_body = response.into_body();
-    let mut stage = crate::file_transfer::FileStage::create(staging_root, byte_length, byte_length)
-        .map_err(|_| terminal("reference.import capacity unavailable"))?;
-    let mut observed = 0_u64;
-    while let Some(chunk) = response_body.data().await {
-        let chunk = chunk.map_err(|_| reconnect("reference.import response failed"))?;
-        if observed + chunk.len() as u64 > byte_length {
-            return Err(terminal("reference.import body exceeded declared length"));
+    let entry = match entry_kind {
+        "directory" => {
+            if slot != "worker-supply"
+                || content_length != 0
+                || [SHA256_HEADER, BYTE_LENGTH_HEADER, EXECUTABLE_HEADER]
+                    .iter()
+                    .any(|name| headers.contains_key(*name))
+            {
+                return Err(terminal("reference.import directory metadata invalid"));
+            }
+            // Complete the empty body before the command can reach any Sandbox effect.
+            let mut body = response.into_body();
+            while let Some(chunk) = body.data().await {
+                if !chunk
+                    .map_err(|_| reconnect("reference.import response failed"))?
+                    .is_empty()
+                {
+                    return Err(terminal("reference.import directory body invalid"));
+                }
+            }
+            crate::sandbox_bridge::ImportEntry::Directory
         }
-        for consumed in chunk.chunks(FILE_DATA_APPLICATION_CHUNK_BYTES) {
-            std::io::Write::write_all(&mut stage, consumed)
-                .map_err(|_| terminal("reference.import staging failed"))?;
-            observed += consumed.len() as u64;
-            response_body
-                .flow_control()
-                .release_capacity(consumed.len())
-                .map_err(|_| terminal("reference.import flow control failed"))?;
+        "file" => {
+            let executable = match required_header(headers, EXECUTABLE_HEADER).map_err(terminal)? {
+                "true" if slot == "worker-supply" => true,
+                "false" => false,
+                _ => return Err(terminal("reference.import executable invalid")),
+            };
+            let sha256 = required_header(headers, SHA256_HEADER)
+                .map_err(terminal)?
+                .to_string();
+            if !sha256
+                .strip_prefix("sha256:")
+                .is_some_and(|digest| is_lowercase_hex(digest, 64))
+            {
+                return Err(terminal("reference.import digest invalid"));
+            }
+            let byte_length_text =
+                required_header(headers, BYTE_LENGTH_HEADER).map_err(terminal)?;
+            let byte_length = byte_length_text
+                .parse::<u64>()
+                .ok()
+                .filter(|length| {
+                    length.to_string() == byte_length_text
+                        && *length
+                            <= if matches!(
+                                slot.as_str(),
+                                "artifact-input" | "turn-inputs" | "context"
+                            ) {
+                                crate::file_transfer::FILE_BYTES
+                            } else {
+                                FILE_DATA_BODY_MAX_BYTES
+                            }
+                })
+                .ok_or_else(|| terminal("reference.import byte length invalid"))?;
+            if content_length != byte_length {
+                return Err(terminal("reference.import length mismatch"));
+            }
+            let mut response_body = response.into_body();
+            let mut stage =
+                crate::file_transfer::FileStage::create(staging_root, byte_length, byte_length)
+                    .map_err(|_| terminal("reference.import capacity unavailable"))?;
+            let mut observed = 0_u64;
+            while let Some(chunk) = response_body.data().await {
+                let chunk = chunk.map_err(|_| reconnect("reference.import response failed"))?;
+                if observed + chunk.len() as u64 > byte_length {
+                    return Err(terminal("reference.import body exceeded declared length"));
+                }
+                for consumed in chunk.chunks(FILE_DATA_APPLICATION_CHUNK_BYTES) {
+                    std::io::Write::write_all(&mut stage, consumed)
+                        .map_err(|_| terminal("reference.import staging failed"))?;
+                    observed += consumed.len() as u64;
+                    response_body
+                        .flow_control()
+                        .release_capacity(consumed.len())
+                        .map_err(|_| terminal("reference.import flow control failed"))?;
+                }
+            }
+            let file = stage
+                .complete(Some((byte_length, &sha256)))
+                .map_err(|_| terminal("reference.import body digest or length mismatch"))?;
+            crate::sandbox_bridge::ImportEntry::File { executable, file }
         }
-    }
-    let file = stage
-        .complete(Some((byte_length, &sha256)))
-        .map_err(|_| terminal("reference.import body digest or length mismatch"))?;
+        _ => return Err(terminal("reference.import entry kind invalid")),
+    };
     Ok(Some(PolledEffectCommand {
         kind: RuntimeEffectKind::ImportReference,
         request_id,
         input: serde_json::json!({}),
         trace_context,
-        file_data: Some(RawImportFile {
+        file_data: Some(RawImportEntry {
             slot,
             relative_path,
-            sha256,
-            byte_length,
-            file,
+            entry,
         }),
     }))
 }
@@ -3133,15 +3167,19 @@ mod tests {
                 let raw_import = *kind == RuntimeEffectKind::ImportReference && !extra;
                 let additive_collect = *kind == RuntimeEffectKind::CollectWorkspace;
                 let body = if raw_import {
-                    command["body"]["hex"]
-                        .as_str()
-                        .unwrap()
-                        .as_bytes()
-                        .chunks_exact(2)
-                        .map(|pair| {
-                            u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
-                        })
-                        .collect()
+                    match command["entryKind"].as_str().unwrap() {
+                        "directory" => Vec::new(),
+                        "file" => command["body"]["hex"]
+                            .as_str()
+                            .unwrap()
+                            .as_bytes()
+                            .chunks_exact(2)
+                            .map(|pair| {
+                                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+                            })
+                            .collect(),
+                        _ => panic!("invalid fixture import entry kind"),
+                    }
                 } else {
                     serde_json::to_vec(&command).unwrap()
                 };
@@ -3165,8 +3203,16 @@ mod tests {
                                 RELATIVE_PATH_HEADER,
                                 command["relativePath"].as_str().unwrap(),
                             )
-                            .header(SHA256_HEADER, command["sha256"].as_str().unwrap())
-                            .header(BYTE_LENGTH_HEADER, body.len().to_string());
+                            .header(ENTRY_KIND_HEADER, command["entryKind"].as_str().unwrap());
+                        if command["entryKind"] == "file" {
+                            headers = headers
+                                .header(
+                                    EXECUTABLE_HEADER,
+                                    command["executable"].as_bool().unwrap().to_string(),
+                                )
+                                .header(SHA256_HEADER, command["sha256"].as_str().unwrap())
+                                .header(BYTE_LENGTH_HEADER, body.len().to_string());
+                        }
                     }
                     let mut response = respond
                         .send_response(headers.body(()).unwrap(), false)
@@ -3350,8 +3396,20 @@ mod tests {
                             );
                         }
                         RuntimeEffectKind::ExportFile | RuntimeEffectKind::ImportReference => {
-                            let (sandbox_id, slot, path, sha256, byte_length, presence) =
+                            let (sandbox_id, slot, path, sha256, byte_length, presence, file_kind) =
                                 if let Some(raw) = &command.file_data {
+                                    let (sha256, byte_length, file_kind) = match &raw.entry {
+                                        crate::sandbox_bridge::ImportEntry::File { executable, file } => (
+                                            file.digest().to_string(),
+                                            file.length(),
+                                            crate::sandbox_bridge::FileEffectKind::ImportReference { executable: *executable },
+                                        ),
+                                        crate::sandbox_bridge::ImportEntry::Directory => (
+                                            String::new(),
+                                            0,
+                                            crate::sandbox_bridge::FileEffectKind::ImportDirectory,
+                                        ),
+                                    };
                                     (
                                         fixture["command"]["sandboxId"]
                                             .as_str()
@@ -3359,9 +3417,10 @@ mod tests {
                                             .to_string(),
                                         raw.slot.clone(),
                                         raw.relative_path.clone(),
-                                        raw.sha256.clone(),
-                                        raw.byte_length,
+                                        sha256,
+                                        byte_length,
                                         crate::sandbox_bridge::FileEffectPresence::Required,
+                                        file_kind,
                                     )
                                 } else {
                                     assert_eq!(input["finalStatusAccepted"], true);
@@ -3381,6 +3440,7 @@ mod tests {
                                             }
                                             _ => panic!("invalid file presence"),
                                         },
+                                        crate::sandbox_bridge::FileEffectKind::ExportFile,
                                     )
                                 };
                             crate::sandbox_bridge::FileEffectRequest {
@@ -3392,11 +3452,7 @@ mod tests {
                                 sha256,
                                 byte_length,
                                 presence,
-                                kind: if raw_import {
-                                    crate::sandbox_bridge::FileEffectKind::ImportReference
-                                } else {
-                                    crate::sandbox_bridge::FileEffectKind::ExportFile
-                                },
+                                kind: file_kind,
                             }
                             .validate()
                             .unwrap();
@@ -3514,6 +3570,304 @@ mod tests {
                 assert_eq!(observations.len(), 1);
             }
         }
+    }
+
+    /// The raw entry boundary must reject unsafe carriage before exposing a Sandbox command.
+    #[tokio::test]
+    async fn physical_skill_import_carriage_admits_only_exact_entries() {
+        let empty_digest =
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let cases = [
+            (
+                "file",
+                "worker-supply",
+                Some("true"),
+                true,
+                "",
+                b"\x00\xff\x01".as_slice(),
+                true,
+            ),
+            (
+                "file",
+                "worker-supply",
+                Some("false"),
+                true,
+                "",
+                b"\x00\xff\x01".as_slice(),
+                true,
+            ),
+            (
+                "",
+                "worker-supply",
+                Some("false"),
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "duplicate",
+                "worker-supply",
+                Some("false"),
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "symlink",
+                "worker-supply",
+                Some("false"),
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "file",
+                "worker-supply",
+                Some("duplicate"),
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "file",
+                "worker-supply",
+                Some("false"),
+                false,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "directory",
+                "worker-supply",
+                None,
+                false,
+                "reset",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "directory",
+                "worker-supply",
+                None,
+                false,
+                "",
+                b"".as_slice(),
+                true,
+            ),
+            (
+                "file",
+                "worker-supply",
+                Some("true"),
+                true,
+                "",
+                b"".as_slice(),
+                true,
+            ),
+            (
+                "file",
+                "worker-supply",
+                Some("false"),
+                true,
+                "",
+                b"".as_slice(),
+                true,
+            ),
+            (
+                "file",
+                "package-config",
+                Some("false"),
+                true,
+                "",
+                b"".as_slice(),
+                true,
+            ),
+            (
+                "directory",
+                "context",
+                None,
+                false,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "file",
+                "context",
+                Some("true"),
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "file",
+                "worker-supply",
+                None,
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "file",
+                "worker-supply",
+                Some("1"),
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "symlink",
+                "worker-supply",
+                None,
+                false,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "directory",
+                "worker-supply",
+                Some("false"),
+                false,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "directory",
+                "worker-supply",
+                None,
+                true,
+                "",
+                b"".as_slice(),
+                false,
+            ),
+            (
+                "directory",
+                "worker-supply",
+                None,
+                false,
+                "",
+                b"x".as_slice(),
+                false,
+            ),
+            (
+                "directory",
+                "worker-supply",
+                None,
+                false,
+                "../escape",
+                b"".as_slice(),
+                false,
+            ),
+        ];
+        let mut mismatches = Vec::new();
+        for (index, (kind, slot, executable, file_metadata, path, body, accepted)) in
+            cases.into_iter().enumerate()
+        {
+            let (client_io, server_io) = tokio::io::duplex(65536);
+            let (mut sender, connection) = h2::client::handshake(client_io).await.unwrap();
+            let driver = tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io).await.unwrap();
+                let (_, mut respond) = connection.accept().await.unwrap().unwrap();
+                let mut headers = Response::builder()
+                    .status(200)
+                    .header("content-type", FILE_CONTENT_TYPE)
+                    .header(
+                        "content-length",
+                        if kind == "file" { body.len() } else { 0 }.to_string(),
+                    )
+                    .header(REQUEST_ID_HEADER, "a".repeat(64))
+                    .header(SLOT_HEADER, slot)
+                    .header(
+                        RELATIVE_PATH_HEADER,
+                        if path.is_empty() {
+                            "session/supply/inputs/skill/empty"
+                        } else {
+                            path
+                        },
+                    );
+                if kind == "duplicate" {
+                    headers = headers
+                        .header(ENTRY_KIND_HEADER, "file")
+                        .header(ENTRY_KIND_HEADER, "file");
+                } else if !kind.is_empty() {
+                    headers = headers.header(ENTRY_KIND_HEADER, kind);
+                }
+                if let Some(executable) = executable {
+                    if executable == "duplicate" {
+                        headers = headers
+                            .header(EXECUTABLE_HEADER, "false")
+                            .header(EXECUTABLE_HEADER, "false");
+                    } else {
+                        headers = headers.header(EXECUTABLE_HEADER, executable);
+                    }
+                }
+                if file_metadata {
+                    headers = headers
+                        .header(SHA256_HEADER, if body.is_empty() { empty_digest } else {
+                            "sha256:47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123"
+                        })
+                        .header(BYTE_LENGTH_HEADER, body.len().to_string());
+                }
+                let mut response = respond
+                    .send_response(headers.body(()).unwrap(), false)
+                    .unwrap();
+                if path == "reset" {
+                    response.send_reset(h2::Reason::INTERNAL_ERROR);
+                } else {
+                    response
+                        .send_data(Bytes::copy_from_slice(body), true)
+                        .unwrap();
+                }
+                let _ = connection.accept().await;
+            });
+            let result = poll_reference_import(
+                "http://core:80",
+                &mut sender,
+                "/api/nanohost/transport/effects/reference.import",
+                std::env::temp_dir().as_path(),
+            )
+            .await;
+            if result.is_ok() != accepted {
+                mismatches.push(format!(
+                    "case {index}: {kind}/{slot}/{executable:?}, accepted={} expected={accepted}",
+                    result.is_ok()
+                ));
+            }
+            if let (true, Ok(command)) = (accepted, result) {
+                let command = command.expect("one admitted command");
+                let raw = command.file_data.expect("one admitted entry");
+                assert_eq!(raw.slot, slot);
+                match raw.entry {
+                    crate::sandbox_bridge::ImportEntry::Directory => assert_eq!(kind, "directory"),
+                    crate::sandbox_bridge::ImportEntry::File {
+                        executable: actual,
+                        file,
+                    } => {
+                        assert_eq!(kind, "file");
+                        assert_eq!(Some(actual.to_string().as_str()), executable);
+                        let mut observed = Vec::new();
+                        std::io::Read::read_to_end(&mut file.reader().unwrap(), &mut observed)
+                            .unwrap();
+                        assert_eq!(observed, body);
+                    }
+                }
+            }
+            driver.abort();
+            server.abort();
+        }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("; "));
     }
 
     #[test]

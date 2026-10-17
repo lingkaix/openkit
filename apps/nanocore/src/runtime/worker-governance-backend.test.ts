@@ -1,15 +1,20 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
+  planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
-import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
+import { importWorkspaceSkill, removeWorkspaceSkill } from '../catalog/resource-catalog.js';
+import { buildWorkerContextPackageWorkspaceInput } from '../context/worker-context-package.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -119,7 +124,9 @@ describe('NanoHost worker governance helpers', () => {
         relativePath: `${environmentPackage.scope.agentSessionId}/config/package.json`,
         slot: 'package-config',
       });
-      expect(imports[0]?.body[0]).not.toBe(0xef);
+      if (!imports[0]?.body)
+        throw new Error('Canonical package config must have bounded inline bytes.');
+      expect(imports[0].body[0]).not.toBe(0xef);
       expect(imports[0]?.body.at(-1)).not.toBe(0x0a);
       expect(JSON.parse(imports[0]?.body.toString('utf8') ?? '')).toEqual(environmentPackage);
     }
@@ -160,7 +167,10 @@ describe('NanoHost worker governance helpers', () => {
     }
   });
 
-  it('imports verified Skill files after the canonical AEP', async () => {
+  it.each([
+    'available',
+    'removed-during-context-read',
+  ] as const)('imports only currently eligible verified Skill files after the canonical AEP: %s', async (selection) => {
     const skillBody =
       '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n';
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-supply-import-'));
@@ -207,9 +217,60 @@ describe('NanoHost worker governance helpers', () => {
           workspaceRoots: [],
         })
       );
+      const workspaceRoots: Parameters<
+        typeof prepareNanoHostContextPackageImports
+      >[1]['workspaceRoots'] = [];
+      if (selection === 'removed-during-context-read') {
+        const inputId = `context_${turn.id}`;
+        const pathRef = `threads/${turn.threadId}/turns/${turn.id}/context-package`;
+        const sourcePath = join(dataRoot, 'workspaces', turn.workspaceId, ...pathRef.split('/'));
+        mkdirSync(sourcePath, { recursive: true });
+        environmentPackage.workspace.inputs.push({
+          access: 'read-only',
+          id: inputId,
+          kind: 'generated',
+          materialization: {
+            slotId: 'context',
+            strategy: 'filesystem',
+            contentDigest: `sha256:${createHash('sha256').update('[]').digest('hex')}`,
+          },
+          source: { kind: 'generated', pathRef },
+          target: `/openkit/sessions/${agentSessionId}/context`,
+        });
+        (environmentPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+          planSessionWorkspaceMaterialization({ environmentPackage });
+        workspaceRoots.push({
+          id: inputId,
+          access: 'read-only',
+          sourceKind: 'materialized-dir',
+          sourcePath,
+          workerPath: `/openkit/sessions/${agentSessionId}/context`,
+        });
+        const readDirectory = fsPromises.readdir;
+        let removed = false;
+        vi.spyOn(fsPromises, 'readdir').mockImplementation(async (...args) => {
+          const result = await readDirectory(...args);
+          if (String(args[0]) === sourcePath && !removed) {
+            removed = true;
+            removeWorkspaceSkill({
+              dataRoot,
+              workspaceId: turn.workspaceId,
+              entryId: 'repo-guidelines',
+              expectedRevision: created.catalog.revision,
+            });
+          }
+          return result;
+        });
+        syncBuiltinESMExports();
+        await expect(
+          prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })
+        ).rejects.toThrow(/catalog entry not found/i);
+        expect(removed).toBe(true);
+        return;
+      }
       const imports = await prepareNanoHostContextPackageImports(environmentPackage, {
         dataRoot,
-        workspaceRoots: [],
+        workspaceRoots,
       });
       expect(imports.map((item) => item.slot)).toEqual(['package-config', 'worker-supply']);
       expect(imports[1]).toMatchObject({
@@ -222,6 +283,8 @@ describe('NanoHost worker governance helpers', () => {
         created.version.inventory.find((entry) => entry.path === 'SKILL.md')?.sha256
       );
     } finally {
+      vi.restoreAllMocks();
+      syncBuiltinESMExports();
       coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     }
@@ -362,7 +425,9 @@ it.each([
   expect(imported?.contentDigest).toBe(
     `sha256:${createHash('sha256').update(expectedBytes).digest('hex')}`
   );
-  const parsed = AgentEnvironmentPackageSchema.parse(JSON.parse(imported!.body.toString('utf8')));
+  if (imported?.entryKind !== 'file' || !imported.body)
+    throw new Error('Expected bounded canonical package-config file bytes.');
+  const parsed = AgentEnvironmentPackageSchema.parse(JSON.parse(imported.body.toString('utf8')));
   if (recorded) {
     expect(parsed.llm).toHaveProperty('reasoningEffort', 'none');
     expect(parsed.llm.routes[0]).toHaveProperty('reasoningEffortLevels', []);
@@ -466,4 +531,102 @@ describe('encoded-slash Core policy intent', () => {
     ).toBe(true);
     expect(parse([allowed, { ...endpoint, name: 'other_port', port: 8443 }]).success).toBe(true);
   });
+});
+
+it('prepares a large Context Package original as a verified bounded source and rejects later replacement or links', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'context-source-import-'));
+  try {
+    const base = createNanoHostPackage();
+    const { workspaceId, threadId, turnId, agentSessionId } = base.scope;
+    const root = join(
+      dataRoot,
+      'workspaces',
+      workspaceId,
+      'threads',
+      threadId,
+      'turns',
+      turnId,
+      'context-package'
+    );
+    mkdirSync(root, { recursive: true });
+    const bytes = Buffer.alloc(16 * 1024 * 1024 + 17, 120);
+    const path = join(root, 'original.bin');
+    writeFileSync(path, bytes);
+    const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const inventory = [{ byteLength: bytes.length, contentDigest, path: 'original.bin' }];
+    const rootDigest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
+    const workspaceInput = buildWorkerContextPackageWorkspaceInput({
+      threadId,
+      turnId,
+      agentSessionId,
+      packageRootDigest: rootDigest,
+    });
+    const withInput = AgentEnvironmentPackageSchema.parse({
+      ...base,
+      workspace: { ...base.workspace, inputs: [...base.workspace.inputs, workspaceInput] },
+    });
+    const openkit = withInput.extensions.openkit as Record<string, unknown> & {
+      workerStorage: { workSlotRef: string };
+    };
+    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...withInput,
+      extensions: {
+        ...withInput.extensions,
+        openkit: {
+          ...openkit,
+          sessionWorkspace: planSessionWorkspaceMaterialization({
+            environmentPackage: withInput,
+            workSlotRef: openkit.workerStorage.workSlotRef,
+          }),
+        },
+      },
+    });
+    const context = {
+      workspaceRoots: [
+        {
+          id: workspaceInput.id,
+          access: 'read-only' as const,
+          sourceKind: 'materialized-dir' as const,
+          sourcePath: root,
+          workerPath: workspaceInput.target,
+        },
+      ],
+    };
+    const imports = await prepareNanoHostContextPackageImports(environmentPackage, context);
+    const original = imports.find((entry) => entry.slot === 'context');
+    expect(original).toMatchObject({ byteLength: bytes.length, contentDigest });
+    expect(original).not.toHaveProperty('body');
+    if (!original?.source) throw new Error('Expected a bounded original source.');
+    const measured = createHash('sha256');
+    let size = 0;
+    for await (const chunk of original.source.open(new AbortController().signal)) {
+      expect(chunk.byteLength).toBeLessThanOrEqual(65_536);
+      size += chunk.byteLength;
+      measured.update(chunk);
+    }
+    expect(size).toBe(bytes.length);
+    expect(`sha256:${measured.digest('hex')}`).toBe(contentDigest);
+    rmSync(path);
+    writeFileSync(path, bytes);
+    await expect(
+      (async () => {
+        for await (const _chunk of original.source!.open(new AbortController().signal)) {
+          /* Exact accepted source only. */
+        }
+      })()
+    ).rejects.toThrow(/unavailable/);
+    rmSync(path);
+    symlinkSync(join(dataRoot, 'outside'), path);
+    await expect(prepareNanoHostContextPackageImports(environmentPackage, context)).rejects.toThrow(
+      /unavailable/
+    );
+    rmSync(path);
+    writeFileSync(path, bytes);
+    linkSync(path, join(dataRoot, 'linked-original'));
+    await expect(prepareNanoHostContextPackageImports(environmentPackage, context)).rejects.toThrow(
+      /unavailable/
+    );
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });

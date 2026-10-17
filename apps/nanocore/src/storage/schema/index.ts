@@ -110,7 +110,6 @@ export {
   workspaceMaterials,
 } from './workspace-materials.js';
 export type {
-  WorkspaceAccessLevel,
   WorkspaceInvitationStatus,
   WorkspaceMemberStatus,
   WorkspaceRegistryStatus,

@@ -646,7 +646,7 @@ function addMember(f: ReturnType<typeof fixture>): string {
     .run(id, id, Date.now(), Date.now());
   f.coreDb.sqlite
     .prepare(
-      "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, ?, 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)"
+      "INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)"
     )
     .run(f.workspaceId, id, now, now, now);
   return id;

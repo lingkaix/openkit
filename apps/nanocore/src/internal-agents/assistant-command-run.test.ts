@@ -111,8 +111,8 @@ async function fixture(selected = true, description?: string) {
     .run(SKILL_READER_ID, ['skill-reader', 'example.invalid'].join('@'), Date.now(), Date.now());
   coreDb.sqlite
     .prepare(`INSERT INTO workspace_members
-      (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
-      VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+      (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+      VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
     .run(workspace.id, SKILL_READER_ID, timestamp, timestamp, timestamp);
   const actor: Actor = { kind: 'session', userId: SKILL_READER_ID };
   const thread = store.createThread(workspace.id, 'Assistant command');
@@ -457,6 +457,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
   it('accounts summary production and the answer through one captured Gateway environment and budget', async () => {
     const f = await fixture(false);
     f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
+    // Keep history large enough to require a summary with the local bytes/3 estimate.
     for (let index = 0; index < 8; index += 1) {
       const earlier = f.store.createTurn(
         f.workspaceId,
@@ -474,7 +475,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           turnId: earlier.id,
           type,
           status: 'completed',
-          text: `${type} ${index}: ${'x'.repeat(800)}`,
+          text: `${type} ${index}: ${'x'.repeat(2400)}`,
           ...(type === 'user-message'
             ? { actor: { kind: 'user', id: f.actor.userId } as const }
             : {}),
@@ -562,11 +563,11 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(f.execute).not.toHaveBeenCalled();
   });
 
-  it('requires current inference permission even when the actor can still read selected resources', async () => {
+  it('refuses inference and resource access after membership is removed', async () => {
     const f = await fixture();
     f.coreDb.sqlite
       .prepare(
-        "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+        "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
       )
       .run(f.workspaceId, SKILL_READER_ID);
     expect(
@@ -574,7 +575,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         mutating: false,
         policyOperation: 'workspace.read',
       })
-    ).toEqual({ effectiveRole: 'viewer', workspaceId: f.workspaceId });
+    ).toBeNull();
     expect(
       authorizeWorkspace(f.coreDb, f.actor, f.workspaceId, {
         mutating: false,
@@ -597,7 +598,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
   });
 
   it.each([
-    'downgraded',
+    'disabled',
     'revoked',
   ] as const)('reauthorizes inference after authority is %s between model rounds', async (condition) => {
     const f = await fixture();
@@ -605,12 +606,12 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     f.execute.mockImplementationOnce(async (...args) => {
       const result = await f.skillTool.execute(...args);
       expect(result.isError).not.toBe(true);
-      if (condition === 'downgraded')
+      if (condition === 'disabled')
         f.coreDb.sqlite
           .prepare(
-            "UPDATE workspace_members SET access_level = 'viewer', revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+            "UPDATE users SET status = 'disabled', disabled_at = '2026-10-16T00:00:00.000Z' WHERE id = ?"
           )
-          .run(f.workspaceId, SKILL_READER_ID);
+          .run(SKILL_READER_ID);
       else
         f.coreDb.sqlite
           .prepare(

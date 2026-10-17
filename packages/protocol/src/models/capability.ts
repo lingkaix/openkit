@@ -141,6 +141,12 @@ export const GatewayRouteLineageEntrySchema = z.discriminatedUnion('kind', [
 ]);
 /** Optional call-owned route evidence; unknown namespaces and additive fields are ignored. */
 export const CapabilityCallExtensionsSchema = z.object({
+  'openkit.knowledge/delivery': z
+    .object({
+      /** Exact serialized answer bytes delivered by the asking capability call. */
+      answer: z.string().min(1),
+    })
+    .optional(),
   'openkit.gateway/routeLineage': z
     .object({ logicalModelId: z.string().min(1), entries: z.array(GatewayRouteLineageEntrySchema) })
     .optional(),

@@ -56,6 +56,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from './internal-agents/delegation.js';
 import { readInternalContextEvidence } from './internal-agents/internal-context-evidence.js';
+import { interruptKnowledgeManagerTurn } from './internal-agents/knowledge-manager-agent.js';
 import { resolveInternalRoleProfile } from './internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import { internalContextFailure } from './internal-agents/rolling-context.js';
@@ -2379,6 +2380,7 @@ export function createConversationService({
   startModeWorkerTurn,
   workerCoordinatorCandidates,
   goalServices,
+  knowledgeAgent,
 }: {
   readonly coreDb: CoreDb | undefined;
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
@@ -2419,6 +2421,7 @@ export function createConversationService({
     ) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly goalServices?: () => GoalOwnerServices;
+  readonly knowledgeAgent?: import('./operation-composition.js').OperationInvocationDependencies['knowledgeAgent'];
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string,
@@ -2831,14 +2834,17 @@ export function createConversationService({
             409
           );
         }
-        if (artifact.version !== reference.artifactVersion) {
+        try {
+          artifacts.push(
+            store.getArtifactVersion(workspaceId, artifact.id, reference.artifactVersion).artifact
+          );
+        } catch {
           throw new TurnStartValidationError(
             'artifact_version_mismatch',
-            'The selected Artifact version is no longer current.',
+            'The selected Artifact version is unavailable.',
             409
           );
         }
-        artifacts.push(artifact);
       }
       if (
         chatInput.fileInputs?.length &&
@@ -2904,8 +2910,8 @@ export function createConversationService({
           const current = currentArtifacts.get(artifact.id);
           if (
             !current ||
-            current.version !== artifact.version ||
-            current.contentDigest !== artifact.contentDigest
+            store.getArtifactVersion(workspaceId, artifact.id, artifact.version).artifact
+              .contentDigest !== artifact.contentDigest
           )
             throw new TurnStartValidationError(
               'artifact_version_mismatch',
@@ -3065,27 +3071,28 @@ export function createConversationService({
       /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
       const answerFromWorkspaceKnowledge = async (): Promise<ConversationCommandResult | null> => {
         if (!store.getDataRoot()) return null;
-        const inputTurn = filePayloadPaths
-          ? createChatTurn(new Date().toISOString(), providerTurnId)
-          : undefined;
+        const inputTurn = createChatTurn(new Date().toISOString(), providerTurnId);
         const knowledgeAnswer = await createOperationInvocation({
           coreDb,
           store,
           inflightCommands,
           repositoryWorkspaceDb,
           workspaceMutationAdmission,
+          knowledgeAgent,
         })(
-          'knowledge.answer',
-          { workspaceId, query: conversationPrompt, limit: 3 },
+          'knowledge.ask',
+          { workspaceId, question: conversationPrompt },
           {
             kind: 'public',
             actor: actor,
-            queryContext: { threadId },
+            queryContext: { threadId, turnId: inputTurn.id },
           }
         );
         const completedAt = new Date().toISOString();
         const turn = inputTurn ?? createChatTurn(completedAt);
-        const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
+        const sourceTitles = knowledgeAnswer.citations
+          .map((citation) => citation.reference)
+          .join(', ');
         const answerItem = store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
           workspaceId,
@@ -3104,7 +3111,7 @@ export function createConversationService({
           body: ConversationCommandBodySchema.parse({
             outcome: 'answered',
             explanation:
-              knowledgeAnswer.outcome === 'answered'
+              knowledgeAnswer.citations.length > 0
                 ? 'The Knowledge Manager answered from Workspace Knowledge.'
                 : 'The Knowledge Manager found insufficient Workspace evidence.',
             turn: completedTurn,
@@ -3144,8 +3151,9 @@ export function createConversationService({
           };
         }
 
-        const objective =
-          StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(conversationPrompt);
+        const objective = StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(
+          chatInput.input
+        );
         if (!objective.success) {
           throw new TurnStartValidationError(
             'invalid_request',
@@ -3214,7 +3222,7 @@ export function createConversationService({
           );
         }
         const workerRequest = createStructuredWorkerDelegationRequest({
-          objective: conversationPrompt,
+          objective: objective.data,
           acceptanceCriteria: [
             'The bounded worker task satisfies the requested objective.',
             'The worker reports verification evidence or a clear blocker.',
@@ -3222,7 +3230,11 @@ export function createConversationService({
           contextRefs: [
             { kind: 'workspace', id: workspaceId },
             { kind: 'thread', id: receivingThreadId },
-            ...artifacts.map((artifact) => ({ kind: 'artifact' as const, id: artifact.id })),
+            ...artifacts.map((artifact) => ({
+              kind: 'artifact' as const,
+              id: artifact.id,
+              artifactVersion: artifact.version,
+            })),
           ],
           resources: artifacts.map((artifact) => ({
             kind: 'artifact',
@@ -3635,6 +3647,7 @@ export function createConversationService({
                 inflightCommands,
                 repositoryWorkspaceDb,
                 workspaceMutationAdmission,
+                knowledgeAgent,
                 ...(goalServices ? { goalServices: goalServices() } : {}),
               })(id, value, {
                 kind: 'public',
@@ -4012,6 +4025,7 @@ export function createConversationService({
     targets,
     submit,
     async interrupt(store: FsStore, turnId: string) {
+      if (await interruptKnowledgeManagerTurn(store, turnId)) return true;
       const run = activeChatRuns.get(store)?.get(turnId);
       if (!run) return false;
       run.controller.abort();
@@ -4439,6 +4453,7 @@ export function createConversationService({
               inflightCommands,
               repositoryWorkspaceDb,
               workspaceMutationAdmission,
+              knowledgeAgent,
               ...(goalServices ? { goalServices: goalServices() } : {}),
             })(id, value, {
               kind: 'public',

@@ -41,6 +41,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -639,8 +640,10 @@ describe('workspace export route boundaries', () => {
     ).toBe(true);
 
     const targetDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-unicode-target-'));
+    const fileAdmission = new FileStorageAdmission(targetDataRoot, () => 0n);
     const targetResponse = await createApp({
       dataRoot: targetDataRoot,
+      fileAdmission,
       store: createBoundaryStore(targetDataRoot),
     }).request('/api/app/workspace-archives/import-dry-run', {
       body: archive,
@@ -669,7 +672,8 @@ describe('workspace export route boundaries', () => {
         headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
         body: unicodeArchive,
       }),
-      targetDataRoot
+      targetDataRoot,
+      fileAdmission
     );
     try {
       expect(readFileSync(join(staged.exportRoot, unicodePath))).toEqual(exactBytes);
@@ -1182,7 +1186,11 @@ describe('workspace archive import boundaries', () => {
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-    const stagedPromise = stageWorkspaceArchive(request, dataRoot);
+    const stagedPromise = stageWorkspaceArchive(
+      request,
+      dataRoot,
+      new FileStorageAdmission(dataRoot, () => 0n)
+    );
     const requestsRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
     const requestEntries = readdirSync(requestsRoot);
 
@@ -1334,9 +1342,9 @@ describe('workspace archive import boundaries', () => {
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
       method: 'POST',
     } as RequestInit & { duplex: 'half' });
-    await expect(stageWorkspaceArchive(request, dataRoot)).rejects.toThrow(
-      'injected upstream abort'
-    );
+    await expect(
+      stageWorkspaceArchive(request, dataRoot, new FileStorageAdmission(dataRoot, () => 0n))
+    ).rejects.toThrow('injected upstream abort');
     expect(openArchiveStagingDescriptors(dataRoot)).toEqual([]);
   });
 
@@ -1399,15 +1407,14 @@ describe('workspace portable authority boundaries', () => {
       });
       const insertMember = sourceCoreDb.sqlite.prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, 1, ?, ?)`
+        ) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?)`
       );
       insertMember.run(
         sourceWorkspace.id,
         'usr_00000000-0000-7f91-bf04-0eeba702f745',
         'active',
-        'editor',
         timestamp,
         null,
         timestamp,
@@ -1417,7 +1424,6 @@ describe('workspace portable authority boundaries', () => {
         sourceWorkspace.id,
         'usr_00000000-0000-7a07-a29f-1a147d72df71',
         'removed',
-        'viewer',
         timestamp,
         timestamp,
         timestamp,
@@ -1426,10 +1432,10 @@ describe('workspace portable authority boundaries', () => {
       sourceCoreDb.sqlite
         .prepare(
           `INSERT INTO workspace_invitations (
-            invitation_id, workspace_id, invitee_user_id, proposed_access_level,
+            invitation_id, workspace_id, invitee_user_id,
             inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
             revision, created_at, updated_at
-          ) VALUES (?, ?, ?, 'viewer', ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+          ) VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
         )
         .run(
           'inv_00000000-0000-7a35-a611-d2ba2eb6fec6',
@@ -1549,15 +1555,13 @@ describe('workspace portable authority boundaries', () => {
       expect(
         targetCoreDb.sqlite
           .prepare(
-            `SELECT workspace_id AS workspaceId, user_id AS userId, status,
-                    access_level AS accessLevel
+            `SELECT workspace_id AS workspaceId, user_id AS userId, status
              FROM workspace_members
              ORDER BY workspace_id, user_id`
           )
           .all()
       ).toEqual([
         {
-          accessLevel: 'editor',
           status: 'active',
           userId: 'usr_00000000-0000-7dff-a6fb-e1fa9c56d0f0',
           workspaceId: imported.importedWorkspaceId,

@@ -36,7 +36,7 @@ import {
   CatalogNotFoundError,
   CatalogRetentionError,
   type CatalogTreeFile,
-  createWorkspaceMcpConfig,
+  createMcpConfig,
   decideWorkspaceSkillCandidate,
   importWorkspacePlugin,
   type importWorkspaceSkill,
@@ -44,9 +44,9 @@ import {
   McpBindingValidationError,
   materializeCatalogTree,
   type SkillCandidateDecisionContext,
-  selectWorkspaceMcpVersion,
+  selectMcpVersion,
   submitWorkspaceSkillCandidate,
-  updateWorkspaceMcpBinding,
+  updateMcpBinding,
   validateCatalogTree,
 } from './resource-catalog.js';
 import {
@@ -692,7 +692,7 @@ export function createCatalogOperationImplementations(
     },
     'catalog.mcp-create': (input, context) => {
       try {
-        const result = createWorkspaceMcpConfig({
+        const result = createMcpConfig({
           allowedTools: input.allowedTools,
           createdAt: new Date().toISOString(),
           dataRoot: root(),
@@ -702,7 +702,7 @@ export function createCatalogOperationImplementations(
           ...(input.id ? { id: input.id } : {}),
           selectCurrent: true,
           stdioHostAuthorized: administrator(context),
-          workspaceId: input.workspaceId,
+          owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
         afterMutation(input.workspaceId);
         return {
@@ -716,13 +716,13 @@ export function createCatalogOperationImplementations(
     },
     'catalog.mcp-select': (input, context) => {
       try {
-        const catalog = selectWorkspaceMcpVersion({
+        const catalog = selectMcpVersion({
           dataRoot: root(),
           digest: input.digest,
           entryId: input.mcpId,
           expectedRevision: input.expectedRevision,
           stdioHostAuthorized: administrator(context),
-          workspaceId: input.workspaceId,
+          owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
         afterMutation(input.workspaceId);
         return { revision: catalog.revision };
@@ -748,7 +748,7 @@ export function createCatalogOperationImplementations(
             403
           );
         }
-        const next = updateWorkspaceMcpBinding({
+        const next = updateMcpBinding({
           binding: {
             allowedTools: input.allowedTools,
             approvalRequiredTools: input.approvalRequiredTools,
@@ -764,7 +764,7 @@ export function createCatalogOperationImplementations(
           dataRoot: root(),
           entryId: input.mcpId,
           expectedRevision: input.expectedRevision,
-          workspaceId: input.workspaceId,
+          owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
         afterMutation(input.workspaceId);
         return { revision: next.revision };
@@ -833,7 +833,7 @@ function summarizeCatalog(catalog: ReturnType<typeof loadWorkspaceResourceCatalo
 }
 
 /** Projects redacted MCP entries. */
-function mcpEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatalog>) {
+export function mcpEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatalog>) {
   return catalog.mcp.entries.map((entry) => {
     const version = catalog.mcp.versions.find((item) => item.digest === entry.currentVersionDigest);
     const binding = catalog.mcp.bindings.find((item) => item.entryId === entry.id);

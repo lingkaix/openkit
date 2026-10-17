@@ -26,6 +26,7 @@ import {
   KnowledgeProposalReviewSchema,
   KnowledgeSourceSchema,
   MaterializedWorkspaceRootSchema,
+  validKnowledgeProposalShape,
 } from '@openkit/app-api-schemas';
 import { parseRecordEnvelope, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
@@ -37,6 +38,8 @@ import {
   ArtifactInlineContentSchema,
   ArtifactOriginSchema,
   ArtifactSchema,
+  type ArtifactVersionRecord,
+  ArtifactVersionRecordSchema,
   deriveEntityId,
   entityIdPattern,
   GitFailureExplanationReaderSchema,
@@ -78,7 +81,11 @@ import type {
   KnowledgeProposalReviewRecord,
   KnowledgeSourceRecord,
 } from '../lib/store.js';
-import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
+import {
+  readArtifactVersionRecord,
+  stageArtifactVersionRecord,
+} from './artifacts/artifact-version-records.js';
+import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { coreDbPath, ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 
@@ -146,8 +153,8 @@ const TurnFileMetadataSchema = TurnReaderSchema.safeExtend({
     )
     .optional(),
 });
-/** Imported-origin attribution is a historical fact, never current import authority. */
-const ArtifactReaderSchema = ArtifactSchema.safeExtend({
+/** Reads descriptive Artifact extensions and historical imported attribution without granting current authority. */
+export const ArtifactReaderSchema = ArtifactSchema.safeExtend({
   origin: z.discriminatedUnion('kind', [
     ArtifactOriginSchema.options[0],
     ArtifactOriginSchema.options[1].extend({ actor: ActorRefReaderSchema }).strip(),
@@ -182,15 +189,20 @@ export const WorkspaceSystemRecordSchema = WorkspaceRecordSchema.omit({
   name: true,
   counts: true,
 }).strip();
-export const KnowledgeProposalRecordSchema = KnowledgeManagerDraftedProposalSchema.omit({
-  status: true,
-})
+const { status: _proposalStatus, ...knowledgeProposalRecordShape } =
+  KnowledgeManagerDraftedProposalSchema.shape;
+export const KnowledgeProposalRecordSchema = z
+  .object(knowledgeProposalRecordShape)
   .extend({
     id: z.string().regex(/^kp_[a-f0-9]{64}$/),
     producer: ActorRefReaderSchema,
   })
-  .strip();
-export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.extend({
+  .strip()
+  .refine(
+    validKnowledgeProposalShape,
+    'Knowledge Proposal must contain exactly one complete candidate shape.'
+  );
+export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.safeExtend({
   reviewId: z.string().regex(entityIdPattern('kr')),
   actor: ActorRefReaderSchema,
 })
@@ -198,7 +210,9 @@ export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema
   .superRefine((review, context) => {
     const accepted = review.decision === 'accepted';
     if (
-      accepted ? review.targetAbsentAtDecision === null : review.targetAbsentAtDecision !== null
+      accepted
+        ? !review.changedPageIds && review.targetAbsentAtDecision === null
+        : review.targetAbsentAtDecision !== null
     ) {
       context.addIssue({
         code: 'custom',
@@ -626,6 +640,10 @@ export function parseCanonicalWorkspaceHistory(input: {
       review.workspaceId !== workspace.id ||
       review.knowledgePageId !== proposal.knowledgePageId ||
       review.contentDigest !== proposal.contentDigest ||
+      !isDeepStrictEqual(
+        review.changedPageIds,
+        proposal.changes?.map(({ path }) => path.slice(0, -3))
+      ) ||
       review.proposalDigest !== proposalDigest
     ) {
       throw new Error(`Knowledge proposal review ${review.reviewId} has invalid lineage.`);
@@ -1095,11 +1113,13 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
+ * @param initialArtifact Actual admitted v1 record and optional original for one initial directory publication.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
-  updateWorkspaceConfigName = false
+  updateWorkspaceConfigName = false,
+  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
@@ -1109,7 +1129,7 @@ export function writeWorkspaceFileRecords(
   writeThreads(workspaceRoot, records);
   writeKnowledge(workspaceRoot, records);
   writeSources(workspaceRoot, records);
-  writeArtifacts(workspaceRoot, records);
+  writeArtifacts(workspaceRoot, records, initialArtifact);
   writeAgentSessions(workspaceRoot, records);
 }
 
@@ -1743,11 +1763,17 @@ export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalReco
     `owner_scope: ${JSON.stringify(proposal.ownerScope)}`,
     `base_revision: ${JSON.stringify(proposal.baseRevision)}`,
     `candidate_revision: ${JSON.stringify(proposal.candidateRevision)}`,
-    `knowledge_page_id: ${JSON.stringify(proposal.knowledgePageId)}`,
+    ...(proposal.changes
+      ? [
+          `changes: ${JSON.stringify(proposal.changes.map(({ path, content }) => ({ path, removed: content === null })))}`,
+        ]
+      : [`knowledge_page_id: ${JSON.stringify(proposal.knowledgePageId)}`]),
     `content_digest: ${JSON.stringify(proposal.contentDigest)}`,
     `source_references: ${JSON.stringify(proposal.sourceReferences)}`,
     `rationale: ${JSON.stringify(proposal.rationale)}`,
-    `confidence: ${JSON.stringify(proposal.confidence)}`,
+    ...(proposal.confidence === undefined
+      ? []
+      : [`confidence: ${JSON.stringify(proposal.confidence)}`]),
     'review_required: true',
     `producer: ${JSON.stringify(proposal.producer)}`,
     `created_at: ${JSON.stringify(proposal.createdAt)}`,
@@ -1791,7 +1817,7 @@ function loadKnowledgeProposals(
         sourceReferences === null ||
         typeof producerValue !== 'object' ||
         producerValue === null ||
-        typeof confidenceValue !== 'number'
+        (parsed.document.frontmatter.changes === undefined && typeof confidenceValue !== 'number')
       ) {
         throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
       }
@@ -1805,7 +1831,17 @@ function loadKnowledgeProposals(
         path
       );
       const baseRevision = requiredFrontmatterString(parsed.document, 'base_revision', path);
-      const knowledgePageId = requiredFrontmatterString(parsed.document, 'knowledge_page_id', path);
+      const changedMetadata = parsed.document.frontmatter.changes;
+      if (
+        changedMetadata !== undefined &&
+        (Object.hasOwn(parsed.document.frontmatter, 'knowledge_page_id') ||
+          confidenceValue !== undefined)
+      )
+        throw new Error('Knowledge Proposal mixes candidate forms.');
+      const knowledgePageId =
+        changedMetadata === undefined
+          ? requiredFrontmatterString(parsed.document, 'knowledge_page_id', path)
+          : undefined;
       const candidate = notebook.retainedCandidate(id);
       if (
         candidate.revision !== candidateRevision ||
@@ -1814,8 +1850,26 @@ function loadKnowledgeProposals(
         candidate.metadata.authority.proposalId !== id
       )
         throw new Error('Knowledge Proposal retained candidate is unavailable.');
-      const canonicalPageBytes =
-        notebook.readRevision(candidateRevision).files[`${knowledgePageId}.md`];
+      const candidateFiles = notebook.readRevision(candidateRevision).files;
+      const baseFiles = notebook.readRevision(baseRevision).files;
+      const changes =
+        changedMetadata === undefined
+          ? undefined
+          : [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateFiles)])]
+              .sort()
+              .filter((path) => baseFiles[path] !== candidateFiles[path])
+              .map((path) => ({ path, content: candidateFiles[path] ?? null }));
+      if (
+        changes &&
+        !isDeepStrictEqual(
+          changedMetadata,
+          changes.map(({ path, content }) => ({ path, removed: content === null }))
+        )
+      )
+        throw new Error('Knowledge Proposal changed paths contradict its candidate.');
+      const canonicalPageBytes = knowledgePageId
+        ? candidateFiles[`${knowledgePageId}.md`]
+        : undefined;
       const proposal = KnowledgeProposalRecordSchema.parse({
         id,
         workspaceId,
@@ -1823,17 +1877,19 @@ function loadKnowledgeProposals(
         ownerScope: parsed.document.frontmatter.owner_scope,
         baseRevision,
         candidateRevision,
-        knowledgePageId,
-        canonicalPageBytes,
+        ...(changes ? { changes } : { knowledgePageId, canonicalPageBytes }),
         contentDigest: requiredFrontmatterString(parsed.document, 'content_digest', path),
         sourceReferences,
         rationale: requiredFrontmatterString(parsed.document, 'rationale', path),
-        confidence: confidenceValue,
+        ...(changes ? {} : { confidence: confidenceValue }),
         producer: producerValue,
         createdAt: requiredFrontmatterString(parsed.document, 'created_at', path),
       });
       const candidateDigest = `sha256:${createHash('sha256')
-        .update(proposal.canonicalPageBytes, 'utf8')
+        .update(
+          proposal.changes ? JSON.stringify(proposal.changes) : proposal.canonicalPageBytes!,
+          'utf8'
+        )
         .digest('hex')}`;
       if (
         proposal.contentDigest !== candidateDigest ||
@@ -1980,28 +2036,50 @@ function loadArtifacts(
       throw new Error(`Artifact ${artifactId} has an invalid content format.`);
     }
 
-    if (format !== 'file') assertCanonicalDirectory(join(artifactRoot, 'files'));
-    const artifact = ArtifactReaderSchema.parse({
-      ...metadata,
-      content:
-        format === 'file'
-          ? metadataContent
-          : {
-              ...metadataContent,
-              format,
-              body: readCanonicalTextFile(
-                join(artifactRoot, 'files', artifactContentFileName(format))
-              ),
-            },
-    });
-    if (artifact.content.format === 'file') {
-      verifyArtifactFilePayload({
+    // Disposable projections can be absent, but retained paths must still be canonical.
+    if (format !== 'file') {
+      const filesRoot = join(artifactRoot, 'files');
+      if (lstatSync(filesRoot, { throwIfNoEntry: false })) {
+        assertCanonicalDirectory(filesRoot);
+        const projectionPath = join(filesRoot, artifactContentFileName(format));
+        if (lstatSync(projectionPath, { throwIfNoEntry: false }))
+          assertCanonicalRegularFile(projectionPath);
+      }
+    }
+    const selectedVersion = metadata.version;
+    if (!Number.isSafeInteger(selectedVersion) || Number(selectedVersion) < 1)
+      throw new Error(`Artifact ${artifactId} has an invalid current version.`);
+    let artifact: Artifact;
+    try {
+      const retained = readArtifactVersionRecord(
         workspaceRoot,
-        artifactId: artifact.id,
-        version: artifact.version,
-        byteLength: artifact.content.byteLength,
-        contentDigest: artifact.contentDigest,
+        artifactId,
+        Number(selectedVersion)
+      ).artifact;
+      artifact = ArtifactReaderSchema.parse({
+        ...metadata,
+        content:
+          format === 'file'
+            ? metadataContent
+            : {
+                ...metadataContent,
+                body: retained.content.format === 'file' ? undefined : retained.content.body,
+              },
       });
+      if (
+        !isDeepStrictEqual(
+          { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+          artifact
+        )
+      )
+        throw new Error(`Artifact ${artifactId} current-head projection is contradictory.`);
+    } catch (cause) {
+      throw Object.assign(
+        new Error('The retained Artifact version history is unavailable or contradictory.', {
+          cause,
+        }),
+        { code: 'recovery_required' }
+      );
     }
 
     if (
@@ -2406,45 +2484,50 @@ export function turnFilePayloadPath(
   );
 }
 
+/** Proves exactly one addressed canonical original, without rescanning other Turn inputs. */
+export function verifyTurnFileInput(workspaceRoot: string, turn: Turn, ordinal: number): void {
+  const input =
+    Number.isSafeInteger(ordinal) && ordinal >= 0 ? turn.fileInputs?.[ordinal] : undefined;
+  if (!input) throw new Error('Turn input original is unavailable.');
+  const path = turnFilePayloadPath(workspaceRoot, turn.threadId, turn.id, ordinal);
+  let parent = dirname(path);
+  for (let level = 0; level < 7; level += 1) {
+    assertCanonicalDirectory(parent);
+    parent = dirname(parent);
+  }
+  assertCanonicalRegularFile(path);
+  if (lstatSync(path).nlink !== 1)
+    throw new Error('Turn input original must have one canonical owner.');
+  const measured = measureCanonicalFile(path);
+  if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
+    throw new Error('Turn original input is recovery_required.');
+}
+
 /** Proves retained originals before replay, restart, export, or imported publication can use their inventory. */
 export function verifyTurnFileInputs(workspaceRoot: string, turn: Turn): void {
-  for (const [ordinal, input] of (turn.fileInputs ?? []).entries()) {
-    const path = turnFilePayloadPath(workspaceRoot, turn.threadId, turn.id, ordinal);
-    let parent = dirname(path);
-    for (let level = 0; level < 7; level += 1) {
-      assertCanonicalDirectory(parent);
-      parent = dirname(parent);
-    }
-    assertCanonicalRegularFile(path);
-    if (lstatSync(path).nlink !== 1)
-      throw new Error('Turn input original must have one canonical owner.');
-    const measured = measureCanonicalFile(path);
-    if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
-      throw new Error('Turn original input is recovery_required.');
-  }
+  for (const ordinal of (turn.fileInputs ?? []).keys())
+    verifyTurnFileInput(workspaceRoot, turn, ordinal);
 }
 
 /** Publishes one complete new file-backed Artifact directory through the existing P01 tree owner. The exact payload and descriptor are staged together, so process loss cannot expose a canonical directory with missing metadata. No reference Item or command receipt is written here. */
 export function publishArtifactFileRecord(input: {
   readonly workspaceRoot: string;
-  readonly artifact: Artifact;
+  readonly record: ArtifactVersionRecord;
   readonly payloadPath: string;
 }): void {
-  if (input.artifact.content.format !== 'file') throw new Error('A file descriptor is required.');
-  const destination = artifactFilePayloadPath(
-    input.workspaceRoot,
-    input.artifact.id,
-    input.artifact.version
-  );
-  const artifactRoot = join(input.workspaceRoot, 'artifacts', input.artifact.id);
+  const record = ArtifactVersionRecordSchema.parse(input.record);
+  const artifact = record.artifact;
+  if (artifact.version !== 1 || record.version.parentVersion !== null)
+    throw new Error('Initial Artifact publication requires its exact admitted v1 record.');
+  if (artifact.content.format !== 'file') throw new Error('A file descriptor is required.');
+  const destination = artifactFilePayloadPath(input.workspaceRoot, artifact.id, artifact.version);
+  const artifactRoot = join(input.workspaceRoot, 'artifacts', artifact.id);
   ensureCanonicalDirectory(dirname(artifactRoot));
   if (lstatSync(artifactRoot, { throwIfNoEntry: false }))
     throw new Error('The immutable Artifact already exists.');
   publishNewRecordDirectory(input.workspaceRoot, artifactRoot, (stage) => {
-    const payload = join(stage, 'versions', String(input.artifact.version), 'payload');
-    ensureCanonicalDirectory(dirname(payload));
-    publishCanonicalPath(input.payloadPath, payload);
-    writeArtifactDirectory(stage, input.artifact);
+    stageArtifactVersionRecord(join(stage, 'versions', '1'), input.record, input.payloadPath);
+    writeArtifactDirectory(stage, artifact);
   });
   // Keep the path guard above coupled to the same immutable owner spelling.
   assertCanonicalRegularFile(destination);
@@ -2723,21 +2806,67 @@ function writeSources(workspaceRoot: string, records: WorkspaceFileRecords): voi
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param initialArtifact Actual admitted v1 record for an absent Artifact directory.
  */
-function writeArtifacts(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeArtifacts(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords,
+  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
+): void {
   const artifactsRoot = join(workspaceRoot, 'artifacts');
   const expectedArtifactIds = new Set(records.artifacts.map((artifact) => artifact.id));
 
   ensureCanonicalDirectory(artifactsRoot);
   removeStaleDirectories(artifactsRoot, expectedArtifactIds);
 
+  if (initialArtifact) {
+    const record = ArtifactVersionRecordSchema.parse(initialArtifact.record);
+    if (
+      record.artifact.version !== 1 ||
+      record.version.parentVersion !== null ||
+      record.artifact.workspaceId !== records.workspace.id ||
+      !records.artifacts.some((artifact) => isDeepStrictEqual(artifact, record.artifact))
+    )
+      throw new Error('Initial Artifact publication requires its exact admitted v1 record.');
+    if (lstatSync(join(artifactsRoot, record.artifact.id), { throwIfNoEntry: false }))
+      throw new Error('The immutable Artifact already exists.');
+  }
   for (const artifact of records.artifacts) {
     const artifactRoot = join(artifactsRoot, artifact.id);
     if (lstatSync(artifactRoot, { throwIfNoEntry: false })) {
+      const retained = readArtifactVersionRecord(
+        workspaceRoot,
+        artifact.id,
+        artifact.version
+      ).artifact;
+      if (
+        !isDeepStrictEqual(
+          { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+          artifact
+        )
+      )
+        throw new Error('The Artifact current-head projection is contradictory.');
       writeArtifactDirectory(artifactRoot, artifact);
       continue;
     }
+    if (!initialArtifact || initialArtifact.record.artifact.id !== artifact.id)
+      throw new Error('Initial Artifact publication requires its admitted immutable version.');
+    if (artifact.content.format === 'file') {
+      if (!initialArtifact.payloadPath)
+        throw new Error('Artifact file publication requires its admitted original.');
+      publishArtifactFileRecord({
+        workspaceRoot,
+        record: initialArtifact.record,
+        payloadPath: initialArtifact.payloadPath,
+      });
+      continue;
+    }
     publishNewRecordDirectory(workspaceRoot, artifactRoot, (stage) => {
+      stageArtifactVersionRecord(
+        join(stage, 'versions', '1'),
+        initialArtifact.record,
+        initialArtifact.payloadPath
+      );
       writeArtifactDirectory(stage, artifact);
     });
   }

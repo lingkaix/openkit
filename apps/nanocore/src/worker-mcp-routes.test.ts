@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   ListHumanAttentionResponseSchema,
+  operationToolName,
   StartTaskModeResponseSchema,
   SubmitConversationResponseSchema,
   WorkspaceExportResponseSchema,
@@ -40,7 +41,11 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from './auth/nanohost-transport-session.js';
-import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
+import {
+  finishCapabilityCall,
+  listWorkspaceCapabilityCalls,
+  startCapabilityCall,
+} from './capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -489,9 +494,18 @@ describe('worker MCP routes', () => {
     recordMcpWorkerLineage(coreDb, environmentPackage);
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const app = new Hono();
+    const knowledgeAnswer = {
+      threadId: testEntityId('th', 'km-query'),
+      turnId: testEntityId('tu', 'km-query'),
+      answer: 'The cited answer has exact bytes: é.',
+      citations: [],
+      uncertainty: 'Fixture delivery only.',
+    };
+    const askKnowledge = vi.fn(async () => knowledgeAnswer);
     registerWorkerMcpRoutes({
       app,
       coreDb,
+      knowledgeAgent: { ask: askKnowledge, maintain: vi.fn() },
       runtimeConfig: () =>
         createInMemoryRuntimeConfigSnapshot({
           dataRoot,
@@ -557,11 +571,43 @@ describe('worker MCP routes', () => {
       expect(sessionTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect(statelessTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect((await workClient.listTools()).tools.map((tool) => tool.name)).toEqual([
+        operationToolName('knowledge.ask'),
+        operationToolName('knowledge.tell'),
         'work_request_input',
         'work_list_peers',
         'work_read_peer',
+        'work_read_source',
+        'work_search_source',
+        'work_view_source',
         'work_submit_artifact',
       ]);
+      const delivered = await workClient.callTool({
+        name: operationToolName('knowledge.ask'),
+        arguments: { question: 'What is known?' },
+      });
+      expect(askKnowledge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          caller: 'worker',
+          workspaceId: turn.workspaceId,
+          question: 'What is known?',
+          access: expect.objectContaining({ outputThreadId: turn.threadId, outputTurnId: turn.id }),
+        })
+      );
+      const knowledgeDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      try {
+        const retained = listWorkspaceCapabilityCalls(knowledgeDb, turn.workspaceId).find(
+          (call) => call.extensions?.['openkit.knowledge/delivery']
+        );
+        expect(retained?.status).toBe('succeeded');
+        expect(JSON.parse(retained!.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
+          delivered
+        );
+        expect(delivered.content).toEqual([
+          { type: 'text', text: JSON.stringify(knowledgeAnswer) },
+        ]);
+      } finally {
+        knowledgeDb.sqlite.close();
+      }
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
       try {
@@ -1146,11 +1192,25 @@ describe('worker MCP routes', () => {
       expect(workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toHaveLength(1);
       const tools = (await client.listTools()).tools;
       expect(tools.map((tool) => tool.name)).toEqual([
+        operationToolName('knowledge.ask'),
+        operationToolName('knowledge.tell'),
         'work_request_input',
         'work_list_peers',
         'work_read_peer',
+        'work_read_source',
+        'work_search_source',
+        'work_view_source',
         'work_submit_artifact',
       ]);
+      const sourceSchema = tools.find((tool) => tool.name === 'work_read_source')!.inputSchema;
+      expect(sourceSchema.required).toEqual(['path']);
+      expect(sourceSchema.additionalProperties).not.toBe(false);
+      const searchSchema = tools.find((tool) => tool.name === 'work_search_source')!.inputSchema;
+      expect(searchSchema.required).toEqual(['path', 'query']);
+      expect(searchSchema.additionalProperties).not.toBe(false);
+      const viewSchema = tools.find((tool) => tool.name === 'work_view_source')!.inputSchema;
+      expect(viewSchema.required).toEqual(['path']);
+      expect(viewSchema.additionalProperties).not.toBe(false);
       const readSchema = tools.find((tool) => tool.name === 'work_read_peer')!.inputSchema;
       expect(readSchema.required).toEqual(['handle']);
       expect(readSchema.additionalProperties).not.toBe(false);
@@ -2220,6 +2280,7 @@ describe('worker MCP routes', () => {
     const exportRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-export-'));
     const callFile = join(dataRoot, 'mcp-calls.txt');
     const coreDb = openCoreDb(dataRoot);
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000n);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
@@ -2430,6 +2491,7 @@ describe('worker MCP routes', () => {
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission,
       coreDb,
       env: {},
       nanoHostSessionDispatch,
@@ -2438,6 +2500,7 @@ describe('worker MCP routes', () => {
       workspaceMutationAdmission,
     });
     const app = createApp({
+      fileAdmission,
       coreDb,
       dataRoot,
       nanoHostSessionDispatch,
@@ -3117,9 +3180,9 @@ describe('worker MCP routes', () => {
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id, joined_at,
+          workspace_id, user_id, status, invitation_id, joined_at,
           removed_at, revision, created_at, updated_at
-        ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7000-8000-000000000001', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7000-8000-000000000001', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(memberCreatedAt, memberCreatedAt, memberCreatedAt);
     const turn = store.createTurn(

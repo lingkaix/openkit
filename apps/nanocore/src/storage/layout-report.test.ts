@@ -36,6 +36,7 @@ describe('storage layout report', () => {
         'core_0001_concurrent_turn_capacity',
         'core_0002_durable_recurring_schedules',
         'core_0003_notebook_admission',
+        'core_0004_equal_workspace_members',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

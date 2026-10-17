@@ -345,6 +345,7 @@ function createNanoHostWorkerLifecycleRuntime(
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? new SimulatedTurnExecutor({ coreDb, fileAdmission })
       : new WorkerGovernanceTurnExecutor({
+          fileAdmission,
           awaitWorkerCompletion: (environmentPackage, attemptId) =>
             waitForWorkerControlFinalStatus(coreDb, {
               attemptId: attemptId,
@@ -2744,6 +2745,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       throw new Error('NanoHost image build requires the exact V1 empty build-context pair.');
     }
+    let preparedImports: NanoHostContextPackageImport[];
+    try {
+      // Verify and retain the complete incoming collection before any resident eviction or Sandbox effect.
+      preparedImports = await prepareNanoHostContextPackageImports(environmentPackage, context);
+    } catch (error) {
+      this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
+      throw error;
+    }
     // An existing anchor still owns its exact origin; a not-yet-published incoming anchor must use this same Epoch.
     const capacityPhysicalEpoch =
       context.beforeMaterialization && !getWorkerBackendSession(this.coreDb, attemptId)
@@ -3113,7 +3122,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     this.livePartialMaterializations.delete(identity.packageSnapshotId);
     this.requireSession(environmentPackage.snapshotId).pendingImports = [
-      ...(await prepareNanoHostContextPackageImports(environmentPackage, context)),
+      ...preparedImports,
       ...runtimeCredentialImports,
     ];
     const harnessMapKey = nanoHostSharedHarnessMapKey(
@@ -3249,12 +3258,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     session.pendingImports = [];
     for (const file of pendingImports) {
       const imported = await this.effect(session.identity, session.attemptId, 'reference.import', {
-        body: file.body,
-        byteLength: file.byteLength,
+        entryKind: file.entryKind,
         relativePath: file.relativePath,
         sandboxId: session.sharedHarness.sandbox.sandboxId,
-        sha256: file.contentDigest,
         slot: file.slot,
+        ...(file.entryKind === 'file'
+          ? {
+              ...(file.source ? { source: file.source } : { body: file.body }),
+              byteLength: file.byteLength,
+              executable: file.executable,
+              sha256: file.contentDigest,
+            }
+          : {}),
       });
       session.evidence.push(
         nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')

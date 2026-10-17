@@ -26,6 +26,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -1810,7 +1811,11 @@ describe('terminal failed-start product recovery', () => {
       collectTranscript: async () => ({ itemsJsonl: '' }),
       collectWorkspaceChanges: async () => [],
     };
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb: f.coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: f.coreDb,
+    });
     const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const starts = vi.spyOn(executor, 'startTurn');
     const app = createApp({
@@ -2399,7 +2404,7 @@ function dispatchLease(
       .run(responsible, responsible, `${responsible}@restart.invalid`, at, at);
     coreDb.sqlite
       .prepare(
-        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)"
+        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', NULL, ?, NULL, 1, ?, ?)"
       )
       .run(
         responsible,

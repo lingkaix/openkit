@@ -53,7 +53,7 @@ function renderNotebook({
             },
             membershipStatus: 'active',
             accessCause: 'membership',
-            effectiveRole: 'owner',
+            isOwner: true,
             membershipRevision: 1,
             ownerUserId: USER,
             registryRevision: 1,

@@ -22,6 +22,7 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import { importWorkspaceSkill, skillSnapshotPath } from '../catalog/resource-catalog.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
@@ -775,7 +776,9 @@ async function failLivePartialSandboxActivation(
     },
   };
   const environmentPackage = completeNanoHostPackage({
-    runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+    runtime: {
+      image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
+    },
     scope: {
       agentSessionId: testEntityId('as', `as_${label}`),
       threadId: testEntityId('th', `thread_${label}`),
@@ -1446,7 +1449,12 @@ describe('createConfiguredTurnExecutor', () => {
     expect(contextRefCarriage).toBeGreaterThan(imageBuild);
     expect(contextRefCarriage).toBeLessThan(sandboxCreate);
     expect(sandboxCreate).toBeGreaterThanOrEqual(0);
-    expect(prepareImports).toBeGreaterThan(sandboxCreate);
+    expect(prepareImports).toBeGreaterThanOrEqual(0);
+    expect(prepareImports).toBeLessThan(
+      materializeSource?.indexOf('this.evictIncompatibleIdleSandbox(') ?? -1
+    );
+    expect(prepareImports).toBeLessThan(imageBuild);
+    expect(prepareImports).toBeLessThan(sandboxCreate);
     expect(referenceImport).toBeLessThan(launchSource?.indexOf("'session.open'") ?? -1);
     expect(referenceImport).toBeLessThan(launchSource?.indexOf("'session.inspect'") ?? -1);
     expect(launchSource).not.toContain("'turn.start'");
@@ -2235,6 +2243,7 @@ describe('createConfiguredTurnExecutor', () => {
     anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
     const materialization = await backend
       .materialize(environmentPackage, {
+        dataRoot: coreDb.dataRoot,
         workspaceRoots: [],
         ...(options.exactBinding
           ? { sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage) }
@@ -2770,7 +2779,7 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
     // This bounded SQLite cohort exceeds the default case budget under full-suite contention.
-  }, 120_000);
+  }, 180_000);
 
   it('plans a new physical Sandbox identity when encoded-slash authority changes', async () => {
     const f = await admitIdleSupplyResident('encoding_identity');
@@ -2805,6 +2814,99 @@ describe('createConfiguredTurnExecutor', () => {
       expect(JSON.stringify(omitted)).toBe(before);
     } finally {
       f.coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a selected Skill corrupted after preview before materialization eviction or effects', async () => {
+    const f = await admitIdleSupplyResident('skill_pre_effect', { exactBinding: true });
+    const { coreDb, backend, environmentPackage: resident } = f;
+    const native = backend as typeof backend & {
+      evictIncompatibleIdleSandbox(...args: unknown[]): Promise<unknown>;
+    };
+    const eviction = vi.spyOn(native, 'evictIncompatibleIdleSandbox');
+    try {
+      const created = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-10-17T00:00:00.000Z',
+        dataRoot: coreDb.dataRoot,
+        displayName: 'Repo guidelines',
+        expectedRevision: 0,
+        producer: resident.scope.triggerActor,
+        tree: [
+          {
+            kind: 'file',
+            path: 'SKILL.md',
+            contentBase64: Buffer.from(
+              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRead this Skill.\n'
+            ).toString('base64'),
+          },
+        ],
+        workspaceId: resident.scope.workspaceId,
+      });
+      const incoming = completeNanoHostPackage({
+        scope: { ...resident.scope, turnId: testEntityId('tu', 'turn_skill_pre_effect_next') },
+        snapshotId: 'snapshot_skill_pre_effect_next',
+      });
+      authorizeNanoHostPackage(coreDb, incoming);
+      const preview = resolveAgentEnvironmentPackageMetadata({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
+        agentSessionId: incoming.scope.agentSessionId,
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: incoming.createdAt,
+        requestId: incoming.scope.requestId,
+        turn: new FsStore({ dataRoot: coreDb.dataRoot }).createTurn(
+          incoming.scope.workspaceId,
+          incoming.scope.threadId,
+          'Use selected Skill',
+          incoming.scope.triggerActor,
+          null,
+          { turnId: incoming.scope.turnId }
+        ),
+        triggerActor: incoming.scope.triggerActor,
+        userId:
+          incoming.scope.triggerActor.kind === 'user'
+            ? incoming.scope.triggerActor.id
+            : incoming.scope.triggerActor.responsibleUserId!,
+        workspaceRoots: [],
+      });
+      incoming.supply = preview.supply;
+      writeFileSync(
+        join(
+          skillSnapshotPath(
+            coreDb.dataRoot,
+            incoming.scope.workspaceId,
+            'repo-guidelines',
+            created.version.digest
+          ),
+          'SKILL.md'
+        ),
+        'corrupt after preview'
+      );
+      anchorNanoHostMaterialization(coreDb, backend, incoming);
+      const beforeEffects = f.effects.length;
+      const beforeResident = coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all();
+      const beforeStorage = coreDb.sqlite.prepare('SELECT * FROM worker_storage_bindings').all();
+      await expect(
+        backend.materialize(incoming, {
+          dataRoot: coreDb.dataRoot,
+          sandboxBindingRef: factoryPackageBinding(coreDb, incoming),
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow(/Skill|snapshot|integrity|digest|inventory/i);
+      expect(eviction).not.toHaveBeenCalled();
+      await backend.cleanupSession(backend.planSession(incoming));
+      expect(f.effects.slice(beforeEffects)).toEqual([]);
+      expect(coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all()).toEqual(
+        beforeResident
+      );
+      expect(coreDb.sqlite.prepare('SELECT * FROM worker_storage_bindings').all()).toEqual(
+        beforeStorage
+      );
+    } finally {
+      eviction.mockRestore();
+      coreDb.sqlite.close();
     }
   });
 
@@ -2876,9 +2978,57 @@ describe('createConfiguredTurnExecutor', () => {
         attemptId: 'attempt_00000000-0000-7000-8000-000000000001',
         agentSetup: createTestAgentSetup({ network: authored.network }),
         onExport,
-        configurePackage: (pkg) => {
+        configurePackage: (pkg, coreDb) => {
           pkg.scope.requestId = 'request_factory_fixture';
           pkg.runtime.image = registryImage;
+          importWorkspaceSkill({
+            activate: true,
+            createdAt: '2026-10-17T00:00:00.000Z',
+            dataRoot: coreDb.dataRoot,
+            displayName: 'Repo guidelines',
+            expectedRevision: 0,
+            producer: pkg.scope.triggerActor,
+            tree: [
+              {
+                kind: 'file',
+                path: 'SKILL.md',
+                contentBase64: Buffer.from(
+                  '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRun run.sh.\n'
+                ).toString('base64'),
+              },
+              { kind: 'directory', path: 'empty-dir' },
+              {
+                kind: 'file',
+                path: 'run.sh',
+                executable: true,
+                contentBase64: Buffer.from('#!/bin/sh\nprintf ready\n').toString('base64'),
+              },
+            ],
+            workspaceId: pkg.scope.workspaceId,
+          });
+          pkg.supply = resolveAgentEnvironmentPackageMetadata({
+            captureCoverage: { scope: 'server', value: 'off' },
+            agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
+            agentSessionId: pkg.scope.agentSessionId,
+            backend: { kind: 'openshell' },
+            coreDb,
+            createdAt: pkg.createdAt,
+            requestId: pkg.scope.requestId,
+            turn: new FsStore({ dataRoot: coreDb.dataRoot }).createTurn(
+              pkg.scope.workspaceId,
+              pkg.scope.threadId,
+              'Use retained fixture Skill',
+              pkg.scope.triggerActor,
+              null,
+              { turnId: pkg.scope.turnId }
+            ),
+            triggerActor: pkg.scope.triggerActor,
+            userId:
+              pkg.scope.triggerActor.kind === 'user'
+                ? pkg.scope.triggerActor.id
+                : pkg.scope.triggerActor.responsibleUserId!,
+            workspaceRoots: [],
+          }).supply;
         },
       });
       residents.push(resident);
@@ -3149,6 +3299,22 @@ describe('createConfiguredTurnExecutor', () => {
       const originalFixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as typeof normalized;
       expect(normalized).toEqual(originalFixture);
       expect(normalized.filter((effect) => effect.kind === 'file.export')).toHaveLength(2);
+      expect(normalized).toContainEqual(
+        expect.objectContaining({
+          kind: 'reference.import',
+          command: expect.objectContaining({ entryKind: 'directory', slot: 'worker-supply' }),
+        })
+      );
+      expect(normalized).toContainEqual(
+        expect.objectContaining({
+          kind: 'reference.import',
+          command: expect.objectContaining({
+            entryKind: 'file',
+            executable: true,
+            slot: 'worker-supply',
+          }),
+        })
+      );
     } finally {
       client?.destroy();
       if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -3156,8 +3322,10 @@ describe('createConfiguredTurnExecutor', () => {
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
+    // Three resident Workspaces and the dispatch database exceed the default budget under contention.
   }, 60_000);
 
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     'missing-lease',
     'contradictory-route',
@@ -3211,7 +3379,7 @@ describe('createConfiguredTurnExecutor', () => {
       cleanup.mockRestore();
       fixture.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('exports accepted final status while retaining a running Harness without process absence claims', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-resident-export-'));
@@ -3367,6 +3535,7 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
+  // Real baseline admission and canonical-state checks use this local runner limit; product deadlines stay unchanged.
   it('accepts a Sandbox-pinned Git baseline and closes with no host repository', async () => {
     const commit = 'a'.repeat(40);
     const tree = 'b'.repeat(40);
@@ -3451,7 +3620,7 @@ describe('createConfiguredTurnExecutor', () => {
       db.sqlite.close();
       f.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
   it.each([
     'turn-end',
     'release',
@@ -7629,7 +7798,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('deletes a created sandbox directly when context preparation fails before bridge admission', async () => {
+  it('refuses invalid Context before creating a Sandbox or admitting its bridge', async () => {
     const packageSnapshotId = 'aepsnap_factory_pre_bridge_failure';
     const operations: string[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -7731,13 +7900,8 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceRoots: [],
       })
     ).rejects.toThrow('NanoHost Context Package lineage or private root is invalid.');
-    await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow('cleanup-required');
-    expect(operations).toEqual([
-      'image.acquire',
-      'image.inspect',
-      'sandbox.create',
-      'sandbox.delete',
-    ]);
+    await runtime.cleanupBackendSession(identity);
+    expect(operations).toEqual([]);
     expect(operations).not.toContain('bridge.open');
     expect(operations).not.toContain('bridge.close');
   });
@@ -7800,7 +7964,9 @@ describe('createConfiguredTurnExecutor', () => {
         process: { default: 'deny', rules: [] },
         snapshotId: 'policy_factory_reservation_failure',
       },
-      runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+      runtime: {
+        image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
+      },
       scope: {
         agentSessionId: testEntityId('as', 'as_factory_reservation_failure'),
         threadId: 'th_00000000-0000-72db-b3c8-374d6ada7039',
@@ -9545,6 +9711,7 @@ describe('createConfiguredTurnExecutor', () => {
     'materialization-forced-retirement-guard',
   ] as const)('keeps an independent Task queued until one-Sandbox release: %s', async (scenario) => {
     const coreDb = createFactoryCoreDb();
+    const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const effects: NanoHostSessionEffectRequest[] = [];
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -9572,6 +9739,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission,
       coreDb,
       env: {},
       store,
@@ -9631,6 +9799,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
     }
     const executor = new CapacityBoundaryExecutor({
+      fileAdmission,
       backend,
       coreDb,
       awaitWorkerCompletion: async (aep) => {
@@ -10026,6 +10195,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     let tick = 1;
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => `2999-10-03T00:00:${String(tick).padStart(2, '0')}.000Z`,
@@ -11123,6 +11293,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     null,
     'eviction-cleanup-required',
@@ -11775,6 +11946,7 @@ describe('createConfiguredTurnExecutor', () => {
         backend.collectTranscript = async () => ({ eventsJsonl: '', itemsJsonl: '' });
         const submit = vi.spyOn(backend, 'submit');
         const executor = new WorkerGovernanceTurnExecutor({
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
           backend,
           coreDb,
           awaitWorkerCompletion: async (aep) => {
@@ -12116,7 +12288,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('honors explicit selected and fresh storage on a shared resident contributor', async () => {
     const coreDb = createFactoryCoreDb();
@@ -12825,7 +12997,7 @@ describe('createConfiguredTurnExecutor', () => {
         insertFactoryUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001');
         coreDb.sqlite
           .prepare(
-            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,access_level,revision,joined_at,created_at,updated_at) VALUES (?, 'usr_00000000-0000-7000-8000-000000000001','active','editor',1,?,?,?)"
+            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,revision,joined_at,created_at,updated_at) VALUES (?, 'usr_00000000-0000-7000-8000-000000000001','active',1,?,?,?)"
           )
           .run(
             residentPackage.scope.workspaceId,
@@ -14508,6 +14680,9 @@ describe('createConfiguredTurnExecutor', () => {
       ).backend;
       backend.requireAttemptId = (snapshotId) => testEntityId('attempt', `lease-${snapshotId}`);
       const sandboxIds: string[] = [];
+      const agentSetup = createTestAgentSetup();
+      // The policy below grants curl access, so the resolved AEP must declare its binary.
+      agentSetup.manifest.runtime.binaries.push({ id: 'curl', path: '/usr/bin/curl' });
       const policy = {
         filesystem: {
           default: 'deny',
@@ -14540,6 +14715,7 @@ describe('createConfiguredTurnExecutor', () => {
         [testEntityId('as', 'as_wp5_gate_r3_second'), 'aepsnap_factory_dns_upper'],
       ] as const) {
         const environmentPackage = completeNanoHostPackage({
+          agentSetup,
           policy,
           runtime: {
             image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },

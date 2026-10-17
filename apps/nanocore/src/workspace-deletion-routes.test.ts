@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -12,7 +13,10 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { deriveEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
@@ -50,18 +54,214 @@ import {
 import {
   listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
-  resolveWorkspaceRole,
+  resolveWorkspaceMembershipRelation,
 } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { beginWorkspaceDeletion, completeWorkspaceDeletion } from './workspace-sharing.js';
 
-it('derives only the request-bound canonical deletion recovery export identity', () => {
-  const first = '00000000-0000-4000-8000-000000000971';
-  const other = '00000000-0000-4000-8000-000000000972';
-  const id = workspaceDeletionRecoveryExportId(first);
-  expect(id).toMatch(/^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  expect(workspaceDeletionRecoveryExportId(first)).toBe(id);
-  expect(workspaceDeletionRecoveryExportId(other)).not.toBe(id);
+it.each([
+  'requested',
+  'fenced',
+] as const)('rechecks the current deleting credential after awaited cleanup in %s', async (phase) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-deletion-current-credential-'));
+  const coreDb = openCoreDb(dataRoot);
+  let gateway: ReturnType<typeof createDefaultWorkerMcpGateway> | undefined;
+  let responsePromise: Promise<Response> | undefined;
+  let releaseClose = () => {};
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Current deletion credential');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: workspace.id,
+    });
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      scope: phase === 'requested' ? 'workspace' : 'server-admin',
+      workspaceIds: phase === 'requested' ? [workspace.id] : [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const admission = new WorkspaceMutationAdmission();
+    gateway = createDefaultWorkerMcpGateway(coreDb);
+    const closeWorkspace = gateway.closeWorkspace.bind(gateway);
+    const heldClose = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const close = vi.spyOn(gateway, 'closeWorkspace').mockImplementationOnce(async (id) => {
+      await heldClose;
+      await closeWorkspace(id);
+    });
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'server',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+      workerMcpGateway: gateway,
+      workspaceMutationAdmission: admission,
+    });
+    // A named busy session keeps the existing early-202 path observable without external work.
+    const now = new Date().toISOString();
+    store.createAgentSession({
+      id: testEntityId('as', 'deletion-current-credential-busy'),
+      agentId: 'agent_codex_host',
+      workspaceId: workspace.id,
+      threadId: store.createThread(workspace.id, 'Still running').id,
+      status: 'busy',
+      message: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const request = createWorkspaceDeletionRequest(dataRoot, {
+      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+      createdAt: new Date().toISOString(),
+      expectedRegistryRevision: 1,
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      requestId: randomUUID(),
+      workspaceId: workspace.id,
+    });
+    if (phase === 'fenced') {
+      writeWorkspaceDeletionRequest(dataRoot, { ...request, phase });
+      await admission.close(workspace.id);
+    }
+    const before = readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId);
+    responsePromise = Promise.resolve(
+      app.request(
+        ...operationRequest(
+          'workspace.delete',
+          { workspaceId: workspace.id },
+          {
+            headers: { authorization: `Bearer ${token.secret}` },
+            body: JSON.stringify({
+              confirmation: request.confirmation,
+              expectedRegistryRevision: request.expectedRegistryRevision,
+              requestId: request.requestId,
+            }),
+          }
+        )
+      )
+    );
+    await vi.waitFor(() => expect(close).toHaveBeenCalledWith(workspace.id), {
+      timeout: 10_000,
+    });
+    revokeOpenKitAccessTokenRecord(coreDb, token.tokenId);
+    releaseClose();
+    const response = await responsePromise;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'recovery_required' });
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId)).toEqual(before);
+    expect(admission.isClosed(workspace.id)).toBe(true);
+    expect(
+      coreDb.sqlite
+        .prepare(
+          'SELECT owner_user_id, status, revision FROM workspace_registry WHERE workspace_id = ?'
+        )
+        .get(workspace.id)
+    ).toEqual({
+      owner_user_id: 'usr_00000000-0000-7000-8000-000000000001',
+      status: 'active',
+      revision: 1,
+    });
+    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(true);
+    expect(existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id))).toBe(false);
+  } finally {
+    releaseClose();
+    await responsePromise;
+    await gateway?.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  }
+});
+
+it('resumes an exact fenced request after its registry transition without ordinary membership authority', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-deletion-fenced-restart-'));
+  const coreDb = openCoreDb(dataRoot);
+  const gateway = createDefaultWorkerMcpGateway(coreDb);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Fenced deletion restart');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: workspace.id,
+    });
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      scope: 'workspace',
+      workspaceIds: [workspace.id],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const admission = new WorkspaceMutationAdmission();
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'server',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+      workerMcpGateway: gateway,
+      workspaceMutationAdmission: admission,
+    });
+    const request = createWorkspaceDeletionRequest(dataRoot, {
+      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+      createdAt: new Date().toISOString(),
+      expectedRegistryRevision: 1,
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      requestId: randomUUID(),
+      workspaceId: workspace.id,
+    });
+    writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'fenced' });
+    await admission.close(workspace.id);
+    // Model the existing crash boundary between the Core transition and file-phase publication.
+    coreDb.sqlite.transaction(() =>
+      beginWorkspaceDeletion({
+        coreDb,
+        workspaceId: workspace.id,
+        originalOwnerUserId: request.originalOwnerUserId,
+        expectedRegistryRevision: request.expectedRegistryRevision,
+      })
+    )();
+    expect(
+      resolveWorkspaceMembershipRelation(
+        coreDb,
+        workspace.id,
+        'usr_00000000-0000-7000-8000-000000000001'
+      )
+    ).toBeNull();
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          headers: { authorization: `Bearer ${token.secret}` },
+          body: JSON.stringify({
+            confirmation: request.confirmation,
+            expectedRegistryRevision: request.expectedRegistryRevision,
+            requestId: request.requestId,
+          }),
+        }
+      )
+    );
+    expect(response.status).toBe(200);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId)).toMatchObject({
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      phase: 'cleaned',
+    });
+    expect(admission.isClosed(workspace.id)).toBe(true);
+    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
+  } finally {
+    await closeRetrievalServices();
+    await gateway.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  }
 });
 
 it('keeps every durable legal-hold schema in the deletion-owner inventory', () => {
@@ -995,6 +1195,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: workspace.id,
     });
@@ -1061,6 +1262,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId: deletingRequestId,
       workspaceId: deletingWorkspace.id,
     });
@@ -1091,6 +1293,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: workspace.id,
     });
@@ -1156,6 +1359,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
         createdAt: new Date().toISOString(),
         expectedRegistryRevision: 1,
         originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
         requestId,
         workspaceId: workspace.id,
       });
@@ -1225,6 +1429,7 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: deletedWorkspace.id,
     });
@@ -1292,6 +1497,7 @@ it.each([
       createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
       workspaceId: workspace.id,
     });
@@ -1409,6 +1615,141 @@ it.each([
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });
+  }
+});
+
+it('preserves private Thread ownership only through the exact current deletion recovery export', () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-private-deletion-export-'));
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const ownerUserId = 'usr_00000000-0000-7000-8000-000000000001';
+    const privateOwnerUserId = testEntityId('usr', 'deletion-private-history-owner');
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(`INSERT INTO users (
+      id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
+    ) VALUES (?, 'Private owner', 'private-owner@example.test', false, ?, ?, 'human', 'active', NULL)`)
+      .run(privateOwnerUserId, now, now);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Private deletion export');
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
+    const privateThread = store.createThread(
+      workspace.id,
+      'Private history',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId,
+      }
+    );
+    const repositoryWorkspaceDb = (workspaceId: string) => {
+      const db = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(db);
+      return db;
+    };
+    const ordinaryExportId = testEntityId('wsexp', 'ordinary-private-export');
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: ownerUserId,
+        coreDb,
+        dataRoot,
+        exportId: ordinaryExportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Private Thread history requires a separately authorized export.');
+    expect(
+      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, ordinaryExportId))
+    ).toBe(false);
+
+    const requestId = '00000000-0000-4000-8000-000000000974';
+    const request = createWorkspaceDeletionRequest(dataRoot, {
+      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+      createdAt: new Date().toISOString(),
+      expectedRegistryRevision: 1,
+      originalOwnerUserId: ownerUserId,
+      initiatingUserId: ownerUserId,
+      requestId,
+      workspaceId: workspace.id,
+    });
+    coreDb.sqlite.transaction(() =>
+      beginWorkspaceDeletion({
+        coreDb,
+        expectedRegistryRevision: 1,
+        originalOwnerUserId: ownerUserId,
+        workspaceId: workspace.id,
+      })
+    )();
+    writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'deleting' });
+    const exportId = workspaceDeletionRecoveryExportId(requestId);
+    const exported = createVerifiedWorkspaceExport({
+      authorityUserId: ownerUserId,
+      coreDb,
+      dataRoot,
+      deletionRecoveryRequestId: requestId,
+      exportId,
+      repositoryWorkspaceDb,
+      store,
+      workspaceId: workspace.id,
+    }).verified;
+    const threads = exported.fileContents
+      .get('records/threads.jsonl')!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(threads).toContainEqual(
+      expect.objectContaining({
+        id: privateThread.id,
+        visibility: 'private',
+        privateOwnerUserId,
+      })
+    );
+    const wrongExportId = workspaceDeletionRecoveryExportId('00000000-0000-4000-8000-000000000975');
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: ownerUserId,
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: requestId,
+        exportId: wrongExportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    expect(
+      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, wrongExportId))
+    ).toBe(false);
+    writeWorkspaceDeletionRequest(dataRoot, {
+      ...request,
+      phase: 'exported',
+      recoveryExportId: exportId,
+      recoveryExportManifestDigest: exported.manifestDigest,
+    });
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: ownerUserId,
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: requestId,
+        exportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    expect(
+      verifyWorkspaceExportTree({
+        exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, exportId),
+      }).manifestDigest
+    ).toBe(exported.manifestDigest);
+  } finally {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 
@@ -1604,6 +1945,17 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     expect(priorExportResponse.status, await priorExportResponse.clone().text()).toBe(200);
     const priorExport = (await priorExportResponse.json()) as { exportId: string };
 
+    // Deletion's exact internal export must preserve private owners without granting the caller private access.
+    const privateThread = store.createThread(
+      workspace.id,
+      'Private recovery history',
+      undefined,
+      'administration',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const now = Date.now();
     for (const [userId, email] of [
       ['usr_00000000-0000-7d56-82f8-ec994b63859b', 'member@example.com'],
@@ -1621,22 +1973,23 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES (?, 'usr_00000000-0000-7d56-82f8-ec994b63859b', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES (?, 'usr_00000000-0000-7d56-82f8-ec994b63859b', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, nowIso, nowIso, nowIso);
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_invitations (
-          invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+          invitation_id, workspace_id, invitee_user_id, inviter_user_id,
           status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
         ) VALUES (
-          'inv_00000000-0000-74df-bb9f-c7268d65b989', ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'editor', 'usr_00000000-0000-7000-8000-000000000001',
+          'inv_00000000-0000-74df-bb9f-c7268d65b989', ?, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7000-8000-000000000001',
           'pending', '2099-01-01T00:00:00.000Z', NULL, NULL, NULL, 1, ?, ?
         )`
       )
       .run(workspace.id, nowIso, nowIso);
+    expect(privateThread.privateOwnerUserId).toBe('usr_00000000-0000-7000-8000-000000000001');
     const canonicalWorkspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const workspaceBackupRoot = join(workspaceBackupParent, 'workspace');
     cpSync(canonicalWorkspaceRoot, workspaceBackupRoot, { recursive: true });
@@ -1691,11 +2044,11 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     expect(
       coreDb.sqlite
         .prepare(
-          `SELECT status, access_level
+          `SELECT status
            FROM workspace_members WHERE workspace_id = ? AND user_id = 'usr_00000000-0000-7000-8000-000000000001'`
         )
         .get(workspace.id)
-    ).toEqual({ access_level: 'editor', status: 'active' });
+    ).toEqual({ status: 'active' });
     expect(
       coreDb.sqlite
         .prepare(
@@ -1726,7 +2079,11 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
         .get(requestId)
     ).toEqual({ count: 1 });
     expect(
-      resolveWorkspaceRole(coreDb, workspace.id, 'usr_00000000-0000-7000-8000-000000000001')
+      resolveWorkspaceMembershipRelation(
+        coreDb,
+        workspace.id,
+        'usr_00000000-0000-7000-8000-000000000001'
+      )
     ).toBeNull();
     expect(
       listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
@@ -2008,17 +2365,11 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     expect(
       coreDb.sqlite
         .prepare(
-          `SELECT user_id, status, access_level FROM workspace_members
+          `SELECT user_id, status FROM workspace_members
            WHERE workspace_id = ? ORDER BY user_id`
         )
         .all(recovered.recovery.import.importedWorkspaceId)
-    ).toEqual([
-      {
-        access_level: 'editor',
-        status: 'active',
-        user_id: 'usr_00000000-0000-7000-8000-000000000001',
-      },
-    ]);
+    ).toEqual([{ status: 'active', user_id: 'usr_00000000-0000-7000-8000-000000000001' }]);
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });

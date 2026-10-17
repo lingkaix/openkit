@@ -160,6 +160,7 @@ function seedWorkspaceDeletionRequest(dataRoot) {
     createWorkspaceDeletionRequest(dataRoot, {
       ...request,
       createdAt: new Date().toISOString(),
+      initiatingUserId: localUserId,
       originalOwnerUserId: localUserId,
       workspaceId: workspace.id,
     });

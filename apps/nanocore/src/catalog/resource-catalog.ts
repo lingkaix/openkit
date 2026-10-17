@@ -42,7 +42,7 @@ import {
 import { allocateEntityId } from '@openkit/protocol';
 import type { ZodError } from 'zod';
 
-import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
+import { ensureWorkspaceLayout, resolveDataRootPath } from '../storage/fs-layout.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
@@ -197,53 +197,68 @@ export function validateLightAppDefinitionCatalog(catalog: ResourceCatalogDocume
   }
 }
 
-/** Reads the catalog within its owner so normal mutations preserve descriptive history. */
-export function readWorkspaceResourceCatalog(
+/** Trusted storage owner for the existing catalog format. */
+export type ResourceCatalogOwner =
+  | { readonly kind: 'server' }
+  | { readonly kind: 'workspace'; readonly workspaceId: string };
+
+/** Reads retained history at its trusted owner; scope never comes from a projected binding. */
+function readResourceCatalog(
   dataRoot: string,
-  workspaceId: string
+  owner: ResourceCatalogOwner
 ): ResourceCatalogDocument {
-  const path = catalogDocumentPath(dataRoot, workspaceId);
+  const path = resourceCatalogDocumentPath(dataRoot, owner);
   if (existsSync(path)) {
     const catalog = parseResourceCatalogDocument(JSON.parse(readFileSync(path, 'utf8')));
+    assertCatalogScope(catalog, owner);
     validateLightAppDefinitionCatalog(catalog);
     return catalog;
   }
-  if (catalogHasPublishedResidue(dataRoot, workspaceId)) {
-    throw new CatalogIntegrityError('Workspace catalog authority is missing after publication.');
+  if (catalogHasPublishedResidue(dataRoot, owner)) {
+    throw new CatalogIntegrityError('Catalog authority is missing after publication.');
   }
-  return EMPTY_RESOURCE_CATALOG;
+  return { ...EMPTY_RESOURCE_CATALOG, scope: owner.kind };
 }
 
-/** Loads a validated known-core catalog projection, or the empty catalog when unpublished. */
+/** Reads known catalog fields without forwarding retained descriptive additions into effects. */
+export function loadResourceCatalog(
+  dataRoot: string,
+  owner: ResourceCatalogOwner
+): ResourceCatalogDocument {
+  return ResourceCatalogDocumentViewSchema.parse(readResourceCatalog(dataRoot, owner));
+}
+
+/** Loads the Workspace catalog used by Skill and plugin consumers. */
 export function loadWorkspaceResourceCatalog(
   dataRoot: string,
   workspaceId: string
 ): ResourceCatalogDocument {
-  return ResourceCatalogDocumentViewSchema.parse(
-    readWorkspaceResourceCatalog(dataRoot, workspaceId)
-  );
+  return loadResourceCatalog(dataRoot, { kind: 'workspace', workspaceId });
 }
 
-/** Writes one catalog document after payloads exist, using compare-and-set revision. */
-export function publishWorkspaceResourceCatalog(input: {
+/** Reads owned history for Workspace-only Skill, plugin and Light App mutations. */
+export function readWorkspaceResourceCatalog(
+  dataRoot: string,
+  workspaceId: string
+): ResourceCatalogDocument {
+  return readResourceCatalog(dataRoot, { kind: 'workspace', workspaceId });
+}
+
+/** Publishes through the single revision-protected catalog writer. */
+function publishResourceCatalog(input: {
   readonly catalog: ResourceCatalogDocument;
   readonly dataRoot: string;
   readonly expectedRevision: number;
-  readonly workspaceId: string;
+  readonly owner: ResourceCatalogOwner;
 }): ResourceCatalogDocument {
-  const path = catalogDocumentPath(input.dataRoot, input.workspaceId);
-  const current = existsSync(path)
-    ? parseResourceCatalogDocument(JSON.parse(readFileSync(path, 'utf8')))
-    : input.expectedRevision === 0
-      ? EMPTY_RESOURCE_CATALOG
-      : (() => {
-          throw catalogHasPublishedResidue(input.dataRoot, input.workspaceId)
-            ? new CatalogIntegrityError('Workspace catalog authority is missing after publication.')
-            : new CatalogConflictError();
-        })();
-  if (current.revision !== input.expectedRevision) {
-    throw new CatalogConflictError();
-  }
+  const path = resourceCatalogDocumentPath(input.dataRoot, input.owner);
+  // First publication follows immutable payload installation. Existing mutators read authority before installing those payloads.
+  const current =
+    !existsSync(path) && input.expectedRevision === 0
+      ? { ...EMPTY_RESOURCE_CATALOG, scope: input.owner.kind }
+      : readResourceCatalog(input.dataRoot, input.owner);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  assertCatalogScope(input.catalog, input.owner);
   const next = parseResourceCatalogDocument({
     ...input.catalog,
     revision: current.revision + 1,
@@ -253,6 +268,30 @@ export function publishWorkspaceResourceCatalog(input: {
   mkdirSync(dirname(path), { recursive: true });
   writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
   return ResourceCatalogDocumentViewSchema.parse(next);
+}
+
+/** Writes a Workspace catalog after its Skill or plugin payloads exist. */
+export function publishWorkspaceResourceCatalog(input: {
+  readonly catalog: ResourceCatalogDocument;
+  readonly dataRoot: string;
+  readonly expectedRevision: number;
+  readonly workspaceId: string;
+}): ResourceCatalogDocument {
+  return publishResourceCatalog({
+    ...input,
+    owner: { kind: 'workspace', workspaceId: input.workspaceId },
+  });
+}
+
+/** Enforces the closed owner and selection semantics at both read and write boundaries. */
+function assertCatalogScope(catalog: ResourceCatalogDocument, owner: ResourceCatalogOwner): void {
+  if (
+    catalog.scope !== owner.kind ||
+    (owner.kind === 'server' && catalog.mcp.disabledServerIds.length > 0) ||
+    new Set(catalog.mcp.disabledServerIds).size !== catalog.mcp.disabledServerIds.length
+  ) {
+    throw new CatalogIntegrityError('Catalog scope or shared selection is invalid.');
+  }
 }
 
 /**
@@ -779,7 +818,7 @@ export function purgeWorkspaceSkillVersion(input: {
 }
 
 /** Creates an inactive MCP configuration version and optional binding. */
-export function createWorkspaceMcpConfig(input: {
+export function createMcpConfig(input: {
   readonly allowedTools?: readonly string[];
   readonly baseCatalog?: ResourceCatalogDocument;
   readonly createdAt: string;
@@ -794,7 +833,7 @@ export function createWorkspaceMcpConfig(input: {
   readonly pluginVersionDigest?: string | null;
   readonly selectCurrent?: boolean;
   readonly stdioHostAuthorized?: boolean;
-  readonly workspaceId: string;
+  readonly owner: ResourceCatalogOwner;
 }): { catalog: ResourceCatalogDocument; version: McpConfigVersionRecord } {
   const declaration = McpValidatedDeclarationSchema.parse(input.declaration);
   const packageRootDigest = input.packageRootDigest ?? null;
@@ -803,8 +842,7 @@ export function createWorkspaceMcpConfig(input: {
   if (id === 'openkit-generative') {
     throw new CatalogForbiddenError('Catalog id is reserved for a built-in Worker MCP surface.');
   }
-  const current =
-    input.baseCatalog ?? readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = input.baseCatalog ?? readResourceCatalog(input.dataRoot, input.owner);
   const existingBinding = current.mcp.bindings.find((item) => item.entryId === id);
   const entry = current.mcp.entries.find((item) => item.id === id);
   const currentVersion = current.mcp.versions.find(
@@ -856,9 +894,8 @@ export function createWorkspaceMcpConfig(input: {
     ? current.mcp.versions
     : [...current.mcp.versions, version];
   const allowedTools = [...(input.allowedTools ?? [])];
-  const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
-  const packageDataKey = existingBinding?.packageDataKey ?? `mcp_${id}`;
-  mkdirSync(join(layout.catalogMcpData, packageDataKey), { recursive: true });
+  const packageDataKey = existingBinding?.packageDataKey ?? mcpDataKey(input.owner, id);
+  prepareMcpData(input.dataRoot, input.owner, packageDataKey);
   const bindings =
     existingBinding || allowedTools.length === 0
       ? current.mcp.bindings
@@ -885,26 +922,26 @@ export function createWorkspaceMcpConfig(input: {
   if (input.persist === false) {
     return { catalog: nextCatalog, version };
   }
-  const catalog = publishWorkspaceResourceCatalog({
+  const catalog = publishResourceCatalog({
     catalog: nextCatalog,
     dataRoot: input.dataRoot,
     expectedRevision: input.expectedRevision,
-    workspaceId: input.workspaceId,
+    owner: input.owner,
   });
   return { catalog, version };
 }
 
 /** Validates one MCP binding against its current transport before compare-and-set publication. */
-export function updateWorkspaceMcpBinding(input: {
+export function updateMcpBinding(input: {
   readonly binding: Omit<McpBindingRecord, 'entryId' | 'packageDataKey'> & {
     readonly packageDataKey?: string;
   };
   readonly dataRoot: string;
   readonly entryId: string;
   readonly expectedRevision: number;
-  readonly workspaceId: string;
+  readonly owner: ResourceCatalogOwner;
 }): ResourceCatalogDocument {
-  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readResourceCatalog(input.dataRoot, input.owner);
   const existing = current.mcp.bindings.find((item) => item.entryId === input.entryId);
   if (current.revision !== input.expectedRevision) {
     throw new CatalogConflictError();
@@ -912,10 +949,8 @@ export function updateWorkspaceMcpBinding(input: {
   if (existing && existing.revision !== input.binding.revision) {
     throw new CatalogConflictError('MCP binding revision conflict.');
   }
-  const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
-  const packageDataKey =
-    existing?.packageDataKey ?? input.binding.packageDataKey ?? `mcp_${input.entryId}`;
-  mkdirSync(join(layout.catalogMcpData, packageDataKey), { recursive: true });
+  const packageDataKey = existing?.packageDataKey ?? mcpDataKey(input.owner, input.entryId);
+  prepareMcpData(input.dataRoot, input.owner, packageDataKey);
   const nextBinding: McpBindingRecord = {
     ...existing,
     ...input.binding,
@@ -935,7 +970,7 @@ export function updateWorkspaceMcpBinding(input: {
       throw new McpBindingValidationError(parsed.error);
     }
   }
-  return publishWorkspaceResourceCatalog({
+  return publishResourceCatalog({
     catalog: {
       ...current,
       mcp: {
@@ -948,20 +983,20 @@ export function updateWorkspaceMcpBinding(input: {
     },
     dataRoot: input.dataRoot,
     expectedRevision: input.expectedRevision,
-    workspaceId: input.workspaceId,
+    owner: input.owner,
   });
 }
 
 /** Selects one existing MCP configuration version as current. */
-export function selectWorkspaceMcpVersion(input: {
+export function selectMcpVersion(input: {
   readonly dataRoot: string;
   readonly digest: string;
   readonly entryId: string;
   readonly expectedRevision: number;
   readonly stdioHostAuthorized?: boolean;
-  readonly workspaceId: string;
+  readonly owner: ResourceCatalogOwner;
 }): ResourceCatalogDocument {
-  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readResourceCatalog(input.dataRoot, input.owner);
   const version = current.mcp.versions.find(
     (item) => item.entryId === input.entryId && item.digest === input.digest
   );
@@ -983,7 +1018,7 @@ export function selectWorkspaceMcpVersion(input: {
       'Selecting a new or changed stdio MCP configuration requires deployment-admin authority.'
     );
   }
-  return publishWorkspaceResourceCatalog({
+  return publishResourceCatalog({
     catalog: {
       ...current,
       mcp: {
@@ -995,7 +1030,7 @@ export function selectWorkspaceMcpVersion(input: {
     },
     dataRoot: input.dataRoot,
     expectedRevision: input.expectedRevision,
-    workspaceId: input.workspaceId,
+    owner: input.owner,
   });
 }
 
@@ -1053,7 +1088,7 @@ export function importWorkspacePlugin(input: {
     });
   }
   for (const mcp of parsed.mcp) {
-    const created = createWorkspaceMcpConfig({
+    const created = createMcpConfig({
       baseCatalog: catalog,
       createdAt: input.createdAt,
       dataRoot: input.dataRoot,
@@ -1065,7 +1100,7 @@ export function importWorkspacePlugin(input: {
       persist: false,
       pluginMemberKey: mcp.packageKey,
       pluginVersionDigest: packageTree.digest,
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
     });
     catalog = created.catalog;
     members.push({
@@ -1152,7 +1187,10 @@ export function projectEffectiveWorkspaceMcpCatalog(
     if (!entry || entry.availability !== 'available' || !version) {
       continue;
     }
-    servers.push(effectiveMcpServer(binding, version));
+    servers.push({
+      ...effectiveMcpServer(binding, version),
+      ...(catalog.scope === 'server' ? { scope: 'server' as const } : {}),
+    });
   }
   return { schemaVersion: 1, servers };
 }
@@ -1168,19 +1206,124 @@ export function skillSnapshotPath(
   return join(layout.catalogSkillSnapshots, entryId, digest.slice('sha256:'.length));
 }
 
-/** Resolves the catalog.json path for one Workspace. */
+/** Resolves the catalog path without creating or reviving a Workspace. */
 export function catalogDocumentPath(dataRoot: string, workspaceId: string): string {
-  return join(ensureWorkspaceLayout(dataRoot, workspaceId).catalog, 'catalog.json');
+  return resolveDataRootPath(dataRoot, 'workspaces', workspaceId, 'catalog', 'catalog.json');
 }
 
-/** Returns true when snapshot or package-data files exist without catalog.json. */
-function catalogHasPublishedResidue(dataRoot: string, workspaceId: string): boolean {
-  const layout = ensureWorkspaceLayout(dataRoot, workspaceId);
-  return (
-    directoryContainsFiles(layout.catalogSkillSnapshots) ||
-    directoryContainsFiles(layout.catalogPluginSnapshots) ||
-    directoryContainsFiles(layout.catalogMcpData)
+/** Resolves the same catalog layout under its trusted owner. */
+export function resourceCatalogDocumentPath(dataRoot: string, owner: ResourceCatalogOwner): string {
+  return owner.kind === 'workspace'
+    ? catalogDocumentPath(dataRoot, owner.workspaceId)
+    : resolveDataRootPath(dataRoot, 'server', 'catalog', 'catalog.json');
+}
+
+/** Returns true when canonical payloads survive without their owner document. */
+function catalogHasPublishedResidue(dataRoot: string, owner: ResourceCatalogOwner): boolean {
+  const root = dirname(resourceCatalogDocumentPath(dataRoot, owner));
+  return ['skill-snapshots', 'plugin-snapshots', 'mcp-data'].some((name) =>
+    directoryContainsFiles(join(root, name))
   );
+}
+
+/** Server-owned bindings use a distinct key inside each consuming Workspace. */
+function mcpDataKey(owner: ResourceCatalogOwner, id: string): string {
+  return `${owner.kind === 'server' ? 'server_mcp' : 'mcp'}_${id}`;
+}
+
+/** Mutable MCP data is never created under the Server catalog. */
+function prepareMcpData(dataRoot: string, owner: ResourceCatalogOwner, key: string): void {
+  if (owner.kind === 'workspace') {
+    mkdirSync(join(ensureWorkspaceLayout(dataRoot, owner.workspaceId).catalogMcpData, key), {
+      recursive: true,
+    });
+  }
+}
+
+/** Joins current shared supply without copying Server declarations into Workspace authority. */
+export function composeWorkspaceMcpCatalog(input: {
+  readonly dataRoot: string;
+  readonly workspaceId: string;
+  readonly workspaceCatalog?: WorkspaceMcpServerCatalog;
+}): WorkspaceMcpServerCatalog {
+  // An unpublished Server adds no dependency or read-side layout effect to the admitted Workspace view.
+  if (
+    input.workspaceCatalog &&
+    !existsSync(resourceCatalogDocumentPath(input.dataRoot, { kind: 'server' }))
+  ) {
+    return {
+      schemaVersion: 1,
+      servers: input.workspaceCatalog.servers.filter((entry) => entry.scope !== 'server'),
+    };
+  }
+  const local = loadResourceCatalog(input.dataRoot, {
+    kind: 'workspace',
+    workspaceId: input.workspaceId,
+  });
+  const server = loadResourceCatalog(input.dataRoot, { kind: 'server' });
+  const shadowed = new Set([
+    ...local.mcp.entries.map((entry) => entry.id),
+    ...local.mcp.disabledServerIds,
+  ]);
+  return {
+    schemaVersion: 1,
+    servers: [
+      ...(input.workspaceCatalog ?? projectEffectiveWorkspaceMcpCatalog(local)).servers.filter(
+        (entry) => entry.scope !== 'server'
+      ),
+      ...projectEffectiveWorkspaceMcpCatalog(server).servers.filter(
+        (entry) => !shadowed.has(entry.id)
+      ),
+    ],
+  };
+}
+
+/** Disables or restores a shared entry through the consuming Workspace's existing CAS owner. */
+export function setSharedMcpDisabled(input: {
+  readonly dataRoot: string;
+  readonly workspaceId: string;
+  readonly mcpId: string;
+  readonly disabled: boolean;
+  readonly expectedRevision: number;
+}): ResourceCatalogDocument {
+  const owner = { kind: 'workspace' as const, workspaceId: input.workspaceId };
+  const current = readResourceCatalog(input.dataRoot, owner);
+  const disabledServerIds = current.mcp.disabledServerIds.filter((id) => id !== input.mcpId);
+  if (input.disabled) disabledServerIds.push(input.mcpId);
+  return publishResourceCatalog({
+    ...input,
+    owner,
+    catalog: { ...current, mcp: { ...current.mcp, disabledServerIds } },
+  });
+}
+
+/** Tombstones a Server entry without deleting its retained versions or reviving a local binding. */
+export function removeMcpEntry(input: {
+  readonly dataRoot: string;
+  readonly owner: ResourceCatalogOwner;
+  readonly mcpId: string;
+  readonly expectedRevision: number;
+}): ResourceCatalogDocument {
+  const current = readResourceCatalog(input.dataRoot, input.owner);
+  if (!current.mcp.entries.some((entry) => entry.id === input.mcpId))
+    throw new CatalogNotFoundError('MCP entry not found.');
+  return publishResourceCatalog({
+    ...input,
+    catalog: {
+      ...current,
+      mcp: {
+        ...current.mcp,
+        bindings: current.mcp.bindings.map((binding) =>
+          binding.entryId === input.mcpId
+            ? { ...binding, enabled: false, revision: binding.revision + 1 }
+            : binding
+        ),
+        entries: current.mcp.entries.map((entry) =>
+          entry.id === input.mcpId ? { ...entry, availability: 'removed' as const } : entry
+        ),
+      },
+    },
+  });
 }
 
 /** Writes one validated API tree into a confined root. */
@@ -1321,6 +1464,26 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
   });
 }
 
+/** Project one canonical declaration at the shared Gateway connection seam without asserting Worker admission. */
+export function mcpTransportFromDeclaration(
+  declaration: McpValidatedDeclaration
+): WorkspaceMcpServer['transport'] {
+  return declaration.kind === 'stdio'
+    ? {
+        args: [...declaration.args],
+        command: declaration.command,
+        cwd: declaration.cwd,
+        environment: { ...declaration.environmentSlots },
+        environmentValues: { ...declaration.environment },
+        kind: 'stdio' as const,
+      }
+    : {
+        endpoint: declaration.endpoint,
+        headers: { ...declaration.headers },
+        kind: 'http' as const,
+      };
+}
+
 /**
  * Builds the Gateway-facing MCP server from one version and binding.
  *
@@ -1332,21 +1495,7 @@ function effectiveMcpServer(
   binding: McpBindingRecord,
   version: McpConfigVersionRecord
 ): WorkspaceMcpServer {
-  const transport =
-    version.declaration.kind === 'stdio'
-      ? {
-          args: [...version.declaration.args],
-          command: version.declaration.command,
-          cwd: version.declaration.cwd,
-          environment: { ...version.declaration.environmentSlots },
-          environmentValues: { ...version.declaration.environment },
-          kind: 'stdio' as const,
-        }
-      : {
-          endpoint: version.declaration.endpoint,
-          headers: { ...version.declaration.headers },
-          kind: 'http' as const,
-        };
+  const transport = mcpTransportFromDeclaration(version.declaration);
   return {
     allowedTools: [...binding.allowedTools],
     approvalRequiredTools: [...binding.approvalRequiredTools],
