@@ -96,6 +96,26 @@ async function invoke(
   return response;
 }
 
+/** Creates an explicit configured xAI profile through the real pinned stock adapter. */
+function stockXaiFixture() {
+  const models = createModels();
+  models.setProvider(xaiProvider());
+  const model = models.getModel('xai', 'grok-4.3');
+  if (!model) throw new Error('The pinned xAI fixture requires grok-4.3.');
+  const provider: ResolvedLLMProviderConfig = {
+    adapterId: 'xai',
+    apiKey: 'synthetic-xai-tools-key',
+    backend: 'pi-ai',
+    baseUrl: null,
+    displayName: 'Synthetic xAI fixture',
+    gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+    id: 'xai-work',
+    models: [model.id],
+    requiresApiKey: true,
+  };
+  return { client: new PiAiGatewayClient({ models }), model, provider };
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe('stock xAI Worker tool adaptation', () => {
@@ -103,22 +123,7 @@ describe('stock xAI Worker tool adaptation', () => {
     false,
     true,
   ])('restores custom and namespace identity through continuation; stream=%s', async (stream) => {
-    const models = createModels();
-    models.setProvider(xaiProvider());
-    const model = models.getModel('xai', 'grok-4.3');
-    if (!model) throw new Error('The pinned xAI fixture requires grok-4.3.');
-    const provider: ResolvedLLMProviderConfig = {
-      adapterId: 'xai',
-      apiKey: 'synthetic-xai-tools-key',
-      backend: 'pi-ai',
-      baseUrl: null,
-      displayName: 'Synthetic xAI fixture',
-      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-      id: 'xai-work',
-      models: [model.id],
-      requiresApiKey: true,
-    };
-    const client = new PiAiGatewayClient({ models });
+    const { client, model, provider } = stockXaiFixture();
     const requests: Array<Record<string, unknown>> = [];
     const urls: string[] = [];
     const patchInput = 'fixture_patch';
@@ -280,5 +285,38 @@ describe('stock xAI Worker tool adaptation', () => {
         .filter((item) => item.type === 'function_call')
         .every((item) => item.namespace === undefined)
     ).toBe(true);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('rejects an undeclared function-form xAI call; stream=%s', async (stream) => {
+    const { client, model, provider } = stockXaiFixture();
+    const fetch = vi.fn(async () =>
+      syntheticResponses(model.id, [
+        {
+          type: 'function_call',
+          id: 'fc_unadmitted',
+          call_id: 'call_unadmitted',
+          name: 'not_declared',
+          arguments: JSON.stringify({ input: 'fixture input' }),
+          status: 'completed',
+        },
+      ])
+    );
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      invoke(
+        client,
+        provider,
+        {
+          model: model.id,
+          input: 'Use only the declared fixture tool.',
+          tools: [{ type: 'custom', name: 'apply_patch', format: { type: 'text' } }],
+        },
+        stream
+      )
+    ).rejects.toThrow('undeclared provider tool output');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
