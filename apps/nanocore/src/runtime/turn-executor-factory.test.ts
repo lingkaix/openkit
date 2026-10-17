@@ -776,7 +776,9 @@ async function failLivePartialSandboxActivation(
     },
   };
   const environmentPackage = completeNanoHostPackage({
-    runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+    runtime: {
+      image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
+    },
     scope: {
       agentSessionId: testEntityId('as', `as_${label}`),
       threadId: testEntityId('th', `thread_${label}`),
@@ -7960,7 +7962,9 @@ describe('createConfiguredTurnExecutor', () => {
         process: { default: 'deny', rules: [] },
         snapshotId: 'policy_factory_reservation_failure',
       },
-      runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+      runtime: {
+        image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
+      },
       scope: {
         agentSessionId: testEntityId('as', 'as_factory_reservation_failure'),
         threadId: 'th_00000000-0000-72db-b3c8-374d6ada7039',
@@ -14668,6 +14672,9 @@ describe('createConfiguredTurnExecutor', () => {
       ).backend;
       backend.requireAttemptId = (snapshotId) => testEntityId('attempt', `lease-${snapshotId}`);
       const sandboxIds: string[] = [];
+      const agentSetup = createTestAgentSetup();
+      // The policy below grants curl access, so the resolved AEP must declare its binary.
+      agentSetup.manifest.runtime.binaries.push({ id: 'curl', path: '/usr/bin/curl' });
       const policy = {
         filesystem: {
           default: 'deny',
@@ -14700,6 +14707,7 @@ describe('createConfiguredTurnExecutor', () => {
         [testEntityId('as', 'as_wp5_gate_r3_second'), 'aepsnap_factory_dns_upper'],
       ] as const) {
         const environmentPackage = completeNanoHostPackage({
+          agentSetup,
           policy,
           runtime: {
             image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
