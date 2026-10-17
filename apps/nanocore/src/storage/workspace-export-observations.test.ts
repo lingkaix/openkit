@@ -151,6 +151,7 @@ describe('work observation portable closure', () => {
         },
       ]);
       const exported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -309,6 +310,7 @@ describe('work observation portable closure', () => {
         bodies: [],
       });
       const exported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -394,6 +396,7 @@ describe('work observation portable closure', () => {
         importedDb.sqlite.close();
       }
       const reexported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -552,6 +555,7 @@ describe('work observation portable closure', () => {
         bytes: Buffer.from('x'),
       });
       const exported = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -695,6 +699,7 @@ describe('work observation portable closure', () => {
         )
         .run(sourceBundle.id);
       const heldExport = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -743,6 +748,7 @@ describe('work observation portable closure', () => {
         }).expiredCount
       ).toBe(2);
       const expiredExport = createVerifiedWorkspaceExport({
+        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,

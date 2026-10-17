@@ -175,8 +175,25 @@ describe('native fixed-base Knowledge Review and removal', () => {
     expect(git(f, 'rev-parse', `refs/proposals/${d.proposal.id}`)).toBe(
       d.proposal.candidateRevision
     );
-    const accepted = await accept(f, d);
+    const decisionInput = {
+      requestId: randomUUID(),
+      proposalId: d.proposal.id,
+      decision: 'accepted',
+      proposalDigest: d.proposalDigest,
+      baseRevision: d.baseRevision,
+      candidateRevision: d.proposal.candidateRevision,
+    };
+    const [accepted, duplicate] = await Promise.all([
+      call(f, 'knowledge.proposal.decide', decisionInput),
+      call(f, 'knowledge.proposal.decide', decisionInput),
+    ]);
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(duplicate).toEqual(accepted);
+    expect(
+      f.store
+        .listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)
+        .filter((review) => review.proposalId === d.proposal.id)
+    ).toHaveLength(1);
     expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(d.proposal.candidateRevision);
     expect(
       execFileSync(

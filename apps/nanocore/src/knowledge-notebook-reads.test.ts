@@ -28,6 +28,7 @@ import {
 } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
+import { createApp } from './test-support/app.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -345,15 +346,33 @@ describe('published Workspace notebook reads', () => {
     );
     const source = await registerSource(f, sourceThread.id);
     const destination = f.store.createThread(f.workspaceId, 'Shared destination');
-    const secret = page(
+    // The public aggregate projects admitted Knowledge entries, including their required timestamps.
+    const entryBytes = (id: string, title: string, sourceReferences: string[], content: string) =>
+      serializeUserAuthoredKnowledgePage(
+        {
+          id,
+          kind: 'project-context',
+          title,
+          content,
+          sourceReferences,
+          createdAt: '2026-10-16T00:00:00Z',
+          updatedAt: '2026-10-16T00:00:00Z',
+        },
+        { kind: 'workspace', workspaceId: f.workspaceId }
+      );
+    const secret = entryBytes(
+      'denied-path-marker',
       'DENIED-TITLE-MARKER',
       [`source:${source.id}@${source.contentDigest}`],
       'DENIED-BODY-MARKER\n'
     );
     const revision = publish(f, {
       'denied-path-marker.md': secret,
-      'public.md': page('Public page'),
+      'public.md': entryBytes('public', 'Public page', [], 'Public control page.\n'),
     });
+    // A later ordinary Store mutation refreshes the cached aggregate from both published pages.
+    f.store.createThread(f.workspaceId, 'Count refresh');
+    expect(f.store.getWorkspace(f.workspaceId).counts.knowledgeEntryCount).toBe(2);
     expect(readAuthorizedWorkspaceNotebookPages(f).pages).toHaveLength(2);
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(true);
     const memberId = addMember(f);
@@ -371,6 +390,35 @@ describe('published Workspace notebook reads', () => {
     Object.assign(sourceThread, { privateOwnerUserId: randomUUID() });
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(false);
     expect(knowledgeSourceAudienceReadable(f, randomUUID())).toBe(false);
+    const app = createApp({
+      store: f.store,
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      mode: 'server',
+      auth: {
+        api: { getSession: async () => ({ user: { id: LOCAL_USER_ID } }) },
+        handler: async () => new Response(null, { status: 404 }),
+      },
+    });
+    for (const operation of ['workspace.read', 'workspace.dashboard', 'workspace.list']) {
+      const response = await app.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(operation === 'workspace.list' ? {} : { workspaceId: f.workspaceId }),
+      });
+      expect(response.status, `${operation}: ${await response.clone().text()}`).toBe(200);
+      const body = (await response.json()) as {
+        counts?: { knowledgeEntryCount: number };
+        items?: Array<{ workspace: { id: string; counts: { knowledgeEntryCount: number } } }>;
+      };
+      expect(
+        operation === 'workspace.list'
+          ? body.items?.find(({ workspace }) => workspace.id === f.workspaceId)?.workspace.counts
+              .knowledgeEntryCount
+          : body.counts?.knowledgeEntryCount
+      ).toBe(1);
+    }
+
     const result = readAuthorizedWorkspaceNotebookPages({ ...f, notebookRevision: revision });
     expect(result.pages.map((entry) => entry.id)).toEqual(['public']);
     const serialized = JSON.stringify({

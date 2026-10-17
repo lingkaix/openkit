@@ -1040,10 +1040,17 @@ function currentKnowledgeReferenceContent(
     )
       throw knowledgeTraceUnavailable();
   }
-  const selected = readAuthorizedWorkspaceNotebookPages({
-    ...input,
-    pageIds: [reference.objectId],
-  });
+  let selected: ReturnType<typeof readAuthorizedWorkspaceNotebookPages>;
+  try {
+    selected = readAuthorizedWorkspaceNotebookPages({
+      ...input,
+      pageIds: [reference.objectId],
+    });
+  } catch (error) {
+    if (error instanceof OperationError && error.code === 'workspace_access_denied')
+      throw knowledgeTraceUnavailable();
+    throw error;
+  }
   const content = selected.pages[0]?.content ?? null;
   if (content === null) return null;
   const document = parseOkfDocument({

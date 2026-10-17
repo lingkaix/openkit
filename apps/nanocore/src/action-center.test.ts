@@ -120,8 +120,20 @@ function createKnowledgeProposalFixture(
   rationale: string
 ) {
   const source = store.getWorkspaceResources(workspaceId).knowledge[0]!;
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(
+      store.getDataRoot()!,
+      'workspaces',
+      workspaceId,
+      'knowledge',
+      'notebook.git'
+    ),
+  });
+  const baseRevision = notebook.publishedRevision();
+  const sourceBytes = notebook.readRevision(baseRevision).files[`${source.id}.md`];
+  if (!sourceBytes) throw new Error('The Action Center source page is missing from its Git base.');
   const sourceReference = `knowledge:${source.id}@sha256:${createHash('sha256')
-    .update(serializeUserAuthoredKnowledgePage(source, { kind: 'workspace', workspaceId }), 'utf8')
+    .update(sourceBytes, 'utf8')
     .digest('hex')}`;
   const knowledgePageId = `action-center/${label}`;
   const canonicalPageBytes = serializeUserAuthoredKnowledgePage(
@@ -136,15 +148,6 @@ function createKnowledgeProposalFixture(
     },
     { kind: 'workspace', workspaceId }
   ).replace('review_state: "user-authored"', 'review_state: "accepted"');
-  const baseRevision = new KnowledgeNotebook({
-    repositoryPath: join(
-      store.getDataRoot()!,
-      'workspaces',
-      workspaceId,
-      'knowledge',
-      'notebook.git'
-    ),
-  }).publishedRevision();
   const requestSuffix = createHash('sha256').update(label, 'utf8').digest('hex').slice(0, 12);
 
   return store.createKnowledgeProposal({
@@ -870,7 +873,11 @@ describe('action center app API', () => {
           );
           if (proposalRow)
             expect(proposalRow.source).toMatchObject({
-              proposalDigest: store.knowledgeProposalDigest('ws_demo', knowledgeProposal.id),
+              workspaceId: knowledgeProposal.workspaceId,
+              proposalDigest: store.knowledgeProposalDigest(
+                knowledgeProposal.workspaceId,
+                knowledgeProposal.id
+              ),
               baseRevision: knowledgeProposal.baseRevision,
               candidateRevision: knowledgeProposal.candidateRevision,
             });

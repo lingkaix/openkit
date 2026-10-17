@@ -18,6 +18,7 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import type { AdmittedOperationContext } from './operation-contract.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -42,7 +43,7 @@ function projectWorkspace(
   store: FsStore,
   coreDb: CoreDb | undefined,
   workspaceId: string,
-  userId: string,
+  actor: Actor,
   administratorEligible: boolean
 ) {
   const workspace = store.getWorkspace(workspaceId);
@@ -50,11 +51,29 @@ function projectWorkspace(
     ...workspace,
     counts: {
       ...workspace.counts,
+      knowledgeEntryCount: store.getDataRoot()
+        ? readAuthorizedWorkspaceNotebookPages({
+            dataRoot: store.getDataRoot()!,
+            workspaceId,
+            access: {
+              store,
+              coreDb,
+              actor: { kind: 'user', id: actor.userId },
+              requestActor: actor,
+            },
+          }).pages.length
+        : store.getWorkspaceResources(workspaceId).knowledge.length,
       threadCount: store
         .listThreads(workspaceId)
-        .filter((thread) => isThreadVisible(store, thread, userId, administratorEligible)).length,
-      artifactCount: listOutputArtifacts(store, coreDb, workspaceId, userId, administratorEligible)
+        .filter((thread) => isThreadVisible(store, thread, actor.userId, administratorEligible))
         .length,
+      artifactCount: listOutputArtifacts(
+        store,
+        coreDb,
+        workspaceId,
+        actor.userId,
+        administratorEligible
+      ).length,
     },
   });
 }
@@ -64,11 +83,11 @@ function readWorkspace(
   store: FsStore,
   coreDb: CoreDb | undefined,
   workspaceId: string,
-  userId: string,
+  actor: Actor,
   administratorEligible: boolean
 ) {
   try {
-    return projectWorkspace(store, coreDb, workspaceId, userId, administratorEligible);
+    return projectWorkspace(store, coreDb, workspaceId, actor, administratorEligible);
   } catch (error) {
     workspaceCommandFailure(error, 'not_found');
   }
@@ -115,7 +134,7 @@ async function createWorkspace(
 
     // A committed command keeps its owned count-projection fallback; this neither retries nor claims rollback.
     try {
-      return projectWorkspace(store, coreDb, workspace.id, actor.userId, administratorEligible);
+      return projectWorkspace(store, coreDb, workspace.id, actor, administratorEligible);
     } catch (error) {
       throw new OperationError('workspace_create_failed', 'Count projection unavailable.', 404, {
         cause: error,
@@ -151,7 +170,7 @@ async function updateWorkspace(
 
     // The receipt is already owned by the command; a failed viewer projection does not undo it.
     try {
-      return projectWorkspace(store, coreDb, workspace.id, actor.userId, administratorEligible);
+      return projectWorkspace(store, coreDb, workspace.id, actor, administratorEligible);
     } catch (error) {
       throw new OperationError('workspace_update_failed', 'Count projection unavailable.', 404, {
         cause: error,
@@ -196,7 +215,7 @@ export function createWorkspaceOperationImplementations(
           dependencies.store!,
           dependencies.coreDb,
           input.workspaceId,
-          actor.userId,
+          actor,
           administrator(context)
         ),
         ownerUserId: relation.ownerUserId,
@@ -223,12 +242,33 @@ export function createWorkspaceOperationImplementations(
       try {
         const workspaceIds =
           context.scope.kind === 'authorized-workspace-set' ? context.scope.workspaceIds : [];
-        return readAuthorizedWorkspaces(
-          dependencies.coreDb!,
-          dependencies.store!,
-          publicOperationActor(context),
-          workspaceIds
-        );
+        const store = dependencies.store!;
+        const actor = publicOperationActor(context);
+        const result = readAuthorizedWorkspaces(dependencies.coreDb!, store, actor, workspaceIds);
+        const dataRoot = store.getDataRoot();
+        if (!dataRoot) return result;
+        return {
+          ...result,
+          items: result.items.map((entry) => ({
+            ...entry,
+            workspace: {
+              ...entry.workspace,
+              counts: {
+                ...entry.workspace.counts,
+                knowledgeEntryCount: readAuthorizedWorkspaceNotebookPages({
+                  dataRoot,
+                  workspaceId: entry.workspace.id,
+                  access: {
+                    store,
+                    coreDb: dependencies.coreDb,
+                    actor: { kind: 'user', id: actor.userId },
+                    requestActor: actor,
+                  },
+                }).pages.length,
+              },
+            },
+          })),
+        };
       } catch (error) {
         if (error instanceof StoreRecordNotFoundError)
           throw new OperationError('not_found', error.message, 404, { cause: error });
