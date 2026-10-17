@@ -133,14 +133,17 @@ export async function runKnowledgeManagerAgent(
 ): Promise<{ readonly turnId: string; readonly text: string }> {
   const { store } = dependencies;
   const controller = new AbortController();
-  const finished = Promise.withResolvers<void>();
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
   let runs = activeKnowledgeRuns.get(store);
   if (!runs) {
     runs = new Map();
     activeKnowledgeRuns.set(store, runs);
   }
   if (runs.has(input.turn.id)) throw new Error('Knowledge Manager Turn is already running.');
-  runs.set(input.turn.id, { controller, finished: finished.promise });
+  runs.set(input.turn.id, { controller, finished });
   try {
     return await executeKnowledgeManagerAgent(dependencies, {
       ...input,
@@ -148,7 +151,7 @@ export async function runKnowledgeManagerAgent(
     });
   } finally {
     runs.delete(input.turn.id);
-    finished.resolve();
+    finish();
   }
 }
 
