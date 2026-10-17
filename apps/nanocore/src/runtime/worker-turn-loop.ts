@@ -10,6 +10,7 @@ import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
+import { evaluateEffectPolicy } from '../policy/effect-policy.js';
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -213,16 +214,38 @@ export async function runWorkerTurnLoop(
     );
   }
   const prepared = await input.prepare();
-  if (
-    !currentWorkspaceAuthority(
-      input.coreDb,
-      input.workspaceId,
-      input.triggerActor,
-      'runtime.launch',
-      true,
-      input.requestActor
-    )
-  ) {
+  const authority = currentWorkspaceAuthority(
+    input.coreDb,
+    input.workspaceId,
+    input.triggerActor,
+    'runtime.launch',
+    true,
+    input.requestActor
+  );
+  const subjectId = responsibleUserIdForActor(input.triggerActor);
+  if (!authority || !subjectId) {
+    throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
+  }
+  const policy = evaluateEffectPolicy({
+    subjectId,
+    operation: 'runtime.launch',
+    resourceId: input.reservedTurnId,
+    authorityAllowed: authority !== null,
+  });
+  const decisionInput = {
+    workspaceDb: input.workspaceDb,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.reservedTurnId,
+    triggerActor: input.triggerActor,
+    requestId: input.requestId,
+    policy,
+    goalId: input.goalId ?? null,
+    taskId: input.taskId ?? null,
+    ...(input.now ? { now: new Date(input.now()) } : {}),
+  };
+  if (policy.result !== 'allow') {
+    recordWorkerTurnLaunchDecision(decisionInput);
     throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
   const contextAssembly = createContextAssemblySummary(prepared);
@@ -238,15 +261,7 @@ export async function runWorkerTurnLoop(
         409
       );
     }
-    recordWorkerTurnLaunchDecision({
-      workspaceDb: input.workspaceDb,
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      turnId: reserved.turnId,
-      goalId: input.goalId ?? null,
-      taskId: input.taskId ?? null,
-      ...(input.now ? { now: new Date(input.now()) } : {}),
-    });
+    recordWorkerTurnLaunchDecision(decisionInput);
     const checkpoint = upsertWorkerCheckpoint(input.workspaceDb, {
       workspaceId: input.workspaceId,
       threadId: input.threadId,

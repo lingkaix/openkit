@@ -11,15 +11,66 @@ import { describe, expect, it, vi } from 'vitest';
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { evaluateEffectPolicy } from './effect-policy.js';
 import {
   listExportableWorkspacePermissionDecisions,
   listServerPermissionDecisions,
   recordBootPolicySelfCheckDecisions,
   recordPermissionDecision,
   recordProductPermissionDecision,
+  recordWorkerTurnLaunchDecision,
 } from './permission-decisions.js';
 
 describe('permission decision recorder', () => {
+  it('links a launch decision and its Audit to the exact requesting actor and command', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-effect-launch-'));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const turnId = 'tu_00000000-0000-7000-8000-000000000001';
+    const requestId = '00000000-0000-4000-8000-000000000004';
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkerTurnLaunchDecision({
+        workspaceDb,
+        workspaceId,
+        threadId,
+        turnId,
+        triggerActor: actor,
+        requestId,
+        policy: evaluateEffectPolicy({
+          subjectId: actor.id,
+          operation: 'runtime.launch',
+          resourceId: turnId,
+          authorityAllowed: true,
+        }),
+      });
+      const [decision] = listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId);
+      expect(decision).toMatchObject({
+        subjectSummary: actor,
+        contextSummary: { requestId, threadId, turnId },
+        resourceSummary: { workspaceId, threadId, turnId },
+        result: 'allow',
+      });
+      expect(
+        (decision!.contextSummary as { policyContentDigest: string }).policyContentDigest
+      ).toMatch(/^[a-f0-9]{64}$/);
+      const audit = workspaceDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE permission_decision_id = ?')
+        .get(decision!.decisionId) as Record<string, unknown>;
+      expect(audit).toMatchObject({
+        request_id: requestId,
+        thread_id: threadId,
+        turn_id: turnId,
+        actor_json: JSON.stringify(actor),
+        audit_event_id: decision!.auditEventId,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
   it.each([
     'workspace',
     'server',

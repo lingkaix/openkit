@@ -13,6 +13,7 @@ import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-even
 import type { BootPolicyKernel } from '../bootstrap/policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
+import type { EffectPolicyEvaluation } from './effect-policy.js';
 
 /** Supported storage owner scopes for the first permission decision recorder. */
 export type PermissionDecisionOwnerScope = 'server' | 'workspace' | 'user';
@@ -406,6 +407,12 @@ export interface RecordGatewayPolicyDecisionInput {
 
 /** Input for recording one worker-turn launch decision. */
 export interface RecordWorkerTurnLaunchDecisionInput {
+  /** Actual current requester, retained as subject and Audit actor. */
+  triggerActor: ActorRef;
+  /** Existing worker command correlation. */
+  requestId: string;
+  /** Current kernel-backed evaluation for this exact Turn. */
+  policy: EffectPolicyEvaluation;
   /** Workspace-scope database handle. */
   workspaceDb: WorkspaceDb;
   /** Workspace that owns the worker launch. */
@@ -862,7 +869,7 @@ export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionIn
 }
 
 /**
- * Records an allowed worker-turn launch decision.
+ * Records the current worker-turn effect evaluation and its exact actor/command linkage.
  *
  * @param input Worker-turn launch decision input.
  */
@@ -872,9 +879,10 @@ export function recordWorkerTurnLaunchDecision(input: RecordWorkerTurnLaunchDeci
     decisionId: allocateEntityId('pd'),
     ownerScope: 'workspace',
     workspaceId: input.workspaceId,
-    policyEngineVersion: 'nanocore-worker-policy:v1',
+    policyEngineVersion: 'openkit-policy-kernel:effect-v1',
     policySnapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
-    subjectSummary: { kind: 'nanocore', id: 'worker-coordinator' },
+    subjectSummary: input.triggerActor,
+    auditActor: input.triggerActor,
     action: 'runtime.launch',
     resourceSummary: {
       kind: 'worker-turn',
@@ -884,9 +892,16 @@ export function recordWorkerTurnLaunchDecision(input: RecordWorkerTurnLaunchDeci
       goalId: input.goalId ?? null,
       taskId: input.taskId ?? null,
     },
-    contextSummary: { mode: input.goalId ? 'goal' : 'task' },
-    result: 'allow',
-    reasonCode: 'worker_turn_start_allowed',
+    contextSummary: {
+      mode: input.goalId ? 'goal' : 'task',
+      policyContentDigest: input.policy.policySnapshotId,
+      requestId: input.requestId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+    },
+    result: input.policy.result,
+    reasonCode:
+      input.policy.result === 'allow' ? 'worker_turn_start_allowed' : 'worker_turn_start_denied',
     enforcementPoint: 'runtime.worker_turn_loop.start',
     ...(input.now ? { now: input.now } : {}),
   });
