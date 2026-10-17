@@ -1,14 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { operationToolName } from '@openkit/app-api-schemas';
 import { expect, it, onTestFinished } from 'vitest';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { createKnowledgeAnswerApp } from '../test-support/knowledge-agent.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { KnowledgeNotebook } from './notebook.js';
 
 it('keeps scheduling off by default and retains a visible unavailable-model outcome once per day', () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-schedule-app-'));
@@ -84,4 +89,89 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   boot();
   scan('2026-10-17T20:00:00.000Z');
   expect(turns().map(({ id }) => id)).toEqual([turn.id]);
+});
+
+it('stops bounded maintenance through the public Turn command before a late Provider Tool can run', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'km-maintenance-stop-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Interruptible maintenance');
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
+  });
+  const baseRevision = notebook.publishedRevision();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, []);
+  createResponses.mockImplementationOnce(async () => {
+    entered.resolve();
+    await release.promise;
+    return {
+      id: 'late-provider-response',
+      object: 'response',
+      output: [
+        {
+          type: 'function_call',
+          call_id: 'late-edit',
+          name: operationToolName('knowledge.notebook-workspace.update'),
+          arguments: JSON.stringify({ script: 'echo late > late.md' }),
+        },
+      ],
+    };
+  });
+  onTestFinished(() => {
+    release.resolve();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const pending = app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      {},
+      {
+        body: JSON.stringify({
+          workspaceId: workspace.id,
+          requestId: randomUUID(),
+          instruction: 'Organize this notebook.',
+        }),
+      }
+    )
+  );
+  try {
+    await entered.promise;
+    const turn = store
+      .listThreads(workspace.id)
+      .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id))
+      .find((turn) => turn.agentId === 'knowledge-manager')!;
+    expect(turn.status).toBe('running');
+    const stopped = await app.request(
+      ...operationRequest(
+        'turn.interrupt',
+        {},
+        {
+          body: JSON.stringify({
+            workspaceId: workspace.id,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            requestId: randomUUID(),
+          }),
+        }
+      )
+    );
+    expect(stopped.status).toBe(200);
+    expect(store.getTurnById(turn.id).status).toBe('cancelled');
+    release.resolve();
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ outcome: 'failed', turnId: turn.id });
+    expect(notebook.publishedRevision()).toBe(baseRevision);
+    expect(store.getTurnById(turn.id).items.some((item) => item.type === 'tool-call')).toBe(false);
+    expect(createResponses).toHaveBeenCalledTimes(1);
+  } finally {
+    release.resolve();
+    await pending;
+  }
 });
