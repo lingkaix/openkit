@@ -494,7 +494,14 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   await stack.restartCore();
   await page.reload();
   await expect(note).toHaveValue('Original local note');
+  const currentObservation = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/app/operations/generative-ui.refresh') &&
+      response.request().method() === 'POST'
+  );
   await page.getByRole('button', { name: 'Refresh local note', exact: true }).click();
+  expect((await currentObservation).ok()).toBe(true);
+  await expect(page.getByText(/^Current/)).toBeVisible();
   await expect(note).toHaveValue('Concurrent owner note');
   expect(
     (

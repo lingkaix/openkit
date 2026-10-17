@@ -145,3 +145,6 @@ Prepare the separately reviewed Main repair262012562ef3b0fb65fc9ebdc7719efad2281
 
 
 The current Main integration retains the Light App definition catalog and its native family, migrations, API, CLI and Web projections. The combined operation inventory is289 entries, with229 included Web operations,58 server operations and2 Gateway operations. The five P23 operations remain additive. The preceding703 gate passed all500 Native cases but failed two of30 browser cases; both failures remain under diagnosis and the failed aggregate is retained. No real channel send is claimed.
+
+
+The703 browser failures were before the required observation phase. The refresh response was successful and the final captured DOM contained the correct note; the corrected test awaits that response and the existing Current label before retaining the exact note assertion. The Account access case had not reached any API request; it now awaits the existing unauthenticated Workspace admission response before its unchanged heading, layout, pointer and focus assertions. Assertion limits and the global test limit are unchanged. These are test synchronization corrections, with no production change. Complete failed files and the current Main overlap must pass before landing.
