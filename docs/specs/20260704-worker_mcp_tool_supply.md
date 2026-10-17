@@ -220,7 +220,7 @@ The gateway has an MCP subsystem beside the inference dispatcher: the existing w
 
 ## Current Implementation Projection
 
-Worker Knowledge ask/tell and the maintained overview supply are not implemented. The accepted additions reuse `openkit-work`, CapabilityCall evidence and the Knowledge Manager runtime; this specification adds no new worker transport.
+Worker Knowledge ask/tell use `openkit-work`, CapabilityCall evidence and the Knowledge Manager runtime. The maintained overview uses the existing prepared context supply. This specification adds no new worker transport.
 
 The selected `openkit-repository` builtin and `repository_push` binding are removed. Retained captured calls whose tool left supply resolve to `denied-not-executed` before claim or Gateway contact under Pending Requests. Generic captured vendor MCP execution and configured approval remain implemented.
 
