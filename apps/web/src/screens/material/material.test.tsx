@@ -595,6 +595,121 @@ describe('Workspace Material Plane 1 S11', () => {
     expect(client.operations['material.revision-save']).toHaveBeenCalledOnce();
   });
 
+  it('protects the dirty main editor from a range correction head advance', async () => {
+    const user = userEvent.setup();
+    const nextRevision = {
+      ...REVISION_2,
+      revisionId: 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d1',
+      parentRevisionId: REVISION_2.revisionId,
+      content: '# Corrected notes\n',
+      contentDigest: `sha256:${'b'.repeat(64)}`,
+      judgements: [],
+    };
+    const pendingApply =
+      createDeferred<Awaited<ReturnType<CoreClient['operations']['material.range-correct']>>>();
+    const pendingHead = createDeferred<{ material: typeof MATERIAL }>();
+    const rangeCorrect = vi.fn().mockReturnValueOnce(pendingApply.promise);
+    let applyAccepted = false;
+    const materialRead = vi
+      .fn()
+      .mockImplementation(() =>
+        applyAccepted ? pendingHead.promise : Promise.resolve({ material: MATERIAL })
+      );
+    const client = makeClient({
+      operations: {
+        'material.read': materialRead,
+        'material.revision-read': vi.fn().mockImplementation(async ({ revisionId }) => ({
+          revision:
+            revisionId === nextRevision.revisionId
+              ? nextRevision
+              : {
+                  ...(revisionId === REVISION_1.revisionId ? REVISION_1 : REVISION_2),
+                  judgements: [],
+                },
+        })),
+        'material.range-correct': rangeCorrect,
+      },
+    });
+    renderMaterial(client);
+    const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+    const dirtyDraft = `${REVISION_2.content}Keep my unsaved text.\n`;
+    await user.type(editor, 'Keep my unsaved text.\n');
+    await user.click(screen.getByRole('button', { name: 'Assess selected revision' }));
+    await user.type(await screen.findByRole('textbox', { name: 'Range start' }), '2');
+    await user.type(screen.getByRole('textbox', { name: 'Range end' }), '9');
+    await user.click(screen.getByRole('button', { name: 'Use feedback range' }));
+    await user.type(screen.getByRole('textbox', { name: 'Replacement text' }), 'Corrected');
+    const apply = screen.getByRole('button', { name: 'Apply range correction' });
+    expect(apply).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Record accept assessment' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Reject range correction' })).toBeEnabled();
+    await user.click(apply);
+    expect(rangeCorrect).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: 'Release notes' })).toHaveValue(dirtyDraft);
+    // Reverting to the saved text clears only the local dirty guard; Apply becomes available again.
+    await user.clear(editor);
+    await user.type(editor, REVISION_2.content);
+    expect(apply).toBeEnabled();
+    await user.click(apply);
+    await waitFor(() => expect(rangeCorrect).toHaveBeenCalledOnce());
+    expect(editor).toBeDisabled();
+    await act(async () => pendingApply.reject(new Error('Response lost')));
+    expect(await screen.findByRole('alert')).toHaveTextContent('result is unknown');
+    expect(editor).toBeDisabled();
+    expect(screen.getByText(/main editor and revision selection are locked/i)).toBeVisible();
+    const request = rangeCorrect.mock.calls[0][0];
+    expect(request.target).toEqual({
+      kind: 'material-range',
+      offsetUnit: 'utf-16',
+      materialId: MATERIAL_ID,
+      revisionId: REVISION_2.revisionId,
+      contentDigest: REVISION_2.contentDigest,
+      start: 2,
+      end: 9,
+      originalText: 'Release',
+    });
+    rangeCorrect.mockImplementationOnce(async () => {
+      applyAccepted = true;
+      return {
+        judgement: {
+          formatVersion: 1,
+          workspaceId: WORKSPACE_ID,
+          requestId: request.requestId,
+          actor: { kind: 'user', id: REVISION_2.authorId },
+          recordedAt: TIMESTAMP,
+          kind: 'correct',
+          target: request.target,
+          note: request.note,
+          extensions: {},
+          choice: {
+            replacementText: request.replacementText,
+            outcome: 'apply',
+            resultingRevision: {
+              materialId: MATERIAL_ID,
+              revisionId: nextRevision.revisionId,
+              contentDigest: nextRevision.contentDigest,
+            },
+          },
+        },
+      };
+    });
+    const readsBeforeRetry = materialRead.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Retry same request' }));
+    await waitFor(() => expect(materialRead.mock.calls.length).toBeGreaterThan(readsBeforeRetry));
+    expect(rangeCorrect.mock.calls[1][0]).toEqual(request);
+    expect(editor).toBeDisabled();
+    expect(screen.queryByText('Applied correction')).not.toBeInTheDocument();
+    await act(async () =>
+      pendingHead.resolve({ material: { ...MATERIAL, currentRevisionId: nextRevision.revisionId } })
+    );
+    await screen.findByText('Applied correction');
+    await waitFor(() => {
+      const refreshedEditor = screen.getByRole('textbox', { name: 'Release notes' });
+      expect(refreshedEditor).toHaveValue(nextRevision.content);
+      expect(refreshedEditor).toBeEnabled();
+    });
+  });
+
   it('surfaces a typed stale-precondition conflict while preserving the unsaved draft', async () => {
     const user = userEvent.setup();
     const saveWorkspaceMaterialRevision = vi.fn().mockRejectedValue(

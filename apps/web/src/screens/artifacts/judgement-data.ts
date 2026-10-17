@@ -78,23 +78,25 @@ export function useArtifactJudgements(
 /** Invalidates existing owners after an accepted judgement, without installing a receipt as current content. */
 function useInvalidateJudgement() {
   const cache = useQueryClient();
-  return (workspaceId: string, target: JudgementRecord['target']) => {
+  return async (workspaceId: string, target: JudgementRecord['target']) => {
     if (target.kind === 'artifact-version') {
-      void cache.invalidateQueries({
+      await cache.invalidateQueries({
         queryKey: ['artifact-reviews', workspaceId, target.artifactId],
       });
     } else if (target.kind === 'material-range') {
-      void cache.invalidateQueries({
-        queryKey: materialKeys.revision(workspaceId, target.materialId, target.revisionId),
-      });
-      void cache.invalidateQueries({
-        queryKey: materialKeys.material(workspaceId, target.materialId),
-      });
-      void cache.invalidateQueries({
-        queryKey: materialKeys.revisions(workspaceId, target.materialId),
-      });
-      void cache.invalidateQueries({ queryKey: materialKeys.list(workspaceId) });
-      void cache.invalidateQueries({ queryKey: ['thread-material', workspaceId] });
+      await Promise.all([
+        cache.invalidateQueries({
+          queryKey: materialKeys.revision(workspaceId, target.materialId, target.revisionId),
+        }),
+        cache.invalidateQueries({
+          queryKey: materialKeys.material(workspaceId, target.materialId),
+        }),
+        cache.invalidateQueries({
+          queryKey: materialKeys.revisions(workspaceId, target.materialId),
+        }),
+        cache.invalidateQueries({ queryKey: materialKeys.list(workspaceId) }),
+        cache.invalidateQueries({ queryKey: ['thread-material', workspaceId] }),
+      ]);
     }
   };
 }

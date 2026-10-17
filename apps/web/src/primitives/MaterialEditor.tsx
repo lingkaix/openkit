@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Button } from './Button';
 
 /** Material kinds supported by the Plane 1 editor. */
@@ -14,16 +14,27 @@ export interface MaterialEditorProps {
   initialValue: string;
   /** Commits one exact full-content snapshot when Save is pressed. */
   onSave: (value: string) => void | Promise<void>;
+  /** Reports unsaved text or an active save so sibling revision effects cannot discard the draft. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 /** Native text editor that keeps keystrokes local and emits only explicit atomic saves. */
-export function MaterialEditor({ label, kind, initialValue, onSave }: MaterialEditorProps) {
+export function MaterialEditor({
+  label,
+  kind,
+  initialValue,
+  onSave,
+  onDirtyChange,
+}: MaterialEditorProps) {
   const editorId = useId();
   const [draft, setDraft] = useState(initialValue);
   const [savedValue, setSavedValue] = useState(initialValue);
   const [isSaving, setIsSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const isUnsaved = draft !== savedValue;
+  useEffect(() => {
+    onDirtyChange?.(isUnsaved || isSaving);
+  }, [isUnsaved, isSaving, onDirtyChange]);
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
