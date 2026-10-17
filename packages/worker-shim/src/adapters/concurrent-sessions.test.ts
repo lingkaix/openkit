@@ -64,15 +64,16 @@ function nativeResourceSample() {
   return { processes: native.length, rssKiB: native.reduce((sum, row) => sum + row.rssKiB, 0) };
 }
 
-/** Resolves the installed pin without using an image-only absolute executable path. */
+/** Resolves the installed Linux/macOS pin without an image-only absolute executable path. */
 function codexAdapter(): WorkerResidentAdapter {
   const require = createRequire(import.meta.url);
   const pkg = require.resolve('@openai/codex/package.json');
   const vendor = createRequire(pkg).resolve(
     `@openai/codex-${process.platform}-${process.arch}/package.json`
   );
-  const triple =
-    process.arch === 'arm64' ? 'aarch64-unknown-linux-musl' : 'x86_64-unknown-linux-musl';
+  const architecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+  const target = process.platform === 'darwin' ? 'apple-darwin' : 'unknown-linux-musl';
+  const triple = `${architecture}-${target}`;
   return createCodexResidentAdapter({
     binaryPath: join(dirname(vendor), 'vendor', triple, 'bin', 'codex'),
   });
