@@ -1,3 +1,7 @@
+---
+type: change-plan
+status: in-progress
+---
 # Bounded Knowledge Overview Delivery
 
 ## Intent Revision 1
@@ -6,7 +10,7 @@ Source: coordinator GO after the 773d8fdc completeness audit. Working agents mus
 
 ## Accepted Owners And Boundary
 
-Core Knowledge owns scope isolation and overview semantics. The Knowledge Manager runtime owner requires the bounded root overview. S39 owns existing package files, immutable request identity, inventory and digest. The Assistant role owner keeps ordinary rolling-context admission, capture and source guards. Use the existing authorized pinned Notebook readers and current actual Server credentials. No User notebook, model execution, search index, new authority, operation or Tool inventory is added.
+[Core Knowledge](../../core/knowledge.md) owns scope isolation and overview semantics. The [Knowledge Manager runtime owner](../../specs/20260704-knowledge_manager_internal_agent_runtime.md) requires the bounded root overview. [S39](../../specs/20260703-worker_context_package.md) owns existing package files, immutable request identity, inventory and digest. The Assistant role owner keeps ordinary rolling-context admission, capture and source guards. Use the existing authorized pinned Notebook readers and current actual Server credentials. No User notebook, model execution, search index, new authority, operation or Tool inventory is added.
 
 ## Method And Criteria
 
