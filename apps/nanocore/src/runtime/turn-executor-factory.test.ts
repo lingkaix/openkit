@@ -2922,7 +2922,7 @@ describe('createConfiguredTurnExecutor', () => {
       captured.push(
         ...resident.effects.map((request) => ({ producer: 'runtime-reference', request }))
       );
-      const pendingResidents = (['build', 'confirmed'] as const).map(async (variant) => {
+      for (const variant of ['build', 'confirmed'] as const) {
         const next = await admitIdleSupplyResident(
           `producer_pin_${variant}`,
           variant === 'confirmed'
@@ -2934,15 +2934,6 @@ describe('createConfiguredTurnExecutor', () => {
               }
         );
         residents.push(next);
-        return { variant, next };
-      });
-      // Each admission owns its database and effects; Promise.all retains the fixture's capture order.
-      const variants = await Promise.all(pendingResidents).catch(async (error) => {
-        // A successful sibling must reach the cleanup list before finally closes resident databases.
-        await Promise.allSettled(pendingResidents);
-        throw error;
-      });
-      for (const { variant, next } of variants) {
         captured.push(
           ...next.effects
             .filter((request) => request.kind.startsWith('image.'))
@@ -3165,7 +3156,7 @@ describe('createConfiguredTurnExecutor', () => {
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it.each([
     'missing-lease',
