@@ -60,8 +60,9 @@ The Knowledge Store remains the durable content authority. The shared internal A
 
 ## Decision
 
-Knowledge Manager uses the shared internal Agent runtime for semantic retrieval, synthesis, integration and organization. Deterministic search, validation and publication remain Tools, not a replacement coordinator. The [Knowledge Manager agent decision](../decisions/20261017-knowledge_manager_agent_and_compaction.md) records the accepted role and context boundary.
+Knowledge Manager is the existing Internal Core Role listed in [Core Architecture](../core/architecture.md#internal-core-roles). It uses the shared internal Agent runtime for semantic retrieval, synthesis, integration and organization. Deterministic search, validation and publication remain Tools, not a replacement coordinator. The [Knowledge Manager agent decision](../decisions/20261017-knowledge_manager_agent_and_compaction.md) records the accepted role and context boundary.
 
+- Knowledge Manager only queries and manages its admitted notebook scope. It has no network Tools, external effects or Tools for other work. Ordinary Provider transport remains with the shared runtime.
 - Queries are bounded per-request runs bound to the asker's trusted query context. They may run in parallel without sharing context across audiences.
 - Maintenance uses one persistent Thread per notebook scope and one writer. Each request is a bounded Turn; the Thread is not a second content store.
 - The role exposes `answer`, `prepare-context-material`, `draft-proposal`, `suggest-repair`, `health-check` and `maintain`, plus agent-facing `knowledge_ask(question)` and `knowledge_tell(content,sources)`.
@@ -81,7 +82,7 @@ Read operations inherit S61's trusted query context, narrowing-only source selec
 `answer`:
 
 - retrieves and synthesizes a bounded answer for an admitted internal-agent or Worker query through the single governed retrieval owner
-- returns structured scope-qualified `page@revision` and `source@digest` citations, confidence, uncertainty and the observed revision time
+- returns structured scope-qualified `page@revision` and `source@digest` citations, uncertainty and the observed revision time
 - may return `insufficient-evidence` instead of speculating
 
 `prepare-context-material`:
@@ -155,7 +156,11 @@ The caller table constrains the operation entries. Worker ask/tell and native in
 
 ### Output and audit
 
-Every result includes operation id, operation kind, exact semantic caller, and resolved owner scope (one context-admitted source for retrieval); Workspace lineage is included only when applicable. `answer` additionally owns its answer or insufficient-evidence outcome, citations, confidence, and uncertainty; App API `prepare-context-material` owns its bounded selected and excluded projections plus the S61 retrieval trace reference, while Task Mode receives only that trace reference; `draft-proposal` owns the pending proposal, source lineage, validation result, and confidence; `suggest-repair` owns its outcome and bounded suggestions; and `health-check` owns its outcome, summary, checks, and embedded repair suggestions.
+Knowledge Manager has its own usage accounting and work record, like other NanoCore internal agents. Attribute query and maintenance model usage to Knowledge Manager. Link the asking call for lineage only; do not charge its model usage to the caller. Reuse existing UsageRecord, Thread, Turn, Item and CapabilityCall owners without a separate ledger.
+
+At this stage, Knowledge Manager operations are treated as stable and trusted within their admitted scope. They require no second-model review or additional Knowledge Manager confidence mark. Answer outputs require no confidence field. Current authorization, fixed-base validation and required human approval remain effective. Citations and uncertainty remain required.
+
+Every result includes operation id, operation kind, exact semantic caller, and resolved owner scope (one context-admitted source for retrieval); Workspace lineage is included only when applicable. `answer` additionally owns its answer or insufficient-evidence outcome, citations and uncertainty; App API `prepare-context-material` owns its bounded selected and excluded projections plus the S61 retrieval trace reference, while Task Mode receives only that trace reference; `draft-proposal` owns the pending proposal, source lineage, validation result, and confidence; `suggest-repair` owns its outcome and bounded suggestions; and `health-check` owns its outcome, summary, checks, and embedded repair suggestions.
 
 Outputs must not contain secret values, raw vault material, unrestricted file contents, unadmitted cross-scope knowledge, or content or source metadata from excluded, `restricted`, denied, missing, or unreadable candidates.
 
@@ -210,6 +215,7 @@ The existing resolver is `apps/nanocore/src/internal-agents/profile-resolver.ts`
 - Fixed-base conflicts preserve the current winner. Failure, cancellation and restart cannot replay a model or repeat a publication; saved Proposals survive.
 - Routes reject caller overrides and keep typed, redacted authorization, validation, not-found, conflict, recovery and operation-failure results.
 - Task preparation retains the S61 trace-only response and S39 exact-byte delivery boundary. Worker ask delivery retains exact answer bytes in its CapabilityCall and makes no claim of cited-page delivery or use.
+- Query and maintenance usage belongs to Knowledge Manager; its own work record and asking-call lineage use existing records. No network Tool or external effect is supplied. No second-model review or additional Knowledge Manager confidence mark is required.
 - Proposal drafts retain exact sources and base/candidate revisions. Only existing scope authority and required review permit publication; facts and model confidence cannot grant it.
 - No new store, registry, scheduler, ledger, status family, Goal integration or independent context-delivery owner is required.
 
