@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   type LightAppAdmittedSchema,
   LightAppAdmittedSchemaSchema,
@@ -26,6 +27,22 @@ export function admitLightAppSchema(
   schemaRevision: number,
   existing?: LightAppAdmittedSchema
 ): LightAppAdmittedSchema {
+  const definition = admitLightAppDefinition(input, existing);
+  return LightAppAdmittedSchemaSchema.parse({ ...definition, appId, schemaRevision });
+}
+
+/**
+ * Admits a reusable definition with stable collection and field IDs, without app identity.
+ *
+ * @param input Authored definition object or JSON text.
+ * @param existingDefinition Prior exact admitted definition for supported evolution.
+ * @returns Normalized reusable definition with resolved selectors and stable IDs.
+ */
+export function admitLightAppDefinition(
+  input: unknown,
+  existingDefinition?: LightAppSchemaInput
+): LightAppSchemaInput {
+  const existing = existingDefinition;
   const candidate = typeof input === 'string' ? parseSchemaText(input) : input;
   const encoded = JSON.stringify(candidate);
   if (Buffer.byteLength(encoded, 'utf8') > SCHEMA_BYTE_LIMIT) {
@@ -40,9 +57,6 @@ export function admitLightAppSchema(
       'validation_failed',
       parsed.error.issues[0]?.message ?? 'Invalid Light App schema.'
     );
-  }
-  if (existing) {
-    assertSafeSchemaEvolution(parsed.data, existing);
   }
   const collectionIds = new Map<string, string>();
   const collections = parsed.data.collections.map((collection) => {
@@ -90,15 +104,17 @@ export function admitLightAppSchema(
       })),
     };
   });
-  return LightAppAdmittedSchemaSchema.parse({
+  const admitted = LightAppSchemaInputSchema.parse({
     format: 'openkit.light-app',
     schemaVersion: 1,
-    appId,
-    schemaRevision,
     title: parsed.data.title,
     purpose: parsed.data.purpose,
     collections: admittedCollections,
   });
+  if (existing) {
+    assertSafeSchemaEvolution(admitted, existing);
+  }
+  return admitted;
 }
 
 /**
@@ -130,22 +146,19 @@ function parseSchemaText(text: string): Record<string, unknown> {
 function resolveEntityId(
   requestedId: string | undefined,
   name: string,
-  existing: LightAppAdmittedSchema | undefined,
+  existing: LightAppSchemaInput | undefined,
   kind: 'collection'
 ): string {
   const previous = existing?.collections.find(
     (collection) => collection.id === requestedId || collection.name === name
   );
-  if (existing && !requestedId) {
+  if (previous && !requestedId) {
     throw new KernelCommandError(
       'unsupported_operation',
       `Existing ${kind} IDs cannot be omitted.`
     );
   }
   if (requestedId) {
-    if (existing && !existing.collections.some((collection) => collection.id === requestedId)) {
-      throw new KernelCommandError('validation_failed', `Unknown ${kind} id.`);
-    }
     return requestedId;
   }
   return previous?.id ?? allocateEntityId('col');
@@ -164,7 +177,7 @@ function resolveFieldId(
   requestedId: string | undefined,
   name: string,
   collectionId: string,
-  existing: LightAppAdmittedSchema | undefined
+  existing: LightAppSchemaInput | undefined
 ): string {
   const previousCollection = existing?.collections.find(
     (collection) => collection.id === collectionId
@@ -180,12 +193,6 @@ function resolveFieldId(
     return allocateEntityId('fld');
   }
   if (requestedId) {
-    if (
-      previousCollection &&
-      !previousCollection.fields.some((field) => field.id === requestedId)
-    ) {
-      throw new KernelCommandError('validation_failed', 'Unknown field id.');
-    }
     return requestedId;
   }
   const previous = previousCollection?.fields.find((field) => field.name === name);
@@ -209,85 +216,53 @@ function resolveSelector(selector: string, ids: Map<string, string>, label: stri
 }
 
 /**
- * Enforces the initial evolution ceiling: rename, labels, and nullable scalar adds only.
+ * Permits collection additions, optional fields, logical renames, and field removal.
  *
- * @param next Proposed schema.
+ * Surviving field constraints and indexes remain unchanged.
+ * Admission resolves all selectors before this check, so deleted fields cannot leave dangling indexes.
+ *
+ * @param next Resolved proposed schema.
  * @param existing Admitted schema.
  */
-function assertSafeSchemaEvolution(
-  next: LightAppSchemaInput,
-  existing: LightAppAdmittedSchema
-): void {
-  if (next.collections.length < existing.collections.length) {
-    throw new KernelCommandError('unsupported_operation', 'Removing collections is unavailable.');
-  }
+function assertSafeSchemaEvolution(next: LightAppSchemaInput, existing: LightAppSchemaInput): void {
   for (const previous of existing.collections) {
     const match = next.collections.find((collection) => collection.id === previous.id);
     if (!match) {
-      throw new KernelCommandError(
-        'unsupported_operation',
-        'Existing collection IDs cannot be omitted.'
-      );
+      throw new KernelCommandError('unsupported_operation', 'Removing collections is unavailable.');
     }
-    if (match.fields.length < previous.fields.length) {
-      throw new KernelCommandError('unsupported_operation', 'Removing fields is unavailable.');
-    }
+    const survivingIds = new Set(match.fields.map((field) => field.id));
     for (const previousField of previous.fields) {
       const nextField = match.fields.find((field) => field.id === previousField.id);
-      if (!nextField) {
-        throw new KernelCommandError(
-          'unsupported_operation',
-          'Existing field IDs cannot be omitted.'
-        );
-      }
+      if (!nextField) continue;
       if (nextField.type !== previousField.type || nextField.required !== previousField.required) {
         throw new KernelCommandError(
           'unsupported_operation',
           'Changing field type or requiredness is unavailable.'
         );
       }
-      if (
-        JSON.stringify(nextField.options ?? null) !== JSON.stringify(previousField.options ?? null)
-      ) {
+      if (!isDeepStrictEqual(nextField.options ?? null, previousField.options ?? null)) {
         throw new KernelCommandError(
           'unsupported_operation',
           'Changing field options is unavailable.'
         );
       }
     }
-    const fieldIds = new Map<string, string>();
-    for (const field of previous.fields) {
-      fieldIds.set(field.id, field.id);
-      fieldIds.set(field.name, field.id);
+    const indexKey = (index: { unique: boolean; fields: readonly string[] }): string =>
+      JSON.stringify(index);
+    const previousKeys = previous.indexes
+      .filter((index) => index.fields.every((id) => survivingIds.has(id)))
+      .map(indexKey)
+      .sort();
+    const nextKeys = match.indexes.map(indexKey).sort();
+    if (!isDeepStrictEqual(previousKeys, nextKeys)) {
+      throw new KernelCommandError(
+        'unsupported_operation',
+        'Surviving indexes cannot change; removing a field removes only its dependent indexes.'
+      );
     }
     for (const field of match.fields) {
-      if (field.id) {
-        fieldIds.set(field.id, field.id);
-      }
-      const resolved = field.id ?? fieldIds.get(field.name);
-      if (resolved) {
-        fieldIds.set(field.name, resolved);
-      }
-    }
-    const indexKey = (index: { unique?: boolean; fields: readonly string[] }): string =>
-      JSON.stringify({
-        unique: Boolean(index.unique),
-        fields: index.fields.map((selector) => fieldIds.get(selector) ?? selector),
-      });
-    const previousKeys = previous.indexes.map(indexKey).sort();
-    const nextKeys = match.indexes.map(indexKey).sort();
-    if (JSON.stringify(previousKeys) !== JSON.stringify(nextKeys)) {
-      throw new KernelCommandError('unsupported_operation', 'Changing indexes is unavailable.');
-    }
-    for (const nextField of match.fields) {
-      if (nextField.id) {
-        continue;
-      }
-      if (nextField.required || nextField.type === 'relation') {
-        throw new KernelCommandError(
-          'unsupported_operation',
-          'Initial evolution only permits adding nullable scalar fields.'
-        );
+      if (!previous.fields.some((prior) => prior.id === field.id) && field.required) {
+        throw new KernelCommandError('unsupported_operation', 'New fields must be optional.');
       }
     }
   }

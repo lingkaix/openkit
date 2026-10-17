@@ -11221,6 +11221,682 @@
         }
       }
     },
+    "/api/app/operations/catalog.light-app-list": {
+      "post": {
+        "operationId": "catalog.light-app-list",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List reusable Light App definitions in the current Workspace.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.light-app-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List reusable Light App definitions in the current Workspace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.light-app-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.light-app-read": {
+      "post": {
+        "operationId": "catalog.light-app-read",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Read a Light App definition and its immutable parent, actor and time history.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.light-app-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read a Light App definition and its immutable parent, actor and time history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.light-app-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.light-app-import": {
+      "post": {
+        "operationId": "catalog.light-app-import",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Import one declarative definition version without changing live app data.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.light-app-import.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Import one declarative definition version without changing live app data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.light-app-import.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.light-app-history-import": {
+      "post": {
+        "operationId": "catalog.light-app-history-import",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Import exported definition history without activating source selections or data.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.light-app-history-import.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Import exported definition history without activating source selections or data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.light-app-history-import.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.light-app-export": {
+      "post": {
+        "operationId": "catalog.light-app-export",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Export retained Light App definition history without business data.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.light-app-export.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Export retained Light App definition history without business data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.light-app-export.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.light-app-select": {
+      "post": {
+        "operationId": "catalog.light-app-select",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Select a retained definition default, including an earlier version, without migrating live data.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.light-app-select.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Select a retained definition default, including an earlier version, without migrating live data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.light-app-select.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.light-app-pin": {
+      "post": {
+        "operationId": "catalog.light-app-pin",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Pin or unpin a retained definition for future explicit creation or activation.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.light-app-pin.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pin or unpin a retained definition for future explicit creation or activation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.light-app-pin.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/kernel.apps.instantiate": {
+      "post": {
+        "operationId": "kernel.apps.instantiate",
+        "tags": [
+          "kernel"
+        ],
+        "summary": "Create one empty Light App from an exact, pinned or default retained definition.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/kernel.apps.instantiate.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Create one empty Light App from an exact, pinned or default retained definition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/kernel.apps.instantiate.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/kernel.schema.activate": {
+      "post": {
+        "operationId": "kernel.schema.activate",
+        "tags": [
+          "kernel"
+        ],
+        "summary": "Explicitly activate a retained definition after automatic data snapshot and supported one-way migration.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/kernel.schema.activate.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Explicitly activate a retained definition after automatic data snapshot and supported one-way migration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/kernel.schema.activate.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/kernel.snapshots.list": {
+      "post": {
+        "operationId": "kernel.snapshots.list",
+        "tags": [
+          "kernel"
+        ],
+        "summary": "List the selected app's automatic pre-migration snapshots.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/kernel.snapshots.list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List the selected app's automatic pre-migration snapshots.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/kernel.snapshots.list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/kernel.snapshots.rollback": {
+      "post": {
+        "operationId": "kernel.snapshots.rollback",
+        "tags": [
+          "kernel"
+        ],
+        "summary": "Restore one selected data snapshot, discarding later data without a down migration.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/kernel.snapshots.rollback.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restore one selected data snapshot, discarding later data without a down migration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/kernel.snapshots.rollback.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/kernel.format.upgrade": {
+      "post": {
+        "operationId": "kernel.format.upgrade",
+        "tags": [
+          "kernel"
+        ],
+        "summary": "Upgrade a known older app format through the current native journal after an automatic snapshot.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/kernel.format.upgrade.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upgrade a known older app format through the current native journal after an automatic snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/kernel.format.upgrade.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/worker.list": {
       "post": {
         "operationId": "worker.list",
@@ -25356,6 +26032,54 @@
             "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lifecycle": {
             "type": "string",
             "enum": [
@@ -25596,6 +26320,9 @@
           "appRevision",
           "schemaRevision",
           "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
           "lifecycle",
           "schema",
           "capabilities"
@@ -25789,6 +26516,54 @@
                   "type": "string",
                   "pattern": "^sha256:[a-f0-9]{64}$"
                 },
+                "kernelFormatVersion": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "definitionVersion": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "definitionSource": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "entryId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "entryId",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "lifecycle": {
                   "type": "string",
                   "enum": [
@@ -25805,6 +26580,9 @@
                 "appRevision",
                 "schemaRevision",
                 "schemaDigest",
+                "kernelFormatVersion",
+                "definitionVersion",
+                "definitionSource",
                 "lifecycle"
               ],
               "additionalProperties": false
@@ -26000,6 +26778,54 @@
             "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lifecycle": {
             "type": "string",
             "enum": [
@@ -26240,6 +27066,9 @@
           "appRevision",
           "schemaRevision",
           "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
           "lifecycle",
           "schema",
           "capabilities"
@@ -26453,6 +27282,54 @@
             "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lifecycle": {
             "type": "string",
             "enum": [
@@ -26693,6 +27570,9 @@
           "appRevision",
           "schemaRevision",
           "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
           "lifecycle",
           "schema",
           "capabilities"
@@ -26755,6 +27635,54 @@
             "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lifecycle": {
             "type": "string",
             "enum": [
@@ -26995,6 +27923,9 @@
           "appRevision",
           "schemaRevision",
           "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
           "lifecycle",
           "schema",
           "capabilities"
@@ -27469,6 +28400,54 @@
                 "type": "string",
                 "pattern": "^sha256:[a-f0-9]{64}$"
               },
+              "kernelFormatVersion": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "definitionVersion": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "definitionSource": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "entryId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "entryId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "lifecycle": {
                 "type": "string",
                 "enum": [
@@ -27485,6 +28464,9 @@
               "appRevision",
               "schemaRevision",
               "schemaDigest",
+              "kernelFormatVersion",
+              "definitionVersion",
+              "definitionSource",
               "lifecycle"
             ],
             "additionalProperties": false
@@ -82067,6 +83049,2541 @@
         ],
         "additionalProperties": false
       },
+      "catalog.light-app-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "availability": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "removed"
+                  ]
+                },
+                "currentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "displayName",
+                "availability",
+                "currentDigest"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "revision",
+          "entries"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "entryId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entry": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "removed"
+                ]
+              },
+              "currentDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "displayName",
+              "availability",
+              "currentDigest"
+            ],
+            "additionalProperties": false
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "parentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "producer": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "agent",
+                        "system"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "definitionJson": {
+                  "type": "string",
+                  "maxLength": 262144
+                }
+              },
+              "required": [
+                "entryId",
+                "digest",
+                "parentDigest",
+                "producer",
+                "createdAt",
+                "definitionJson"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "entry",
+          "versions",
+          "pin"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-import.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "definition": {
+            "type": "object",
+            "properties": {
+              "format": {
+                "type": "string",
+                "const": "openkit.light-app"
+              },
+              "schemaVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "purpose": {
+                "type": "string"
+              },
+              "collections": {
+                "minItems": 1,
+                "maxItems": 16,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^col_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "base"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "fields": {
+                      "minItems": 1,
+                      "maxItems": 64,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "name": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "number",
+                              "bool",
+                              "date",
+                              "select",
+                              "relation"
+                            ]
+                          },
+                          "required": {
+                            "type": "boolean"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "unit": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "namespace": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "options": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "type",
+                          "required",
+                          "description"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "indexes": {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "fields": {
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "unique": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "fields",
+                          "unique"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "type",
+                    "description",
+                    "fields",
+                    "indexes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "format",
+              "schemaVersion",
+              "title",
+              "purpose",
+              "collections"
+            ],
+            "additionalProperties": false
+          },
+          "parentDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selectDefault": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "expectedRevision",
+          "entryId",
+          "displayName",
+          "definition",
+          "selectDefault"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-import.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "version": {
+            "type": "object",
+            "properties": {
+              "entryId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "parentDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "producer": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "agent",
+                      "system"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind"
+                ],
+                "additionalProperties": false
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "definitionJson": {
+                "type": "string",
+                "maxLength": 262144
+              }
+            },
+            "required": [
+              "entryId",
+              "digest",
+              "parentDigest",
+              "producer",
+              "createdAt",
+              "definitionJson"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "revision",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-history-import.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "export": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "entry": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  },
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "availability": {
+                    "type": "string",
+                    "enum": [
+                      "available",
+                      "removed"
+                    ]
+                  },
+                  "currentDigest": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "displayName",
+                  "availability",
+                  "currentDigest"
+                ],
+                "additionalProperties": false
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "entryId": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "parentDigest": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "producer": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "user",
+                            "agent",
+                            "system"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "definitionJson": {
+                      "type": "string",
+                      "maxLength": 262144
+                    }
+                  },
+                  "required": [
+                    "entryId",
+                    "digest",
+                    "parentDigest",
+                    "producer",
+                    "createdAt",
+                    "definitionJson"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "pin": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "entryId": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "entryId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "entry",
+              "versions",
+              "pin"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "workspaceId",
+          "expectedRevision",
+          "export"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-history-import.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entry": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "removed"
+                ]
+              },
+              "currentDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "displayName",
+              "availability",
+              "currentDigest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "revision",
+          "entry"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-export.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "entryId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-export.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "number",
+            "const": 1
+          },
+          "entry": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "removed"
+                ]
+              },
+              "currentDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "displayName",
+              "availability",
+              "currentDigest"
+            ],
+            "additionalProperties": false
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "parentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "producer": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "agent",
+                        "system"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "definitionJson": {
+                  "type": "string",
+                  "maxLength": 262144
+                }
+              },
+              "required": [
+                "entryId",
+                "digest",
+                "parentDigest",
+                "producer",
+                "createdAt",
+                "definitionJson"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "entry",
+          "versions",
+          "pin"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-select.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "expectedCurrentDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "workspaceId",
+          "expectedRevision",
+          "entryId",
+          "digest",
+          "expectedCurrentDigest"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-select.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-pin.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expectedPinDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "workspaceId",
+          "expectedRevision",
+          "entryId",
+          "digest",
+          "expectedPinDigest"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.light-app-pin.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.apps.instantiate.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "entryId"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.apps.instantiate.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "appRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "active",
+              "retired",
+              "unavailable"
+            ]
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "format": {
+                    "type": "string",
+                    "const": "openkit.light-app"
+                  },
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "appId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "schemaRevision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "purpose": {
+                    "type": "string"
+                  },
+                  "collections": {
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^col_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "base"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "fields": {
+                          "minItems": 1,
+                          "maxItems": 64,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text",
+                                  "number",
+                                  "bool",
+                                  "date",
+                                  "select",
+                                  "relation"
+                                ]
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "unit": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "namespace": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "type",
+                              "required",
+                              "description"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "indexes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "fields": {
+                                "minItems": 1,
+                                "maxItems": 4,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "unique": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "fields",
+                              "unique"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "type",
+                        "description",
+                        "fields",
+                        "indexes"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "format",
+                  "schemaVersion",
+                  "appId",
+                  "schemaRevision",
+                  "title",
+                  "purpose",
+                  "collections"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "fieldTypes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "number",
+                    "bool",
+                    "date",
+                    "select",
+                    "relation"
+                  ]
+                }
+              },
+              "filterOperators": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "=",
+                    "!=",
+                    ">",
+                    ">=",
+                    "<",
+                    "<=",
+                    "&&",
+                    "||"
+                  ]
+                }
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxRecords": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxBatchEntries": {
+                "type": "number",
+                "const": 50
+              },
+              "maxFilterBytes": {
+                "type": "number",
+                "const": 2048
+              }
+            },
+            "required": [
+              "fieldTypes",
+              "filterOperators",
+              "maxPerPage",
+              "maxRecords",
+              "maxBatchEntries",
+              "maxFilterBytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "appId",
+          "title",
+          "purpose",
+          "appRevision",
+          "schemaRevision",
+          "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
+          "lifecycle",
+          "schema",
+          "capabilities"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.schema.activate.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expectedAppRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "expectedSchemaRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "appId",
+          "expectedAppRevision",
+          "expectedSchemaRevision",
+          "entryId"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.schema.activate.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "appRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "active",
+              "retired",
+              "unavailable"
+            ]
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "format": {
+                    "type": "string",
+                    "const": "openkit.light-app"
+                  },
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "appId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "schemaRevision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "purpose": {
+                    "type": "string"
+                  },
+                  "collections": {
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^col_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "base"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "fields": {
+                          "minItems": 1,
+                          "maxItems": 64,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text",
+                                  "number",
+                                  "bool",
+                                  "date",
+                                  "select",
+                                  "relation"
+                                ]
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "unit": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "namespace": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "type",
+                              "required",
+                              "description"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "indexes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "fields": {
+                                "minItems": 1,
+                                "maxItems": 4,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "unique": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "fields",
+                              "unique"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "type",
+                        "description",
+                        "fields",
+                        "indexes"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "format",
+                  "schemaVersion",
+                  "appId",
+                  "schemaRevision",
+                  "title",
+                  "purpose",
+                  "collections"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "fieldTypes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "number",
+                    "bool",
+                    "date",
+                    "select",
+                    "relation"
+                  ]
+                }
+              },
+              "filterOperators": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "=",
+                    "!=",
+                    ">",
+                    ">=",
+                    "<",
+                    "<=",
+                    "&&",
+                    "||"
+                  ]
+                }
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxRecords": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxBatchEntries": {
+                "type": "number",
+                "const": 50
+              },
+              "maxFilterBytes": {
+                "type": "number",
+                "const": 2048
+              }
+            },
+            "required": [
+              "fieldTypes",
+              "filterOperators",
+              "maxPerPage",
+              "maxRecords",
+              "maxBatchEntries",
+              "maxFilterBytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "appId",
+          "title",
+          "purpose",
+          "appRevision",
+          "schemaRevision",
+          "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
+          "lifecycle",
+          "schema",
+          "capabilities"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.snapshots.list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "appId"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.snapshots.list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "snapshotId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "definition-migration",
+                    "kernel-format-migration"
+                  ]
+                },
+                "appRevision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "schemaRevision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "definitionVersion": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "kernelFormatVersion": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "snapshotId",
+                "createdAt",
+                "reason",
+                "appRevision",
+                "schemaRevision",
+                "definitionVersion",
+                "kernelFormatVersion",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "snapshots"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.snapshots.rollback.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expectedAppRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "snapshotId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "appId",
+          "expectedAppRevision",
+          "snapshotId"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.snapshots.rollback.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "appRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "active",
+              "retired",
+              "unavailable"
+            ]
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "format": {
+                    "type": "string",
+                    "const": "openkit.light-app"
+                  },
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "appId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "schemaRevision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "purpose": {
+                    "type": "string"
+                  },
+                  "collections": {
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^col_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "base"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "fields": {
+                          "minItems": 1,
+                          "maxItems": 64,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text",
+                                  "number",
+                                  "bool",
+                                  "date",
+                                  "select",
+                                  "relation"
+                                ]
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "unit": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "namespace": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "type",
+                              "required",
+                              "description"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "indexes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "fields": {
+                                "minItems": 1,
+                                "maxItems": 4,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "unique": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "fields",
+                              "unique"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "type",
+                        "description",
+                        "fields",
+                        "indexes"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "format",
+                  "schemaVersion",
+                  "appId",
+                  "schemaRevision",
+                  "title",
+                  "purpose",
+                  "collections"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "fieldTypes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "number",
+                    "bool",
+                    "date",
+                    "select",
+                    "relation"
+                  ]
+                }
+              },
+              "filterOperators": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "=",
+                    "!=",
+                    ">",
+                    ">=",
+                    "<",
+                    "<=",
+                    "&&",
+                    "||"
+                  ]
+                }
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxRecords": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxBatchEntries": {
+                "type": "number",
+                "const": 50
+              },
+              "maxFilterBytes": {
+                "type": "number",
+                "const": 2048
+              }
+            },
+            "required": [
+              "fieldTypes",
+              "filterOperators",
+              "maxPerPage",
+              "maxRecords",
+              "maxBatchEntries",
+              "maxFilterBytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "appId",
+          "title",
+          "purpose",
+          "appRevision",
+          "schemaRevision",
+          "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
+          "lifecycle",
+          "schema",
+          "capabilities"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.format.upgrade.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expectedAppRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "workspaceId",
+          "appId",
+          "expectedAppRevision"
+        ],
+        "additionalProperties": false
+      },
+      "kernel.format.upgrade.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "appRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "kernelFormatVersion": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionVersion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definitionSource": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "entryId",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "active",
+              "retired",
+              "unavailable"
+            ]
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "format": {
+                    "type": "string",
+                    "const": "openkit.light-app"
+                  },
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "appId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "schemaRevision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "purpose": {
+                    "type": "string"
+                  },
+                  "collections": {
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^col_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "base"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "fields": {
+                          "minItems": 1,
+                          "maxItems": 64,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text",
+                                  "number",
+                                  "bool",
+                                  "date",
+                                  "select",
+                                  "relation"
+                                ]
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "unit": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "namespace": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "options": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "type",
+                              "required",
+                              "description"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "indexes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "fields": {
+                                "minItems": 1,
+                                "maxItems": 4,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^fld_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "unique": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "fields",
+                              "unique"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "type",
+                        "description",
+                        "fields",
+                        "indexes"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "format",
+                  "schemaVersion",
+                  "appId",
+                  "schemaRevision",
+                  "title",
+                  "purpose",
+                  "collections"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "fieldTypes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "number",
+                    "bool",
+                    "date",
+                    "select",
+                    "relation"
+                  ]
+                }
+              },
+              "filterOperators": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "=",
+                    "!=",
+                    ">",
+                    ">=",
+                    "<",
+                    "<=",
+                    "&&",
+                    "||"
+                  ]
+                }
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxRecords": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxBatchEntries": {
+                "type": "number",
+                "const": 50
+              },
+              "maxFilterBytes": {
+                "type": "number",
+                "const": 2048
+              }
+            },
+            "required": [
+              "fieldTypes",
+              "filterOperators",
+              "maxPerPage",
+              "maxRecords",
+              "maxBatchEntries",
+              "maxFilterBytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "appId",
+          "title",
+          "purpose",
+          "appRevision",
+          "schemaRevision",
+          "schemaDigest",
+          "kernelFormatVersion",
+          "definitionVersion",
+          "definitionSource",
+          "lifecycle",
+          "schema",
+          "capabilities"
+        ],
+        "additionalProperties": false
+      },
       "worker.list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -106581,5 +110098,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4168993804a9b4a87459451c841ee8221d053d19c54cf04e87880c76fdb2cc93"
+  "x-openkit-source-digest": "sha256:63be81eee96426ee823c975d40d0c932ec8b2be2aa71d97266f43e789fd9a236"
 }

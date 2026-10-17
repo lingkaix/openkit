@@ -1,6 +1,7 @@
 import { ThreadIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  CONVERSATION_FILE_MEDIA_TYPE,
   ConversationTargetCatalogSchema,
   SubmitConversationRequestSchema,
   SubmitConversationResponseSchema,
@@ -51,6 +52,11 @@ export const CONVERSATION_OPERATION_DEFINITIONS = {
   },
   'conversation.submit': {
     binding: 'json',
+    binaryRequestBody: {
+      mediaType: CONVERSATION_FILE_MEDIA_TYPE,
+      description:
+        'Four-byte unsigned big-endian UTF-8 JSON length (1 through 1,048,576), that many strict conversation.submit input bytes, then one exact payload per ordered fileInputs entry. No extra bytes. Combined payload limit: 1,000,000,000 bytes. JSON-only nonempty inventory reconciles an existing receipt; a new command returns file_input_bytes_required before effects.',
+    },
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Submit one structured conversation turn.',
