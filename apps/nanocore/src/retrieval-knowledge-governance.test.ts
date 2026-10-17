@@ -270,6 +270,7 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     expect(JSON.stringify(after)).not.toContain('source-backed');
   });
 
+  // Fresh attributed import of 1001 Git pages measured 81s; this is fixture setup, not a retrieval deadline.
   it('returns a typed failure and writes no trace when lexical enumeration exceeds 1000 matches', async () => {
     const initialKnowledge = Array.from({ length: 1001 }, (_, index) => ({
       id: `bulk-${String(index).padStart(4, '0')}`,
@@ -295,17 +296,14 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       status: 503,
     });
     expect(readTraceBytes(fixture)).not.toContain(failedTraceId);
-  // Fresh attributed import of 1001 Git pages measured 81s; this is fixture setup, not a retrieval deadline.
   }, 180_000);
 
-  it('returns a typed failure and writes no successful trace when canonical bytes change in flight', async () => {
+  it('keeps selection and its trace at the pinned commit across a later content publication', async () => {
     const fixture = createFixture('concurrent-change');
-    const page = await createEntry(
-      fixture,
-      'Concurrent page',
-      `before-change-marker\n${'x'.repeat(1024 * 1024)}`
-    );
-    const failedTraceId = traceId(11);
+    const page = await createEntry(fixture, 'Concurrent page', 'before-change-marker');
+    const pinnedRevision = fixture.notebook.publishedRevision();
+    const pinnedBytes = readPage(fixture, page.id);
+    const retrievalTraceId = traceId(11);
     const traceThread = fixture.store.createThread(fixture.workspaceId, 'Concurrent trace owner');
     fixture.access.outputThreadId = traceThread.id;
     const service = getRetrievalService(fixture.dataRoot, fixture.workspaceRoot);
@@ -320,19 +318,45 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       });
       return generation;
     });
-    const outcome = retrieveWorkspaceKnowledge({
+    const result = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'before-change-marker'),
-      traceId: failedTraceId,
-    }).then(
-      (value) => ({ status: 'fulfilled', value }),
-      (error: unknown) => ({ status: 'rejected', error })
-    );
-    expect(await outcome).toMatchObject({
-      status: 'rejected',
-      error: { code: 'knowledge_retrieval_failed', status: 409 },
+      traceId: retrievalTraceId,
     });
-    expect(readTraceBytes(fixture)).not.toContain(failedTraceId);
-    expect(readPage(fixture, page.id)).toContain('after-change-marker');
+    const selectedEvidence = {
+      reference: pageReference(fixture, page.id),
+      revision: pinnedRevision,
+      contentDigest: sha256(pinnedBytes),
+      sourceReferences: [],
+    };
+    expect(result.notebookRevision).toBe(pinnedRevision);
+    expect(result.selected).toEqual([expect.objectContaining(selectedEvidence)]);
+    expect(result.excluded).toEqual([]);
+    expect(result.retrievalTraceRef).toEqual({
+      scopeId: `retrieval-trace/thread/${fixture.workspaceId}/${traceThread.id}`,
+      objectId: retrievalTraceId,
+    });
+    const retainedTrace = JSON.parse(
+      readFileSync(
+        join(
+          fixture.workspaceRoot,
+          'threads',
+          traceThread.id,
+          'retrieval-traces',
+          `${retrievalTraceId}.json`
+        ),
+        'utf8'
+      )
+    );
+    expect(retainedTrace).toMatchObject({
+      traceId: retrievalTraceId,
+      notebookRevision: pinnedRevision,
+    });
+    expect(retainedTrace.selected).toEqual([selectedEvidence]);
+    expect(fixture.notebook.publishedRevision()).not.toBe(pinnedRevision);
+    const currentBytes = readPage(fixture, page.id);
+    expect(currentBytes).toContain('after-change-marker');
+    expect(currentBytes).not.toContain('before-change-marker');
+    expect(sha256(currentBytes)).not.toBe(sha256(pinnedBytes));
   });
 });
 
