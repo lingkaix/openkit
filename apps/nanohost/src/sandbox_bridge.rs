@@ -608,11 +608,16 @@ impl EffectCarriage {
     }
 }
 
-/// One of the two closed V1 single-file effects.
+/// One closed import entry or regular-file export on the existing V1 path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileEffectKind {
     /// Places one immutable staged input before worker launch.
-    ImportReference,
+    ImportReference {
+        /// Normalized executable permission, admitted only for worker supply.
+        executable: bool,
+    },
+    /// Creates one inventory-bound worker-supply directory, including an empty directory.
+    ImportDirectory,
     /// Collects one regular output after the terminal barrier.
     ExportFile,
 }
@@ -630,13 +635,26 @@ impl FileEffectKind {
     /// Returns the fixed wire operation carried to the image-owned helper.
     fn wire_name(self) -> &'static str {
         match self {
-            Self::ImportReference => "reference.import",
+            Self::ImportReference { .. } | Self::ImportDirectory => "reference.import",
             Self::ExportFile => "file.export",
         }
     }
 }
 
-/// Validated envelope for one regular-file import or export.
+/// One completely admitted source entry for the existing reference import.
+pub enum ImportEntry {
+    /// Exact verified bytes and the normalized executable fact.
+    File {
+        /// Only worker-supply files may be executable.
+        executable: bool,
+        /// Staged bytes with verified digest and length.
+        file: crate::file_transfer::VerifiedFile,
+    },
+    /// A declared worker-supply directory with no file payload or metadata.
+    Directory,
+}
+
+/// Validated envelope for one import entry or regular-file export.
 pub struct FileEffectRequest {
     /// Correlated outer-session request identity.
     pub request_id: String,
@@ -648,10 +666,9 @@ pub struct FileEffectRequest {
     pub slot: String,
     /// Normalized path relative to the declared slot.
     pub relative_path: PathBuf,
-    /// Exact lowercase SHA-256 digest for an import; empty for an export whose
-    /// actual digest is computed from the produced bytes.
+    /// Exact lowercase SHA-256 for a file import; empty for a directory or export.
     pub sha256: String,
-    /// Exact import byte length or the fixed export maximum.
+    /// Exact file import length, zero for a directory, or the fixed export maximum.
     pub byte_length: u64,
     /// Closed effect direction.
     pub kind: FileEffectKind,
@@ -699,8 +716,9 @@ impl FileEffectRequest {
                     .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
         });
         let file_facts_valid = match self.kind {
-            FileEffectKind::ImportReference => {
-                self.presence == FileEffectPresence::Required
+            FileEffectKind::ImportReference { executable } => {
+                (!executable || self.slot == "worker-supply")
+                    && self.presence == FileEffectPresence::Required
                     && digest_valid
                     && self.byte_length
                         <= if matches!(
@@ -711,6 +729,9 @@ impl FileEffectRequest {
                         } else {
                             FILE_EFFECT_MAX_BYTES
                         }
+            }
+            FileEffectKind::ImportDirectory => {
+                self.slot == "worker-supply" && self.presence == FileEffectPresence::Required
             }
             FileEffectKind::ExportFile => {
                 self.sha256.is_empty()
@@ -749,12 +770,19 @@ impl FileEffectRequest {
             self.relative_path.to_string_lossy().into_owned(),
         ];
         match self.kind {
-            FileEffectKind::ImportReference => command.extend([
+            FileEffectKind::ImportReference { executable } => command.extend([
                 "--length".to_string(),
                 self.byte_length.to_string(),
                 "--sha256".to_string(),
                 self.sha256.clone(),
+                "--entry-kind".to_string(),
+                "file".to_string(),
+                "--executable".to_string(),
+                executable.to_string(),
             ]),
+            FileEffectKind::ImportDirectory => {
+                command.extend(["--entry-kind".to_string(), "directory".to_string()]);
+            }
             FileEffectKind::ExportFile => {
                 command.extend(["--max-length".to_string(), self.byte_length.to_string()])
             }
@@ -1694,6 +1722,84 @@ mod tests {
         assert_eq!(successor.replayed_request_count(), 0);
         assert_eq!(BRIDGE_REESTABLISH_TARGET, Duration::from_secs(30));
         assert_eq!(BRIDGE_REESTABLISH_HARD_BOUND, Duration::from_secs(120));
+    }
+
+    /// Fixed import arguments retain exact file facts and only normalized executable flags.
+    #[test]
+    fn physical_skill_import_file_argv_preserves_executable() {
+        let mut request = FileEffectRequest {
+            artifact_submission: false,
+            request_id: "a".repeat(64),
+            sandbox_id: "sandbox".into(),
+            slot: "worker-supply".into(),
+            relative_path: PathBuf::from("session/supply/inputs/skill/script"),
+            sha256: format!("sha256:{}", "a".repeat(64)),
+            byte_length: 3,
+            kind: FileEffectKind::ImportReference { executable: false },
+            presence: FileEffectPresence::Required,
+        };
+        for executable in [false, true] {
+            request.kind = FileEffectKind::ImportReference { executable };
+            let command = request.helper_command().unwrap();
+            assert_eq!(
+                command,
+                [
+                    super::FILE_EFFECT_HELPER.to_string(),
+                    "reference.import".into(),
+                    "--slot".into(),
+                    "worker-supply".into(),
+                    "--path".into(),
+                    "session/supply/inputs/skill/script".into(),
+                    "--length".into(),
+                    "3".into(),
+                    "--sha256".into(),
+                    request.sha256.clone(),
+                    "--entry-kind".into(),
+                    "file".into(),
+                    "--executable".into(),
+                    executable.to_string(),
+                ]
+            );
+            request.slot = "context".into();
+            assert_eq!(request.validate().is_ok(), !executable);
+            request.slot = "worker-supply".into();
+        }
+    }
+
+    /// Directories carry no file arguments and cannot expand another slot's authority.
+    #[test]
+    fn physical_skill_import_directory_argv_is_closed() {
+        let mut request = FileEffectRequest {
+            artifact_submission: false,
+            request_id: "b".repeat(64),
+            sandbox_id: "sandbox".into(),
+            slot: "worker-supply".into(),
+            relative_path: PathBuf::from("session/supply/inputs/skill/empty"),
+            sha256: String::new(),
+            byte_length: 0,
+            kind: FileEffectKind::ImportDirectory,
+            presence: FileEffectPresence::Required,
+        };
+        assert_eq!(
+            request.helper_command().unwrap(),
+            [
+                super::FILE_EFFECT_HELPER,
+                "reference.import",
+                "--slot",
+                "worker-supply",
+                "--path",
+                "session/supply/inputs/skill/empty",
+                "--entry-kind",
+                "directory",
+            ]
+        );
+        for slot in ["package-config", "context", "turn-inputs", "main-worktree"] {
+            request.slot = slot.into();
+            assert!(request.helper_command().is_err());
+        }
+        request.slot = "worker-supply".into();
+        request.relative_path = PathBuf::from("../escape");
+        assert!(request.helper_command().is_err());
     }
 
     /// Exercises the current capture/staging boundary without a live Sandbox.

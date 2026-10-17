@@ -470,6 +470,9 @@ importers:
       '@openkit/codex-app-server-schema':
         specifier: workspace:*
         version: link:../codex-app-server-schema
+      '@openkit/config-schema':
+        specifier: workspace:*
+        version: link:../config-schema
       '@openkit/protocol':
         specifier: workspace:*
         version: link:../protocol
