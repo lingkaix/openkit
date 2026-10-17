@@ -565,7 +565,7 @@ describe('workspace derived index rebuild', () => {
     const material = 'The current registered source supplies exact evidence.';
     const source = store.createKnowledgeSource(
       {
-        id: 'ks_00000000-0000-4000-8000-000000000702',
+        id: testEntityId('ks', 'index-current-evidence'),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'document',
         title: 'Current evidence',
@@ -1091,7 +1091,7 @@ describe('workspace derived index rebuild', () => {
       content: 'Registered knowledge body.',
     });
 
-    store.createKnowledgeSource({
+    const source = store.createKnowledgeSource({
       id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
@@ -1117,7 +1117,7 @@ describe('workspace derived index rebuild', () => {
         'status: "stable"',
         'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
         'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
-        'source_refs: ["source:ks_123e4567-e89b-42d3-a456-426614174000"]',
+        `source_refs: ${JSON.stringify([`source:${source.id}`])}`,
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',

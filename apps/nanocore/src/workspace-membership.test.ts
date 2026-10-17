@@ -623,16 +623,21 @@ describe('workspace membership foundation', () => {
       );
       expect(notebookResponse.status).toBe(200);
       const notebook = await notebookResponse.json();
+      const saveRequestId = randomUUID();
       const saved = await exporterApp.request(
-        ...operationRequest('knowledge.create', {
-          workspaceId: source.id,
-          baseRevision: notebook.notebookRevision,
-          knowledgePageId: 'private-export',
-          requestId: randomUUID(),
-          content: 'Private export knowledge.',
-          kind: 'project-context',
-          title: 'Private export knowledge',
-        })
+        ...operationRequest(
+          'knowledge.create',
+          {
+            workspaceId: source.id,
+            baseRevision: notebook.notebookRevision,
+            knowledgePageId: 'private-export',
+            requestId: saveRequestId,
+            content: 'Private export knowledge.',
+            kind: 'project-context',
+            title: 'Private export knowledge',
+          },
+          { headers: { 'x-openkit-request-id': saveRequestId } }
+        )
       );
       expect(saved.status).toBe(200);
       const otherApp = createApp({

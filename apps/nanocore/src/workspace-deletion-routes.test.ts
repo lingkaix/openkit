@@ -1446,15 +1446,19 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
     const { notebookRevision } = await notebookResponse.json();
     const pageResponse = await app.request(
-      ...operationRequest('knowledge.create', {
-        workspaceId: workspace.id,
-        baseRevision: notebookRevision,
-        knowledgePageId: 'deletion-recovery-trace',
-        requestId: '00000000-0000-4000-8000-000000000904',
-        kind: 'project-context',
-        title: 'Deletion recovery trace',
-        content: 'Retain this retrieval trace in the verified recovery export.',
-      })
+      ...operationRequest(
+        'knowledge.create',
+        {
+          workspaceId: workspace.id,
+          baseRevision: notebookRevision,
+          knowledgePageId: 'deletion-recovery-trace',
+          requestId: '00000000-0000-4000-8000-000000000904',
+          kind: 'project-context',
+          title: 'Deletion recovery trace',
+          content: 'Retain this retrieval trace in the verified recovery export.',
+        },
+        { headers: { 'x-openkit-request-id': '00000000-0000-4000-8000-000000000904' } }
+      )
     );
     expect(pageResponse.status, await pageResponse.clone().text()).toBe(200);
     const page = await pageResponse.json();
