@@ -59,6 +59,13 @@ function validate(base: Record<string, string>, candidate: Record<string, string
 }
 
 describe('Notebook final immutable tree validation', () => {
+  it('refuses a root-index edit that removes the required OKF version', () => {
+    expect(validate({}, { 'index.md': '# Unversioned root\n' }).errors).toContainEqual({
+      pageId: 'index',
+      code: 'notebook.invalid_document',
+    });
+  });
+
   it('resolves joint multi-file edits and relative/reference Markdown links in the complete tree', () => {
     const a = page('group/a', '[Neighbor](../b.md#heading) and [reference][b].\n\n[b]: /b.md');
     const b = page('b', '[Back](/group/a.md)', 'custom: {preserve: [one, two]}\n');

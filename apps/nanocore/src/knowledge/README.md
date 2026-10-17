@@ -26,3 +26,5 @@ This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-pro
 Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge` and the affected Knowledge Store tests.
 
 See [Research Cookbook](../../../../docs/cookbooks/research.md).
+
+Fresh Workspace Notebook initialization adds the OKF root version and initial navigation before its first Git publication. A valid authored root stays byte exact; a valid body-only initial root receives only the version block. Current Notebook edits keep that version, and Thread storage never repairs materialized page bytes.

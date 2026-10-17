@@ -597,17 +597,25 @@ describe('workspace export route boundaries', () => {
       store: sourceStore,
     });
     const pagePath = `knowledge/pages/分类/${'a'.repeat(90)}.md`;
-    const sourcePage = join(
-      sourceDataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      pagePath
+    const notebookResponse = await sourceApp.request(
+      ...operationRequest('knowledge.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
-    mkdirSync(dirname(sourcePage), { recursive: true });
-    writeFileSync(
-      sourcePage,
-      '---\ntype: "RepoConvention"\ntitle: "Unicode archive"\n---\nPortable.\n'
+    expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
+    const { notebookRevision } = await notebookResponse.json();
+    const created = await sourceApp.request(
+      ...operationRequest('knowledge.create', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        baseRevision: notebookRevision,
+        knowledgePageId: pagePath.slice('knowledge/pages/'.length, -3),
+        requestId: '00000000-0000-4000-8000-000000000991',
+        kind: 'project-context',
+        title: 'Unicode archive',
+        content: 'Portable.',
+      })
     );
+    expect(created.status, await created.clone().text()).toBe(200);
     // Create the handle through its native owner so the fixture includes real persisted creator attribution.
     const exportedResponse = await sourceApp.request(
       ...operationRequest('workspace.export', {

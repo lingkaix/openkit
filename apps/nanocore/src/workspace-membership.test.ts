@@ -606,11 +606,6 @@ describe('workspace membership foundation', () => {
         .run(now, now, now, now);
       const store = new FsStore({ dataRoot });
       const source = store.createWorkspace('Private export source');
-      store.createKnowledgeEntry(source.id, {
-        content: 'Private export knowledge.',
-        kind: 'project-context',
-        title: 'Private export knowledge',
-      });
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-778d-b552-9947e8876ed1',
@@ -623,6 +618,23 @@ describe('workspace membership foundation', () => {
         mode: 'server',
         store,
       });
+      const notebookResponse = await exporterApp.request(
+        ...operationRequest('knowledge.list', { workspaceId: source.id })
+      );
+      expect(notebookResponse.status).toBe(200);
+      const notebook = await notebookResponse.json();
+      const saved = await exporterApp.request(
+        ...operationRequest('knowledge.create', {
+          workspaceId: source.id,
+          baseRevision: notebook.notebookRevision,
+          knowledgePageId: 'private-export',
+          requestId: randomUUID(),
+          content: 'Private export knowledge.',
+          kind: 'project-context',
+          title: 'Private export knowledge',
+        })
+      );
+      expect(saved.status).toBe(200);
       const otherApp = createApp({
         auth: authForUser('usr_00000000-0000-73d4-904a-d4c4b905df7c'),
         coreDb,

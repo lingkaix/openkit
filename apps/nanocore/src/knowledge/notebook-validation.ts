@@ -87,6 +87,10 @@ export function validateNotebookCandidate(input: {
       fail(pageId, 'notebook.invalid_document');
       continue;
     }
+    if (path === 'index.md' && parsed.document.frontmatter.okf_version !== '0.2') {
+      fail(pageId, 'notebook.invalid_document');
+      continue;
+    }
     if (changed.has(path) && !parsed.document.reserved) {
       const report = validateKnowledgePageCandidate({
         path,

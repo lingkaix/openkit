@@ -1427,11 +1427,37 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       workspaceId: workspace.id,
     });
     const thread = store.createThread(workspace.id, 'Deletion trace owner');
-    const page = store.createKnowledgeEntry(workspace.id, {
-      kind: 'project-context',
-      title: 'Deletion recovery trace',
-      content: 'Retain this retrieval trace in the verified recovery export.',
+    const repositoryWorkspaceDb = (workspaceId: string) => {
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb);
+      return workspaceDb;
+    };
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'local',
+      repositoryWorkspaceDb,
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
     });
+    const notebookResponse = await app.request(
+      ...operationRequest('knowledge.list', { workspaceId: workspace.id })
+    );
+    expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
+    const { notebookRevision } = await notebookResponse.json();
+    const pageResponse = await app.request(
+      ...operationRequest('knowledge.create', {
+        workspaceId: workspace.id,
+        baseRevision: notebookRevision,
+        knowledgePageId: 'deletion-recovery-trace',
+        requestId: '00000000-0000-4000-8000-000000000904',
+        kind: 'project-context',
+        title: 'Deletion recovery trace',
+        content: 'Retain this retrieval trace in the verified recovery export.',
+      })
+    );
+    expect(pageResponse.status, await pageResponse.clone().text()).toBe(200);
+    const page = await pageResponse.json();
     const traceId = 'krt_00000000-0000-7c9e-a8c7-f3f6e7618033';
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {
@@ -1456,11 +1482,6 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     const sourceTrace = JSON.parse(
       readFileSync(join(dataRoot, 'workspaces', workspace.id, traceRelativePath), 'utf8')
     );
-    const repositoryWorkspaceDb = (workspaceId: string) => {
-      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb);
-      return workspaceDb;
-    };
     const unauthorizedExportId = 'wsexp_00000000-0000-796a-a49a-520342225098';
     expect(() =>
       createVerifiedWorkspaceExport({
@@ -1495,14 +1516,6 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     expect(
       existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unboundExportId))
     ).toBe(false);
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      mode: 'local',
-      repositoryWorkspaceDb,
-      store,
-      turnExecutor: new SimulatedTurnExecutor(),
-    });
     const requestId = '00000000-0000-4000-8000-000000000902';
     const response = await app.request(
       ...operationRequest(

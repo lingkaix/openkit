@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApiErrorSchema } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -24,89 +25,128 @@ interface LineageRequest {
 }
 
 /** Creates two authorized Workspaces with child records owned only by the second Workspace. */
-function createLineageFixture() {
+async function createLineageFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-child-lineage-'));
   const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
-  const app = createApp({ coreDb, dataRoot, store });
-  const allowedWorkspace = store.createWorkspace('Allowed lineage Workspace');
-  const foreignWorkspace = store.createWorkspace('Foreign lineage Workspace');
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const app = createApp({ coreDb, dataRoot, store });
+    const allowedWorkspace = store.createWorkspace('Allowed lineage Workspace');
+    const foreignWorkspace = store.createWorkspace('Foreign lineage Workspace');
 
-  for (const workspace of [allowedWorkspace, foreignWorkspace]) {
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: workspace.id,
+    for (const workspace of [allowedWorkspace, foreignWorkspace]) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: workspace.id,
+      });
+    }
+
+    const allowedThread = store.createThread(allowedWorkspace.id, 'Allowed lineage Thread');
+    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign lineage Thread');
+    const foreignTurn = store.createTurn(
+      foreignWorkspace.id,
+      foreignThread.id,
+      'Foreign lineage Turn',
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
+    );
+    const allowedNotebookResponse = await app.request(
+      ...operationRequest('knowledge.list', { workspaceId: allowedWorkspace.id })
+    );
+    expect(allowedNotebookResponse.status, await allowedNotebookResponse.clone().text()).toBe(200);
+    const { notebookRevision: allowedNotebookRevision } = await allowedNotebookResponse.json();
+    const foreignNotebookResponse = await app.request(
+      ...operationRequest('knowledge.list', { workspaceId: foreignWorkspace.id })
+    );
+    expect(foreignNotebookResponse.status, await foreignNotebookResponse.clone().text()).toBe(200);
+    const { notebookRevision: foreignBaseRevision } = await foreignNotebookResponse.json();
+    const created = await app.request(
+      ...operationRequest('knowledge.create', {
+        workspaceId: foreignWorkspace.id,
+        knowledgePageId: 'foreign-knowledge',
+        baseRevision: foreignBaseRevision,
+        requestId: randomUUID(),
+        kind: 'project-context',
+        title: 'Foreign knowledge',
+        content: 'This entry belongs to the foreign Workspace.',
+      })
+    );
+    expect(created.status, await created.clone().text()).toBe(200);
+    const foreignKnowledge = await created.json();
+    const foreignNotebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        foreignWorkspace.id,
+        'knowledge',
+        'notebook.git'
+      ),
     });
-  }
-
-  const allowedThread = store.createThread(allowedWorkspace.id, 'Allowed lineage Thread');
-  const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign lineage Thread');
-  const foreignTurn = store.createTurn(
-    foreignWorkspace.id,
-    foreignThread.id,
-    'Foreign lineage Turn',
-    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
-  );
-  const foreignKnowledge = store.createKnowledgeEntry(foreignWorkspace.id, {
-    kind: 'project-context',
-    title: 'Foreign knowledge',
-    content: 'This entry belongs to the foreign Workspace.',
-  });
-  const timestamp = new Date().toISOString();
-  const foreignKnowledgeSource = store.createKnowledgeSource({
-    id: 'ks_00000000-0000-756d-9b79-fde0d969c5fa',
-    workspaceId: foreignWorkspace.id,
-    kind: 'document',
-    title: 'Foreign knowledge source',
-    uri: null,
-    contentDigest: 'sha256:foreign-lineage-source',
-    originatingThreadId: null,
-    originatingTurnId: null,
-    originatingFileId: null,
-    capturedAt: timestamp,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  });
-  const artifactBody = 'Foreign Artifact content.';
-  const artifactRequestId = 'foreign-artifact-lineage';
-  const foreignArtifact = store.createArtifact({
-    id: 'ar_00000000-0000-7ef1-bb38-38a02dd7b18c',
-    workspaceId: foreignWorkspace.id,
-    threadId: foreignThread.id,
-    turnId: foreignTurn.id,
-    kind: 'summary',
-    title: 'Foreign Artifact',
-    status: 'ready',
-    summary: null,
-    version: 1,
-    content: { format: 'text', body: artifactBody },
-    contentDigest: `sha256:${createHash('sha256').update(artifactBody).digest('hex')}`,
-    lastMutationRequestId: artifactRequestId,
-    origin: {
-      kind: 'turn-output',
+    const foreignKnowledgeBytes = foreignNotebook.readRevision(foreignNotebook.publishedRevision())
+      .files[`${foreignKnowledge.id}.md`]!;
+    const foreignKnowledgeDigest = `sha256:${createHash('sha256').update(foreignKnowledgeBytes).digest('hex')}`;
+    const timestamp = new Date().toISOString();
+    const foreignKnowledgeSource = store.createKnowledgeSource({
+      id: 'ks_00000000-0000-756d-9b79-fde0d969c5fa',
+      workspaceId: foreignWorkspace.id,
+      kind: 'document',
+      title: 'Foreign knowledge source',
+      uri: null,
+      contentDigest: 'sha256:foreign-lineage-source',
+      originatingThreadId: null,
+      originatingTurnId: null,
+      originatingFileId: null,
+      capturedAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const artifactBody = 'Foreign Artifact content.';
+    const artifactRequestId = 'foreign-artifact-lineage';
+    const foreignArtifact = store.createArtifact({
+      id: 'ar_00000000-0000-7ef1-bb38-38a02dd7b18c',
+      workspaceId: foreignWorkspace.id,
       threadId: foreignThread.id,
       turnId: foreignTurn.id,
-      requestId: artifactRequestId,
-    },
-    createdAt: foreignTurn.startedAt ?? new Date().toISOString(),
-    updatedAt: foreignTurn.startedAt ?? new Date().toISOString(),
-  });
+      kind: 'summary',
+      title: 'Foreign Artifact',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: artifactBody },
+      contentDigest: `sha256:${createHash('sha256').update(artifactBody).digest('hex')}`,
+      lastMutationRequestId: artifactRequestId,
+      origin: {
+        kind: 'turn-output',
+        threadId: foreignThread.id,
+        turnId: foreignTurn.id,
+        requestId: artifactRequestId,
+      },
+      createdAt: foreignTurn.startedAt ?? new Date().toISOString(),
+      updatedAt: foreignTurn.startedAt ?? new Date().toISOString(),
+    });
 
-  return {
-    allowedThread,
-    allowedWorkspace,
-    app,
-    coreDb,
-    foreignArtifact,
-    foreignKnowledge,
-    foreignKnowledgeSource,
-    foreignThread,
-    foreignTurn,
-    store,
-  };
+    return {
+      allowedThread,
+      allowedWorkspace,
+      allowedNotebookRevision,
+      dataRoot,
+      foreignKnowledgeDigest,
+      app,
+      coreDb,
+      foreignArtifact,
+      foreignKnowledge,
+      foreignKnowledgeSource,
+      foreignThread,
+      foreignTurn,
+      store,
+    };
+  } catch (error) {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Sends one request and requires the uniform Workspace access denial response. */
@@ -160,14 +200,15 @@ async function sendLineageRequest(
   });
 }
 
-let fixture: ReturnType<typeof createLineageFixture>;
+let fixture: Awaited<ReturnType<typeof createLineageFixture>>;
 
-beforeEach(() => {
-  fixture = createLineageFixture();
+beforeEach(async () => {
+  fixture = await createLineageFixture();
 });
 
 afterEach(() => {
-  fixture.coreDb.sqlite.close();
+  if (fixture?.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
+  if (fixture) rmSync(fixture.dataRoot, { recursive: true, force: true });
 });
 
 describe('Workspace child lineage', () => {
@@ -215,6 +256,7 @@ describe('Workspace child lineage', () => {
           knowledgeEntryId: fixture.foreignKnowledge.id,
           requestId: '00000000-0000-4000-8000-000000000403',
           title: 'Do not update this entry',
+          baseRevision: fixture.allowedNotebookRevision,
         },
       ],
       [
@@ -222,6 +264,9 @@ describe('Workspace child lineage', () => {
         {
           knowledgeEntryId: fixture.foreignKnowledge.id,
           requestId: '00000000-0000-4000-8000-000000000404',
+          baseRevision: fixture.allowedNotebookRevision,
+          expectedContentDigest: fixture.foreignKnowledgeDigest,
+          confirmRemoval: true,
         },
       ],
       ['knowledge.source.read', { sourceId: fixture.foreignKnowledgeSource.id }],
