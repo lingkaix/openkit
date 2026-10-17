@@ -83,6 +83,211 @@ async function assertRejected(runFileEffect, slotRoots, rejection) {
   }
 }
 
+/** Builds the fixed verified-file argv without a caller-selected mode. */
+function fileImportArgs(slot, path, bytes, executable = 'false') {
+  return [
+    'reference.import',
+    '--slot',
+    slot,
+    '--path',
+    path,
+    '--length',
+    String(bytes.length),
+    '--sha256',
+    `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    '--entry-kind',
+    'file',
+    '--executable',
+    executable,
+  ];
+}
+
+test('worker-supply installs executable and non-executable files with normalized modes', async () => {
+  const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const root = await mkdtemp(join(tmpdir(), 'openkit-supply-modes-'));
+  try {
+    const bytes = Buffer.from('#!/bin/sh\nprintf skill-ok\n');
+    for (const [executable, mode] of [
+      ['true', 0o700],
+      ['false', 0o600],
+    ]) {
+      const path = `as_one/supply/inputs/skill/scripts/${executable}.sh`;
+      const result = await invokeFileEffect(
+        runFileEffect,
+        { 'worker-supply': root },
+        fileImportArgs('worker-supply', path, bytes, executable),
+        bytes
+      );
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr.length, 0);
+      assert.equal(
+        result.stdout.toString(),
+        `sha256:${createHash('sha256').update(bytes).digest('hex')} ${bytes.length}\n`
+      );
+      const target = join(root, path);
+      assert.deepEqual(await readFile(target), bytes);
+      assert.equal((await lstat(target)).mode & 0o7777, mode);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('worker-supply installs an empty directory without reading open stdin or replacing a target', async () => {
+  const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const root = await mkdtemp(join(tmpdir(), 'openkit-supply-directory-'));
+  const input = new PassThrough();
+  try {
+    const path = 'as_one/supply/inputs/skill/empty';
+    const argv = [
+      'reference.import',
+      '--slot',
+      'worker-supply',
+      '--path',
+      path,
+      '--entry-kind',
+      'directory',
+    ];
+    // NanoHost keeps stdin open until helper settlement. Even asking for a body iterator is an error.
+    input[Symbol.asyncIterator] = () => {
+      throw new Error('directory requested stdin');
+    };
+    const result = await invokeFileEffect(runFileEffect, { 'worker-supply': root }, argv, input);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.length, 0);
+    assert.equal(result.stderr.length, 0);
+    assert.equal(input.writableEnded, false);
+    const target = join(root, path);
+    assert.equal((await lstat(target)).isDirectory(), true);
+    assert.equal((await lstat(target)).mode & 0o7777, 0o700);
+    assert.deepEqual(await readdir(target), []);
+    await writeFile(join(target, 'preserve'), 'retained');
+    await assertRejected(runFileEffect, { 'worker-supply': root }, { argv });
+    assert.equal(await readFile(join(target, 'preserve'), 'utf8'), 'retained');
+    await symlink(target, join(root, 'as_one/supply/inputs/skill/linked'));
+    await assertRejected(
+      runFileEffect,
+      { 'worker-supply': root },
+      {
+        argv: argv.map((value) => (value === path ? 'as_one/supply/inputs/skill/linked' : value)),
+      }
+    );
+    await writeFile(join(root, 'as_one/supply/inputs/skill/file'), 'retained');
+    await assertRejected(
+      runFileEffect,
+      { 'worker-supply': root },
+      {
+        argv: argv.map((value) => (value === path ? 'as_one/supply/inputs/skill/file' : value)),
+      }
+    );
+  } finally {
+    input.destroy();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('import entry kind, executable flag and namespace fail closed before filesystem writes', async () => {
+  const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const root = await mkdtemp(join(tmpdir(), 'openkit-supply-refusal-'));
+  try {
+    const bytes = Buffer.from('private fixture');
+    const path = 'as_one/supply/inputs/skill/new/file';
+    const directoryArgs = [
+      'reference.import',
+      '--slot',
+      'worker-supply',
+      '--path',
+      path,
+      '--entry-kind',
+      'directory',
+    ];
+    const fileArgs = fileImportArgs('worker-supply', path, bytes);
+    const roots = Object.fromEntries(Object.keys(CANONICAL_SLOT_ROOTS).map((slot) => [slot, root]));
+    const rejected = [
+      fileArgs.slice(0, 9),
+      fileArgs.slice(0, 11),
+      ...['TRUE', '1', '0700', ''].map((flag) =>
+        fileImportArgs('worker-supply', path, bytes, flag)
+      ),
+      fileArgs.map((value) => (value === 'file' ? 'symlink' : value)),
+      [...fileArgs, '--mode', '0700'],
+      [...directoryArgs, '--executable', 'false'],
+      [...directoryArgs, '--length', '0'],
+      [...directoryArgs, '--sha256', `sha256:${'0'.repeat(64)}`],
+      ...[
+        'context',
+        'package-config',
+        'artifact-input',
+        'external-data',
+        'instructions',
+        'turn-inputs',
+        'runtime-credential',
+        'turn-output',
+        'unknown',
+      ].flatMap((slot) => [
+        [
+          'reference.import',
+          '--slot',
+          slot,
+          '--path',
+          slot === 'context'
+            ? 'as_one/context/new/file'
+            : slot === 'package-config'
+              ? 'as_one/config/package.json'
+              : path,
+          '--entry-kind',
+          'directory',
+        ],
+        fileImportArgs(
+          slot,
+          slot === 'context'
+            ? 'as_one/context/new/file'
+            : slot === 'package-config'
+              ? 'as_one/config/package.json'
+              : path,
+          bytes,
+          'true'
+        ),
+      ]),
+      ...[
+        '../escape',
+        '/absolute',
+        'as_one/supply/inputs/skill/../escape',
+        'as_one/supply/inputs/skill//empty',
+        'as_one/supply/inputs/skill',
+        'as_one/context/empty',
+        'as_one/supply/inputs/bad.identity/empty',
+        String.raw`as_one/supply/inputs/skill/back\slash`,
+      ].flatMap((badPath) => [
+        directoryArgs.map((value) => (value === path ? badPath : value)),
+        fileImportArgs('worker-supply', badPath, bytes, 'true'),
+      ]),
+    ];
+    for (const argv of rejected) {
+      await assertRejected(runFileEffect, roots, {
+        argv,
+        input: bytes,
+        label: JSON.stringify(argv),
+      });
+      assert.deepEqual(await readdir(root), [], 'invalid metadata must not create a parent');
+    }
+    const outside = join(root, 'outside');
+    await mkdir(outside);
+    await mkdir(join(root, 'as_one/supply/inputs/skill'), { recursive: true });
+    await symlink(outside, join(root, 'as_one/supply/inputs/skill/linked'));
+    for (const argv of [
+      directoryArgs.map((value) =>
+        value === path ? 'as_one/supply/inputs/skill/linked/escape' : value
+      ),
+      fileImportArgs('worker-supply', 'as_one/supply/inputs/skill/linked/escape', bytes, 'true'),
+    ])
+      await assertRejected(runFileEffect, roots, { argv, input: bytes });
+    assert.deepEqual(await readdir(outside), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('session export admits only a Thread/runtime/Turn capture, never native state', async () => {
   const { CANONICAL_SLOT_ROOTS: actualRoots, runFileEffect } = await import(
     pathToFileURL(helperPath).href
@@ -271,6 +476,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
           String(packageBytes.length),
           '--sha256',
           packageDigest,
+          '--entry-kind',
+          'file',
+          '--executable',
+          'false',
         ],
         packageBytes
       );
@@ -303,6 +512,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         String(supplyBytes.length),
         '--sha256',
         supplyDigest,
+        '--entry-kind',
+        'file',
+        '--executable',
+        'false',
       ],
       supplyBytes
     );
@@ -327,6 +540,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         String(importedBytes.length),
         '--sha256',
         importedDigest,
+        '--entry-kind',
+        'file',
+        '--executable',
+        'false',
       ],
       importedBytes
     );
@@ -359,6 +576,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
           String(retainedCredentialBytes.length),
           '--sha256',
           retainedCredentialDigest,
+          '--entry-kind',
+          'file',
+          '--executable',
+          'false',
         ],
         input: retainedCredentialBytes,
         label: 'retained runtime credential sink',
@@ -380,6 +601,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
           String(credentialBytes.length),
           '--sha256',
           credentialDigest,
+          '--entry-kind',
+          'file',
+          '--executable',
+          'false',
         ],
         credentialBytes
       );
@@ -418,6 +643,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         String(importedBytes.length),
         '--sha256',
         importedDigest,
+        '--entry-kind',
+        'file',
+        '--executable',
+        'false',
       ],
       declaredLengthInput
     );
@@ -538,6 +767,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
       String(importedBytes.length),
       '--sha256',
       importedDigest,
+      '--entry-kind',
+      'file',
+      '--executable',
+      'false',
     ];
     for (const rejection of [
       {
@@ -728,8 +961,10 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     for (const rejection of [
       {
         argv: [
-          ...validImportArgs('context', 'as-one/context/integrity/wrong-digest').slice(0, -1),
-          `sha256:${'0'.repeat(64)}`,
+          ...validImportArgs('context', 'as-one/context/integrity/wrong-digest').map(
+            (value, index, values) =>
+              values[index - 1] === '--sha256' ? `sha256:${'0'.repeat(64)}` : value
+          ),
         ],
         input: importedBytes,
         label: 'wrong digest',
