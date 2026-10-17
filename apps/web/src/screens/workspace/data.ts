@@ -871,7 +871,7 @@ export function useSubmitSkillCandidate() {
   });
 }
 
-/** Withdraws the current actor's proposed candidate through its native lifecycle command. */
+/** Withdraws a proposed candidate through Core's current actor authority checks. */
 export function useWithdrawSkillCandidate() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
