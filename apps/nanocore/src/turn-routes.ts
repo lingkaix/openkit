@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   isSealedTurnTerminal,
   ProductTurnSchema,
@@ -47,7 +48,7 @@ const activeTurnCloseouts = new WeakMap<CoreDb, Map<string, Promise<void>>>();
 /**
  * Binds Core command input to the common durable live Turn admission.
  *
- * Receipt lookup already verifies the complete semantic-input hash before replay; this predicate verifies that the scheduler owners still carry that same admitted input.
+ * Receipt lookup already verifies the complete semantic-input hash before replay; this predicate verifies the admitted scheduler fields and the canonical Turn Skill choices without duplicating them in scheduler storage.
  *
  * @param coreDb Scheduler authority, required for worker admission.
  * @param store Command store.
@@ -69,7 +70,7 @@ function validateCoreTurnAdmission(
       'Turn admission has no scheduler storage.',
       409
     );
-  const { admission } = validateLiveProductTurnAdmission({
+  const { admission, turn } = validateLiveProductTurnAdmission({
     coreDb,
     store,
     actorId,
@@ -83,7 +84,8 @@ function validateCoreTurnAdmission(
     admission.modelId !== (input.modelId ?? null) ||
     admission.profileRef !== (input.profileId ?? null) ||
     (input.agentId !== undefined && admission.requestedAgentId !== input.agentId) ||
-    admission.reasoningEffort !== input.reasoningEffort
+    admission.reasoningEffort !== input.reasoningEffort ||
+    !isDeepStrictEqual(turn.skillSelections, input.skillSelections)
   )
     throw new TurnStartValidationError(
       'recovery_required',

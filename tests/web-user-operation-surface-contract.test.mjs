@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 281;
+const EXPECTED_CATALOG_SIZE = 290;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 203;
+const EXPECTED_INCLUDED_SIZE = 212;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -28,17 +28,18 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
   ['memory.create', 'R069'],
-  ['memory.forget', 'R069'],
-  ['memory.forget.prepare', 'R069'],
+  ['memory.update', 'R069'],
   ['memory.list', 'R069'],
-  ['memory.notebook.diff', 'R069'],
-  ['memory.notebook.history', 'R069'],
-  ['memory.notebook.restore', 'R069'],
   ['memory.read', 'R069'],
+  ['memory.notebook.history', 'R069'],
+  ['memory.notebook.diff', 'R069'],
+  ['memory.notebook.restore', 'R069'],
+  ['memory.forget.prepare', 'R069'],
+  ['memory.forget', 'R069'],
+  ['memory.source.register', 'R069'],
+  ['memory.search', 'R069'],
   ['memory.source.list', 'R069'],
   ['memory.source.read', 'R069'],
-  ['memory.source.register', 'R069'],
-  ['memory.update', 'R069'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -115,6 +116,14 @@ const WEB_OPERATION_GROUPS = {
     'catalog.mcp-list': { disposition: 'live', surface: 'Catalog' },
     'catalog.plugin-list': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-version-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-update-check': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-version-read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-content-read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-diff': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-remove': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-purge': { disposition: 'live', surface: 'Catalog' },
+    'catalog.skill-candidate-withdraw': { disposition: 'live', surface: 'Catalog' },
     'catalog.mcp-select': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-select': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-pin': { disposition: 'live', surface: 'Catalog' },
@@ -184,17 +193,18 @@ const WEB_OPERATION_GROUPS = {
   },
   Memory: {
     'memory.create': { disposition: 'roadmap', roadmap: 'R069' },
-    'memory.forget': { disposition: 'roadmap', roadmap: 'R069' },
-    'memory.forget.prepare': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.update': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.list': { disposition: 'roadmap', roadmap: 'R069' },
-    'memory.notebook.diff': { disposition: 'roadmap', roadmap: 'R069' },
-    'memory.notebook.history': { disposition: 'roadmap', roadmap: 'R069' },
-    'memory.notebook.restore': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.read': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.notebook.history': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.notebook.diff': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.notebook.restore': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.forget.prepare': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.forget': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.source.register': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.search': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.source.list': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.source.read': { disposition: 'roadmap', roadmap: 'R069' },
-    'memory.source.register': { disposition: 'roadmap', roadmap: 'R069' },
-    'memory.update': { disposition: 'roadmap', roadmap: 'R069' },
   },
   Materials: {
     'material.bind': { disposition: 'live', surface: 'Material' },

@@ -224,6 +224,14 @@ export type CommandRequestName =
   | 'vault.server-mcp-grant-revoke'
   | 'vault.server-mcp-grant-narrow'
   | 'catalog.shared-mcp-set-disabled'
+  | 'catalog.skill-import'
+  | 'catalog.skill-select'
+  | 'catalog.skill-pin'
+  | 'catalog.skill-remove'
+  | 'catalog.skill-purge'
+  | 'catalog.skill-candidate-submit'
+  | 'catalog.skill-candidate-decide'
+  | 'catalog.skill-candidate-withdraw'
   | 'workspace.create'
   | 'workspace.update'
   | 'workspace.invitation.create'
@@ -314,6 +322,9 @@ export type CommandRequestResponseKind =
   | 'catalog_mcp'
   | 'vault_reference'
   | 'vault_grant'
+  | 'skill_version'
+  | 'skill_catalog'
+  | 'skill_candidate'
   | 'workspace'
   | 'workspace_invitation'
   | 'workspace_member'
@@ -573,6 +584,8 @@ interface CreateTurnOptions {
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
   reasoningEffort?: Turn['reasoningEffort'];
+  /** Exact per-run Skill input captured on the canonical admitted Turn. */
+  skillSelections?: Turn['skillSelections'];
   /** Command-owned start time when a Core-local Turn must share one accepted timestamp. */
   startedAt?: string;
   /** Admission-time capture pair when the caller already resolved the effective setting. */
@@ -2678,6 +2691,9 @@ export class FsStore {
       durationMs: null,
       ...(options.reasoningEffort !== undefined
         ? { reasoningEffort: options.reasoningEffort }
+        : {}),
+      ...(options.skillSelections !== undefined
+        ? { skillSelections: options.skillSelections }
         : {}),
       ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
       ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),

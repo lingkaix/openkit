@@ -810,6 +810,7 @@ export function useImportSkill() {
 /** Exact Skill pin change bound to one Workspace revision. */
 export type SetSkillPinCommand = {
   digest: string | null;
+  expectedPinDigest: string | null;
   expectedRevision: number;
   skillId: string;
   workspaceId: string;
@@ -825,6 +826,7 @@ export function useSetSkillPin() {
         workspaceId: command.workspaceId,
         skillId: command.skillId,
         digest: command.digest,
+        expectedPinDigest: command.expectedPinDigest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
       }),
@@ -869,10 +871,30 @@ export function useSubmitSkillCandidate() {
   });
 }
 
+/** Withdraws a proposed candidate through Core's current actor authority checks. */
+export function useWithdrawSkillCandidate() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { workspaceId: string; candidateId: string; expectedRevision: number }) =>
+      client.operations['catalog.skill-candidate-withdraw']({
+        ...input,
+        requestId: createRequestId(),
+      }),
+    retry: false,
+    onSuccess: (_result, input) =>
+      queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(input.workspaceId),
+        exact: true,
+      }),
+  });
+}
+
 /** Exact Skill candidate decision bound to one Workspace revision. */
 export type DecideSkillCandidateCommand = {
   candidateId: string;
   decision: 'promoted' | 'rejected' | 'withdrawn';
+  expectedCurrentDigest: string | null;
   expectedRevision: number;
   workspaceId: string;
 };
@@ -887,6 +909,7 @@ export function useDecideSkillCandidate() {
         workspaceId: command.workspaceId,
         candidateId: command.candidateId,
         decision: command.decision,
+        expectedCurrentDigest: command.expectedCurrentDigest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
       }),
@@ -903,6 +926,7 @@ export function useDecideSkillCandidate() {
 /** Exact Skill default selection bound to one Workspace revision. */
 export type SelectSkillDefaultCommand = {
   digest: string;
+  expectedCurrentDigest: string | null;
   expectedRevision: number;
   skillId: string;
   workspaceId: string;
@@ -918,6 +942,7 @@ export function useSelectSkillDefault() {
         workspaceId: command.workspaceId,
         skillId: command.skillId,
         digest: command.digest,
+        expectedCurrentDigest: command.expectedCurrentDigest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
       }),

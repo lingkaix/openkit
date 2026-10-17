@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentCaptureCoverage,
@@ -32,8 +33,12 @@ import {
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
 import {
+  CatalogContentUnavailableError,
+  CatalogIntegrityError,
+  CatalogNotFoundError,
   composeWorkspaceMcpCatalog,
   loadWorkspaceResourceCatalog,
+  readWorkspaceSkillSnapshot,
 } from '../catalog/resource-catalog.js';
 import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
@@ -456,11 +461,12 @@ function resolveOpenShellAgentEnvironmentPackage(
   }
 
   const workerSkills = resolveWorkerSkillSupply(
-    (manifest.skills ?? []).map((skill) => skill.id),
+    manifest.skills ?? [],
     manifest.runtime.adapter,
     input.turn.workspaceId,
     input.coreDb?.dataRoot,
-    input.agentSessionId
+    input.agentSessionId,
+    input.turn.skillSelections
   );
   const capturePaths = workerTurnCapturePaths(
     input.turn.threadId,
@@ -1042,24 +1048,48 @@ function workspaceInputSource(
 }
 
 /**
- * Resolves catalog-approved Skill snapshots against release-owned adapter supply qualification.
+ * Refuses run choices that would add undeclared Skill supply, at admission and current resolution.
+ * @param skills Skills included by the current composed Agent setup.
+ * @param selections Exact run input retained on the canonical Turn, if supplied.
+ * @throws TurnStartValidationError when a selected Skill is absent from the setup.
+ */
+export function assertRunSkillSelectionsIncluded(
+  skills: readonly { readonly id: string }[],
+  selections: z.infer<typeof TurnSchema>['skillSelections']
+): void {
+  if (selections?.some((selection) => !skills.some((skill) => skill.id === selection.skillId))) {
+    throw new TurnStartValidationError(
+      'invalid_skill_selection',
+      'Run Skill selections must name Skills included in the composed Agent setup.',
+      409
+    );
+  }
+}
+
+/**
+ * Verifies exact catalog Skill snapshots against release-owned adapter supply qualification.
  *
- * @param skillIds Worker Skill ids requested by the selected agent.
+ * @param skills Included Skill references from the composed Agent setup.
  * @param adapter Runtime adapter that will consume the supply.
  * @param workspaceId Workspace owning the Skill catalog.
  * @param dataRoot Core data root containing the catalog.
  * @param agentSessionId Exact AgentSession identity owning the supply input paths.
+ * @param runSelections Exact run input from the canonical Turn, without any catalog mutation.
  * @returns Catalog-resolved Skill supply entries.
  * @throws DeterministicAgentPreparationError when the adapter has no declared filesystem Skill form.
+ * @throws CatalogNotFoundError or CatalogIntegrityError when selected retained supply is unavailable or changed.
  */
 function resolveWorkerSkillSupply(
-  skillIds: string[],
+  skills: readonly { readonly id: string; readonly digest?: string | undefined }[],
   adapter: string,
   workspaceId: string,
   dataRoot: string | undefined,
-  agentSessionId: string
+  agentSessionId: string,
+  runSelections: z.infer<typeof TurnSchema>['skillSelections']
 ) {
-  if (skillIds.length === 0) return [];
+  assertRunSkillSelectionsIncluded(skills, runSelections);
+  if (skills.length === 0) return [];
+  const runDigests = new Map(runSelections?.map(({ skillId, digest }) => [skillId, digest]));
   if (!dataRoot) {
     throw new Error('Workspace Skill catalog requires a data root.');
   }
@@ -1068,26 +1098,66 @@ function resolveWorkerSkillSupply(
     .map(([id]) => id);
   const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
   const { supplyRoot } = workerSessionInputPaths(agentSessionId);
-  return skillIds.map((skillId) => {
+  const selected = skills.map((skill) => {
+    const skillId = skill.id;
     const entry = catalog.skills.entries.find((item) => item.id === skillId);
     const pin = catalog.skills.pins.find((item) => item.entryId === skillId);
-    const digest = pin?.digest ?? entry?.currentDigest;
-    const version = catalog.skills.versions.find(
-      (item) => item.entryId === skillId && item.digest === digest
-    );
-    if (!entry || entry.availability !== 'available' || !digest || !version) {
-      throw new Error(`Worker supply catalog entry not found: skill:${skillId}`);
+    const runDigest = runDigests.get(skillId);
+    const digest = runDigest ?? skill.digest ?? pin?.digest ?? entry?.currentDigest;
+    if (!entry || entry.availability !== 'available' || !digest) {
+      throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${skillId}`);
     }
     if (!allowedRuntimeAdapters.includes(adapter)) {
       throw new DeterministicAgentPreparationError(
         `Worker skill catalog entry is not allowed for ${adapter}: ${entry.id}`
       );
     }
+    const { version } = readWorkspaceSkillSnapshot({
+      dataRoot,
+      digest,
+      entryId: skillId,
+      workspaceId,
+    });
+    return {
+      digest,
+      entry,
+      version,
+      selectionSource: runDigest
+        ? ('run' as const)
+        : skill.digest
+          ? ('setup' as const)
+          : pin?.digest
+            ? ('pin' as const)
+            : ('current' as const),
+    };
+  });
+  // Recheck the complete selection after collection; a later Skill read can revoke an earlier entry.
+  const current = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
+  return selected.map(({ digest, entry, selectionSource, version }) => {
+    const retained = current.skills.versions.find(
+      (item) => item.entryId === entry.id && item.digest === digest
+    );
+    if (
+      !current.skills.entries.some(
+        (item) => item.id === entry.id && item.availability === 'available'
+      ) ||
+      !retained
+    ) {
+      throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${entry.id}`);
+    }
+    if (retained.contentState === 'purged') {
+      throw new CatalogContentUnavailableError(`Skill content was purged: ${entry.id}/${digest}`);
+    }
+    if (!isDeepStrictEqual(retained, version)) {
+      throw new CatalogIntegrityError(
+        `Skill version changed during Worker supply admission: ${entry.id}/${digest}`
+      );
+    }
     const targetPath = `${supplyRoot}/${entry.id}`;
     return {
       allowedRuntimeAdapters,
       allowedWorkspaceScopes: ['workspace'],
-      digestFormat: 'openkit-tree-v1' as const,
+      digestFormat: version.digestFormat,
       id: entry.id,
       integrity: { sha256: digest },
       inventory: version.inventory,
@@ -1103,7 +1173,7 @@ function resolveWorkerSkillSupply(
       policyRefIds: [],
       reviewStatus: 'approved' as const,
       secretRefIds: [],
-      selectionSource: pin?.digest ? ('pin' as const) : ('current' as const),
+      selectionSource,
       sourceRef: `catalog:skill:${entry.id}:${digest}`,
       target: targetPath,
       version: version.publisherVersion ?? digest,

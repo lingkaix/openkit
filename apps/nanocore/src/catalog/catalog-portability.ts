@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
   AGENT_RESOURCE_CATALOG_FEATURE,
-  digestOpenKitTree,
   hashOpenKitTreeEntries,
   type PortableAgentResourceCatalog,
   type PortableCatalogTreeFile,
@@ -20,7 +19,7 @@ import {
   publishCanonicalPath,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
-import { loadWorkspaceResourceCatalog, skillSnapshotPath } from './resource-catalog.js';
+import { loadWorkspaceResourceCatalog, readWorkspaceSkillSnapshot } from './resource-catalog.js';
 
 /** Inventory path for the portable catalog projection. */
 export const AGENT_RESOURCE_CATALOG_EXPORT_PATH = 'records/agent-resource-catalog.json';
@@ -91,26 +90,24 @@ export function projectWorkspaceCatalogExport(
   });
   return {
     catalog: portable,
-    payloads: catalog.skills.versions.map((version) => {
-      const snapshot = skillSnapshotPath(dataRoot, workspaceId, version.entryId, version.digest);
-      if (!existsSync(snapshot)) {
-        throw new Error(`Skill snapshot missing for export: ${version.entryId} ${version.digest}`);
-      }
-      const tree = digestOpenKitTree(snapshot);
-      if (tree.digest !== version.digest) {
-        throw new Error(
-          `Skill snapshot digest mismatch for export: ${version.entryId} ${version.digest}`
-        );
-      }
-      return {
-        path: skillPayloadExportPath(version.entryId, version.digest),
-        payload: {
+    payloads: catalog.skills.versions
+      .filter((version) => version.contentState === 'retained')
+      .map((version) => {
+        const tree = readWorkspaceSkillSnapshot({
+          dataRoot,
           digest: version.digest,
           entryId: version.entryId,
-          tree: tree.entries.map(treeEntryToPortable),
-        },
-      };
-    }),
+          workspaceId,
+        });
+        return {
+          path: skillPayloadExportPath(version.entryId, version.digest),
+          payload: {
+            digest: version.digest,
+            entryId: version.entryId,
+            tree: tree.entries.map(treeEntryToPortable),
+          },
+        };
+      }),
   };
 }
 
@@ -127,9 +124,9 @@ export function reconstructImportedWorkspaceCatalog(
   payloads: ReadonlyMap<string, PortableSkillPayload>
 ): ResourceCatalogDocument {
   const expectedPaths = new Set(
-    portable.skills.versions.map((version) =>
-      skillPayloadExportPath(version.entryId, version.digest)
-    )
+    portable.skills.versions
+      .filter((version) => version.contentState === 'retained')
+      .map((version) => skillPayloadExportPath(version.entryId, version.digest))
   );
   for (const path of payloads.keys()) {
     if (!expectedPaths.has(path)) {
@@ -137,6 +134,7 @@ export function reconstructImportedWorkspaceCatalog(
     }
   }
   for (const version of portable.skills.versions) {
+    if (version.contentState === 'purged') continue;
     const path = skillPayloadExportPath(version.entryId, version.digest);
     const payload = payloads.get(path);
     if (!payload) {
