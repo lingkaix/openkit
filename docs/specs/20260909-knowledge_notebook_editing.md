@@ -6,6 +6,12 @@ date: 2026-09-09
 ---
 # Knowledge Notebook Editing And Publication
 
+## Source Pointer Extension
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) extends the published Git tree with admitted OKF SourceSummary pointers at `sources/<source-id>.md`, retaining the same fixed-base publisher, current source disclosure, history and suppression rules. This supersedes the external Source-registry authority on activation; raw bytes and backend locations remain outside Git. Original changes update one pointer through one commit; an old digest pin resolves only while matching authorized bytes remain available.
+
+The publisher also auto-admits embedded raw files and pins their digests in existing `sourceReferences` in the same commit; historical rendering uses those pins or shows unavailable. Embedded paths use RFC 3986 resolution from each page directory and must resolve inside Knowledge Base `raw/`. Raw renames/moves rewrite referrers, and admitted page relocation rewrites its embeds, under existing validation/review and page-identity constraints; no new move operation is added. The existing tree/editing paths below describe the current implementation until this extension lands. Package import validates the remapped Source/page graph before publication and cannot replace retained history merely because the current view is empty.
+
 ## Owns
 
 The single fixed-base editing and publication contract for an owner-scoped OKF notebook: retained Git content revisions, bounded Knowledge Manager file editing, final-tree validation, exact authority and conflict checks, multi-page publication, history/diff/restore, and their publication command projections. This contract replaces the former single-page generated-change restriction and mandatory per-edit human Review for ordinary explicitly delegated maintenance.

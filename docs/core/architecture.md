@@ -92,6 +92,8 @@ Each model-using internal role has its own work records and usage accounting thr
 
 Internal roles may produce decisions or proposals only through normal Core services and records. They must not create private workflow, knowledge, evaluation, or product-state authorities.
 
+NanoCore MUST own one interception mechanism at its mediation boundaries, with Policy-bound observe, advise, gate and transform participants. A participant may be an agent, deterministic engine, model, external service or human; its output cannot create authority. Existing effect owners and the final Policy Kernel check remain decisive. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records the design; implementation of the unified mechanism is Not Started.
+
 Product target selection and runtime placement are independent. A product surface may select an internal role, Agent supply and profile, logical model preference, and Thread or explicit new-work action. Core alone resolves that intent to Core-local execution or worker placement; product surfaces do not select Provider routes, AgentSessions, Harnesses, Sandboxes, RuntimeTargets, or native processes.
 
 ## Boundaries And Non-Goals

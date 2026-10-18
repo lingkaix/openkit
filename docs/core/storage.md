@@ -36,6 +36,12 @@ Secret values belong to the vault boundary, not normal workspace files or protoc
 
 Storage format evolution follows the unknown-field preservation and fail-closed rules in `docs/core/contract-evolution.md`.
 
+## Shared File Storage
+
+Content identity, locations, attachments, derivatives, indexes and Knowledge entries have separate responsibilities. The Storage Service owns locations and byte operations, not content meaning, Policy decisions, semantic retrieval or processing. Its separate process-agnostic package starts with a local backend and Knowledge Sources; other owners adopt it later. Vault owns backend credentials.
+
+A reference binds its observed digest and locator; unavailable bytes never bind another object. Storage leases reuse Policy grants and current runtime enforcement. Derivation owns conversion; retrieval owns indexes and embeddings. Do not retain extra originals or derivative excerpts solely for historical resolution. Existing canonical data and retained work keep their owners. The [layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) records these boundaries.
+
 ## Persistent Worker Working Storage
 
 OpenKit SHOULD treat a healthy Worker environment as a long-lived, lightweight VM-like working resource. Durable working storage MUST outlive the replaceable process, Sandbox, image and execution-substrate epoch that use it. This is backend-independent storage doctrine, not a requirement to implement a VM backend or to preserve a container root filesystem.

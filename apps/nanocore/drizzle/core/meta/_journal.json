@@ -47,8 +47,15 @@
     {
       "idx": 6,
       "version": "6",
-      "when": 1792269395784,
-      "tag": "0006_server_capability_usage",
+      "when": 1792273105805,
+      "tag": "0006_external_trigger_admissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792273105806,
+      "tag": "0007_server_capability_usage",
       "breakpoints": true
     }
   ]

@@ -21,6 +21,7 @@ import {
 } from '../scheduler-records';
 import * as schedulerRecords from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
+import { insertExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
 import {
   isCurrentAgentSessionStatus,
@@ -725,6 +726,199 @@ describe('scheduler dispatch loop', () => {
       vi.restoreAllMocks();
       coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'none',
+    'missing',
+    'stale-cache',
+  ] as const)('dispatches event-linked work without a receipt and preserves faulty publication: %s', async (fault) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new RecordingTurnExecutor(coreDb);
+    const manifest = agentManifest();
+    const pollThread = store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
+    const schedules = new AutomationStore(
+      coreDb,
+      new WorkspaceMutationAdmission(),
+      () => '2026-10-16T00:00:00.000Z'
+    );
+    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: pollThread.id,
+      name: 'External event poll',
+      prompt: 'Read the selected source.',
+      intervalSeconds: 5,
+    });
+    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    const occurrence = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z')[0]!;
+    schedules.commitAttempt(occurrence.id, 2, {
+      kind: 'ready',
+      payload: {
+        backendId: executor.executionBackend.id,
+        requestedAgentId: manifest.id,
+        profileRef: 'default',
+        modelId: 'openai/gpt-5.2',
+        workspaceRoots: [],
+        workspaceCwd: null,
+      },
+    });
+    const source = schedules.getOccurrence(occurrence.id);
+    store.createTurn(
+      DEMO_WORKSPACE_ID,
+      pollThread.id,
+      'Read the selected source.',
+      schedule.actor,
+      null,
+      { turnId: source.turnId!, status: 'pending', agentId: manifest.id, executorKind: 'worker' }
+    );
+    cancelSchedulerAdmissionEntry(coreDb, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      queueEntryId: source.queueEntryId!,
+    });
+    const caseThread = store.createThread(
+      DEMO_WORKSPACE_ID,
+      'Isolated event case',
+      undefined,
+      'conversation',
+      { visibility: 'workspace', threadSource: 'worker', parentThreadId: pollThread.id }
+    );
+    const entry = coreDb.sqlite.transaction(() => {
+      const accepted = createSchedulerAdmissionEntry(coreDb, {
+        backendId: executor.executionBackend.id,
+        queueEntryId: 'queue_external_event',
+        requestId: 'external-event-request',
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: caseThread.id,
+        turnId: testEntityId('tu', 'tu_external_dispatch'),
+        requestedAgentId: manifest.id,
+        triggerActor: schedule.actor,
+        turnInput: 'Only this case brief.',
+        profileRef: 'default',
+        modelId: 'openai/gpt-5.2',
+      });
+      insertExternalTriggerAdmission(coreDb, {
+        scheduleId: schedule.id,
+        eventKey: 'source/event-1',
+        sourceTurnId: source.turnId!,
+        queueEntryId: accepted.queueEntryId,
+      });
+      return accepted;
+    })();
+    store.createTurn(DEMO_WORKSPACE_ID, caseThread.id, entry.turnInput, schedule.actor, null, {
+      turnId: entry.turnId,
+      status: 'pending',
+      agentId: manifest.id,
+      executorKind: 'worker',
+    });
+    const app = createApp({ coreDb, dataRoot: coreDb.dataRoot, store, automationStore: schedules });
+    const published = readPublishedTurnFileRecords(
+      coreDb.dataRoot,
+      DEMO_WORKSPACE_ID,
+      caseThread.id,
+      entry.turnId
+    );
+    const turnRoot = join(
+      coreDb.dataRoot,
+      'workspaces',
+      DEMO_WORKSPACE_ID,
+      'threads',
+      caseThread.id,
+      'turns',
+      entry.turnId
+    );
+    const originalBytes = ['turn.json', 'items.jsonl'].map((file) =>
+      readFileSync(join(turnRoot, file))
+    );
+    if (fault === 'stale-cache') {
+      const persist = vi
+        .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
+        .mockImplementationOnce(() => {
+          throw new Error('Turn persistence interrupted');
+        });
+      try {
+        expect(() => store.updateTurn(entry.turnId, { agentId: 'other-worker' })).toThrow(
+          'Turn persistence interrupted'
+        );
+      } finally {
+        persist.mockRestore();
+      }
+      expect(store.getTurnById(entry.turnId).agentId).toBe('other-worker');
+    }
+    if (fault === 'missing')
+      rmSync(
+        join(
+          coreDb.dataRoot,
+          'workspaces',
+          DEMO_WORKSPACE_ID,
+          'threads',
+          caseThread.id,
+          'turns',
+          entry.turnId
+        ),
+        { recursive: true, force: true }
+      );
+    const create = vi.spyOn(store, 'createTurn');
+    const update = vi.spyOn(store, 'updateTurn');
+    try {
+      const outcome = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+      });
+      if (fault !== 'none') {
+        expect(outcome).toMatchObject({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'recovery-required' },
+        });
+        expect(executor.calls).toEqual([]);
+        expect(executor.prepareCalls).toEqual([]);
+        expect(create).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: DEMO_WORKSPACE_ID,
+            queueEntryId: entry.queueEntryId,
+          }),
+        });
+        expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+        expect(update).not.toHaveBeenCalled();
+        expect(
+          readPublishedTurnFileRecords(
+            coreDb.dataRoot,
+            DEMO_WORKSPACE_ID,
+            caseThread.id,
+            entry.turnId
+          )
+        ).toEqual(fault === 'missing' ? null : published);
+        expect(
+          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+        ).toBe('cancelled');
+        if (fault === 'stale-cache')
+          expect(
+            ['turn.json', 'items.jsonl'].map((file) => readFileSync(join(turnRoot, file)))
+          ).toEqual(originalBytes);
+      } else {
+        expect(outcome.startedTurns).toHaveLength(1);
+        expect(executor.calls.map((call) => call.input)).toEqual(['Only this case brief.']);
+      }
+    } finally {
+      create.mockRestore();
+      update.mockRestore();
+      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
   });
 

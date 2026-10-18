@@ -1,7 +1,9 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import {
+  AdmitExternalTriggerRequestSchema,
   assertOperationNames,
+  EXTERNAL_TRIGGER_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
   KnowledgeAskRequestSchema,
   KnowledgeTellRequestSchema,
@@ -43,7 +45,10 @@ import {
   ArtifactAuthorityError,
   type FsStore,
 } from '../lib/store.js';
-import type { OperationInvocationDependencies } from '../operation-composition.js';
+import {
+  createOperationInvocation,
+  type OperationInvocationDependencies,
+} from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
 import {
@@ -188,6 +193,13 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
 
 /** Canonical built-in Work contracts; their schemas ignore inert additive input members. */
 export const OPENKIT_WORK_TOOL_DEFINITIONS = [
+  {
+    name: 'automation.event-admit',
+    description: EXTERNAL_TRIGGER_OPERATION_DEFINITIONS['automation.event-admit'].description,
+    inputSchema: mcpInputSchema(
+      AdmitExternalTriggerRequestSchema.omit({ workspaceId: true, threadId: true, turnId: true })
+    ),
+  },
   ...(['knowledge.ask', 'knowledge.tell'] as const).map((id) => ({
     name: id,
     description: KNOWLEDGE_OPERATION_DEFINITIONS[id].description,
@@ -299,6 +311,8 @@ export async function dispatchOpenkitWorkTool(
     readonly signal?: AbortSignal;
     readonly requireAdmission?: () => void;
     readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
+    readonly automationStore?: OperationInvocationDependencies['automationStore'];
+    readonly turnStartServices?: OperationInvocationDependencies['turnStartServices'];
     readonly knowledgeCallId?: string;
     readonly knowledgePublicationAdmission?: (
       request: NotebookUpdate
@@ -325,6 +339,42 @@ export async function dispatchOpenkitWorkTool(
   if (toolId === 'work.source.read') return readSource(input, args);
   if (toolId === 'work.source.search') return searchSource(input, args);
   if (toolId === 'work.source.view') return viewSource(input, args);
+  if (toolId === 'automation.event-admit') {
+    input.requireAdmission?.();
+    if (!input.automationStore || !input.turnStartServices)
+      throw new OperationError(
+        'scheduler_unavailable',
+        'Scheduled event admission is unavailable.',
+        503
+      );
+    const invoke = createOperationInvocation({
+      coreDb: input.coreDb,
+      store: input.store,
+      automationStore: input.automationStore,
+      turnStartServices: input.turnStartServices,
+      workspaceMutationAdmission: input.automationStore.mutationAdmission,
+    });
+    const result = await invoke('automation.event-admit', args, {
+      kind: 'worker',
+      actor: scope.triggerActor,
+      lineage: { ...scope, packageSnapshotId: input.environmentPackage.snapshotId },
+      requestId: uuidv5(
+        JSON.stringify(['automation.event-admit', scope.turnId, input.knowledgeCallId])
+      ),
+      bindings: {
+        workspaceId: scope.workspaceId,
+        threadId: scope.threadId,
+        turnId: scope.turnId,
+      },
+      delivery: 'model',
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+      structuredContent: result as Record<string, unknown>,
+      isError: false,
+    };
+  }
   if (toolId === 'knowledge.ask' || toolId === 'knowledge.tell') {
     input.requireAdmission?.();
     if (!input.knowledgeAgent || !input.knowledgeCallId)
