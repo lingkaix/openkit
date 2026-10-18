@@ -56,6 +56,7 @@ import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import * as snapshotLedger from './runtime/aep-snapshot-ledger.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import { evaluateCapturedPendingCall } from './runtime/captured-pending-call.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
@@ -1517,9 +1518,9 @@ describe('worker MCP routes', () => {
         {
           id: 'echo',
           enabled: true,
-          allowedTools: ['echo'],
+          allowedTools: ['echo', 'review-echo'],
           deniedTools: [],
-          approvalRequiredTools: [],
+          approvalRequiredTools: ['review-echo'],
           credentialBindings: [],
           pinnedSchemaSnapshotId: null,
           schemaPolicy: 'tracking' as const,
@@ -1558,7 +1559,7 @@ describe('worker MCP routes', () => {
     };
     let environmentPackage = makePackage('req_schema_first');
     const firstTurnId = environmentPackage.scope.turnId;
-    const original = [mcpEchoTool()];
+    const original = [mcpEchoTool(), { ...mcpEchoTool(), name: 'review-echo' }];
     const changed = [
       {
         name: 'echo',
@@ -1623,10 +1624,53 @@ describe('worker MCP routes', () => {
     };
     try {
       expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
-      tools = changed;
-      expect(
-        await request('tools/call', { name: 'echo', arguments: { message: 'original' } })
-      ).toMatchObject({ result: { content: [{ text: 'called' }] } });
+      const pending = await request('tools/call', {
+        name: 'review-echo',
+        arguments: { message: 'captured approval' },
+      });
+      expect(pending).toMatchObject({
+        result: { isError: true, structuredContent: { status: 'pending-approval' } },
+      });
+      expect(workerMcpGateway.callTool).not.toHaveBeenCalled();
+      const currentSchemaDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        const record = readPendingRequest(
+          currentSchemaDb.sqlite,
+          pending.result.structuredContent.requestId
+        )!;
+        expect(
+          evaluateCapturedPendingCall({
+            manifest: setup.manifest,
+            catalog,
+            coreDb,
+            record,
+            sqlite: currentSchemaDb.sqlite,
+          }).schemaCurrent
+        ).toBe(true);
+        tools = changed;
+        expect(
+          await request('tools/call', { name: 'echo', arguments: { message: 'original' } })
+        ).toMatchObject({ result: { content: [{ text: 'called' }] } });
+        expect(
+          readCurrentMcpToolSchemaSnapshot({
+            catalogEntryId: 'echo',
+            pinnedSchemaSnapshotId: null,
+            workspaceDb: currentSchemaDb,
+            workspaceId,
+          })?.tools
+        ).toEqual(changed);
+        expect(
+          evaluateCapturedPendingCall({
+            manifest: setup.manifest,
+            catalog,
+            coreDb,
+            record,
+            sqlite: currentSchemaDb.sqlite,
+          }).schemaCurrent
+        ).toBe(false);
+      } finally {
+        currentSchemaDb.sqlite.close();
+      }
       expect(await request('tools/call', { name: 'echo', arguments: { count: 1 } })).toMatchObject({
         error: { data: { code: 'mcp-invalid-arguments' } },
       });
@@ -3415,6 +3459,7 @@ describe('worker MCP routes', () => {
         server('authority-race'),
         server('gate-race'),
         server('schema-cancel'),
+        server('near-limit'),
       ],
     };
     let environmentPackage = resolveAgentEnvironmentPackage({
@@ -3430,6 +3475,7 @@ describe('worker MCP routes', () => {
           'authority-race',
           'gate-race',
           'schema-cancel',
+          'near-limit',
         ],
       }),
       backend: { kind: 'openshell' },
@@ -3558,7 +3604,11 @@ describe('worker MCP routes', () => {
       listBarrier = { entered: markEntered, released, serverId };
       return { entered, release };
     };
+    let nearLimitListing: Awaited<ReturnType<WorkerMcpGateway['listTools']>>['tools'] = [];
     const listTools = vi.fn(async (request: Parameters<WorkerMcpGateway['listTools']>[0]) => {
+      if (request.server.id === 'near-limit') {
+        return { serverVersion: '1.0.0', tools: nearLimitListing };
+      }
       if (listBarrier?.serverId === request.server.id) {
         listBarrier.entered(request.signal);
         await listBarrier.released;
@@ -4050,22 +4100,10 @@ describe('worker MCP routes', () => {
           name: 'echo',
         },
       ];
-      const nearLimitSchemaDb = openWorkspaceDb(
-        dataRoot,
-        'ws_00000000-0000-7000-8000-000000000001'
-      );
-      recordMcpToolSchemaSnapshot({
-        environmentPackage,
-        schemaSnapshotId: 'mcpschema_near_limit',
-        serverId: 'echo',
-        source: 'live',
-        tools: nearLimitTools,
-        workspaceDb: nearLimitSchemaDb,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      nearLimitSchemaDb.sqlite.close();
+      nearLimitListing = nearLimitTools;
+      const nearLimit = await connect('near-limit');
       expect(Buffer.byteLength(JSON.stringify(nearLimitTools), 'utf8')).toBe(512 * 1024);
-      const nearLimitList = await echo.listTools();
+      const nearLimitList = await nearLimit.listTools();
       expect(Buffer.byteLength(JSON.stringify(nearLimitList.tools), 'utf8')).toBe(512 * 1024);
       const nearLimitListDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(

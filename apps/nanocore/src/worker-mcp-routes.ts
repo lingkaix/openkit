@@ -1852,23 +1852,22 @@ async function observeWorkerMcpTools(input: {
   const snapshotDigest = mcpToolSchemaContentDigest(snapshotTools);
   // Keep selection and stamping synchronous: concurrent discoveries must reuse the first binding.
   const bound = readTurnMcpToolSchemaSnapshot(input);
-  const snapshotId =
-    bound?.schemaSnapshotId ??
-    recordMcpToolSchemaSnapshot({
-      capabilityCallId: input.call.id,
-      environmentPackage: input.environmentPackage,
-      schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
-      serverId: input.serverId,
-      serverVersion: live.serverVersion,
-      source: 'live',
-      tools: snapshotTools,
-      workspaceDb: input.workspaceDb,
-      workspaceId: input.environmentPackage.scope.workspaceId,
-    });
+  // Approval re-evaluation needs the latest live observation even when the Worker stays on its Turn schema.
+  const liveSnapshotId = recordMcpToolSchemaSnapshot({
+    capabilityCallId: input.call.id,
+    environmentPackage: input.environmentPackage,
+    schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
+    serverId: input.serverId,
+    serverVersion: live.serverVersion,
+    source: 'live',
+    tools: snapshotTools,
+    workspaceDb: input.workspaceDb,
+    workspaceId: input.environmentPackage.scope.workspaceId,
+  });
+  const snapshotId = bound?.schemaSnapshotId ?? liveSnapshotId;
   if (
     input.selected.schemaPolicy === 'pinned' &&
-    (input.selected.pinnedSchemaSnapshotId !== snapshotId ||
-      (bound && mcpToolSchemaContentDigest(bound.tools) !== snapshotDigest))
+    input.selected.pinnedSchemaSnapshotId !== liveSnapshotId
   ) {
     throw new WorkerControlGatewayError(
       'mcp-schema-drift',
