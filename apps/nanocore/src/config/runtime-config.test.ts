@@ -521,6 +521,34 @@ describe('runtime config loading and reload planning', () => {
     ]);
   });
 
+  it('retains Discord startup identity through safe reload and reports the pending restart', () => {
+    const dataRoot = createDataRoot();
+    const discord = { applicationId: '123456789012345678', publicKey: 'ab'.repeat(32) };
+    const configured = (value: typeof discord) =>
+      `, "server": { "publicBaseUrl": "https://openkit.invalid" }, "channels": ${JSON.stringify({ discord: value })}`;
+    try {
+      writeConfiguredServer(dataRoot, 'openai/gpt-5.1', configured(discord));
+      const manager = createRuntimeConfigManager({ dataRoot });
+      writeConfiguredServer(
+        dataRoot,
+        'openai/gpt-5.1',
+        configured({ ...discord, publicKey: 'cd'.repeat(32) })
+      );
+      const applied = manager.reload({ dryRun: false, mode: 'safe' });
+      expect(applied.status).toBe('applied');
+      expect(manager.current().openKitConfig.channels).toEqual({ discord });
+      expect(manager.status().pendingRestart).toEqual([
+        expect.objectContaining({
+          action: 'requires-restart',
+          category: 'restart-required',
+          path: 'channels',
+        }),
+      ]);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('loads durable Workspace approval modes and requires restart for changes', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();

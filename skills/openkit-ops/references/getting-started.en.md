@@ -138,3 +138,11 @@ Use [configuration](nanocore-data-root-config.en.md) for separate Server, Worksp
 Observe public health and authorized diagnostics, then verify Provider inference and NanoHost readiness independently. Create or select a Workspace, attach the requested source/data through supported product operations, and ask for one bounded real Worker task in Web or through the public Skill. Inspect the terminal task and meaningful output; a successful Assistant reply or HTTP request does not prove Worker execution.
 
 If a prerequisite is unavailable, report that exact boundary and follow [operations](nanocore-operations.en.md). Preserve the running deployment and unrelated state. [Product use](using-openkit.en.md) explains ordinary work after installation.
+
+## Human Review In The Web App
+
+Select the intended Workspace and open Catalog to inspect a Skill candidate, promote or reject it, and select or pin its reviewed version. Light App definitions have separate import, exact-version pin and default selection actions in the same Catalog. Knowledge proposals are inspected and decided in Knowledge. Approve a captured sensitive action in Overview's Action Center only after reviewing that invocation.
+
+For an existing Workspace MCP server, inspect its allowed, approval-required and denied tool names in Catalog, edit the comma-separated fields, then select Save tool rules. This changes that binding's configuration, not Server-owned shared supply or approval of a particular tool call. A failed save requires Refresh rules and inspection before another deliberate save.
+
+Open Settings, Debug, then select the retained package snapshot for the Turn under review. Its detail shows the Thread, Turn, exact Skill digest and recorded selection source, including `pin` when the Workspace pin supplied that version. These are historical package selections; they do not show the current pin or prove native consumption. Unavailable lineage remains labeled unavailable. Human output choice uses the existing Artifact Review; this flow adds no Turn-draft Skill-version launch control.

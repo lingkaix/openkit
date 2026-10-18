@@ -6,6 +6,7 @@ export { AccessTokensScreen } from './AccessTokensScreen';
 export { AdministrationScreen } from './AdministrationScreen';
 export { AiInterfaceScreen } from './AiInterfaceScreen';
 export { AppUpdateScreen } from './AppUpdateScreen';
+export { ChannelsScreen } from './ChannelsScreen';
 export { ConfigurationScreen } from './ConfigurationScreen';
 export { DataRootBackupScreen } from './DataRootBackupScreen';
 export { DebugScreen } from './DebugScreen';
