@@ -766,6 +766,11 @@ async function retrieveNotebookSelection(
         pageScopeId: sourceScope,
         path,
         content,
+        resolvedReferences: verifiedKnowledgePageSourceReferences(
+          stringListFrontmatterField(document, 'source_refs') ?? [],
+          pinnedPages,
+          sourceScope
+        ),
         scopeSchemaText: scopeSchemaText!,
         expectedOwnerScope: expectedOwnerScope!,
         registeredSources,
@@ -845,6 +850,11 @@ async function retrieveNotebookSelection(
       pageScopeId: sourceScope,
       path: expectedPath,
       content,
+      resolvedReferences: verifiedKnowledgePageSourceReferences(
+        document ? (stringListFrontmatterField(document, 'source_refs') ?? []) : [],
+        pinnedPages,
+        sourceScope
+      ),
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
@@ -869,7 +879,10 @@ async function retrieveNotebookSelection(
       registeredSources,
       knowledgeIds,
       ...(expectedOwnerScope ? { expectedOwnerScope } : {}),
-      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+      resolvedReferences: new Set([
+        ...verifiedKnowledgePageSourceReferences(sourceReferences, pinnedPages, sourceScope),
+        ...(referenceProof?.resolvedReferences ?? []),
+      ]),
     });
     const projectedSourceReferences = [
       ...new Set(sourceReferencesByConcept.get(candidate.knowledgePageId) ?? []),
@@ -1490,7 +1503,10 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
-      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+      resolvedReferences: new Set([
+        ...verifiedKnowledgePageSourceReferences(sourceRefs, pinnedPages, trace.sourceScope),
+        ...(referenceProof?.resolvedReferences ?? []),
+      ]),
     });
     const reviewState = document ? stringFrontmatterField(document, 'review_state') : null;
     const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
