@@ -885,7 +885,14 @@ export function recordBootPolicySelfCheckDecisions(
         const linkedAudit = input.coreDb.sqlite
           .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
           .get(row.audit_event_id) as Record<string, unknown> | undefined;
-        if (linkedAudit) readAuditEventRowV1(linkedAudit);
+        if (linkedAudit) {
+          try {
+            readAuditEventRowV1(linkedAudit);
+          } catch {
+            // Boot owns the pair's corruption diagnostic; a failed retained read still blocks retry.
+            throw new Error('Boot policy self-check record is contradictory.');
+          }
+        }
         // Compare the known immutable core and leave additive storage columns untouched.
         const expectedAudit = {
           audit_event_id: row.audit_event_id,
