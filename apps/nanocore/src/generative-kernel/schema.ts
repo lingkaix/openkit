@@ -109,7 +109,7 @@ export function admitLightAppDefinition(
     schemaVersion: 1,
     title: parsed.data.title,
     purpose: parsed.data.purpose,
-    references: parsed.data.references ?? [],
+    references: [...new Set(parsed.data.references ?? [])],
     collections: admittedCollections,
   });
   if (existing) {
