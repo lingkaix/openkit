@@ -170,6 +170,28 @@ function snapshotPath(
 }
 
 describe('AEP snapshot ledger', () => {
+  it('refuses missing or unknown outer versions before decoding the embedded AEP or replaying', () => {
+    const db = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(db, { environmentPackage });
+      const path = snapshotPath(db, environmentPackage);
+      for (const marker of [{}, { schemaVersion: 2 }]) {
+        const invalid = JSON.stringify({ ...marker, snapshot: 'invalid' });
+        writeFileSync(path, invalid);
+        expect(() =>
+          requireAgentEnvironmentPackageSnapshot(db, db.workspaceId, environmentPackage.snapshotId)
+        ).toThrow('Unsupported retained record format.');
+        expect(() => recordAgentEnvironmentPackageSnapshot(db, { environmentPackage })).toThrow(
+          'Unsupported retained record format.'
+        );
+        expect(readFileSync(path, 'utf8')).toBe(invalid);
+      }
+    } finally {
+      db.sqlite.close();
+      rmSync(db.dataRoot, { recursive: true, force: true });
+    }
+  });
   it('reads only the exact snapshot across many sessions and leaves export validation intact', () => {
     const db = createWorkspaceDb();
     const named = createEnvironmentPackage();
@@ -772,7 +794,9 @@ describe('AEP snapshot ledger', () => {
     });
 
     expect.soft(existsSync(path)).toBe(true);
-    expect.soft(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null).toEqual(record);
+    expect
+      .soft(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null)
+      .toEqual({ ...record, schemaVersion: 1 });
     expect(record).toMatchObject({
       snapshotId: environmentPackage.snapshotId,
       workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',

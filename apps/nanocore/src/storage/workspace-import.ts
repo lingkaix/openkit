@@ -2042,7 +2042,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     if (!firstLine) {
       throw new Error('Runtime provenance index is empty.');
     }
-    const firstRow = WorkerRuntimeOriginIndexRowSchema.parse(JSON.parse(firstLine));
+    const firstRow = readRetainedV1(JSON.parse(firstLine), (value) =>
+      WorkerRuntimeOriginIndexRowSchema.parse(value)
+    );
     const sourceLineage = firstRow.lineage;
     if (
       bundle.workspaceId !== sourceLineage.workspaceId ||

@@ -21,6 +21,7 @@ import {
   RetainedAgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
 
@@ -315,7 +316,7 @@ function writeSnapshotRecord(
   try {
     writeFileSync(
       temporaryPath,
-      `${JSON.stringify({ ...record, snapshot: 'retainedSnapshot' in record ? record.retainedSnapshot : record.snapshot }, null, 2)}\n`,
+      `${JSON.stringify(writeRetainedV1({ ...record, snapshot: 'retainedSnapshot' in record ? record.retainedSnapshot : record.snapshot }), null, 2)}\n`,
       { flag: 'wx' }
     );
     try {
@@ -353,7 +354,9 @@ function readSnapshotRecord(
   }
   let record: AgentEnvironmentPackageSnapshotReadRecord;
   try {
-    record = validateSnapshotRecord(workspaceDb, JSON.parse(readFileSync(path, 'utf8')));
+    record = readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+      validateSnapshotRecord(workspaceDb, value)
+    );
   } catch (cause) {
     if (cause instanceof SyntaxError || cause instanceof z.ZodError) {
       throw new AgentEnvironmentSnapshotReadError(cause);
