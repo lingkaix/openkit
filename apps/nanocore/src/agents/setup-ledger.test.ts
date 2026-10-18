@@ -1,8 +1,8 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkerSandboxAccessSchema } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -20,11 +20,13 @@ import type { ResolvedAgentSetup } from './setup-resolver.js';
  * @returns Open workspace database.
  */
 function createWorkspaceDb() {
-  const workspaceDb = openWorkspaceDb(
-    mkdtempSync(join(tmpdir(), 'openkit-agent-setup-ledger-')),
-    'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
-    'ws_00000000-0000-73c3-900f-8d310e4ba201'
-  );
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-setup-ledger-'));
+  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+  onTestFinished(() => {
+    if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  });
+  workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -82,7 +84,7 @@ describe('resolved agent setup ledger', () => {
     }
   });
 
-  it('persists and reads one workspace-scoped resolved setup record', () => {
+  it('persists and reopens one v1 workspace-scoped resolved setup without rewriting annotations', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
@@ -109,6 +111,84 @@ describe('resolved agent setup ledger', () => {
       expect(
         requireResolvedAgentSetup(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'ras_1')
       ).toEqual(record);
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM resolved_agent_setups')
+          .get()
+      ).toEqual({ schemaVersion: 1 });
+      workspaceDb.sqlite
+        .prepare('UPDATE resolved_agent_setups SET setup_json = ? WHERE setup_record_id = ?')
+        .run(
+          JSON.stringify({ ...record.setup, annotation: 'Descriptive setup annotation.' }),
+          record.id
+        );
+      const retained = workspaceDb.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,
+        required_features_json, setup_json FROM resolved_agent_setups`)
+        .get();
+      workspaceDb.sqlite.close();
+      const reopened = openWorkspaceDb(workspaceDb.dataRoot, record.workspaceId);
+      try {
+        expect(requireResolvedAgentSetup(reopened, record.workspaceId, record.id)).toEqual(record);
+        expect(listExportableResolvedAgentSetups(reopened, record.workspaceId)).toEqual([record]);
+        expect(
+          reopened.sqlite
+            .prepare(`SELECT schema_version AS schemaVersion,
+          required_features_json, setup_json FROM resolved_agent_setups`)
+            .get()
+        ).toEqual(retained);
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown setup version before JSON decode, replacement or import collision', () => {
+    const workspaceDb = createWorkspaceDb();
+    const setup = resolvedSetup();
+    const input = {
+      recordId: 'ras_unknown_version',
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      setup,
+      createdAt: '2026-07-06T00:00:00.000Z',
+    };
+    try {
+      const record = recordResolvedAgentSetup(workspaceDb, input);
+      workspaceDb.sqlite
+        .prepare(`UPDATE resolved_agent_setups SET schema_version = 2,
+        required_features_json = '{', setup_json = '{' WHERE setup_record_id = ?`)
+        .run(record.id);
+      workspaceDb.sqlite.exec(`CREATE TRIGGER reject_unsupported_setup_insert BEFORE INSERT ON resolved_agent_setups
+        BEGIN SELECT RAISE(FAIL, 'Unsupported setup reached an INSERT'); END`);
+
+      expect(() => requireResolvedAgentSetup(workspaceDb, record.workspaceId, record.id)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => listExportableResolvedAgentSetups(workspaceDb, record.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      const otherWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      expect(() =>
+        recordResolvedAgentSetup(workspaceDb, { ...input, workspaceId: otherWorkspaceId })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        importResolvedAgentSetups(workspaceDb, [{ ...record, workspaceId: otherWorkspaceId }])
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        workspaceDb.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion, workspace_id,
+        required_features_json, setup_json FROM resolved_agent_setups`)
+          .all()
+      ).toEqual([
+        {
+          schemaVersion: 2,
+          workspace_id: record.workspaceId,
+          required_features_json: '{',
+          setup_json: '{',
+        },
+      ]);
     } finally {
       workspaceDb.sqlite.close();
     }
