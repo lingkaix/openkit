@@ -8715,6 +8715,31 @@ describe('WorkerGovernanceTurnExecutor', () => {
     } = fixture;
     const backend = new FakeWorkerGovernanceBackend();
     const launchSpy = vi.spyOn(backend, 'submit');
+    const originalChunks: Buffer[] = [];
+    // Real imports open in prepareLaunch, after accepted delivery consumes the selection queue.
+    const prepareSpy = vi.spyOn(backend, 'prepareLaunch').mockImplementation(async () => {
+      const workspaceDb = openTestWorkspaceDb(coreDb);
+      try {
+        expect(selectQueuedThreadMaterialRevision(workspaceDb, turn.threadId)).toBeNull();
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      const original = backend.lastContext?.contextPackageSources?.find(
+        (entry) =>
+          entry.source.kind === 'material' &&
+          entry.source.reference.objectId === material.materialId &&
+          entry.source.revisionId === revision.revisionId
+      );
+      expect(original).toMatchObject({
+        byteLength: 5_000,
+        originalDigest: fixture.materialContentDigest,
+      });
+      if (!original) throw new Error('The exact live Material supplier is missing.');
+      for await (const chunk of original.open(new AbortController().signal)) {
+        expect(chunk.byteLength).toBeLessThanOrEqual(65_536);
+        originalChunks.push(Buffer.from(chunk));
+      }
+    });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
@@ -8786,21 +8811,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
           'utf8'
         )
       ).toBe('B'.repeat(2_048));
-      expect(
-        readFileSync(
-          join(
-            contextRoot,
-            'originals',
-            'materials',
-            material.materialId,
-            revision.revisionId,
-            'payload'
-          ),
-          'utf8'
-        )
-      ).toBe('B'.repeat(5_000));
+      expect(prepareSpy).toHaveBeenCalledOnce();
+      const originalBytes = Buffer.concat(originalChunks);
+      expect(originalBytes.toString('utf8')).toBe('B'.repeat(5_000));
+      expect(turnRuntimeSha256(originalBytes)).toBe(fixture.materialContentDigest);
+      expect(existsSync(join(contextRoot, 'originals'))).toBe(false);
       reopenedDb.sqlite.close();
     } finally {
+      prepareSpy.mockRestore();
       launchSpy.mockRestore();
       coreDb.sqlite.close();
     }
