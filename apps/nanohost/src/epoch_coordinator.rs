@@ -26,7 +26,7 @@ use opentelemetry::{Context, KeyValue};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
 use crate::epoch_evidence::{
     EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, REBUILD_FENCE_STARTED_PATH,
