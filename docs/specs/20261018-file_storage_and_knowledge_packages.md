@@ -209,7 +209,7 @@ Ablation: digest references remove required historical copies while preserving t
 
 Context packages adopt exact owner/digest/location references rather than retaining another original solely for history. Keep original, representation and delivered digests distinct, with ranges, lineage and availability. Missing bytes remain unavailable; current sources cannot reconstruct historical delivery. Do not retain extra derivative fragments solely to guarantee replay. Existing Items and independently governed evidence keep their owners.
 
-A disposable read-only input snapshot may serve a running Turn under its current delivery contract. That execution requirement creates no post-settlement source-retention promise. Artifacts, Turn inputs and Context adopt Storage later; their owners coordinate retained format/readers and source admission before activation. Current copied-original inventories remain the implementation baseline until that transition.
+A disposable read-only input snapshot may serve a running Turn under its current delivery contract. That execution requirement creates no post-settlement source-retention promise. The Context digest-reference cutover removes mandatory extra original and complete representation copies from its retained inventory; its existing owner/version references and digest metadata identify content. Artifact and Turn input canonical storage remain with their owners until their separate Storage adoption.
 
 ## Backup And Workspace Export
 

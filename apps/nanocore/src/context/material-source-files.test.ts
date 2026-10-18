@@ -34,7 +34,7 @@ function fixture(content: string) {
   };
 }
 
-it('delivers one bounded excerpt while retaining and streaming every original byte', async () => {
+it('delivers one bounded excerpt while streaming every original byte for admission', async () => {
   const content = '漢字の原本\n'.repeat(20_000);
   const state = fixture(content);
   const prepared = await prepareMaterialSourceInput(state.input);
@@ -56,7 +56,6 @@ it('delivers one bounded excerpt while retaining and streaming every original by
   expect(prepared.selection.projection).toEqual(prepared.source.projection);
   expect(prepared.source.projection).toMatchObject({
     kind: 'excerpt',
-    originalSnapshotPath: `originals/materials/${state.selection.materialId}/${state.selection.revisionId}/payload`,
     deliveredDigest: sha256(Buffer.from(delivered)),
     representationDigest: sha256(Buffer.from(content)),
     truncated: true,

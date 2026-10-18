@@ -1,11 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   constants,
   existsSync,
   fstatSync,
   fsyncSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -59,7 +58,7 @@ import {
   readCanonicalTextFile,
   syncCanonicalDirectory,
 } from '../storage/workspace-file-records.js';
-import { PDF_TEXT_LAYER_LIMITS, PdfTextLayerEvidenceSchema } from './pdf-text-layer.js';
+import { PdfTextLayerEvidenceSchema } from './pdf-text-layer.js';
 
 /** Stable policy version for the first accepted worker Context Package trace. */
 export const WORKER_CONTEXT_PACKAGE_POLICY_VERSION = 'worker-context-v1' as const;
@@ -131,8 +130,6 @@ export const WorkerContextPackageProjectionSchema = z.object({
   byteLength: z.number().int().nonnegative().max(51_200),
   truncated: z.boolean(),
   availability: z.enum(['available', 'incomplete', 'unavailable']),
-  originalSnapshotPath: IdSchema.optional(),
-  representationSnapshotPath: IdSchema.optional(),
   pdfTextLayer: PdfTextLayerEvidenceSchema.optional(),
 });
 /** Exact text projection admitted by the existing package owner. */
@@ -155,17 +152,16 @@ const SourceFileSchema = z.object({
   originalDigest: Sha256Schema,
   byteLength: z.number().int().nonnegative().safe(),
   mediaType: IdSchema.max(255),
-  originalSnapshotPath: IdSchema,
   packagePath: IdSchema,
   projection: WorkerContextPackageProjectionSchema,
 });
-/** Additive source inventory under the existing WIS and package materialization proof. */
+/** Digest-bound existing owner references; only delivered projections enter the retained file inventory. */
 export type WorkerContextPackageSourceFile = z.infer<typeof SourceFileSchema>;
 /** Private pinned source supplier; callbacks and host paths never enter retained metadata. */
 export interface WorkerContextPackageSourceFileInput extends WorkerContextPackageSourceFile {
   /** Bounded worker-visible UTF-8 bytes. */
   readonly deliveredBytes: Uint8Array;
-  /** Reads the complete retained derived representation in at most 64 KiB chunks, when selected. */
+  /** Reads the complete current derived representation in at most 64 KiB chunks, when selected. */
   readonly openRepresentation?: ((signal: AbortSignal) => AsyncIterable<Uint8Array>) | undefined;
   /** Reads the held immutable original in chunks no larger than 64 KiB. */
   readonly open: (signal: AbortSignal) => AsyncIterable<Uint8Array>;
@@ -796,7 +792,7 @@ export function createWorkerContextPackageFiles(
     throw new Error('Worker Context Package source inventory exceeds its entry bound.');
   const sourceFileInputs: WorkerContextPackageSourceFileInput[] = [];
   const sourceFiles = [...(input.sourceFiles ?? [])]
-    .sort((a, b) => a.originalSnapshotPath.localeCompare(b.originalSnapshotPath))
+    .sort((a, b) => a.packagePath.localeCompare(b.packagePath))
     .map((entry) => {
       const metadata = SourceFileSchema.parse(entry);
       assertSourceFile(metadata, input.workspaceId, materialSelections);
@@ -818,11 +814,6 @@ export function createWorkerContextPackageFiles(
         if (existing) throw new Error('Worker Context Package duplicate delivered source path.');
         ordinaryFiles.push({ path: metadata.packagePath, bytes });
       }
-      if (
-        Boolean(metadata.projection.representationSnapshotPath) !==
-        Boolean(entry.openRepresentation)
-      )
-        throw new Error('Worker Context Package representation supplier mismatch.');
       sourceFileInputs.push({
         ...metadata,
         deliveredBytes: bytes,
@@ -839,37 +830,11 @@ export function createWorkerContextPackageFiles(
     'original source identity'
   );
   assertUnique(
-    [
-      ...ordinaryFiles.map((file) => file.path),
-      ...sourceFiles.map((entry) => entry.originalSnapshotPath),
-      ...sourceFiles.flatMap((entry) =>
-        entry.projection.representationSnapshotPath
-          ? [entry.projection.representationSnapshotPath]
-          : []
-      ),
-    ],
+    ordinaryFiles.map((file) => file.path),
     'package path'
   );
   ordinaryFiles.sort((left, right) => left.path.localeCompare(right.path));
-  const ordinaryInventory = [
-    ...ordinaryFiles.map(inventoryEntry),
-    ...sourceFiles.map((entry) => ({
-      path: entry.originalSnapshotPath,
-      byteLength: entry.byteLength,
-      contentDigest: entry.originalDigest,
-    })),
-    ...sourceFiles.flatMap((entry) =>
-      entry.projection.representationSnapshotPath
-        ? [
-            {
-              path: entry.projection.representationSnapshotPath,
-              byteLength: entry.projection.representationByteLength,
-              contentDigest: entry.projection.representationDigest,
-            },
-          ]
-        : []
-    ),
-  ].sort((a, b) => a.path.localeCompare(b.path));
+  const ordinaryInventory = ordinaryFiles.map(inventoryEntry);
   const contextPackageId = `ctxpkg_${input.turnId}`;
   const manifest = {
     contextBudgetTokens: input.contextBudgetTokens,
@@ -916,7 +881,7 @@ export function createWorkerContextPackageFiles(
   };
 }
 
-/** Writes exact inline projections and streamed originals through the shared capacity owner. */
+/** Verifies current source identities and retains exact delivered projections through shared capacity admission. */
 export async function writeWorkerContextPackageFiles(
   workspaceRoot: string,
   packageFiles: WorkerContextPackageFiles,
@@ -979,20 +944,31 @@ export async function writeWorkerContextPackageFiles(
       const parts = safeRelativePathSegments(relative);
       return join(canonicalWorkspaceDirectory(root, parts.slice(0, -1), true), parts.at(-1)!);
     };
-    // Originals are complete before the manifest can announce readiness. Exact replay never opens a source.
+    // First admission verifies current original and representation identities without retaining extra copies.
+    // Exact replay verifies only the accepted delivered files and never repairs history from current sources.
     for (const source of packageFiles.sourceFileInputs ?? []) {
-      await writeOriginal(pathFor(source.originalSnapshotPath), source, options);
-      if (source.projection.representationSnapshotPath) {
-        await writeOriginal(
-          pathFor(source.projection.representationSnapshotPath),
-          {
-            ...source,
-            originalSnapshotPath: source.projection.representationSnapshotPath,
-            originalDigest: source.projection.representationDigest,
-            byteLength: source.projection.representationByteLength,
-            open: source.openRepresentation!,
-          },
-          options
+      if (
+        source.projection.kind !== 'descriptor' &&
+        source.projection.representationId !== 'original-utf8' &&
+        !source.openRepresentation
+      )
+        throw new Error('Worker Context Package representation supplier is unavailable.');
+      await verifySourceStream(
+        source,
+        source.open,
+        source.originalDigest,
+        source.byteLength,
+        options.signal,
+        source.projection.representationId === 'original-utf8'
+      );
+      if (source.openRepresentation) {
+        await verifySourceStream(
+          source,
+          source.openRepresentation,
+          source.projection.representationDigest,
+          source.projection.representationByteLength,
+          options.signal,
+          true
         );
       }
     }
@@ -1065,95 +1041,50 @@ export async function writeWorkerContextPackageFiles(
   }
 }
 
-/** Publishes one pinned original without a whole-body buffer or a second publication copy. */
-async function writeOriginal(
-  path: string,
+/** Verifies a bounded current source stream without creating a historical retention copy. */
+async function verifySourceStream(
   source: WorkerContextPackageSourceFileInput,
-  options: { readonly admission: FileStorageAdmission; readonly signal?: AbortSignal }
+  open: (signal: AbortSignal) => AsyncIterable<Uint8Array>,
+  digest: string,
+  byteLength: number,
+  suppliedSignal?: AbortSignal,
+  verifyProjection = false
 ): Promise<void> {
-  const proof = {
-    path: source.originalSnapshotPath,
-    byteLength: source.byteLength,
-    contentDigest: source.originalDigest,
-  };
-  if (existsSync(path)) {
-    assertFileProof(path, proof);
-    return;
-  }
-  options.signal?.throwIfAborted();
-  const signal = options.signal ?? new AbortController().signal;
-  const reservation = options.admission.reserve({
-    stagingBytes: BigInt(source.byteLength) + 65_536n,
-    extractionBytes: 0n,
-    derivativeBytes: 0n,
-    publicationBytes: 0n,
-  });
-  const stage = `${path}.stage-${randomUUID()}`;
-  let descriptor: number | undefined;
-  let clean = false;
-  let created = false;
-  try {
-    await source.assertUnchanged(signal);
+  const signal = suppliedSignal ?? new AbortController().signal;
+  signal.throwIfAborted();
+  await source.assertUnchanged(signal);
+  const hash = createHash('sha256');
+  const selected: Buffer[] = [];
+  let length = 0;
+  for await (const chunk of open(signal)) {
     signal.throwIfAborted();
-    descriptor = openSync(
-      stage,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o400
-    );
-    created = true;
-    const hash = createHash('sha256');
-    let length = 0;
-    for await (const chunk of source.open(signal)) {
-      signal.throwIfAborted();
-      if (
-        !(chunk instanceof Uint8Array) ||
-        chunk.byteLength > 65_536 ||
-        chunk.byteLength > source.byteLength - length
-      )
-        throw new Error(
-          'Worker Context Package original stream exceeds its admitted size or chunk bound.'
-        );
-      reservation.assertAvailable();
-      let written = 0;
-      while (written < chunk.byteLength) {
-        const count = writeSync(descriptor, chunk, written, chunk.byteLength - written);
-        if (!count) throw new Error('Worker Context Package original write made no progress.');
-        written += count;
-        reservation.recordWritten(count);
+    if (
+      !(chunk instanceof Uint8Array) ||
+      chunk.byteLength > 65_536 ||
+      chunk.byteLength > byteLength - length
+    )
+      throw new Error('Worker Context Package source exceeds its admitted size or chunk bound.');
+    if (verifyProjection && source.projection.kind !== 'descriptor') {
+      for (const range of source.projection.ranges) {
+        const start = Math.max(length, range.start);
+        const end = Math.min(length + chunk.byteLength, range.end);
+        if (end > start) selected.push(Buffer.from(chunk.subarray(start - length, end - length)));
       }
-      length += chunk.byteLength;
-      hash.update(chunk);
-      await yieldToIo(undefined, { signal });
     }
-    if (length !== source.byteLength || `sha256:${hash.digest('hex')}` !== source.originalDigest)
-      throw new Error('Worker Context Package original digest mismatch.');
-    await source.assertUnchanged(signal);
-    signal.throwIfAborted();
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = undefined;
-    reservation.assertAvailable();
-    // Exclusive hard-link publication cannot overwrite a racing immutable original; remove the private stage before verification.
-    try {
-      linkSync(stage, path);
-    } catch (error) {
-      if (!existsSync(path)) throw error;
-      assertFileProof(path, proof);
-    }
-    unlinkSync(stage);
-    created = false;
-    syncCanonicalDirectory(dirname(path));
-    assertFileProof(path, proof);
-    clean = true;
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
-    if (created) {
-      unlinkSync(stage);
-      syncCanonicalDirectory(dirname(stage));
-      clean = true;
-    } else if (!existsSync(stage)) clean = true;
-    if (clean) reservation.release();
+    length += chunk.byteLength;
+    hash.update(chunk);
+    await yieldToIo(undefined, { signal });
   }
+  if (length !== byteLength || `sha256:${hash.digest('hex')}` !== digest)
+    throw new Error('Worker Context Package source digest mismatch.');
+  if (
+    verifyProjection &&
+    source.projection.kind !== 'descriptor' &&
+    !Buffer.concat(selected).equals(Buffer.from(source.deliveredBytes))
+  )
+    throw new Error('Worker Context Package delivered bytes differ from selected source ranges.');
+  await source.assertUnchanged(signal);
+  signal.throwIfAborted();
 }
 
 /** Builds the exact generated AEP input for one prepared Context Package root. */
@@ -1894,29 +1825,6 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
         readCanonicalPackageFile(packageRoot, entry.packagePath, entry.projection.byteLength)
       );
   }
-  for (const source of trace.sourceFiles ?? []) {
-    const projection = source.projection;
-    if (!projection.representationSnapshotPath) continue;
-    const representation = readCanonicalPackageFile(
-      packageRoot,
-      projection.representationSnapshotPath,
-      projection.representationByteLength
-    );
-    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(representation);
-    const delivered = readCanonicalPackageFile(
-      packageRoot,
-      source.packagePath,
-      projection.byteLength
-    );
-    if (
-      !Buffer.concat(
-        projection.ranges.map((range) => representation.subarray(range.start, range.end))
-      ).equals(delivered)
-    )
-      throw new Error(
-        'Worker Context Package preview differs from its retained representation ranges.'
-      );
-  }
   const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json', 16_777_216);
   const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
   const parsedManifest = WorkerContextPackageManifestSchema.safeParse(originalManifest);
@@ -2110,19 +2018,19 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
       assertProjection(selection.projection);
       const revision =
         'revisionId' in selection ? selection.revisionId : selection.notebookRevision;
-      if (selection.projection.originalSnapshotPath) {
+      if ('materialId' in selection) {
         const original = trace.sourceFiles?.find(
-          (entry) => entry.originalSnapshotPath === selection.projection!.originalSnapshotPath
+          (entry) =>
+            entry.source.kind === 'material' &&
+            entry.source.reference.objectId === selection.materialId &&
+            entry.source.revisionId === selection.revisionId
         );
-        if (!original || original.originalDigest !== selection.contentDigest)
-          throw new Error('Worker Context Package selected original inventory mismatch.');
         if (
-          'materialId' in selection &&
-          (original.source.kind !== 'material' ||
-            original.source.reference.objectId !== selection.materialId ||
-            original.source.revisionId !== selection.revisionId)
+          original &&
+          (original.originalDigest !== selection.contentDigest ||
+            !isDeepStrictEqual(original.projection, selection.projection))
         )
-          throw new Error('Worker Context Package selected Material original identity mismatch.');
+          throw new Error('Worker Context Package selected Material source mismatch.');
       }
       if (!revision || selection.projection.sourceRevision !== revision)
         throw new Error('Worker Context Package selection source revision mismatch.');
@@ -2130,7 +2038,7 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   }
   assertStrictlySorted(
     trace.sourceFiles ?? [],
-    (a, b) => a.originalSnapshotPath.localeCompare(b.originalSnapshotPath),
+    (a, b) => a.packagePath.localeCompare(b.packagePath),
     'original source inventory'
   );
   assertUnique(
@@ -2140,29 +2048,11 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   const sourcePaths = new Set<string>();
   for (const source of trace.sourceFiles ?? []) {
     assertSourceFile(source, trace.workspaceId, trace.materialSelections);
-    if (sourcePaths.has(source.originalSnapshotPath) || sourcePaths.has(source.packagePath))
+    if (sourcePaths.has(source.packagePath))
       throw new Error('Worker Context Package duplicate source path.');
-    sourcePaths.add(source.originalSnapshotPath);
     sourcePaths.add(source.packagePath);
-    const representationPath = source.projection.representationSnapshotPath;
-    if (representationPath) {
-      if (sourcePaths.has(representationPath))
-        throw new Error('Worker Context Package duplicate representation path.');
-      sourcePaths.add(representationPath);
-      const representation = trace.fileInventory.find((entry) => entry.path === representationPath);
-      if (
-        representation?.contentDigest !== source.projection.representationDigest ||
-        representation.byteLength !== source.projection.representationByteLength
-      )
-        throw new Error('Worker Context Package representation inventory mismatch.');
-    }
-    const original = trace.fileInventory.find(
-      (entry) => entry.path === source.originalSnapshotPath
-    );
     const delivered = trace.fileInventory.find((entry) => entry.path === source.packagePath);
     if (
-      original?.contentDigest !== source.originalDigest ||
-      original.byteLength !== source.byteLength ||
       delivered?.contentDigest !== source.projection.deliveredDigest ||
       delivered.byteLength !== source.projection.byteLength
     )
@@ -2341,20 +2231,9 @@ function assertProjection(value: WorkerContextPackageProjection, bytes?: Uint8Ar
     previousEnd = range.end;
     total += range.end - range.start;
   }
-  if (projection.originalSnapshotPath) safeRelativePathSegments(projection.originalSnapshotPath);
-  if (projection.representationSnapshotPath) {
-    safeRelativePathSegments(projection.representationSnapshotPath);
-    if (
-      !projection.representationSnapshotPath.startsWith('representations/') ||
-      projection.kind === 'descriptor' ||
-      projection.representationByteLength > PDF_TEXT_LAYER_LIMITS.maxOutputBytes
-    )
-      throw new Error('Worker Context Package representation snapshot path is invalid.');
-  }
   if (projection.pdfTextLayer) {
     const { processor, pages, coverage } = projection.pdfTextLayer;
     if (
-      !projection.representationSnapshotPath ||
       projection.kind === 'descriptor' ||
       projection.representationId !==
         `pdf-text-layer-v1:${sha256(Buffer.from(JSON.stringify(processor)))}` ||
@@ -2468,7 +2347,6 @@ function assertSourceFile(
   const scope = parseReferenceScope(entry.source.reference.scopeId);
   if (!scope || !('workspaceId' in scope) || scope.workspaceId !== workspaceId)
     throw new Error('Worker Context Package source belongs to another Workspace.');
-  safeRelativePathSegments(entry.originalSnapshotPath);
   safeRelativePathSegments(entry.packagePath);
   const selected = selections.find(
     (selection) =>
@@ -2488,11 +2366,7 @@ function assertSourceFile(
       ))
   )
     throw new Error('Worker Context Package shared Material metadata mismatch.');
-  if (
-    !entry.originalSnapshotPath.startsWith('originals/') ||
-    (!entry.packagePath.startsWith('sources/') && !sharedMaterial) ||
-    entry.projection.originalSnapshotPath !== entry.originalSnapshotPath
-  )
+  if (!entry.packagePath.startsWith('sources/') && !sharedMaterial)
     throw new Error('Worker Context Package source snapshot path is invalid.');
   const revision =
     entry.source.kind === 'artifact'
@@ -2502,6 +2376,12 @@ function assertSourceFile(
         : entry.source.reference.objectId;
   if (revision !== entry.projection.sourceRevision)
     throw new Error('Worker Context Package source revision mismatch.');
+  if (
+    entry.projection.representationId === 'original-utf8' &&
+    (entry.projection.representationDigest !== entry.originalDigest ||
+      entry.projection.representationByteLength !== entry.byteLength)
+  )
+    throw new Error('Worker Context Package original representation identity mismatch.');
   if (
     entry.projection.pdfTextLayer &&
     (entry.source.kind !== 'artifact' || entry.mediaType !== 'application/pdf')
