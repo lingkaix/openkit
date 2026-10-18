@@ -9,6 +9,8 @@ import {
   RawContentReferenceSchema,
   ReferenceScopeIdSchema,
   ReferenceUriSchema,
+  ScopeQualifiedReferenceSchema,
+  SkillReferenceSchema,
 } from './object-reference.js';
 
 const uuid7 = '0190f4c8-0000-7000-8000-000000000001';
@@ -230,5 +232,66 @@ describe('canonical reference URI codec', () => {
     const uri = `openkit:${reference.scopeId}/${reference.objectId}`;
     expect(formatReferenceUri(reference)).toBe(uri);
     expect(parseReferenceUri(uri)).toEqual({ reference });
+  });
+});
+
+describe('exact Skill version references', () => {
+  it.each([
+    ['skill/server', { family: 'skill', kind: 'server' }],
+    [`skill/workspace/${workspaceId}`, { family: 'skill', kind: 'workspace', workspaceId }],
+  ] as const)('round-trips the exact catalog entry and version in %s', (skillScope, expected) => {
+    const reference = { scopeId: skillScope, objectId: 'openkit-ops' };
+    const uri = `openkit:${skillScope}/openkit-ops@${digest}`;
+    expect(parseReferenceScope(skillScope)).toEqual(expected);
+    expect(SkillReferenceSchema.parse(reference)).toEqual(reference);
+    expect(ScopeQualifiedReferenceSchema.parse(reference)).toEqual(reference);
+    expect(formatReferenceUri(reference, digest)).toBe(uri);
+    expect(parseReferenceUri(uri)).toEqual({ reference, contentDigest: digest });
+    expect(ReferenceUriSchema.parse(uri)).toBe(uri);
+    expect(formatReferenceUri(reference, `sha256:${'cd'.repeat(32)}`)).not.toBe(uri);
+    expect(() => formatReferenceUri(reference)).toThrow();
+    expect(parseReferenceUri(`openkit:${skillScope}/openkit-ops`)).toBeNull();
+  });
+
+  it.each([
+    '',
+    'OpenKit',
+    'openkit_ops',
+    'entry/name',
+    'entry.name',
+    'entry-',
+    'entry--name',
+    'entry\n',
+  ])('rejects non-catalog Skill selector %j', (objectId) => {
+    const reference = { scopeId: 'skill/server', objectId };
+    expect(SkillReferenceSchema.safeParse(reference).success).toBe(false);
+    expect(ScopeQualifiedReferenceSchema.safeParse(reference).success).toBe(false);
+    expect(() => formatReferenceUri(reference, digest)).toThrow();
+  });
+
+  it.each([
+    'skill',
+    `skill/user/${userId}`,
+    `skill/workspace/${userId}`,
+    'skill/server/extra',
+    'skills/server',
+  ])('refuses unsupported Skill scope %s', (skillScope) => {
+    expect(parseReferenceScope(skillScope)).toBeNull();
+    expect(
+      ReferenceUriSchema.safeParse(`openkit:${skillScope}/openkit-ops@${digest}`).success
+    ).toBe(false);
+  });
+
+  it('does not treat another reference family as a Skill catalog target', () => {
+    expect(SkillReferenceSchema.safeParse({ scopeId, objectId: 'openkit-ops' }).success).toBe(
+      false
+    );
+    expect(
+      parseReferenceUri(`openkit:skill/server/openkit-ops@sha256:${'AB'.repeat(32)}`)
+    ).toBeNull();
+    expect(parseReferenceUri(`openkit:skill/server/openkit-ops@latest`)).toBeNull();
+    expect(
+      parseReferenceUri(`openkit:skill/server/openkit-ops@sha256:${'ab'.repeat(32)}\n`)
+    ).toBeNull();
   });
 });
