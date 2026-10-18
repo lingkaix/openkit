@@ -295,11 +295,15 @@ export function writeWorkspacePortableFileState(
     (row) => row.resolvedAt ?? row.createdAt
   );
   if (state.workspaceConfig !== null) {
+    const imported = readRetainedV1(parseJsoncObject(state.workspaceConfig), (value) =>
+      WorkspaceConfigSchema.parse(value)
+    );
     const initializedConfig = readOptionalText(root, 'config/workspace.jsonc');
     if (initializedConfig !== null) {
       // Native Notebook initialization fixes the target base before portable config is staged.
-      const initialized = WorkspaceConfigSchema.parse(parseJsoncObject(initializedConfig));
-      const imported = WorkspaceConfigSchema.parse(parseJsoncObject(state.workspaceConfig));
+      const initialized = readRetainedV1(parseJsoncObject(initializedConfig), (value) =>
+        WorkspaceConfigSchema.parse(value)
+      );
       if (
         !initialized.workspace.defaultKnowledgeBaseId ||
         initialized.workspace.defaultKnowledgeBaseId !== imported.workspace.defaultKnowledgeBaseId
