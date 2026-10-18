@@ -146,7 +146,7 @@ export function preparePolicyDocument(input: {
 }): {
   document: PolicyDocumentV1;
   diff: { added: string[]; changed: string[]; removed: string[] };
-  classification: 'unchanged' | 'widening';
+  classification: 'unchanged' | 'narrowing' | 'widening';
 } {
   const proposed = PolicyDocumentV1Schema.parse(input.proposed);
   const current = new Map(input.current.statements.map((statement) => [statement.id, statement]));
@@ -180,11 +180,70 @@ export function preparePolicyDocument(input: {
   const retained = new Set(statements.map(({ id }) => id));
   diff.removed = input.current.statements.filter(({ id }) => !retained.has(id)).map(({ id }) => id);
   const document = validatePolicyDocument({ schemaVersion: 1, statements });
-  // Removing a prohibition can widen authority. Until the automatic review path
-  // proves narrowing, every change uses the explicit owning-human confirmation.
-  const classification =
-    diff.added.length || diff.changed.length || diff.removed.length ? 'widening' : 'unchanged';
+  // Only the author's passive observer reductions prove narrower disclosure.
+
+  const changed = diff.added.length || diff.changed.length || diff.removed.length;
+  const narrowing =
+    diff.added.length === 0 &&
+    diff.removed.every((id) => isNarrowedObservation(current.get(id), undefined, input.userId)) &&
+    diff.changed.every((id) =>
+      isNarrowedObservation(
+        current.get(id),
+        document.statements.find((statement) => statement.id === id),
+        input.userId
+      )
+    );
+  const classification = !changed ? 'unchanged' : narrowing ? 'narrowing' : 'widening';
   return { document, diff, classification };
+}
+
+/** Proves less observation disclosure while keeping participant, author and lifetime authority bounded. */
+function isNarrowedObservation(
+  before: PolicyDocumentV1['statements'][number] | undefined,
+  after: PolicyDocumentV1['statements'][number] | undefined,
+  userId: string
+): boolean {
+  if (
+    before?.kind !== 'binding' ||
+    before.mode !== 'observe' ||
+    before.author.kind !== 'human' ||
+    before.author.id !== userId ||
+    before.authority.kind !== 'human' ||
+    before.authority.userId !== userId
+  )
+    return false;
+  if (!after) return true;
+  if (
+    after.kind !== 'binding' ||
+    after.mode !== 'observe' ||
+    after.author.kind !== 'human' ||
+    after.author.id !== userId ||
+    (after.state !== before.state && after.state !== 'inactive') ||
+    before.lifetime.uses !== undefined ||
+    after.lifetime.uses !== undefined
+  )
+    return false;
+  const fixedContent = (statement: PolicyBindingV1) => {
+    const {
+      author: _author,
+      authoredAt: _at,
+      scope: _scope,
+      inputDisclosure: _input,
+      lifetime: _lifetime,
+      state: _state,
+      ...fixed
+    } = statement;
+    return fixed;
+  };
+  const expiry = (value: string | undefined) =>
+    value ? Date.parse(value) : Number.POSITIVE_INFINITY;
+  return (
+    policyDigest(fixedContent(before)) === policyDigest(fixedContent(after)) &&
+    policyDigest(before.lifetime.anchor) === policyDigest(after.lifetime.anchor) &&
+    expiry(after.lifetime.notAfter) <= expiry(before.lifetime.notAfter) &&
+    scopeContains(before.scope, after.scope) &&
+    scopeContains(before.inputDisclosure, after.inputDisclosure)
+  );
 }
 
 /** Matches the exact subject and Tool target of the closed schema-independent pilot input. */

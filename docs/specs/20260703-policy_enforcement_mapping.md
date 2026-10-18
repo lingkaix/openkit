@@ -409,7 +409,7 @@ Once means consuming this proposal approval without a Policy write. Work-unit or
 
 ## Current Implementation Projection
 
-The native I16 pilot and human `policy.write` candidate path implement the first shared mediation slice. Protocol retains version-one statements, subjects, lifetime, decision and invocation envelopes. Goal-domain activation, Task-resource intersection, agent-principal grants and automatic narrowing review remain Not Started. Inactive declarations do not activate these authorities. No agent approver is activated.
+The native I16 pilot and human `policy.write` candidate path implement the first shared mediation slice. Added or changed noninactive human bindings check current input Workspace authority through the existing Kernel-only authorizer at proposal and apply. The same author's passive observation reductions and withdrawals classify as narrowing; other unproved changes remain widening. The path still requires explicit human application for every change. Protocol retains version-one statements, subjects, lifetime, decision and invocation envelopes. Goal-domain activation, Task-resource intersection, agent-principal grants and automatic narrowing review remain Not Started. Inactive declarations do not activate these authorities. No agent approver is activated.
 
 ### Version-One Retained Projection
 

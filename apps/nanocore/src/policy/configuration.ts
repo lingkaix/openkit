@@ -8,7 +8,7 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import { authorizeWorkspace, requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
@@ -75,6 +75,26 @@ export function preparePolicyConfiguration(input: {
     now: authoredAt,
   });
   if (prepared.classification === 'unchanged') throw new Error('Policy changes are required.');
+  const changedIds = new Set([...prepared.diff.added, ...prepared.diff.changed]);
+  for (const statement of prepared.document.statements) {
+    if (
+      statement.kind !== 'binding' ||
+      statement.state === 'inactive' ||
+      !changedIds.has(statement.id)
+    )
+      continue;
+    // Recheck the input contract's sole Workspace at apply to prevent stale candidate authority.
+
+    const resource = statement.inputDisclosure.resources[0];
+    if (
+      resource?.kind !== 'mcp-tool' ||
+      !authorizeWorkspace(input.coreDb, input.actor, resource.workspaceId, {
+        mutating: true,
+        policyOperation: 'tool.use',
+      })
+    )
+      throw new Error('Policy binding input authority is unavailable.');
+  }
   for (const statement of prepared.document.statements) {
     if (statement.kind !== 'delegation' || statement.purpose !== 'goal-domain') continue;
     const source = statement.source!;

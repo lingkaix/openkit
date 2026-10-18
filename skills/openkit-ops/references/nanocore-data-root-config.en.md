@@ -408,7 +408,9 @@ Discord source references, account bindings, pairing digests, disclosures, inbou
 
 The shared Policy collection is `policy.mediation` in `config/server.jsonc`. It carries `schemaVersion: 1` and a `statements` array. The version marker identifies the retained format. Core derives exact content revisions; do not supply a mutable revision label.
 
-Use the existing configuration proposal operation with `targetFamily: "policy"` and `targetId: "server"`. Supply the exact current file revision, the proposed collection and a rationale. Inspect the immutable candidate in its private administration Thread. Apply that exact candidate with explicit human confirmation through the existing configuration apply operation. Current deployment-admin authority is required at both steps. Generic configuration-file updates refuse Policy collection changes.
+Use the existing configuration proposal operation with `targetFamily: "policy"` and `targetId: "server"`. Supply the exact current file revision, the proposed collection and a rationale. Inspect the immutable candidate in its private administration Thread. Apply that exact candidate with explicit human confirmation through the existing configuration apply operation. Current deployment-admin authority is required at both steps. Generic configuration-file updates refuse Policy collection changes. Added or changed noninactive bindings also require current access to their input Workspace at both steps. If that Workspace closes after proposal, application refuses the candidate without writing it. Inspect current authority and create a new proposal after resolving the cause.
+
+The candidate labels only the same author's passive observation reduction or withdrawal as narrowing. A changed participant, withdrawn gate, longer lifetime or unproved change is widening. The classification does not bypass explicit human application.
 
 Inspect the saved revision and reload outcome separately. A saved file does not prove that its Policy is active. If reload or evidence fails, inspect the existing candidate and outcome before a new request. Core does not automatically repeat an uncertain effect.
 
