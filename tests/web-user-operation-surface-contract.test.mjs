@@ -12,7 +12,7 @@ import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 const EXPECTED_CATALOG_SIZE = 328;
 const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 242;
+const EXPECTED_INCLUDED_SIZE = 246;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -94,6 +94,10 @@ const WEB_OPERATION_GROUPS = {
   },
   Artifacts: {
     'artifact.import': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-list': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-read': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-commit': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-file-commit': { disposition: 'live', surface: 'Artifacts' },
     'artifact.download': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },

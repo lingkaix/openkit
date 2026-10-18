@@ -6,7 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { type ArtifactSchema, allocateEntityId } from '@openkit/protocol';
+import {
+  type ArtifactSchema,
+  type ArtifactVersionRecord,
+  allocateEntityId,
+} from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { publishArtifactFileRecord } from '../workspace-file-records.js';
@@ -23,6 +27,28 @@ const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+/** Builds the actual imported initial record supplied to canonical publication. */
+function initialRecord(artifact: z.infer<typeof ArtifactSchema>): ArtifactVersionRecord {
+  if (artifact.origin.kind !== 'imported') throw new Error('Imported fixture required.');
+  return {
+    artifact,
+    version: {
+      artifactId: artifact.id,
+      workspaceId: artifact.workspaceId,
+      artifactVersion: 1,
+      parentVersion: null,
+      title: artifact.title,
+      summary: artifact.summary,
+      contentDigest: artifact.contentDigest,
+      actor: artifact.origin.actor,
+      threadId: null,
+      turnId: null,
+      requestId: artifact.lastMutationRequestId,
+      recordedAt: artifact.updatedAt,
+    },
+  };
+}
 
 /** Publishes a small exact original through the real stream and canonical durability owners. */
 async function fixture(bytes = Buffer.from('00ffc328800a', 'hex')) {
@@ -72,7 +98,11 @@ async function fixture(bytes = Buffer.from('00ffc328800a', 'hex')) {
     createdAt: '2026-10-16T00:00:00.000Z',
     updatedAt: '2026-10-16T00:00:00.000Z',
   };
-  publishArtifactFileRecord({ workspaceRoot, artifact, payloadPath: staged.path });
+  publishArtifactFileRecord({
+    workspaceRoot,
+    record: initialRecord(artifact),
+    payloadPath: staged.path,
+  });
   await staged.remove();
   reservation.release();
   return { ...identity, artifact, bytes, byteLength: bytes.length, contentDigest };
@@ -106,7 +136,7 @@ describe('immutable Artifact payload files', () => {
     expect(() =>
       publishArtifactFileRecord({
         workspaceRoot: state.workspaceRoot,
-        artifact: state.artifact,
+        record: initialRecord(state.artifact),
         payloadPath: 'unused',
       })
     ).toThrow('already exists');

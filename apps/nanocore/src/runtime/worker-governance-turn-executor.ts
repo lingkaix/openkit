@@ -529,7 +529,12 @@ export async function prepareWorkerTurnContextPackage(
   for (const reference of artifactRefs) {
     let artifact: ReturnType<FsStore['getArtifact']>;
     try {
-      artifact = store.getArtifact(input.workspaceId, reference.artifactId);
+      const current = store.getArtifact(input.workspaceId, reference.artifactId);
+      artifact = store.getArtifactVersion(
+        input.workspaceId,
+        reference.artifactId,
+        reference.artifactVersion ?? current.version
+      ).artifact;
     } catch {
       throw new TurnStartValidationError(
         'source_unavailable',
@@ -537,13 +542,7 @@ export async function prepareWorkerTurnContextPackage(
         503
       );
     }
-    if (reference.artifactVersion !== undefined && reference.artifactVersion !== artifact.version)
-      throw new TurnStartValidationError(
-        'source_unavailable',
-        'Selected Artifact version is unavailable.',
-        503
-      );
-    selectedArtifacts.set(artifact.id, structuredClone(artifact));
+    selectedArtifacts.set(`${artifact.id}/${artifact.version}`, structuredClone(artifact));
   }
   const assertCurrentKnowledgeOverview = () => {
     try {
@@ -596,7 +595,10 @@ export async function prepareWorkerTurnContextPackage(
         : store.getThread(input.workspaceId, current.origin.threadId);
     if (
       current.status !== 'ready' ||
-      !isDeepStrictEqual(current, artifact) ||
+      !isDeepStrictEqual(
+        store.getArtifactVersion(input.workspaceId, artifact.id, artifact.version).artifact,
+        artifact
+      ) ||
       !isArtifactVisible(
         store,
         current,

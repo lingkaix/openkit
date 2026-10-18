@@ -31,6 +31,8 @@ import { parseRecordEnvelope, WorkspaceConfigSchema } from '@openkit/config-sche
 import {
   ActorRefSchema,
   type ArtifactSchema,
+  type ArtifactVersionRecord,
+  ArtifactVersionRecordSchema,
   deriveEntityId,
   entityIdPattern,
   ItemSchema,
@@ -70,7 +72,11 @@ import type {
   KnowledgeProposalReviewRecord,
   KnowledgeSourceRecord,
 } from '../lib/store.js';
-import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
+import {
+  readArtifactVersionRecord,
+  stageArtifactVersionRecord,
+} from './artifacts/artifact-version-records.js';
+import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { coreDbPath, ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 import {
@@ -119,7 +125,7 @@ export const TurnReaderSchema = StoredTurnSnapshotV1Schema;
 /** Metadata retains its feature and capture declarations without embedded Item payloads. */
 const TurnFileMetadataSchema = StoredTurnV1Schema.omit({ schemaVersion: true });
 /** Body-bearing retained projections preserve immutable Artifact lineage. */
-const ArtifactReaderSchema = StoredArtifactSnapshotV1Schema;
+export const ArtifactReaderSchema = StoredArtifactSnapshotV1Schema;
 /** Historical event meaning is independent of the live protocol version. */
 const SseEventReaderSchema = StoredEventPayloadV1Schema;
 /** System metadata excludes the editable name and derived counts. */
@@ -1023,11 +1029,13 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
+ * @param initialArtifact Actual admitted v1 record and optional original for one initial directory publication.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
-  updateWorkspaceConfigName = false
+  updateWorkspaceConfigName = false,
+  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
@@ -1037,7 +1045,7 @@ export function writeWorkspaceFileRecords(
   writeThreads(workspaceRoot, records);
   writeKnowledge(workspaceRoot, records);
   writeSources(workspaceRoot, records);
-  writeArtifacts(workspaceRoot, records);
+  writeArtifacts(workspaceRoot, records, initialArtifact);
   writeAgentSessions(workspaceRoot, records);
 }
 
@@ -1972,28 +1980,50 @@ function loadArtifacts(
     }
 
     const metadata = StoredArtifactV1Schema.parse(rawMetadata);
-    if (format !== 'file') assertCanonicalDirectory(join(artifactRoot, 'files'));
-    const artifact = ArtifactReaderSchema.parse({
-      ...metadata,
-      content:
-        format === 'file'
-          ? metadataContent
-          : {
-              ...metadataContent,
-              format,
-              body: readCanonicalTextFile(
-                join(artifactRoot, 'files', artifactContentFileName(format))
-              ),
-            },
-    });
-    if (artifact.content.format === 'file') {
-      verifyArtifactFilePayload({
+    // Disposable projections can be absent, but retained paths must still be canonical.
+    if (format !== 'file') {
+      const filesRoot = join(artifactRoot, 'files');
+      if (lstatSync(filesRoot, { throwIfNoEntry: false })) {
+        assertCanonicalDirectory(filesRoot);
+        const projectionPath = join(filesRoot, artifactContentFileName(format));
+        if (lstatSync(projectionPath, { throwIfNoEntry: false }))
+          assertCanonicalRegularFile(projectionPath);
+      }
+    }
+    const selectedVersion = metadata.version;
+    if (!Number.isSafeInteger(selectedVersion) || Number(selectedVersion) < 1)
+      throw new Error(`Artifact ${artifactId} has an invalid current version.`);
+    let artifact: Artifact;
+    try {
+      const retained = readArtifactVersionRecord(
         workspaceRoot,
-        artifactId: artifact.id,
-        version: artifact.version,
-        byteLength: artifact.content.byteLength,
-        contentDigest: artifact.contentDigest,
+        artifactId,
+        Number(selectedVersion)
+      ).artifact;
+      artifact = ArtifactReaderSchema.parse({
+        ...metadata,
+        content:
+          format === 'file'
+            ? metadataContent
+            : {
+                ...metadataContent,
+                body: retained.content.format === 'file' ? undefined : retained.content.body,
+              },
       });
+      if (
+        !isDeepStrictEqual(
+          { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+          artifact
+        )
+      )
+        throw new Error(`Artifact ${artifactId} current-head projection is contradictory.`);
+    } catch (cause) {
+      throw Object.assign(
+        new Error('The retained Artifact version history is unavailable or contradictory.', {
+          cause,
+        }),
+        { code: 'recovery_required' }
+      );
     }
 
     if (
@@ -2437,24 +2467,22 @@ export function verifyTurnFileInputs(workspaceRoot: string, turn: Turn): void {
 /** Publishes one complete new file-backed Artifact directory through the existing P01 tree owner. The exact payload and descriptor are staged together, so process loss cannot expose a canonical directory with missing metadata. No reference Item or command receipt is written here. */
 export function publishArtifactFileRecord(input: {
   readonly workspaceRoot: string;
-  readonly artifact: Artifact;
+  readonly record: ArtifactVersionRecord;
   readonly payloadPath: string;
 }): void {
-  if (input.artifact.content.format !== 'file') throw new Error('A file descriptor is required.');
-  const destination = artifactFilePayloadPath(
-    input.workspaceRoot,
-    input.artifact.id,
-    input.artifact.version
-  );
-  const artifactRoot = join(input.workspaceRoot, 'artifacts', input.artifact.id);
+  const record = ArtifactVersionRecordSchema.parse(input.record);
+  const artifact = record.artifact;
+  if (artifact.version !== 1 || record.version.parentVersion !== null)
+    throw new Error('Initial Artifact publication requires its exact admitted v1 record.');
+  if (artifact.content.format !== 'file') throw new Error('A file descriptor is required.');
+  const destination = artifactFilePayloadPath(input.workspaceRoot, artifact.id, artifact.version);
+  const artifactRoot = join(input.workspaceRoot, 'artifacts', artifact.id);
   ensureCanonicalDirectory(dirname(artifactRoot));
   if (lstatSync(artifactRoot, { throwIfNoEntry: false }))
     throw new Error('The immutable Artifact already exists.');
   publishNewRecordDirectory(input.workspaceRoot, artifactRoot, (stage) => {
-    const payload = join(stage, 'versions', String(input.artifact.version), 'payload');
-    ensureCanonicalDirectory(dirname(payload));
-    publishCanonicalPath(input.payloadPath, payload);
-    writeArtifactDirectory(stage, input.artifact);
+    stageArtifactVersionRecord(join(stage, 'versions', '1'), input.record, input.payloadPath);
+    writeArtifactDirectory(stage, artifact);
   });
   // Keep the path guard above coupled to the same immutable owner spelling.
   assertCanonicalRegularFile(destination);
@@ -2731,21 +2759,67 @@ function writeSources(workspaceRoot: string, records: WorkspaceFileRecords): voi
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param initialArtifact Actual admitted v1 record for an absent Artifact directory.
  */
-function writeArtifacts(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeArtifacts(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords,
+  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
+): void {
   const artifactsRoot = join(workspaceRoot, 'artifacts');
   const expectedArtifactIds = new Set(records.artifacts.map((artifact) => artifact.id));
 
   ensureCanonicalDirectory(artifactsRoot);
   removeStaleDirectories(artifactsRoot, expectedArtifactIds);
 
+  if (initialArtifact) {
+    const record = ArtifactVersionRecordSchema.parse(initialArtifact.record);
+    if (
+      record.artifact.version !== 1 ||
+      record.version.parentVersion !== null ||
+      record.artifact.workspaceId !== records.workspace.id ||
+      !records.artifacts.some((artifact) => isDeepStrictEqual(artifact, record.artifact))
+    )
+      throw new Error('Initial Artifact publication requires its exact admitted v1 record.');
+    if (lstatSync(join(artifactsRoot, record.artifact.id), { throwIfNoEntry: false }))
+      throw new Error('The immutable Artifact already exists.');
+  }
   for (const artifact of records.artifacts) {
     const artifactRoot = join(artifactsRoot, artifact.id);
     if (lstatSync(artifactRoot, { throwIfNoEntry: false })) {
+      const retained = readArtifactVersionRecord(
+        workspaceRoot,
+        artifact.id,
+        artifact.version
+      ).artifact;
+      if (
+        !isDeepStrictEqual(
+          { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+          artifact
+        )
+      )
+        throw new Error('The Artifact current-head projection is contradictory.');
       writeArtifactDirectory(artifactRoot, artifact);
       continue;
     }
+    if (!initialArtifact || initialArtifact.record.artifact.id !== artifact.id)
+      throw new Error('Initial Artifact publication requires its admitted immutable version.');
+    if (artifact.content.format === 'file') {
+      if (!initialArtifact.payloadPath)
+        throw new Error('Artifact file publication requires its admitted original.');
+      publishArtifactFileRecord({
+        workspaceRoot,
+        record: initialArtifact.record,
+        payloadPath: initialArtifact.payloadPath,
+      });
+      continue;
+    }
     publishNewRecordDirectory(workspaceRoot, artifactRoot, (stage) => {
+      stageArtifactVersionRecord(
+        join(stage, 'versions', '1'),
+        initialArtifact.record,
+        initialArtifact.payloadPath
+      );
       writeArtifactDirectory(stage, artifact);
     });
   }
