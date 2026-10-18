@@ -471,3 +471,8 @@ The active-member association is adapter vocabulary for full Workspace operation
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
+
+
+## Interception BASE Pilot
+
+I16 `tool.use` final admission uses the common interception base in [Unified Interception](20261018-nanocore_interception_and_information_consolidation.md). The existing native eligibility, exact selected MCP rules, Turn authority and credential checks remain mandatory; configurable participants cannot replace them. Statements remain in the existing Server Policy/config owner. Each admitted invocation records its typed binding snapshot, safe version references and actual result in existing scoped Audit. The native final evaluation retains its existing PermissionDecision and call link. A Core authority storage failure or evaluator error is an error, never a fabricated Policy refusal. Failure of required invocation evidence prevents dispatch. Other enforcement rows keep their existing owners and migrate separately.

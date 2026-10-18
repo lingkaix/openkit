@@ -277,6 +277,7 @@ export function isWorkspaceOperationAuthorized(
  * @param operation Concrete product operation, including unknown values that must fail closed.
  * @param effectAuthority Whether the caller's existing effect-specific authority remains valid.
  * @param requestActor Optional authenticating request actor; a presented usable server-admin bearer grants administrator eligibility without membership.
+ * @param failureMode I16 uses `throw` to keep authority storage failure distinct from a Policy refusal; remaining callers retain their owner-specific admission behavior.
  * @returns The current effective Workspace eligibility, or null when any authority component denies the effect.
  */
 export function currentWorkspaceAuthority(

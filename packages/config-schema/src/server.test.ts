@@ -10,6 +10,49 @@ import {
 } from './index.js';
 
 describe('server config schema', () => {
+  it('admits only unique Server-owned interception statements without authored source versions', () => {
+    const actor = { kind: 'user' as const, id: allocateEntityId('usr') };
+    const statement = {
+      schemaVersion: 1,
+      id: 'tool-check',
+      point: 'P3',
+      mode: 'gate',
+      owner: { kind: 'server' },
+      subject: actor,
+      action: 'tool.use',
+      resource: {
+        kind: 'record',
+        owner: { kind: 'server' },
+        family: 'tool',
+        id: 'echo',
+        version: '1',
+      },
+      participant: { id: 'deterministic', version: '1' },
+      inputContract: { id: 'tool-input', version: '1' },
+      outputContract: { id: 'gate-result', version: '1' },
+      order: 0,
+      timeoutMs: 100,
+      circuit: { failureThreshold: 1, resetAfterMs: 100 },
+      onUnavailable: 'error',
+      author: actor,
+      delegation: null,
+    };
+    expect(OpenKitConfigSchema.safeParse({ policy: { interceptions: [statement] } }).success).toBe(
+      true
+    );
+    for (const interceptions of [
+      [statement, statement],
+      [{ ...statement, owner: { kind: 'user', userId: actor.id } }],
+      [{ ...statement, version: 'self-authored' }],
+    ])
+      expect(OpenKitConfigSchema.safeParse({ policy: { interceptions } }).success).toBe(false);
+    expect(
+      getConfigPolicyCatalog().some(
+        (entry) => entry.path === '$.policy.interceptions' && entry.reloadClass === 'hot-swappable'
+      )
+    ).toBe(true);
+  });
+
   it('admits an explicit finite Worker Git-read maintenance assignment without changing omission', () => {
     const assignment = {
       responsibleUserId: allocateEntityId('usr'),

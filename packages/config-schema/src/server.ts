@@ -339,7 +339,17 @@ export const OpenKitConfigSchema = z
     mode: CoreModeSchema.optional(),
     policy: z
       .object({
-        interceptions: z.array(InterceptionStatementSchema).optional(),
+        interceptions: z
+          .array(InterceptionStatementSchema)
+          .refine(
+            (entries) => entries.every((entry) => entry.owner.kind === 'server'),
+            'Server configuration owns only Server bindings.'
+          )
+          .refine(
+            (entries) => new Set(entries.map((entry) => entry.id)).size === entries.length,
+            'Interception binding IDs must be unique in this owner.'
+          )
+          .optional(),
         workerGitReadMaintenance: z
           .array(WorkerGitReadMaintenanceAssignmentSchema)
           .refine(

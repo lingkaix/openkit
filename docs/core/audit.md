@@ -142,3 +142,6 @@ Decision Trace is a derived read-only view over retained identifier edges, with 
 - `docs/core/vault.md`
 - `docs/core/agent-capability.md`
 - `docs/core/storage.md`
+
+
+Interception invocation metadata is an optional typed observation in the existing scoped Audit family, not a separate ledger or active binding store. It retains the admitted small binding snapshot, safe scoped version references and actual actor/result; existing call, Turn and PermissionDecision edges retain their authority. Historical observations confer no grant. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this boundary.

@@ -312,3 +312,8 @@ Previously open questions are resolved by accepted defaults: `stdio` MCP servers
 ### Administrator Discovery Is A Separate Consumer
 
 The [explicit bounded preview](20260907-mcp_catalog_management.md#explicit-bounded-discovery-preview) reuses the SDK Gateway connection and teardown seam with an exact canonical declaration and a trusted temporary context. Its narrow connection input does not claim an enabled Worker binding or AEP admission. Ordinary Worker selection, current binding/material checks and `tools/call` authority remain unchanged. Preview instances never share a Worker session or consuming-Workspace process data, and cannot execute a tool.
+
+
+## I16 Interception Boundary
+
+The final `tool.use` admission uses the common base in [Unified Interception](20261018-nanocore_interception_and_information_consolidation.md). It pins the retained AEP selection and the effective MCP catalog digest, including tool rules, and rechecks the current selection, Workspace authority, Turn admission and credential bindings before dispatch. Its safe input reference does not contain raw tool arguments. The existing PermissionDecision and linked Audit retain the native invocation snapshot and actual Worker actor; the system evaluator is its projection author, not an invented catalog-rule author. A participant failure, authority read failure or missing required evidence stops dispatch with an unavailable/error result. A valid gate refusal remains a refusal. Native final checks, required evidence and upstream dispatch have no intervening suspension. Requested upstream MCP effect failures keep their existing CapabilityCall, cleanup and retry owners.

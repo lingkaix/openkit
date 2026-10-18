@@ -11,6 +11,7 @@ import {
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
 import { AutomationStore } from './lib/automation-store.js';
+import { resolveInterceptionBinding } from './policy/interception.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -34,7 +35,48 @@ describe('workspace audit events', () => {
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(workspaceDb);
+      const reference = {
+        kind: 'record' as const,
+        owner: { kind: 'workspace' as const, workspaceId },
+        family: 'mcp-rule',
+        id: 'echo',
+        version: 'rules-1',
+      };
+      const actor = { kind: 'system' as const, id: 'fixture', responsibleUserId: null };
+      const interception = {
+        schemaVersion: 1 as const,
+        binding: resolveInterceptionBinding(
+          {
+            schemaVersion: 1,
+            id: 'native-tool',
+            point: 'P3',
+            mode: 'gate',
+            owner: { kind: 'server' },
+            subject: actor,
+            action: 'tool.use',
+            resource: reference,
+            participant: { id: 'native', version: '1' },
+            inputContract: { id: 'tool-input', version: '1' },
+            outputContract: { id: 'decision', version: '1' },
+            order: 0,
+            timeoutMs: 100,
+            circuit: { failureThreshold: 1, resetAfterMs: 100 },
+            onUnavailable: 'error',
+            author: actor,
+            delegation: null,
+          },
+          reference
+        ),
+        input: reference,
+        output: null,
+        actor,
+        outcome: 'allowed' as const,
+        reasonCode: null,
+        startedAt: '2026-10-18T00:00:00.000Z',
+        finishedAt: '2026-10-18T00:00:00.001Z',
+      };
       const local = recordWorkspaceAuditEvent({
+        interception,
         workspaceDb,
         workspaceId,
         action: 'workspace.inspect',

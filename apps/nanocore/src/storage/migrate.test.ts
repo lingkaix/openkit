@@ -254,6 +254,7 @@ describe('database setup', () => {
         '0005_channel_notifications.sql',
         '0006_external_trigger_admissions.sql',
         '0007_discord_capture_origin.sql',
+        '0008_interception_evidence.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -270,6 +271,7 @@ describe('database setup', () => {
         'core_0005_channel_notifications',
         'core_0006_external_trigger_admissions',
         'core_0007_discord_capture_origin',
+        'core_0008_interception_evidence',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(
@@ -310,6 +312,7 @@ describe('database setup', () => {
           'subject_json',
           'resource_revision',
           'notebook_admission_json',
+          'interception_json',
         ])
       );
       expect(listColumnNames(coreDb, 'idempotency_requests')).toEqual([

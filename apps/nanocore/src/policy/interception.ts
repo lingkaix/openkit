@@ -192,7 +192,7 @@ export function createInterceptionExecutor(options: InterceptionExecutorOptions)
             circuit.failures += 1;
             if (circuit.failures >= binding.circuit.failureThreshold)
               circuit.openUntil = now() + binding.circuit.resetAfterMs;
-          } else {
+          } else if (!reason) {
             circuit.failures = 0;
             circuit.openUntil = 0;
           }

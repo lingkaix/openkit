@@ -104,7 +104,30 @@ export const InterceptionInvocationSchema = z
     startedAt: TimestampSchema,
     finishedAt: TimestampSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const valid = {
+      observe: ['observed'],
+      transform: ['transformed'],
+      advise: ['advised'],
+      gate: ['allowed', 'refused', 'pending'],
+    };
+    if (
+      !['unavailable', 'error'].includes(value.outcome) &&
+      !valid[value.binding.mode].includes(value.outcome)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path: ['outcome'],
+        message: 'The result must match the admitted mode.',
+      });
+    if (value.outcome === 'transformed' && value.output === null)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['output'],
+        message: 'A transform must identify its validated output.',
+      });
+  });
 
 /** A configured statement has no independent storage or identity lifecycle. */
 export type InterceptionStatement = z.infer<typeof InterceptionStatementSchema>;

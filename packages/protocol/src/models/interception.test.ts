@@ -83,6 +83,16 @@ describe('interception retained formats', () => {
     };
     expect(InterceptionInvocationSchema.parse(invocation).outcome).toBe('unavailable');
     expect(
+      InterceptionInvocationSchema.safeParse({ ...invocation, outcome: 'advised' }).success
+    ).toBe(false);
+    expect(
+      InterceptionInvocationSchema.safeParse({
+        ...invocation,
+        binding: { ...invocation.binding, mode: 'transform' },
+        outcome: 'transformed',
+      }).success
+    ).toBe(false);
+    expect(
       InterceptionInvocationSchema.safeParse({
         ...invocation,
         input: { kind: 'record', family: 'page', id: 'admissions', version: '1' },
@@ -98,6 +108,29 @@ describe('interception retained formats', () => {
         },
       }).success
     ).toBe(true);
+  });
+
+  it('carries a Gateway per-Agent tool rule without treating the requester as the rule author', () => {
+    const binding = InterceptionStatementSchema.parse({
+      ...statement,
+      owner: { kind: 'server' },
+      subject: { kind: 'agent', id: 'meta-skill-agent', responsibleUserId: user.id },
+      action: 'gateway.tool.use',
+      resource: {
+        ...reference,
+        owner: { kind: 'server' },
+        family: 'gateway-tool',
+        id: 'knowledge/read',
+      },
+      inputContract: { id: 'gateway.agent-tool-rule', version: '1' },
+    });
+    expect(binding.subject).toEqual({
+      kind: 'agent',
+      id: 'meta-skill-agent',
+      responsibleUserId: user.id,
+    });
+    expect(binding.author).toEqual(user);
+    expect(binding.resource.id).toBe('knowledge/read');
   });
 
   it('carries a storage-grant input contract without taking ownership of the lease payload', () => {

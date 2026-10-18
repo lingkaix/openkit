@@ -108,6 +108,19 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
 
   {
     kind: 'server',
+    path: '$.policy.interceptions',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'forbidden',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'hot-swappable',
+    secretPolicy: 'no-secret',
+    summary:
+      'Interception statements change only after successful reload; active invocations recheck the admitted version.',
+  },
+  {
+    kind: 'server',
     path: '$.policy.workerGitReadMaintenance',
     owner: 'server',
     merge: 'replace',

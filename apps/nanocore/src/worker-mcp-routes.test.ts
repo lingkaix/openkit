@@ -30,12 +30,13 @@ import {
   parseWorkspaceMcpServerCatalog,
   resolveWorkspaceMcpServer,
 } from '@openkit/config-schema';
-import { deriveEntityId } from '@openkit/protocol';
+import { deriveEntityId, InterceptionInvocationSchema } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createDefaultWorkerControlGateway } from './app.js';
+import { listWorkspaceAuditEvents } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -3509,6 +3510,85 @@ describe('worker MCP routes', () => {
       );
       expect(new Set(typedIdRows.map((row) => row.call_id)).size).toBe(2);
       expect(new Set(typedIdRows.map((row) => row.item_id)).size).toBe(2);
+      const toolUseEvents = listWorkspaceAuditEvents(typedIdDb, turn.workspaceId).filter(
+        (event) => event.interception !== undefined
+      );
+      expect(toolUseEvents).toHaveLength(2);
+      const selectedEcho = environmentPackage.supply.mcpServers.find(
+        (entry) => entry.id === 'echo'
+      )!;
+      expect(selectedEcho.catalogDigest).toBe(
+        resolveWorkspaceMcpServer({ catalog, serverId: 'echo' }).catalogDigest
+      );
+      expect(selectedEcho.catalogDigest).not.toBe(
+        resolveWorkspaceMcpServer({
+          catalog: {
+            ...catalog,
+            servers: catalog.servers.map((entry) =>
+              entry.id === 'echo' ? { ...entry, deniedTools: ['echo'] } : entry
+            ),
+          },
+          serverId: 'echo',
+        }).catalogDigest
+      );
+      for (const event of toolUseEvents) {
+        const invocation = InterceptionInvocationSchema.parse(event.interception);
+        const source = {
+          kind: 'record',
+          owner: { kind: 'workspace', workspaceId: turn.workspaceId },
+          family: 'aep',
+          id: environmentPackage.snapshotId,
+          version: selectedEcho.catalogDigest,
+        };
+        expect(invocation).toMatchObject({
+          schemaVersion: 1,
+          binding: {
+            point: 'P3',
+            mode: 'gate',
+            action: 'tool.use',
+            source,
+            resource: { ...source, family: 'mcp-tool', id: 'echo/echo' },
+            author: {
+              kind: 'system',
+              id: 'nanocore-mcp-tool-use-policy',
+              responsibleUserId: null,
+            },
+          },
+          input: source,
+          output: null,
+          actor: {
+            kind: 'agent',
+            id: environmentPackage.agent.agentId,
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          },
+          outcome: 'allowed',
+          reasonCode: null,
+        });
+        expect(Date.parse(invocation.finishedAt)).toBeGreaterThanOrEqual(
+          Date.parse(invocation.startedAt)
+        );
+        expect(event).toMatchObject({
+          action: 'permission.decision',
+          actor: turn.triggerActor,
+          threadId: turn.threadId,
+          turnId: turn.id,
+        });
+        expect(typedIdRows.map((row) => row.call_id)).toContain(event.capabilityCallId);
+        expect(
+          typedIdDb.sqlite
+            .prepare(
+              `SELECT result, audit_event_id, context_summary_json
+               FROM permission_decisions WHERE decision_id = ?`
+            )
+            .get(event.permissionDecisionId)
+        ).toMatchObject({
+          result: 'allow',
+          audit_event_id: event.id,
+          context_summary_json: expect.stringContaining(event.capabilityCallId!),
+        });
+        expect(JSON.stringify(event)).not.toContain('typed-id');
+        expect(JSON.stringify(event)).not.toContain('"arguments"');
+      }
       typedIdDb.sqlite.close();
       const failures = [
         { arguments: { message: 'blocked' }, code: 'mcp-tool-not-found', name: 'missing' },
@@ -3840,6 +3920,83 @@ describe('worker MCP routes', () => {
         workspaceDb.sqlite.close();
       }
       environmentPackage = authorizedEnvironmentPackage;
+      const interceptionFailureDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      try {
+        const effectsBefore = mcpEffectCounts(interceptionFailureDb);
+        const upstreamBefore = callTool.mock.calls.length;
+        interceptionFailureDb.sqlite.exec(`
+          CREATE TRIGGER reject_mcp_interception_audit
+          BEFORE INSERT ON audit_events
+          WHEN NEW.interception_json IS NOT NULL
+          BEGIN
+            SELECT RAISE(ABORT, 'injected interception audit failure');
+          END;
+        `);
+        const response = await rawCall('interception-audit-failure', 'private-audit-input');
+        const body = await response.json();
+        expect(body).toMatchObject({
+          id: 'interception-audit-failure',
+          error: { data: { code: 'mcp-policy-unavailable' } },
+        });
+        expect(JSON.stringify(body)).not.toContain('injected interception audit failure');
+        expect(callTool).toHaveBeenCalledTimes(upstreamBefore);
+        const effectsAfter = mcpEffectCounts(interceptionFailureDb);
+        expect(effectsAfter.permission_decisions).toEqual(effectsBefore.permission_decisions);
+        expect(effectsAfter.usage_records).toEqual(effectsBefore.usage_records);
+        expect(
+          interceptionFailureDb.sqlite
+            .prepare(
+              `SELECT error_code, status FROM capability_calls
+               WHERE operation = 'mcp.call-tool' ORDER BY rowid DESC LIMIT 1`
+            )
+            .get()
+        ).toEqual({ error_code: 'mcp-policy-unavailable', status: 'failed' });
+      } finally {
+        interceptionFailureDb.sqlite.exec('DROP TRIGGER IF EXISTS reject_mcp_interception_audit');
+        interceptionFailureDb.sqlite.close();
+      }
+
+      const authorityFailureDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      try {
+        const effectsBefore = mcpEffectCounts(authorityFailureDb);
+        const upstreamBefore = callTool.mock.calls.length;
+        const barrier = createListBarrier('echo');
+        const pending = rawCall('authority-read-failure');
+        await barrier.entered;
+        const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
+        const failedRead = vi.fn(() => {
+          throw new Error('injected Workspace authority read failure');
+        });
+        const authorityRead = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+          if (sql.includes('LEFT JOIN workspace_members AS member')) return failedRead();
+          return prepare(sql);
+        });
+        try {
+          barrier.release();
+          const response = await pending;
+          expect(await response.json()).toMatchObject({
+            id: 'authority-read-failure',
+            error: { data: { code: 'mcp-policy-unavailable' } },
+          });
+          expect(failedRead).toHaveBeenCalledTimes(1);
+        } finally {
+          authorityRead.mockRestore();
+        }
+        expect(callTool).toHaveBeenCalledTimes(upstreamBefore);
+        const effectsAfter = mcpEffectCounts(authorityFailureDb);
+        expect(effectsAfter.permission_decisions).toEqual(effectsBefore.permission_decisions);
+        expect(effectsAfter.usage_records).toEqual(effectsBefore.usage_records);
+        expect(
+          authorityFailureDb.sqlite
+            .prepare(
+              `SELECT error_code, status FROM capability_calls
+               WHERE operation = 'mcp.call-tool' ORDER BY rowid DESC LIMIT 1`
+            )
+            .get()
+        ).toEqual({ error_code: 'mcp-policy-unavailable', status: 'failed' });
+      } finally {
+        authorityFailureDb.sqlite.close();
+      }
       const emptyNearLimitTools = [
         { inputSchema: { description: '', type: 'object' as const }, name: 'echo' },
       ];

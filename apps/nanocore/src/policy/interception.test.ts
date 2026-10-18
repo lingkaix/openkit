@@ -262,18 +262,52 @@ describe('common interception executor', () => {
     ).toMatchObject({ outcome: 'allowed' });
   });
 
+  it('rechecks an earlier binding after a later participant suspends', async () => {
+    let current = true;
+    const fixture = execution({
+      bindings: [binding('earlier', 'advise'), binding('later', 'gate')],
+      isCurrent: (selected) => selected.id !== 'earlier' || current,
+    });
+    const executor = createInterceptionExecutor({
+      invoke: async (selected, input) => {
+        if (selected.id === 'later') current = false;
+        return {
+          bindingVersion: selected.version,
+          input: input.reference,
+          outcome: selected.mode === 'advise' ? 'advised' : 'allowed',
+          output: null,
+        };
+      },
+    });
+    expect(await executor.execute(fixture.input)).toMatchObject({
+      outcome: 'unavailable',
+      reasonCode: 'stale',
+    });
+    expect(fixture.release).not.toHaveBeenCalled();
+  });
+
   it('passes the existing lease facts to a deterministic participant without creating lease authority', async () => {
     const lease = {
+      issuer: { kind: 'server' },
+      subject: actor,
+      audience: { kind: 'agent', id: 'fixture-agent' },
       knowledgeBaseId: 'owner-defined-kb',
       mount: 'default',
       prefix: 'admissions/',
       mode: 'read-only',
       expiresAt: '2026-10-18T01:00:00.000Z',
+      revoked: false,
     };
     const fixture = execution({
       input: { reference: { ...source, family: 'policy-grant', id: 'lease' }, value: lease },
       bindings: [binding('lease-assessment', 'advise')],
-      finalPolicy: () => 'deny',
+      finalPolicy: (value) => {
+        const facts = value as typeof lease;
+        return facts.revoked ||
+          Date.parse(facts.expiresAt) <= Date.parse('2026-10-18T02:00:00.000Z')
+          ? 'deny'
+          : 'allow';
+      },
     });
     const invoke = vi.fn(async (selected, input) => {
       expect(input.value).toEqual(lease);

@@ -986,8 +986,6 @@ export function recordBootPolicySelfCheckDecisions(
           agent_session_id: null,
           category: 'approval',
           action: 'permission.decision',
-          interception: input.interception,
-          capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
           resource: `permission:${request.operation}`,
           resource_revision: null,
           outcome: permissionAuditOutcome(row.result),
