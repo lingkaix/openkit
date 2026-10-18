@@ -1744,7 +1744,7 @@ export function readWorkspaceKnowledgeEntries(workspaceRoot: string): KnowledgeE
  * @returns Exact canonical proposal-file bytes.
  */
 export function serializeKnowledgeProposalRecord(
-  proposal: Omit<KnowledgeProposalRecord, 'workspaceId'>
+  proposal: KnowledgeProposalRecord | Omit<KnowledgeProposalRecord, 'workspaceId'>
 ): string {
   const retained = (
     proposal as KnowledgeProposalRecord & {
