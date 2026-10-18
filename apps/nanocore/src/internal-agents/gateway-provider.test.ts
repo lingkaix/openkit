@@ -2267,6 +2267,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
         .all(calls[0]!.id)
     ).toEqual([
+      expect.objectContaining({ action: 'capability.admit', request_id: expectedAuditRequest }),
       expect.objectContaining({
         action: 'capability.finish',
         request_id: expectedAuditRequest,
@@ -2298,6 +2299,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
         .all(calls[0]!.id)
     ).toEqual([
+      expect.objectContaining({ action: 'capability.admit', request_id: commandRequestId }),
       expect.objectContaining({
         action: 'capability.finish',
         request_id: commandRequestId,
@@ -2348,6 +2350,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
         .all(calls[0]!.id)
     ).toEqual([
+      expect.objectContaining({ action: 'capability.admit', request_id: commandRequestId }),
       expect.objectContaining({
         action: 'capability.finish',
         capability_call_id: calls[0]!.id,

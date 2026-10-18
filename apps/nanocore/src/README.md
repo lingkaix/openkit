@@ -40,6 +40,8 @@ The private administration entry provisions a current administrator bearer's own
 
 ## Supporting Directories
 
+Native Light App mutations preserve actual executing Worker, Coordinator or trusted Assistant Thread/Turn identity in the existing app-local Audit fields. Direct human calls leave execution unknown; a presentation Item links the viewed content and does not identify the executor of a later click. The Kernel command assembler reads only trusted invocation lineage and checks the retained Workspace/Thread/Turn before mutation; caller payloads cannot supply this evidence.
+
 - `capability/` owns capability-call and usage-ledger operations.
 - `context/` owns LLM context projection and its projection policy.
 - `diagnostics/` owns product-safe setup and runtime diagnostic projections.

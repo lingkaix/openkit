@@ -111,7 +111,11 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
     expect(
       coreDb.sqlite.prepare('SELECT workspace_id, capability_call_id FROM audit_events').get()
     ).toMatchObject({ workspace_id: null, capability_call_id: call.id });
-    const pending = startCapabilityCall({ ...input, requestId: null });
+    const pending = startCapabilityCall({
+      ...input,
+      requestId: null,
+      auditLineage: { commandRequestId: input.requestId },
+    });
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -123,10 +127,10 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
     expect(
       coreDb.sqlite
         .prepare(
-          "SELECT actor_json FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish'"
+          "SELECT actor_json, request_id FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish'"
         )
         .get(pending.id)
-    ).toEqual({ actor_json: JSON.stringify(input.authorityActor) });
+    ).toEqual({ actor_json: JSON.stringify(input.authorityActor), request_id: input.requestId });
   } finally {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });

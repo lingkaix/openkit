@@ -891,17 +891,21 @@ function summarizeCatalog(catalog: ReturnType<typeof loadWorkspaceResourceCatalo
     mcp: mcpEntries(catalog),
     plugins: pluginEntries(catalog),
     revision: catalog.revision,
-    skills: catalog.skills.entries.map((entry) => ({
-      ...entry,
-      pinDigest: catalog.skills.pins.find((pin) => pin.entryId === entry.id)?.digest ?? null,
-      versions: catalog.skills.versions
-        .filter((version) => version.entryId === entry.id)
-        .map((version) => ({
-          contentState: version.contentState,
-          createdAt: version.createdAt,
-          digest: version.digest,
-        })),
-    })),
+    skills: catalog.skills.entries.map((entry) => {
+      const pin = catalog.skills.pins.find((item) => item.entryId === entry.id);
+      return {
+        ...entry,
+        pinDigest: pin?.digest ?? null,
+        ...(pin?.pinAuditRef === undefined ? {} : { pinAuditRef: pin.pinAuditRef }),
+        versions: catalog.skills.versions
+          .filter((version) => version.entryId === entry.id)
+          .map((version) => ({
+            contentState: version.contentState,
+            createdAt: version.createdAt,
+            digest: version.digest,
+          })),
+      };
+    }),
   };
 }
 

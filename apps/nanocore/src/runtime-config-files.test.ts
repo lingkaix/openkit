@@ -256,6 +256,7 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const localUserId = ensureLocalUser(coreDb);
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
     const configRoot = join(
@@ -321,7 +322,7 @@ describe('runtime config file API', () => {
           category: 'system',
           actor_json: JSON.stringify({
             kind: 'user',
-            id: 'usr_00000000-0000-7000-8000-000000000001',
+            id: localUserId,
           }),
           authentication_json: JSON.stringify({ credentialKind: 'local', credentialId: null }),
           request_id: null,

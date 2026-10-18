@@ -6,6 +6,7 @@ import {
 } from '@openkit/config-schema';
 import {
   type ActorRef,
+  type AuditEvent,
   type GatewayRouteLineageEntry,
   REASONING_EFFORT_LEVELS,
   type ReasoningEffort,
@@ -14,6 +15,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   currentWorkerLineageWorkspaceAuthority,
@@ -186,6 +188,8 @@ interface DurableLlmGatewayCall extends GatewayCallLedgerBinding {
 function startPublicLlmGatewayCall(input: {
   /** Exact authenticated actor that authorized the workspace call. */
   authorityActor: ActorRef;
+  /** Non-secret credential identity from the same authenticated request. */
+  authentication: NonNullable<AuditEvent['authentication']>;
   /** Optional Core database handle for durable workspace storage. */
   coreDb?: CoreDb;
   /** Gateway endpoint family. */
@@ -219,6 +223,7 @@ function startPublicLlmGatewayCall(input: {
       agentId: lineage?.agentId ?? null,
       agentSessionId: lineage?.agentSessionId ?? null,
       authorityActor: input.authorityActor,
+      authentication: input.authentication,
       capabilityId: `llm.${input.endpoint}`,
       family: 'llm',
       itemId: lineage?.itemId ?? null,
@@ -3005,6 +3010,7 @@ export function registerLlmGatewayRoutes({
       const durableCall = startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
         authorityActor,
+        authentication: auditAuthenticationFromActor(c.get('actor')),
         endpoint: 'chat_completions',
         metadata: (request as { metadata?: unknown }).metadata,
         request,
@@ -3173,6 +3179,7 @@ export function registerLlmGatewayRoutes({
       const durableCall = startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
         authorityActor,
+        authentication: auditAuthenticationFromActor(c.get('actor')),
         endpoint: 'responses',
         metadata: (request as { metadata?: unknown }).metadata,
         request,

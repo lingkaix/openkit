@@ -1,5 +1,7 @@
 import {
   type ActorRef,
+  AuditAuthenticationSchema,
+  type AuditEvent,
   allocateEntityId,
   type CapabilityCall,
   CapabilityCallExtensionsSchema,
@@ -82,6 +84,8 @@ export interface GatewayCallContext {
   workspaceId: string;
   /** Process-local authority actor for linked usage attribution. */
   authorityActor: ActorRef | null;
+  /** Available native credential attribution; never secret material or permission. */
+  authentication?: AuditEvent['authentication'];
   /** Thread lineage when available. */
   threadId?: string | null;
   /** Turn lineage when available. */
@@ -128,6 +132,8 @@ export interface ServerGatewayCallContext extends Omit<GatewayCallContext, 'work
 
 /** Server input for the shared capability-call writer. */
 export interface StartServerCapabilityCallInput extends ServerGatewayCallContext {
+  /** Existing command lineage for Audit only; it never changes call idempotency. */
+  readonly auditLineage?: CapabilityAuditLineage;
   readonly workspaceDb: CoreDb;
   readonly callId?: string;
   readonly now?: Date;
@@ -135,6 +141,8 @@ export interface StartServerCapabilityCallInput extends ServerGatewayCallContext
 
 /** Input for starting one capability call. */
 export interface StartCapabilityCallInput extends GatewayCallContext {
+  /** Existing command lineage for Audit only; it never changes call idempotency. */
+  readonly auditLineage?: CapabilityAuditLineage;
   /** Database handle for the immutable call owner. */
   workspaceDb: WorkspaceDb;
   /** Stable call id for deterministic tests. */
@@ -261,6 +269,8 @@ export function startCapabilityCall(
         now: _now,
         callId: _callId,
         authorityActor: _authorityActor,
+        authentication: _authentication,
+        auditLineage: _auditLineage,
         ...safeInput
       } = input;
       assertNoUnsafeLedgerValue(safeInput);
@@ -360,6 +370,7 @@ export function startCapabilityCall(
         const audit = {
           action: 'capability.admit',
           actor: input.authorityActor,
+          ...(input.authentication ? { authentication: input.authentication } : {}),
           agentId: protocolCall.agentId,
           agentSessionId: protocolCall.agentSessionId,
           capabilityCallId: protocolCall.id,
@@ -368,7 +379,11 @@ export function startCapabilityCall(
           now: new Date(startedAt),
           occurredAt: new Date(startedAt),
           outcome: 'unknown' as const,
-          requestId: protocolCall.requestId,
+          requestId:
+            protocolCall.requestId ??
+            (input.auditLineage
+              ? RequestIdSchema.parse(input.auditLineage.commandRequestId)
+              : null),
           resource: `capability:${protocolCall.capabilityId}`,
           summary: 'Capability call admitted; effect outcome is not yet known.',
           threadId: protocolCall.threadId,
@@ -393,7 +408,8 @@ export function startCapabilityCall(
         context: {
           agentId: stored.agent_id,
           agentSessionId: stored.agent_session_id,
-          authorityActor: readCapabilityAdmissionActor(input.workspaceDb, stored.call_id),
+          authorityActor:
+            readCapabilityAdmissionAttribution(input.workspaceDb, stored.call_id).actor ?? null,
           capabilityId: stored.capability_id,
           family: stored.family as CapabilityCallFamily,
           itemId: stored.item_id,
@@ -419,14 +435,29 @@ export function startCapabilityCall(
     .immediate();
 }
 
-/** Reads the actor captured before effect contact, including after process restart. */
-function readCapabilityAdmissionActor(db: WorkspaceDb | CoreDb, callId: string): ActorRef | null {
+/** Reads paired attribution captured before effect contact, including after process restart. */
+function readCapabilityAdmissionAttribution(
+  db: WorkspaceDb | CoreDb,
+  callId: string
+): Pick<AuditEvent, 'actor' | 'authentication' | 'requestId'> {
   const row = db.sqlite
     .prepare(
-      "SELECT actor_json FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit' ORDER BY created_at, audit_event_id LIMIT 1"
+      "SELECT actor_json, authentication_json, request_id FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit' ORDER BY created_at, audit_event_id LIMIT 1"
     )
-    .get(callId) as { actor_json: string | null } | undefined;
-  return row?.actor_json ? ActorRefReaderSchema.parse(JSON.parse(row.actor_json)) : null;
+    .get(callId) as
+    | { actor_json: string | null; authentication_json: string | null; request_id: string | null }
+    | undefined;
+  return {
+    requestId: row?.request_id ?? null,
+    actor: row?.actor_json ? ActorRefReaderSchema.parse(JSON.parse(row.actor_json)) : null,
+    ...(row?.authentication_json
+      ? {
+          authentication: AuditAuthenticationSchema.strip().parse(
+            JSON.parse(row.authentication_json)
+          ),
+        }
+      : {}),
+  };
 }
 
 /**
@@ -595,8 +626,13 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
       if (!call || call.completed_at) {
         return;
       }
+      const admittedAttribution = readCapabilityAdmissionAttribution(
+        input.workspaceDb,
+        call.call_id
+      );
       const auditRequestId =
         call.request_id ??
+        admittedAttribution.requestId ??
         (input.auditLineage === undefined
           ? null
           : RequestIdSchema.parse(input.auditLineage.commandRequestId));
@@ -632,7 +668,7 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
 
       const audit: Omit<Parameters<typeof recordServerAuditEvent>[0], 'coreDb'> = {
         action: 'capability.finish',
-        actor: readCapabilityAdmissionActor(input.workspaceDb, call.call_id),
+        ...admittedAttribution,
         agentId: call.agent_id,
         agentSessionId: call.agent_session_id,
         capabilityCallId: call.call_id,

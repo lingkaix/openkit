@@ -155,7 +155,7 @@ function fixture(missingKey = false) {
 
 describe('public durable logical Gateway lineage', () => {
   it('retains a public call without Workspace metadata in the Server ledger and keeps Core open', async () => {
-    const f = fixture();
+    const f = fixture(true);
     try {
       f.primary.setResponses([
         fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'invalid_api_key' }),
@@ -175,12 +175,13 @@ describe('public durable logical Gateway lineage', () => {
       expect(call).toMatchObject({ workspace_id: null, status: 'succeeded' });
       const audits = f.coreDb.sqlite
         .prepare(
-          'SELECT action, actor_json FROM audit_events WHERE capability_call_id = ? ORDER BY created_at'
+          'SELECT action, actor_json, authentication_json FROM audit_events WHERE capability_call_id = ? ORDER BY created_at'
         )
         .all(call.call_id);
       expect(audits).toEqual([
         expect.objectContaining({
           action: 'capability.admit',
+          authentication_json: JSON.stringify({ credentialKind: 'local', credentialId: null }),
           actor_json: JSON.stringify({
             kind: 'user',
             id: 'usr_00000000-0000-7000-8000-000000000001',
@@ -188,6 +189,7 @@ describe('public durable logical Gateway lineage', () => {
         }),
         expect.objectContaining({
           action: 'capability.finish',
+          authentication_json: JSON.stringify({ credentialKind: 'local', credentialId: null }),
           actor_json: JSON.stringify({
             kind: 'user',
             id: 'usr_00000000-0000-7000-8000-000000000001',

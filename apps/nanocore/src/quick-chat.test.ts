@@ -1550,6 +1550,7 @@ describe('quick chat app API', () => {
             .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
             .all(call?.call_id)
         ).toEqual([
+          expect.objectContaining({ action: 'capability.admit', request_id: requestId }),
           expect.objectContaining({
             action: 'capability.finish',
             request_id: requestId,
