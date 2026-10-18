@@ -225,8 +225,18 @@ const ImportedThreadMaterialBindingSchema = z
   })
   .strip();
 const ImportedArtifactReviewSchema = StoredArtifactReviewV1Schema.safeExtend({
+  materialProposal: StoredArtifactReviewV1Schema.shape.materialProposal.unwrap().strip().nullable(),
+  rangeFeedback: StoredArtifactReviewV1Schema.shape.rangeFeedback
+    .unwrap()
+    .unwrap()
+    .strip()
+    .nullable()
+    .optional(),
+  candidateSelections: z
+    .array(StoredArtifactReviewV1Schema.shape.candidateSelections.unwrap().element.strip())
+    .default([]),
   decisionRequestId: z.string().min(1).nullable(),
-});
+}).strip();
 
 /** Known-field portable Workspace Material owner accepted by import. */
 type ImportedWorkspaceMaterial = z.infer<typeof ImportedWorkspaceMaterialSchema>;

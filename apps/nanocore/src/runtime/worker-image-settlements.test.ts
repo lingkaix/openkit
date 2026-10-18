@@ -17,11 +17,14 @@ const environment = {
   defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
   values: {},
 };
-const settlement = {
+const identity = {
   authoredArtifactId: 'ar_00000000-0000-7ce7-b2d8-9d02176fb5b5',
   authoredArtifactVersion: 1 as const,
   authoredContentDigest: `sha256:${'a'.repeat(64)}`,
   inputDigest: `sha256:${'b'.repeat(64)}`,
+};
+const settlement = {
+  ...identity,
   requestId: '1'.repeat(64),
   operation: 'image.acquire' as const,
   outcome: { kind: 'success' as const, imageDigest },
@@ -37,7 +40,7 @@ describe('retained worker image settlement format', () => {
     });
     applyMigrations(db);
     writeWorkerImageSettlement(db, settlement);
-    admitWorkerImageEnvironment(db, settlement, environment);
+    admitWorkerImageEnvironment(db, identity, environment);
     const bytes = JSON.stringify({ ...environment, note: 'retained description' }, null, 2);
     db.sqlite.prepare('UPDATE worker_image_settlements SET native_environment_json = ?').run(bytes);
     expect(
@@ -50,7 +53,7 @@ describe('retained worker image settlement format', () => {
     expect(readWorkerImageSettlement(db, settlement.requestId)).toEqual(settlement);
     expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toEqual(environment);
     writeWorkerImageSettlement(db, settlement);
-    admitWorkerImageEnvironment(db, settlement, environment);
+    admitWorkerImageEnvironment(db, identity, environment);
     expect(
       db.sqlite
         .prepare('SELECT native_environment_json AS bytes FROM worker_image_settlements')
@@ -80,7 +83,7 @@ describe('retained worker image settlement format', () => {
     expect(() => writeWorkerImageSettlement(db, settlement)).toThrow(
       'Unsupported retained record format.'
     );
-    expect(() => admitWorkerImageEnvironment(db, settlement, environment)).toThrow(
+    expect(() => admitWorkerImageEnvironment(db, identity, environment)).toThrow(
       'Unsupported retained record format.'
     );
     expect(db.sqlite.serialize().equals(before)).toBe(true);
