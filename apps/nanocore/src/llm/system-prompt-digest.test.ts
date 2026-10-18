@@ -149,6 +149,7 @@ describe('persistLlmCapabilityCallSystemPromptDigest', () => {
       prepare(sql: string) {
         statements.push(sql);
         return {
+          get: () => ({ schema_version: 1 }),
           run: () => ({ changes: 1 }),
         };
       },
@@ -160,12 +161,18 @@ describe('persistLlmCapabilityCallSystemPromptDigest', () => {
       workspaceDb,
     });
 
-    expect(statements).toHaveLength(1);
-    expect(statements[0]).toContain('system_prompt_digest');
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toContain('SELECT schema_version');
     expect(statements[0]).toContain("family = 'llm'");
     expect(statements[0]).toContain('capability_id IN');
     expect(statements[0]).toContain("'llm.chat_completions'");
     expect(statements[0]).toContain("'llm.responses'");
+    expect(statements[1]).toContain('UPDATE capability_calls');
+    expect(statements[1]).toContain('system_prompt_digest');
+    expect(statements[1]).toContain("family = 'llm'");
+    expect(statements[1]).toContain('capability_id IN');
+    expect(statements[1]).toContain("'llm.chat_completions'");
+    expect(statements[1]).toContain("'llm.responses'");
   });
 
   it('refuses to record the digest when the family llm row is not updated', () => {
@@ -173,6 +180,7 @@ describe('persistLlmCapabilityCallSystemPromptDigest', () => {
     const workspaceDb = memoryWorkspaceDb({
       prepare() {
         return {
+          get: () => ({ schema_version: 1 }),
           run: () => ({ changes: 0 }),
         };
       },

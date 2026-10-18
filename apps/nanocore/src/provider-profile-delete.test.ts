@@ -48,6 +48,7 @@ function fixture(subscription = false) {
   mkdirSync(join(dataRoot, 'config/providers'), { recursive: true });
   const profile = subscription
     ? {
+        schemaVersion: 1,
         id: 'removed',
         displayName: 'Removed',
         kind: 'oauth',
@@ -56,6 +57,7 @@ function fixture(subscription = false) {
         extensions: { openkit: { subscriptionAccount: { accountSlotId: 'shared' } } },
       }
     : {
+        schemaVersion: 1,
         id: 'removed',
         displayName: 'Removed',
         kind: 'custom',
@@ -123,6 +125,7 @@ function fixture(subscription = false) {
   writeFileSync(
     join(dataRoot, 'config/providers/remaining.provider.jsonc'),
     JSON.stringify({
+      schemaVersion: 1,
       id: 'remaining',
       displayName: 'Remaining',
       kind: 'local',
