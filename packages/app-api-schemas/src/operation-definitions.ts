@@ -42,6 +42,7 @@ import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
 import { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from './runtime-config-operations.js';
 import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { SERVER_MCP_OPERATION_DEFINITIONS } from './server-mcp-operations.js';
+import { SERVER_THREAD_OPERATION_DEFINITIONS } from './server-threads.js';
 import { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 import { THREAD_OPERATION_DEFINITIONS } from './thread-operations.js';
 import { TURN_OPERATION_DEFINITIONS } from './turn-operations.js';
@@ -138,6 +139,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   AGENT_OPERATION_DEFINITIONS,
   CATALOG_OPERATION_DEFINITIONS,
   SERVER_MCP_OPERATION_DEFINITIONS,
+  SERVER_THREAD_OPERATION_DEFINITIONS,
   LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
   WORKER_OPERATION_DEFINITIONS,
   GOVERNANCE_OPERATION_DEFINITIONS,

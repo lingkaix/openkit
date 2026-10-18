@@ -23,6 +23,14 @@ Continue at the current pace. One correction: the Server level is not Memory. It
 
 On 2026-10-17, the coordinator approved retaining the original query Server for User and Server selections under the engineer's 11:07Z ruling, with independent Consultant agreement. A trace records evidence about the Server actually queried. Changing that identity would misstate history, while blanket refusal based on Workspace import provenance would block a new authorized query to the current Server. Existing query context distinguishes these acts without a new field. Retained external history can cross later imports under existing importedFrom provenance; current scope, audience, Source and exact-byte checks remain required. Workspace selections and fresh source acts retain the immediate-manifest binding.
 
+### General Server Thread Owner
+
+At 12:42Z on 2026-10-17, the engineer approved option A: a general Server-owned Thread. Future Server administration and performance evaluation also need Server work records, so the owner kind is `server`, not Knowledge-Manager-specific. The coordinator's 15:4xZ implementation direction fixes current visibility to Server administration authority. Knowledge Manager maintenance is the only implemented Server role in this increment. A fabricated Workspace anchor would expose Server work through that Workspace's membership and give Server work the wrong durable owner. Thread, Turn and Item remain the existing record families.
+
+### Engineer Statement At 12:42Z: English Translation
+
+Option A is fine, because in the future some Agent functions will also belong to the Server scope, for example Server administration and Server performance evaluation.
+
 ## Rejected Alternatives
 
 - Treating Server Knowledge as Memory would mix personal information with shared facts.

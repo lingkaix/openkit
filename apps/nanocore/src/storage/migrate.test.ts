@@ -223,7 +223,9 @@ describe('database setup', () => {
     }
   );
 
-  it('adds channel storage to an existing Core journal without changing retained users', () => {
+  it.each([
+    5, 7, 8,
+  ])('extends Core before migration %s without changing retained users', (cutoff) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-channel-migration-'));
     const legacyFolder = join(dataRoot, 'legacy-core');
     const productionFolder = join(process.cwd(), 'drizzle', 'core');
@@ -231,7 +233,7 @@ describe('database setup', () => {
     const journal = JSON.parse(
       readFileSync(join(productionFolder, 'meta', '_journal.json'), 'utf8')
     );
-    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 5);
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < cutoff);
     writeFileSync(join(legacyFolder, 'meta', '_journal.json'), JSON.stringify(journal));
     for (const entry of journal.entries)
       writeFileSync(
@@ -245,12 +247,15 @@ describe('database setup', () => {
       const before = coreDb.sqlite
         .prepare('SELECT id,display_name,status FROM users ORDER BY id')
         .all();
-      expect(listTableNames(coreDb)).not.toContain('discord_account_bindings');
+      expect(listTableNames(coreDb)).not.toContain(
+        cutoff === 5 ? 'discord_account_bindings' : 'capability_calls'
+      );
       applyMigrations(coreDb);
       expect(
         coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
       ).toEqual(before);
       expect(listTableNames(coreDb)).toContain('discord_account_bindings');
+      expect(listColumnNames(coreDb, 'capability_calls')).toContain('workspace_id');
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM notification_attention').get()
       ).toEqual({ count: 0 });
@@ -285,7 +290,8 @@ describe('database setup', () => {
         '0005_channel_notifications.sql',
         '0006_external_trigger_admissions.sql',
         '0007_discord_capture_origin.sql',
-        '0008_policy_audit_v1.sql',
+        '0008_server_capability_usage.sql',
+        '0009_policy_audit_v1.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -302,9 +308,13 @@ describe('database setup', () => {
         'core_0005_channel_notifications',
         'core_0006_external_trigger_admissions',
         'core_0007_discord_capture_origin',
-        'core_0008_policy_audit_v1',
+        'core_0008_server_capability_usage',
+        'core_0009_policy_audit_v1',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
+      for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
+        expect(listColumnNames(coreDb, table)).toContain('workspace_id');
+      }
       expect(listTableNames(coreDb)).toEqual(
         expect.arrayContaining([
           'notification_attention',

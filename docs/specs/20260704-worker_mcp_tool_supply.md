@@ -156,6 +156,8 @@ Knowledge Manager records its own model usage and work under its existing Intern
 
 The existing CapabilityCall retains the exact delivered answer bytes as delivery evidence. A selection trace proves selection only. The call proves answer delivery, not delivery of every cited page or that the Worker used the answer. Existing Task context preparation and S39 receipt distinctions remain in force. This adds no answer store, delivery ledger or capability family.
 
+`knowledge_ask` and `knowledge_tell` are the projected names of canonical `knowledge.ask` and `knowledge.tell`. Workspace ask includes Workspace Knowledge plus currently admitted Server Knowledge with scope-labelled citations. Arguments cannot select scopes or owners. User Memory is excluded from shared work. Worker tell remains Workspace-only.
+
 `knowledge_tell` submits supplied information and admitted Sources to the notebook scope's Knowledge Manager maintenance Thread. Knowledge Manager integrates and organizes through the existing fixed-base publisher. Current scope maintenance delegation permits ordinary publication; otherwise the exact candidate requires proposal approval. The result preserves the maintenance owner's `published`, `review_required`, `no_change` or typed-failure distinction. A Tool call, fact or model confidence cannot grant publication authority. A tell cannot claim terminal Worker output without the existing completed-Turn and delivery evidence.
 
 Workers receive the scope's bounded OKF root `index.md`, kept current by Knowledge Manager, so they can ask for details. The overview follows current source and audience restrictions. Workers receive no direct notebook editing Tool, host filesystem path, Git handle or App API bearer.
