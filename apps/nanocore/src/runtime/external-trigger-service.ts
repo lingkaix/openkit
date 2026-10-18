@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { type ActorRef, allocateEntityId, SubmitTurnInputRequestSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import { isThreadIdVisible } from '../auth/thread-visibility.js';
+import { canDiscloseThreadToAudience, isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { AutomationStore } from '../lib/automation-store.js';
 import type { SchedulerExecutionLineage } from '../scheduler-records.js';
 import {
@@ -170,6 +170,11 @@ export async function admitExternalTriggerEvent(
         session.agentId !== turn.agentId ||
         session.status !== 'busy' ||
         input.store.getThread(source.workspaceId, source.threadId).visibility !== 'workspace' ||
+        !canDiscloseThreadToAudience(
+          input.store,
+          input.store.getThread(source.workspaceId, source.threadId),
+          null
+        ) ||
         !isThreadIdVisible(
           input.store,
           source.workspaceId,
