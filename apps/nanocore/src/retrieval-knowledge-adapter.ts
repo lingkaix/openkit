@@ -8,6 +8,7 @@ import {
   ReferenceScopeIdSchema,
   RetrievalTraceReferenceSchema,
   responsibleUserIdForActor,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { parseDocument } from 'yaml';
@@ -18,6 +19,7 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { admitMemoryContext, memoryPageFacts } from './knowledge/memory-lifecycle.js';
 import { readMemorySuppressions } from './knowledge/memory-maintenance.js';
@@ -25,6 +27,7 @@ import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   type KnowledgePageReferenceProof,
+  parseKnowledgePageSourceReference,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   resolveRegisteredKnowledgeSourceReference,
@@ -100,6 +103,11 @@ export function readAuthorizedServerNotebookPages(input: Target) {
     actor: input.access.serverKnowledgeActor ?? input.access.requestActor,
   };
   const owner = resolveScopedNotebookOwner({ ...context, target: { kind: 'server' } });
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: input.dataRoot,
+    scope: { kind: 'server' },
+  });
+  const pageScopeId = `page/server/${knowledgeBaseId}`;
   const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
   const current = pin.read().files;
   const notebook = new KnowledgeNotebook({
@@ -162,22 +170,24 @@ export function readAuthorizedServerNotebookPages(input: Target) {
         registeredSources.set(targetId, source.source.contentDigest);
         if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
           return false;
-      } else if (reference.startsWith('knowledge:')) {
-        const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
-        const source = match ? selected[`${match[1]}.md`] : undefined;
+      } else if (reference.startsWith('openkit:')) {
+        const parsedReference = parseKnowledgePageSourceReference(reference, pageScopeId);
+        const sourceId = parsedReference?.reference.objectId;
+        const source = sourceId ? selected[`${sourceId}.md`] : undefined;
         if (
-          !match ||
+          !parsedReference ||
+          !sourceId ||
           source === undefined ||
-          (match[2] && digest(source) !== match[2]) ||
-          !eligible(match[1]!, source, selected, next)
+          (parsedReference.contentDigest && digest(source) !== parsedReference.contentDigest) ||
+          !eligible(sourceId, source, selected, next)
         )
           return false;
         // A retained reference cannot bypass a later restriction on its current source page.
-        const currentSource = current[`${match[1]}.md`];
+        const currentSource = current[`${sourceId}.md`];
         if (
           selected !== current &&
           currentSource !== undefined &&
-          !eligible(match[1]!, currentSource, current, new Set())
+          !eligible(sourceId, currentSource, current, new Set())
         )
           return false;
       } else return false;
@@ -214,6 +224,7 @@ export function readAuthorizedServerNotebookPages(input: Target) {
   admitServerKnowledgeRetrieval(input);
   const selectedIds = new Set(pages.map(({ id }) => id));
   return {
+    knowledgeBaseId,
     notebookRevision,
     pages,
     scopeSchemaText,
@@ -310,7 +321,9 @@ export function admitUserMemoryRetrieval(input: Target): void {
         actor: access.requestActor,
         userDb: access.userDb,
       });
-    ReferenceScopeIdSchema.parse(`page/user/${access.requestActor.userId}`);
+    ReferenceScopeIdSchema.parse(
+      `page/user/${access.requestActor.userId}/${readDefaultKnowledgeBaseId({ dataRoot: input.dataRoot, scope: { kind: 'user', userId: access.requestActor.userId } })}`
+    );
     const timeline = findAssistantTimeline(
       access.store,
       input.workspaceId,
@@ -331,6 +344,10 @@ export function readAuthorizedUserMemoryPages(input: Target) {
   const coreDb = input.access.coreDb!;
   const actor = input.access.requestActor!;
   const owner = resolveScopedNotebookOwner({ coreDb, actor, target: { kind: 'user' } });
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: input.dataRoot,
+    scope: { kind: 'user', userId: actor.userId },
+  });
   const userRoot = join(input.dataRoot, 'users', actor.userId);
   let sqlite: Database.Database | undefined;
   try {
@@ -429,6 +446,7 @@ export function readAuthorizedUserMemoryPages(input: Target) {
     }
     admitUserMemoryRetrieval(input);
     return {
+      knowledgeBaseId,
       notebookRevision,
       pages,
       scopeSchemaText,
@@ -468,7 +486,7 @@ export function resolveKnowledgeQueryContext(input: Target) {
   try {
     if (!workspaceId || !access.actor) throw new Error('Missing query owner.');
     input.access.store.getWorkspace(workspaceId);
-    ReferenceScopeIdSchema.parse(`page/workspace/${workspaceId}`);
+    WorkspaceIdSchema.parse(workspaceId);
     if (access.outputTurnId && !access.outputThreadId) throw new Error('Turn without Thread.');
     if (access.outputThreadId) {
       const thread = access.store.getThread(workspaceId, access.outputThreadId);
@@ -605,6 +623,8 @@ export function currentKnowledgeReferenceProofs(
 }
 /** Request-local immutable content selection; this object contains no retained authorization grant. */
 interface PinnedNotebookTarget extends Target {
+  readonly knowledgeBaseId: string;
+  readonly pageScopeId: string;
   readonly notebook: KnowledgeNotebook;
   readonly notebookRevision: string;
   readonly entries: Readonly<Record<string, string>>;
@@ -622,6 +642,10 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
   )
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
   input.access.store.getWorkspace(input.workspaceId);
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: input.workspaceId },
+  });
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
   });
@@ -631,6 +655,8 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
   return {
     ...input,
     dataRoot,
+    knowledgeBaseId,
+    pageScopeId: `page/workspace/${input.workspaceId}/${knowledgeBaseId}`,
     notebook,
     notebookRevision,
     entries: notebook.inspectRevision(notebookRevision).entries,
@@ -707,20 +733,25 @@ function pinnedSourcesReadable(
         const material = store.readKnowledgeSourceMaterial(input.workspaceId, source.id);
         if (material === null || digest(material) !== source.contentDigest) return false;
         if (!knowledgeSourceAudienceReadable(input, source.id)) return false;
-      } else if (reference.startsWith('knowledge:')) {
-        const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
-        if (!match) return false;
-        const content = pinnedPage(input, match[1]!);
-        if (content === null || (match[2] && digest(content) !== match[2])) return false;
-        if (!pinnedKnowledgeSourceReadable(input, match[1]!, content, visiting)) return false;
+      } else if (reference.startsWith('openkit:')) {
+        const parsedReference = parseKnowledgePageSourceReference(reference, input.pageScopeId);
+        if (!parsedReference) return false;
+        const sourceId = parsedReference.reference.objectId;
+        const content = pinnedPage(input, sourceId);
+        if (
+          content === null ||
+          (parsedReference.contentDigest && digest(content) !== parsedReference.contentDigest)
+        )
+          return false;
+        if (!pinnedKnowledgeSourceReadable(input, sourceId, content, visiting)) return false;
         // Exact history stays pinned; later source restrictions still govern its disclosure.
         const currentRevision = input.notebook.publishedRevision();
         if (currentRevision !== input.notebookRevision) {
           const current = pinNotebook({ ...input, notebookRevision: currentRevision });
-          const currentContent = pinnedPage(current, match[1]!);
+          const currentContent = pinnedPage(current, sourceId);
           if (
             currentContent !== null &&
-            !pinnedKnowledgeSourceReadable(current, match[1]!, currentContent, new Set())
+            !pinnedKnowledgeSourceReadable(current, sourceId, currentContent, new Set())
           )
             return false;
         }
@@ -795,6 +826,7 @@ export interface AuthorizedWorkspaceNotebookPage {
  * The returned commit and bytes never follow a later publication during this request.
  */
 export function readAuthorizedWorkspaceNotebookPages(input: Target): {
+  readonly knowledgeBaseId: string;
   readonly notebookRevision: string;
   readonly pages: readonly AuthorizedWorkspaceNotebookPage[];
   readonly referenceProofs: ReadonlyMap<string, KnowledgePageReferenceProof>;
@@ -837,13 +869,18 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
   const currentIds = new Set(currentPages.map(({ id }) => id));
   admitKnowledgeRetrieval(pinned);
   return {
+    knowledgeBaseId: pinned.knowledgeBaseId,
     notebookRevision: pinned.notebookRevision,
     pages: currentPages,
     referenceProofs: new Map([...referenceProofs].filter(([id]) => currentIds.has(id))),
   };
 }
 /** Source-bound conflict state stays an authoritative ledger decision, never an index flag. */
-export function knowledgePageConflicted(workspaceRoot: string, pageId: string): boolean {
+export function knowledgePageConflicted(
+  workspaceRoot: string,
+  pageId: string,
+  pageScopeId: string
+): boolean {
   const latest = new Map<string, { status: string; subjectReferences: string[] }>();
   for (const rows of readWorkspaceKnowledgeConflictLedger(workspaceRoot).values())
     for (const row of rows) latest.set(row.id, row);
@@ -851,7 +888,8 @@ export function knowledgePageConflicted(workspaceRoot: string, pageId: string): 
     (row) =>
       !['resolved', 'superseded'].includes(row.status) &&
       row.subjectReferences.some(
-        (reference) => reference.replace(/@sha256:[a-f0-9]{64}$/, '') === `knowledge:${pageId}`
+        (reference) =>
+          parseKnowledgePageSourceReference(reference, pageScopeId)?.reference.objectId === pageId
       )
   );
 }
@@ -885,10 +923,12 @@ function textRanges(content: string, body: string): { start: number; end: number
 /** Enumerates one published Git revision after current scope and recursive source admission. */
 export function collectKnowledgeInventory(input: Target): {
   view: RetrievalScope;
+  knowledgeBaseId: string;
   notebookRevision: string;
   referenceProofs: ReadonlyMap<string, KnowledgePageReferenceProof>;
 } {
-  const { notebookRevision, pages, referenceProofs } = readAuthorizedWorkspaceNotebookPages(input);
+  const { knowledgeBaseId, notebookRevision, pages, referenceProofs } =
+    readAuthorizedWorkspaceNotebookPages(input);
   const documents: RetrievalDocument[] = [];
   for (const { id, content } of pages) {
     const parsed = parseOkfDocument({ path: `knowledge/pages/${id}.md`, content });
@@ -907,7 +947,7 @@ export function collectKnowledgeInventory(input: Target): {
         ? textRanges(content, doc.body)
         : [{ start: 0, end: Buffer.byteLength(content) }],
       ...(language === 'zh' || language === 'ja' || language === 'unicode' ? { language } : {}),
-      metadata: { workspaceId: input.workspaceId, knowledgePageId: id },
+      metadata: { workspaceId: input.workspaceId, knowledgeBaseId, knowledgePageId: id },
       locator: `knowledge/pages/${id}.md`,
       content: { kind: 'inline-text', text: content },
     });
@@ -917,11 +957,13 @@ export function collectKnowledgeInventory(input: Target): {
       scope: JSON.stringify([
         'knowledge',
         input.workspaceId,
+        knowledgeBaseId,
         responsibleUserIdForActor(input.access.actor),
         input.access.outputThreadId ?? null,
       ]),
       documents,
     },
+    knowledgeBaseId,
     notebookRevision,
     referenceProofs,
   };
@@ -942,7 +984,11 @@ export function collectServerKnowledgeInventory(input: Target) {
       media_type: 'text/markdown',
       text_ranges: textRanges(content, doc.body),
       ...(language === 'zh' || language === 'ja' || language === 'unicode' ? { language } : {}),
-      metadata: { sourceScope: 'server', knowledgePageId: id },
+      metadata: {
+        sourceScope: 'server',
+        knowledgeBaseId: admitted.knowledgeBaseId,
+        knowledgePageId: id,
+      },
       locator: `server/knowledge/pages/${id}.md`,
       content: { kind: 'inline-text', text: content },
     };
@@ -953,6 +999,7 @@ export function collectServerKnowledgeInventory(input: Target) {
       scope: JSON.stringify([
         'knowledge',
         'server',
+        admitted.knowledgeBaseId,
         input.workspaceId,
         responsibleUserIdForActor(input.access.actor),
         input.access.outputThreadId ?? null,
@@ -978,7 +1025,12 @@ export function collectUserMemoryInventory(input: Target) {
       media_type: 'text/markdown',
       text_ranges: textRanges(content, doc.body),
       ...(language === 'zh' || language === 'ja' || language === 'unicode' ? { language } : {}),
-      metadata: { userId, workspaceId: input.workspaceId, knowledgePageId: id },
+      metadata: {
+        userId,
+        workspaceId: input.workspaceId,
+        knowledgeBaseId: admitted.knowledgeBaseId,
+        knowledgePageId: id,
+      },
       locator: `memory/pages/${id}.md`,
       content: { kind: 'inline-text', text: content },
     };
@@ -986,7 +1038,13 @@ export function collectUserMemoryInventory(input: Target) {
   return {
     ...admitted,
     view: {
-      scope: JSON.stringify(['memory', userId, input.workspaceId, input.access.outputThreadId]),
+      scope: JSON.stringify([
+        'memory',
+        userId,
+        admitted.knowledgeBaseId,
+        input.workspaceId,
+        input.access.outputThreadId,
+      ]),
       documents,
     },
   };

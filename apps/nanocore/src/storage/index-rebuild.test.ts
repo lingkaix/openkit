@@ -14,7 +14,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { KnowledgeRetrievalTraceSchema } from '@openkit/app-api-schemas';
+import { formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
@@ -443,15 +445,15 @@ describe('workspace derived index rebuild', () => {
       limit: 1,
       pinnedReferences: [
         {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: overflow.id,
         },
         {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: selected.id,
         },
         {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: selected.id,
         },
       ],
@@ -477,8 +479,12 @@ describe('workspace derived index rebuild', () => {
     ).toEqual([
       {
         body: 'retrievalneedle',
+        knowledgeBaseId: readDefaultKnowledgeBaseId({
+          dataRoot,
+          scope: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        }),
         reference: {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: selected.id,
         },
         knowledgePageId: selected.id,
@@ -507,7 +513,7 @@ describe('workspace derived index rebuild', () => {
         actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
       },
-      sourceScope: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+      sourceScope: workspacePageScope(dataRoot),
       notebookRevision,
       caller: 'task-mode',
       requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -515,11 +521,11 @@ describe('workspace derived index rebuild', () => {
         limit: 1,
         pinnedReferences: [
           {
-            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            scopeId: workspacePageScope(dataRoot),
             objectId: selected.id,
           },
           {
-            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            scopeId: workspacePageScope(dataRoot),
             objectId: overflow.id,
           },
         ],
@@ -529,7 +535,7 @@ describe('workspace derived index rebuild', () => {
       selected: [
         {
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            scopeId: workspacePageScope(dataRoot),
             objectId: selected.id,
           },
           revision: notebookRevision,
@@ -540,7 +546,7 @@ describe('workspace derived index rebuild', () => {
       excluded: [
         {
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            scopeId: workspacePageScope(dataRoot),
             objectId: overflow.id,
           },
           revision: notebookRevision,
@@ -619,7 +625,7 @@ describe('workspace derived index rebuild', () => {
     expect(retrieval.selected).toContainEqual(
       expect.objectContaining({
         reference: {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: knowledgePageId,
         },
       })
@@ -698,7 +704,7 @@ describe('workspace derived index rebuild', () => {
       dataRoot,
       pinnedReferences: [
         {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: knowledgePageId,
         },
       ],
@@ -715,7 +721,7 @@ describe('workspace derived index rebuild', () => {
     expect(retrieval.excluded).toEqual([
       {
         reference: {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: knowledgePageId,
         },
         revision: workspaceNotebook(workspaceRoot).publishedRevision(),
@@ -1146,7 +1152,7 @@ describe('workspace derived index rebuild', () => {
         'status: "stable"',
         'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
         'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
-        `source_refs: ["knowledge:${knowledge.id}"]`,
+        `source_refs: ${JSON.stringify([formatReferenceUri({ scopeId: workspacePageScope(dataRoot), objectId: knowledge.id })])}`,
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1192,7 +1198,7 @@ describe('workspace derived index rebuild', () => {
         'status: "stable"',
         'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
         'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
-        'source_refs: ["knowledge:kn_missing"]',
+        `source_refs: ${JSON.stringify([formatReferenceUri({ scopeId: workspacePageScope(dataRoot), objectId: 'kn_missing' })])}`,
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1325,10 +1331,13 @@ describe('workspace derived index rebuild', () => {
         `source_refs: ${JSON.stringify([
           'source:ks_00000000-0000-7e28-9211-1f67fd14ca84',
           `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'a'.repeat(64)}`,
-          `knowledge:${knowledge.id}`,
-          `knowledge:${knowledge.id}@sha256:${'b'.repeat(64)}`,
+          formatReferenceUri({ scopeId: workspacePageScope(dataRoot), objectId: knowledge.id }),
+          formatReferenceUri(
+            { scopeId: workspacePageScope(dataRoot), objectId: knowledge.id },
+            `sha256:${'b'.repeat(64)}`
+          ),
           'source:ks_00000000-0000-7e65-a399-d53a84c98ecb',
-          'knowledge:kn_missing',
+          formatReferenceUri({ scopeId: workspacePageScope(dataRoot), objectId: 'kn_missing' }),
           'https://example.com/source',
           'not-a-valid-external-reference',
         ])}`,
@@ -1386,7 +1395,10 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: `knowledge:${knowledge.id}`,
+          reference: formatReferenceUri({
+            scopeId: workspacePageScope(dataRoot),
+            objectId: knowledge.id,
+          }),
           kind: 'workspace-knowledge',
           targetId: knowledge.id,
           resolved: true,
@@ -1394,7 +1406,10 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: `knowledge:${knowledge.id}@sha256:${'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}`,
+          reference: formatReferenceUri(
+            { scopeId: workspacePageScope(dataRoot), objectId: knowledge.id },
+            `sha256:${'b'.repeat(64)}`
+          ),
           kind: 'workspace-knowledge',
           targetId: knowledge.id,
           resolved: true,
@@ -1410,7 +1425,10 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: 'knowledge:kn_missing',
+          reference: formatReferenceUri({
+            scopeId: workspacePageScope(dataRoot),
+            objectId: 'kn_missing',
+          }),
           kind: 'workspace-knowledge',
           targetId: 'kn_missing',
           resolved: false,
@@ -1699,7 +1717,7 @@ describe('workspace derived index rebuild', () => {
       expect.arrayContaining([
         expect.objectContaining({
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            scopeId: workspacePageScope(dataRoot),
             objectId: 'mem_project',
           },
         }),
@@ -1856,4 +1874,10 @@ function editDerivedIndex(
   const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
   edit(record);
   writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+/** Resolves the established base of the demo Workspace used by these index fixtures. */
+function workspacePageScope(dataRoot: string): string {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  return `page/workspace/${workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } })}`;
 }
