@@ -1786,7 +1786,9 @@ describe('definition-derived deployment administration cutover', () => {
           .all();
         expect(native['nanohost.runtime-target']()).toEqual(expected);
         expect(await f.client.operations['nanohost.runtime-target']({})).toEqual(expected);
-        expect(await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input: {} })).toEqual({
+        expect(
+          await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input: {} })
+        ).toEqual({
           isError: false,
           result: expected,
         });
@@ -2149,9 +2151,9 @@ describe('definition-derived deployment administration cutover', () => {
       ).toEqual([]);
       expect(readdirSync(f.slotRoot)).toEqual([]);
       expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
-      expect((await f.mcp('openkit_call', { operation: 'nanohost.token-list', input: {} })).result).toEqual(
-        { items: [] }
-      );
+      expect(
+        (await f.mcp('openkit_call', { operation: 'nanohost.token-list', input: {} })).result
+      ).toEqual({ items: [] });
     } finally {
       f.coreDb.sqlite.close();
     }
