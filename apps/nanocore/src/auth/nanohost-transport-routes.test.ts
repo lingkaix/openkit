@@ -1786,7 +1786,9 @@ describe('definition-derived deployment administration cutover', () => {
           .all();
         expect(native['nanohost.runtime-target']()).toEqual(expected);
         expect(await f.client.operations['nanohost.runtime-target']({})).toEqual(expected);
-        expect(await f.mcp('call', { operation: 'nanohost.runtime-target', input: {} })).toEqual({
+        expect(
+          await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input: {} })
+        ).toEqual({
           isError: false,
           result: expected,
         });
@@ -1940,7 +1942,7 @@ describe('definition-derived deployment administration cutover', () => {
         );
         expect(response.status).toBe(400);
         expect(await response.json()).toMatchObject({ code: 'invalid_request' });
-        const mcp = await f.mcp('call', { operation: 'nanohost.runtime-target', input });
+        const mcp = await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input });
         expect(mcp).toMatchObject({
           isError: true,
           result: { code: 'invalid_request' },
@@ -2005,9 +2007,9 @@ describe('definition-derived deployment administration cutover', () => {
       const target = await f.client.operations['nanohost.runtime-target']({});
       expect(target.connectionGeneration).toBe(generation.connectionGeneration);
       expect(
-        (await f.mcp('call', { operation: 'nanohost.runtime-target', input: {} })).result
+        (await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input: {} })).result
       ).toEqual(target);
-      const enrolled = await f.mcp('call', {
+      const enrolled = await f.mcp('openkit_call', {
         operation: 'nanohost.enroll',
         input: { expiresAt: '2999-01-01T00:00:00.000Z' },
       });
@@ -2021,7 +2023,7 @@ describe('definition-derived deployment administration cutover', () => {
       expect(await f.client.operations['nanohost.token-list']({})).toEqual({
         items: [enrolled.result.record],
       });
-      const rotated = await f.mcp('call', {
+      const rotated = await f.mcp('openkit_call', {
         operation: 'nanohost.token-rotate',
         input: { tokenId: initial },
       });
@@ -2039,7 +2041,7 @@ describe('definition-derived deployment administration cutover', () => {
       expect(
         (await f.client.operations['nanohost.token-revoke']({ tokenId: initial })).record.status
       ).toBe('revoked');
-      const issued = await f.mcp('call', {
+      const issued = await f.mcp('openkit_call', {
         operation: 'nanohost.token-issue',
         input: { targetSlot: 'B', expiresAt: '2999-01-01T00:00:00.000Z' },
       });
@@ -2051,9 +2053,9 @@ describe('definition-derived deployment administration cutover', () => {
       );
       const layout = await f.client.operations['storage.layout-report']({});
       expect(
-        (await f.mcp('call', { operation: 'storage.layout-report', input: {} })).result
+        (await f.mcp('openkit_call', { operation: 'storage.layout-report', input: {} })).result
       ).toEqual(layout);
-      const created = await f.mcp('call', { operation: 'backup.create', input: {} });
+      const created = await f.mcp('openkit_call', { operation: 'backup.create', input: {} });
       expect(created.isError).toBe(false);
       expect(created.result.manifest.consistency).toBe('crash-consistent');
       expect(created.result.checkedFiles).toContain('server/db/core.sqlite');
@@ -2138,7 +2140,7 @@ describe('definition-derived deployment administration cutover', () => {
         });
         expect(response.status, id).toBe(503);
         expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
-        expect(await f.mcp('call', { operation: id, input })).toMatchObject({
+        expect(await f.mcp('openkit_call', { operation: id, input })).toMatchObject({
           isError: true,
           result: { code: 'product_work_unavailable' },
         });
@@ -2149,9 +2151,9 @@ describe('definition-derived deployment administration cutover', () => {
       ).toEqual([]);
       expect(readdirSync(f.slotRoot)).toEqual([]);
       expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
-      expect((await f.mcp('call', { operation: 'nanohost.token-list', input: {} })).result).toEqual(
-        { items: [] }
-      );
+      expect(
+        (await f.mcp('openkit_call', { operation: 'nanohost.token-list', input: {} })).result
+      ).toEqual({ items: [] });
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -2196,7 +2198,7 @@ describe('definition-derived deployment administration cutover', () => {
         });
         expect(response.status, id).toBe(403);
         expect(await response.json()).toMatchObject({ code: 'deployment_admin_required' });
-        expect(await f.mcp('call', { operation: id, input }, headers)).toMatchObject({
+        expect(await f.mcp('openkit_call', { operation: id, input }, headers)).toMatchObject({
           isError: true,
           result: { code: 'deployment_admin_required' },
         });
@@ -2265,7 +2267,7 @@ describe('definition-derived deployment administration cutover', () => {
       expect(readFileSync(f.config.credentialSlots.A.companionPath)).toEqual(companionBefore);
       expect(readdirSync(f.slotRoot).sort()).toEqual(['A.meta', 'A.token']);
       expect(
-        await f.mcp('call', { operation: 'nanohost.token-rotate', input: { tokenId } })
+        await f.mcp('openkit_call', { operation: 'nanohost.token-rotate', input: { tokenId } })
       ).toMatchObject({ isError: true, result: { code } });
       expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
         tokensBefore
