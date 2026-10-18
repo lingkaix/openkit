@@ -6,6 +6,7 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { ServerKnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { FsStore } from '../lib/store.js';
+import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb } from '../storage/db.js';
@@ -248,8 +249,27 @@ it('recalls the exact Server candidate only after its human Review publishes the
     candidateRevision: proposal.candidateRevision,
     decision: 'accepted' as const,
   };
-  const accepted = await decideServerNotebookProposal(context, request);
-  expect(await decideServerNotebookProposal(context, request)).toEqual(accepted);
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    serverKnowledgeMaintenance: f.dependencies,
+  });
+  await expect(
+    invoke('knowledge.server.proposal.decide', request, {
+      kind: 'public',
+      actor: f.requestActor,
+      delivery: 'model',
+    })
+  ).rejects.toMatchObject({ code: 'human_review_required', status: 403 });
+  expect(f.notebook.publishedRevision()).toBe(f.human);
+  const afterRefusal = readServerNotebookProposal(context, proposal.id);
+  expect(afterRefusal.reviews).toEqual([]);
+  expect(afterRefusal.proposalDigest).toBe(selected.proposalDigest);
+  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+  const accepted = await invoke('knowledge.server.proposal.decide', request, human);
+  expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(accepted);
+  expect(readServerNotebookProposal(context, proposal.id).reviews).toHaveLength(1);
+  expect(f.notebook.publishedRevision()).toBe(accepted.notebookRevision);
   const published = f.notebook.readRevision(accepted.notebookRevision!);
   expect(published.metadata.producer).toEqual(producer);
   expect(published.files['release-rule.md']).toBe(preview.after);

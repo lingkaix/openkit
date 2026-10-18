@@ -152,6 +152,12 @@ export function createServerThreadOperations(
         const native = available();
         const actor = publicOperationActor(context);
         requireCurrentDeploymentAdmin(native.coreDb, actor);
+        if (context.delivery === 'model')
+          throw new OperationError(
+            'human_review_required',
+            'A human must decide this Server candidate.',
+            403
+          );
         return decideServerNotebookProposal(
           { ...native, actor, revalidate: () => serverNotebookAdmission(native, actor) },
           input
