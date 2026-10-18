@@ -25,10 +25,10 @@ interface KnowledgeBaseOwner {
 }
 
 /** Resolves the existing configuration and content owners without creating storage. */
-function configurationOwner(input: KnowledgeBaseOwner) {
+function configurationOwner(input: KnowledgeBaseOwner, workspaceRoot?: string) {
   const scope = KnowledgeOwnerScopeSchema.parse(input.scope);
   if (scope.kind === 'workspace') {
-    const root = join(input.dataRoot, 'workspaces', scope.workspaceId);
+    const root = workspaceRoot ?? join(input.dataRoot, 'workspaces', scope.workspaceId);
     return {
       path: join(root, 'config', 'workspace.jsonc'),
       notebookRoot: join(root, 'knowledge'),
@@ -80,17 +80,33 @@ export function readDefaultKnowledgeBaseId(input: KnowledgeBaseOwner): string {
  *
  * Existing binding bytes are retained on retry. Workspace creation supplies its initial configuration in the existing unpublished staging root; published readers never call this writer.
  */
-export function initializeDefaultKnowledgeBaseId(input: KnowledgeBaseOwner): string {
+export function initializeDefaultKnowledgeBaseId(
+  input: KnowledgeBaseOwner & {
+    /** Existing unpublished Workspace staging root supplied by native creation. */
+    readonly workspaceRoot?: string;
+    /** Already reminted import identity; ordinary fresh creation allocates here. */
+    readonly knowledgeBaseId?: string;
+  }
+): string {
   try {
-    const owner = configurationOwner(input);
+    const owner = configurationOwner(input, input.workspaceRoot);
+    const requested =
+      input.knowledgeBaseId === undefined
+        ? undefined
+        : KnowledgeBaseIdSchema.parse(input.knowledgeBaseId);
     const source = existsSync(owner.path) ? readCanonicalTextFile(owner.path) : owner.empty;
     if (source === undefined) throw new NotebookError('recovery_required');
     const previous = readBinding(owner, source);
-    if (previous !== undefined) return KnowledgeBaseIdSchema.parse(previous);
+    if (previous !== undefined) {
+      const retained = KnowledgeBaseIdSchema.parse(previous);
+      if (requested !== undefined && retained !== requested)
+        throw new NotebookError('recovery_required');
+      return retained;
+    }
     if (existsSync(join(owner.notebookRoot, 'notebook.git')) || existsSync(owner.sourcesRoot)) {
       throw new NotebookError('recovery_required');
     }
-    const id = allocateEntityId('kb');
+    const id = requested ?? allocateEntityId('kb');
     const updated = applyEdits(
       source,
       modify(source, owner.member, id, {
