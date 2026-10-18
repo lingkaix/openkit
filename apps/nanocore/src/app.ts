@@ -60,6 +60,13 @@ import {
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
+
+import {
+  type ChannelServices,
+  createChannelServices,
+  type DiscordAttentionTransport,
+} from './channel-services.js';
+import { createDiscordRestTransport } from './channels/discord-rest.js';
 import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
@@ -76,6 +83,7 @@ import {
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
+import { registerDiscordInteractionRoutes } from './discord-interaction-routes.js';
 import { uuidv5 } from './generative-kernel/uuid.js';
 import {
   pinKnowledgeManagerExecution,
@@ -104,6 +112,7 @@ import {
 } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
+import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
@@ -159,6 +168,7 @@ import {
 import {
   installPendingRequestAdmission,
   type PendingAdmissionDependencies,
+  setPendingRequestAttentionObserver,
 } from './runtime/pending-request-flow.js';
 import { cancelOwnedQueuedAdmission, startProductTurn } from './runtime/product-turn-start.js';
 import { createCoordinatorTaskTool } from './runtime/task-admission.js';
@@ -390,6 +400,8 @@ function workerCoordinatorCandidates(
  * Construction options for the Hono app.
  */
 export interface CreateAppOptions {
+  /** Optional private Discord send boundary; deterministic tests supply a fake. */
+  discordAttentionTransport?: DiscordAttentionTransport;
   /** Boot joins this finite preparation callback to the existing recurring scanner. */
   onKnowledgeMaintenanceReady?: (scan: (instant: string) => void) => void;
   /** Explicit canonical identity for an embedded fixture without Core storage; production resolves the recorded local User. */
@@ -1732,6 +1744,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     dispatch: nanoHostSessionDispatch,
   });
 
+  let channelServices: ChannelServices | undefined;
+  registerDiscordInteractionRoutes({
+    app,
+    config: startupOpenKitConfig.channels?.discord,
+    services: () => channelServices,
+  });
+
   app.use('/api/*', browserCors);
   app.use('/api/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
   app.use('/v1/*', browserCors);
@@ -2172,6 +2191,41 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
   };
 
+  if (options.coreDb) {
+    const discordConfig = startupOpenKitConfig.channels?.discord;
+    const botTokenRef = discordConfig?.botTokenRef;
+    const transport =
+      options.discordAttentionTransport ??
+      (botTokenRef && publicBaseUrl
+        ? createDiscordRestTransport({
+            publicBaseUrl,
+            resolveBotToken: async () => resolveEnvSecretRef(botTokenRef),
+          })
+        : undefined);
+    channelServices = createChannelServices({
+      coreDb: options.coreDb,
+      store: sharedStore,
+      mode,
+      openWorkspace: repositoryWorkspaceDb,
+      ...(publicBaseUrl ? { publicBaseUrl } : {}),
+      ...(discordConfig ? { discordConfig } : {}),
+      ...(transport ? { transport } : {}),
+      invokePending: (id, value, actor) =>
+        createOperationInvocation({
+          coreDb: options.coreDb,
+          store: sharedStore,
+          repositoryWorkspaceDb,
+          inflightCommands,
+          pendingRequestServices,
+          workspaceMutationAdmission,
+          fileAdmission,
+          mode,
+        })(id, value, { kind: 'public', actor, delivery: 'human' }),
+    });
+    setPendingRequestAttentionObserver(sharedStore, channelServices.attentionRaised);
+    channelServices.recoverAttention();
+  }
+
   registerArtifactFileRoutes({
     app,
     coreDb: options.coreDb,
@@ -2228,6 +2282,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     conversationService: chatService,
     taskStart,
     pendingRequestServices,
+    ...(channelServices ? { channelServices } : {}),
     startModeWorkerTurn,
     coreDb: options.coreDb,
     workspaceMutationAdmission,
@@ -2289,6 +2344,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     conversationService: chatService,
     taskStart,
     pendingRequestServices,
+    ...(channelServices ? { channelServices } : {}),
     runtimeConfigManager,
     runtimeConfigOperations,
     providerSubscriptionOperations,

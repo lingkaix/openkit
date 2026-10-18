@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,6 +7,7 @@ import type { AgentManifest } from '../agents/manifest.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createDiagnosticsSnapshot } from './snapshot.js';
 
 /**
@@ -31,46 +32,50 @@ describe('createDiagnosticsSnapshot', () => {
   it('aggregates mode, storage, migrations, providers, agents, and auth without secrets', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
     const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const snapshot = createDiagnosticsSnapshot({
-      actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-      coreDb,
-      dataRoot,
-      mode: 'local',
-      providerRegistry: new ProviderRegistry([
-        {
-          baseUrl: 'https://user:password@example.com/v1',
-          displayName: 'Provider',
-          id: 'provider',
-          kind: 'direct',
-          models: ['model'],
-          secretRef: 'env:SECRET_TOKEN',
+    try {
+      applyMigrations(coreDb);
+      const snapshot = createDiagnosticsSnapshot({
+        actor: { kind: 'local', userId: FIXTURE_LOCAL_USER_ID },
+        coreDb,
+        dataRoot,
+        mode: 'local',
+        providerRegistry: new ProviderRegistry([
+          {
+            baseUrl: 'https://user:password@example.com/v1',
+            displayName: 'Provider',
+            id: 'provider',
+            kind: 'direct',
+            models: ['model'],
+            secretRef: 'env:SECRET_TOKEN',
+          },
+        ]),
+        agentManifests: [agentManifest()],
+      });
+
+      expect(snapshot).toMatchObject({
+        auth: { mode: 'local' },
+        dataRoot: 'configured',
+        migrations: {
+          applied: [
+            'core_0000_setup',
+            'core_0001_concurrent_turn_capacity',
+            'core_0002_durable_recurring_schedules',
+            'core_0003_notebook_admission',
+            'core_0004_equal_workspace_members',
+            'core_0005_channel_notifications',
+            'core_0006_external_trigger_admissions',
+          ],
         },
-      ]),
-      agentManifests: [agentManifest()],
-    });
-
-    expect(snapshot).toMatchObject({
-      auth: { mode: 'local' },
-      dataRoot: 'configured',
-      migrations: {
-        applied: [
-          'core_0000_setup',
-          'core_0001_concurrent_turn_capacity',
-          'core_0002_durable_recurring_schedules',
-          'core_0003_notebook_admission',
-          'core_0004_equal_workspace_members',
-          'core_0005_external_trigger_admissions',
-        ],
-      },
-      mode: 'local',
-      providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
-      agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],
-    });
-    expect(JSON.stringify(snapshot)).not.toContain(dataRoot);
-    expect(JSON.stringify(snapshot)).not.toContain('SECRET_TOKEN');
-    expect(JSON.stringify(snapshot)).not.toContain('user:password');
-
-    coreDb.sqlite.close();
+        mode: 'local',
+        providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
+        agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],
+      });
+      expect(JSON.stringify(snapshot)).not.toContain(dataRoot);
+      expect(JSON.stringify(snapshot)).not.toContain('SECRET_TOKEN');
+      expect(JSON.stringify(snapshot)).not.toContain('user:password');
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 });

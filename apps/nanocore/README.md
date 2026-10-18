@@ -570,6 +570,12 @@ Supported Vault request/review uses the existing Pending Request command-intent 
 
 `thread-read-state.ts` joins authenticated User-owned read receipts to current eligible completed message Items. `thread.read-state` reads without marking; `thread.mark-read` accepts displayed Item identities, or an omitted list for explicit Mark read. Existing operation admission supplies the current User and Workspace/Thread audience; callers cannot select another User. Invalid or cross-Thread identities refuse the complete batch before mutation. Conversation navigation projects unread counts from the same receipt owner.
 
+## Discord And Notification Delivery
+
+`src/channel-services.ts` composes the Discord adapter and shared notification lifecycle with the existing Pending Request owners. The private signed entry is `/api/channels/discord/interactions`; account settings and delivery observations use the definition-driven channel family. Startup reads optional `channels.discord` configuration. Pairing retains no credential privilege, sends carry App links only, and grants return to the App. Core migration `0005_channel_notifications` adds deployment-local transport records without changing existing records. Focused checks cover `src/channels`, `src/notifications`, and the channel-to-Pending Request seam. No real vendor operation is part of deterministic tests.
+
+## Identifier Boundaries
+
 Direct Task command replay uses the current worker Turn and existing command owner. Historical Task-to-Goal replay is removed under the authorized pre-stable reset because its producer is retired. Run the complete `src/server.test.ts` suite for current replay and lineage refusal.
 
 Command receipt normalization selects the existing per-kind validator from the response discriminator before memory, SQLite or owner-directory publication and on retained-row readback. Direct Workspace, User, Thread, Turn, Artifact, Material, Review, Knowledge, invitation, presentation and Worker storage pointers use their declared owners; composite, request, Goal and native keys retain their own opaque contracts. Run the complete `src/storage/command-request-records.test.ts` suite for malformed and wrong-kind refusal, unchanged inventory, retained-row refusal and opaque-owner controls.
