@@ -93,8 +93,11 @@ async function verifyFile(
     )
       throw new Error('Knowledge package member bytes do not match their captured identity.');
   } finally {
-    await destination?.close();
-    await source.close();
+    try {
+      await destination?.close();
+    } finally {
+      await source.close();
+    }
   }
 }
 
