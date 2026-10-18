@@ -7,6 +7,51 @@ import {
 } from './delegation.js';
 
 describe('structured worker delegation requests', () => {
+  it('retains exact typed Policy selectors separately from descriptive resources', () => {
+    const request = createStructuredWorkerDelegationRequest({
+      objective: 'Read one application',
+      acceptanceCriteria: ['The application is reviewed'],
+      contextRefs: [{ kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' }],
+      resources: [
+        { kind: 'external', reference: 'sis/application.read', reason: 'Descriptive context' },
+        {
+          kind: 'policy',
+          resource: {
+            kind: 'mcp-tool',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            serverId: 'sis',
+            toolName: 'application.read',
+          },
+          reason: 'Only this exact Tool is selected',
+        },
+      ],
+      expectedArtifacts: [],
+      constraints: { maxContextTokens: 12_000, maxWorkerIterations: 1 },
+      verification: [{ kind: 'manual', description: 'Inspect the result' }],
+      reviewPolicy: { required: false, reviewers: ['human'], instructions: 'Inspect the result' },
+      escalationConditions: [],
+      reviewContext: null,
+    });
+    expect(
+      StructuredWorkerDelegationRequestSchema.parse(
+        JSON.parse(serializeStructuredWorkerDelegationRequest(request))
+      ).resources
+    ).toEqual(request.resources);
+    const typed = request.resources[1]!;
+    expect(
+      StructuredWorkerDelegationRequestSchema.safeParse({
+        ...request,
+        resources: [{ ...typed, reference: 'an untyped replacement' }],
+      }).success
+    ).toBe(false);
+    expect(
+      StructuredWorkerDelegationRequestSchema.safeParse({
+        ...request,
+        resources: [{ ...typed, reason: '' }],
+      }).success
+    ).toBe(false);
+  });
+
   it('creates a structured app-local worker delegation request', () => {
     const request = createStructuredWorkerDelegationRequest({
       objective: 'Fix the failing projection test.',

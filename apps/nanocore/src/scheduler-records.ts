@@ -708,10 +708,7 @@ export function findSchedulerAdmissionForTurn(
 export function findSchedulerAdmissionForWorkerLineage(
   coreDb: CoreDb,
   lineage: SchedulerExecutionLineage
-): Pick<
-  SchedulerAdmissionEntryRecord,
-  'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
-> | null {
+): SchedulerAdmissionEntryRecord | null {
   const rows = coreDb.sqlite
     .prepare(`SELECT admission.* FROM scheduler_execution_attempts attempt
     JOIN scheduler_admission_entries admission ON admission.queue_entry_id = attempt.queue_entry_id
