@@ -2543,10 +2543,7 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
   // Both formats preserve additions from the same physical header, which omits inline bodies.
   const headerReader = z.object({
     ...ArtifactReaderSchema.shape,
-    content: z.union([
-      ArtifactInlineContentSchema.omit({ body: true }),
-      ArtifactFileContentSchema,
-    ]),
+    content: z.union([ArtifactInlineContentSchema.omit({ body: true }), ArtifactFileContentSchema]),
   });
   if (artifact.content.format === 'file') {
     ensureCanonicalDirectory(artifactRoot);
