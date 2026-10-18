@@ -1430,11 +1430,12 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         const oldRow = input.workspaceDb.sqlite
           .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
           .get(duplicate.policyDecisionId);
-        const previous = oldRow ? readPermissionDecisionRowV1(oldRow).mediation : undefined;
+        const previousRecord = oldRow ? readPermissionDecisionRowV1(oldRow) : undefined;
+        const previous = previousRecord?.mediation;
         if (
           !previous ||
           previous.proposalDigest !== policyDecision.proposalDigest ||
-          previous.policyRevision !== policyDecision.policyRevision ||
+          previousRecord?.policySnapshotId !== policyDecision.policyRevision ||
           previous.authorizationRevision !== policyDecision.authorizationRevision
         )
           throw new WorkerControlGatewayError(
@@ -1813,7 +1814,7 @@ export async function reviewCapturedMcpPolicy(input: {
   );
   if (
     policyProposalDigest(proposalInput.proposal) !== source.mediation.proposalDigest ||
-    policyDigest(proposalInput.document) !== source.mediation.policyRevision ||
+    policyDigest(proposalInput.document) !== source.policySnapshotId ||
     proposalInput.authorizationRevision !== source.mediation.authorizationRevision ||
     policyDigest(proposalInput.proposal.subject) !== policyDigest(source.mediation.subject)
   )
@@ -1826,7 +1827,7 @@ export async function reviewCapturedMcpPolicy(input: {
       deciderId: input.actor.userId,
       binding: {
         proposalDigest: source.mediation.proposalDigest,
-        policyRevision: source.mediation.policyRevision,
+        policyRevision: source.policySnapshotId,
         authorizationRevision: source.mediation.authorizationRevision,
       },
     },

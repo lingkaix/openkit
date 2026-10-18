@@ -57,19 +57,10 @@ function binding(id: string, mode: PolicyBindingV1['mode'] = 'gate'): PolicyBind
     state: 'active',
     operation: 'mcp.call-tool',
     stage: mode === 'gate' ? 'decide' : mode === 'observe' ? 'completed' : 'propose',
-    point: `mcp.call-tool@${mode === 'gate' ? 'decide' : mode === 'observe' ? 'completed' : 'propose'}`,
     mode,
     participant: { kind: 'deterministic', id: 'test', version: participantVersion },
-    inputContract: 'mcp-tool-summary-v1',
+
     inputDisclosure: scope,
-    outputContract:
-      mode === 'gate'
-        ? 'gate-v1'
-        : mode === 'advise'
-          ? 'advice-v1'
-          : mode === 'observe'
-            ? 'observation-v1'
-            : 'replacement-v1',
     order: 0,
     timeoutMs: 100,
     failure: 'escalate-to-human',
@@ -127,22 +118,30 @@ function fixture(bindings: PolicyBindingV1[]) {
 }
 
 describe('bounded native Policy pipeline', () => {
-  it('retains advice before ordered gates and the real final Kernel deny', async () => {
-    const input = fixture([
-      binding('second'),
-      { ...binding('first'), order: 1 },
-      binding('context', 'advise'),
-    ]);
+  it('refuses active advice before disclosure until its safe output can be retained', async () => {
+    const input = fixture([binding('context', 'advise')]);
+    const invoke = vi.fn(async () => ({ attributes: { risk: 'reviewed' } }));
+    const finalKernel = vi.fn(() => kernel());
+    await expect(
+      new PolicyInterception({ id: 'test', version: participantVersion, invoke }).decide({
+        ...input,
+        finalKernel,
+      })
+    ).rejects.toThrow(/safe participant output reference/);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(finalKernel).not.toHaveBeenCalled();
+    expect(listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId)).toEqual([]);
+  });
+
+  it('retains ordered gates before the real final Kernel deny', async () => {
+    const input = fixture([binding('second'), { ...binding('first'), order: 1 }]);
     const order: string[] = [];
     const pipeline = new PolicyInterception({
       id: 'test',
       version: participantVersion,
       invoke: async ({ binding: current, advice }) => {
         order.push(current.id);
-        if (current.mode === 'advise') return { attributes: { risk: 'reviewed' } };
-        expect(advice).toMatchObject([
-          { binding: { id: 'context' }, attributes: { risk: 'reviewed' } },
-        ]);
+        expect(advice).toEqual([]);
         return { decision: 'allow' };
       },
     });
@@ -150,11 +149,11 @@ describe('bounded native Policy pipeline', () => {
       ...input,
       finalKernel: ({ advice }) => {
         order.push('kernel');
-        expect(advice).toHaveLength(1);
+        expect(advice).toEqual([]);
         return kernel(false);
       },
     });
-    expect(order).toEqual(['context', 'second', 'first', 'kernel']);
+    expect(order).toEqual(['second', 'first', 'kernel']);
     expect(result.result).toBe('deny');
     const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
     expect(rows.filter((row) => row.mediation?.role === 'gate').map((row) => row.result)).toEqual([
@@ -166,12 +165,11 @@ describe('bounded native Policy pipeline', () => {
       mediation: {
         kernel: { effect: 'deny', reason: 'missing-privilege' },
         consumedStatements: [],
-        invocations: [{ kind: 'audit' }, { kind: 'decision' }, { kind: 'decision' }],
+        invocations: [{ kind: 'decision' }, { kind: 'decision' }],
       },
     });
     const events = audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId);
     expect(events.filter((event) => event.policyInvocation?.mode === 'gate')).toHaveLength(2);
-    expect(events.filter((event) => event.policyInvocation?.mode === 'advise')).toHaveLength(1);
   });
 
   it('does not disclose a selected proposal outside the binding input scope', async () => {
@@ -321,7 +319,7 @@ describe('bounded native Policy pipeline', () => {
   });
 
   it('does not release participant output when required Audit evidence cannot be written', async () => {
-    const input = fixture([binding('context', 'advise')]);
+    const input = fixture([binding('context')]);
     const finalKernel = vi.fn(() => kernel());
     vi.spyOn(audit, 'recordWorkspaceAuditEvent').mockImplementation(() => {
       throw new Error('Audit write failed.');
@@ -329,7 +327,7 @@ describe('bounded native Policy pipeline', () => {
     const pipeline = new PolicyInterception({
       id: 'test',
       version: participantVersion,
-      invoke: async () => ({ attributes: { risk: 'reviewed' } }),
+      invoke: async () => ({ decision: 'allow' }),
     });
     await expect(pipeline.decide({ ...input, finalKernel })).rejects.toThrow('Audit write failed.');
     expect(finalKernel).not.toHaveBeenCalled();

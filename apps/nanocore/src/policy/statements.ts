@@ -42,19 +42,27 @@ export const EMPTY_POLICY_DOCUMENT: PolicyDocumentV1 = { schemaVersion: 1, state
 export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
   const document = PolicyDocumentV1Schema.parse(input);
   const positions = new Set<string>();
-  const principals = new Map<
-    string,
-    Extract<PolicyDocumentV1['statements'][number], { kind: 'agent-principal' }>
-  >();
   for (const statement of document.statements) {
-    if (statement.kind === 'agent-principal') {
-      if (principals.has(statement.principal.id))
-        throw new Error('Duplicate agent principal declaration.');
-      principals.set(statement.principal.id, statement);
-    }
     if (statement.state === 'inactive') continue;
-    // This format cut activates only native human-owned I16 bindings. Other forms
-    // remain authored declarations until their current authority consumer exists.
+    // Goal activation is admitted separately against its jointly approved request.
+    // Structural admission alone supplies no Goal authority to a consumer.
+    if (statement.kind === 'delegation' && statement.purpose === 'goal-domain') {
+      const source = statement.source!;
+      const anchor = statement.lifetime.anchor;
+      if (
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        statement.delegate.kind !== 'agent' ||
+        anchor.owner.kind !== 'workspace' ||
+        anchor.owner.workspaceId !== source.workspaceId ||
+        anchor.kind !== 'goal' ||
+        anchor.id !== source.goalId
+      )
+        throw new Error('Active Goal domain requires its human author and exact Goal anchor.');
+      continue;
+    }
+    // Other forms stay declarations until their native authority consumer exists.
     if (statement.kind !== 'binding') throw new Error('This Policy form must remain inactive.');
     const definition = OPERATION_REGISTRY[statement.operation as keyof typeof OPERATION_REGISTRY];
     if (!definition || definition.binding !== 'native' || statement.operation !== 'mcp.call-tool')
@@ -65,10 +73,10 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     const stage = { observe: 'completed', advise: 'propose', transform: 'propose', gate: 'decide' };
     if (statement.stage !== stage[statement.mode])
       throw new Error('Policy mode is at the wrong stage.');
-    // I16 has no retained replacement body owner. Do not claim a completed
-    // transformation from a digest-only summary or expose argument bodies.
-    if (statement.mode === 'transform')
-      throw new Error('I16 replacement ownership is unavailable.');
+    // I16 has no resolvable safe output owner for advice or replacement bodies.
+    // Refuse both active and shadow admission before any proposal can be disclosed.
+    if (statement.mode === 'transform' || statement.mode === 'advise')
+      throw new Error('I16 safe participant output reference is unavailable.');
     if (statement.mode === 'observe' && statement.lifetime.uses !== undefined)
       throw new Error('Finite-use completed observation is unavailable.');
     if (
@@ -99,41 +107,18 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       throw new Error('I16 binding requires the existing Tool-use action.');
     if (!scopeContains(statement.scope, statement.inputDisclosure))
       throw new Error('Participant input disclosure exceeds its admitted binding scope.');
-    const position = JSON.stringify([statement.point, statement.mode, statement.order]);
+    const position = JSON.stringify([
+      statement.operation,
+      statement.stage,
+      statement.mode,
+      statement.order,
+    ]);
     if (positions.has(position))
       throw new Error('Active binding order must be explicit and unique.');
     positions.add(position);
   }
-  const byId = new Map(document.statements.map((statement) => [statement.id, statement]));
-  for (const statement of document.statements) {
-    if (statement.authority.kind !== 'delegation') continue;
-    const reference = statement.authority.statement;
-    const envelope = byId.get(reference.id);
-    if (
-      envelope?.kind !== 'delegation' ||
-      policyDigest(envelope) !== reference.digest ||
-      !scopeContains(envelope.scope, statement.scope)
-    )
-      throw new Error(
-        'Delegated declaration requires its exact enclosing statement and bounded scope.'
-      );
-  }
-  for (const statement of principals.values()) {
-    const visited = new Set<string>();
-    let responsible = statement.responsiblePrincipal;
-    visited.add(statement.principal.id);
-    while (responsible.kind === 'agent') {
-      if (visited.has(responsible.id))
-        throw new Error('Agent responsibility chain must be acyclic.');
-      visited.add(responsible.id);
-      const parent = principals.get(responsible.id);
-      if (!parent)
-        throw new Error('Agent responsibility chain has no declared responsible principal.');
-      responsible = parent.responsiblePrincipal;
-    }
-    // Current human/domain authority is checked by native activation/evaluation,
-    // not inferred from an inactive declaration or its creator attribution.
-  }
+  if (document.statements.some((statement) => statement.authority.kind === 'delegation'))
+    throw new Error('Delegated Policy authority is unavailable.');
   return document;
 }
 
@@ -162,19 +147,8 @@ export function preparePolicyDocument(input: {
     return {
       ...statement,
       author: { kind: 'human' as const, id: input.userId },
-      authority:
-        statement.state === 'inactive' && statement.authority.kind === 'delegation'
-          ? statement.authority
-          : { kind: 'human' as const, userId: input.userId },
+      authority: { kind: 'human' as const, userId: input.userId },
       authoredAt: input.now,
-      ...(statement.kind === 'agent-principal'
-        ? {
-            creator:
-              previous?.kind === 'agent-principal'
-                ? previous.creator
-                : { kind: 'human' as const, id: input.userId },
-          }
-        : {}),
     };
   });
   const retained = new Set(statements.map(({ id }) => id));

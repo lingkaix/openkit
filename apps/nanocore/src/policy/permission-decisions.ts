@@ -6,6 +6,7 @@ import {
   allocateEntityId,
   isEntityId,
   type PolicyDecisionV1,
+  PolicyDecisionV1Schema,
   type PolicyInvocationV1,
   PolicyInvocationV1Schema,
   PolicyStatementReferenceV1Schema,
@@ -21,6 +22,7 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
 import {
   PermissionDecisionRetainedV1Schema,
+  projectPermissionDecision,
   readAuditEventRowV1,
   readPermissionDecisionRowV1,
 } from './retained-records-v1.js';
@@ -447,12 +449,16 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
   const retained = writeRetainedV1(input);
   const mediation = PermissionDecisionRetainedV1Schema.parse({
     ...input,
+    mediation:
+      input.mediation === undefined ? undefined : PolicyDecisionV1Schema.parse(input.mediation),
     workspaceId: input.workspaceId ?? null,
     requiredApprovalKind: input.requiredApprovalKind ?? null,
     approvalId: input.approvalId ?? null,
     auditEventId,
     createdAt,
   }).mediation;
+  if (mediation && input.enforcementPoint !== `${mediation.operation}@${mediation.stage}`)
+    throw new Error('PermissionDecision enforcement point projection is inconsistent.');
   const policyInvocation =
     input.policyInvocation === undefined
       ? undefined
@@ -463,8 +469,9 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
       policyInvocation.mode !== 'gate' ||
       input.auditEventId ||
       !auditEventId ||
-      policyInvocation.point !== mediation.point ||
-      policyInvocation.policyRevision !== mediation.policyRevision ||
+      policyInvocation.operation !== mediation.operation ||
+      policyInvocation.stage !== mediation.stage ||
+      policyInvocation.policyRevision !== input.policySnapshotId ||
       policyInvocation.authorizationRevision !== mediation.authorizationRevision ||
       policyInvocation.proposalDigest !== mediation.proposalDigest ||
       !isDeepStrictEqual(policyInvocation.binding, mediation.binding) ||
@@ -550,13 +557,13 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         input.workspaceId ?? null,
         input.policyEngineVersion,
         input.policySnapshotId,
-        JSON.stringify(input.subjectSummary),
+        JSON.stringify(mediation ? null : input.subjectSummary),
         input.action,
         JSON.stringify(input.resourceSummary),
         JSON.stringify(input.contextSummary),
         input.result,
         input.reasonCode,
-        input.enforcementPoint,
+        mediation ? '' : input.enforcementPoint,
         mediation === undefined ? null : JSON.stringify(mediation),
         input.requiredApprovalKind ?? null,
         input.approvalId ?? null,
@@ -728,10 +735,10 @@ export function listServerPermissionDecisions(coreDb: CoreDb): ServerPermissionD
  */
 export function importWorkspacePermissionDecisions(
   workspaceDb: WorkspaceDb,
-  decisions: readonly ExportedWorkspacePermissionDecision[]
+  decisions: readonly unknown[]
 ): void {
   for (const source of decisions) {
-    const decision = PermissionDecisionRetainedV1Schema.parse(source);
+    const decision = PermissionDecisionRetainedV1Schema.parse(projectPermissionDecision(source));
     const retained = writeRetainedV1(decision);
     if (decision.ownerScope !== 'workspace' || !decision.workspaceId) {
       throw new Error('Workspace permission decision import record must be workspace-scoped.');
@@ -767,13 +774,13 @@ export function importWorkspacePermissionDecisions(
         decision.workspaceId,
         decision.policyEngineVersion,
         decision.policySnapshotId,
-        JSON.stringify(decision.subjectSummary),
+        JSON.stringify(decision.mediation ? null : decision.subjectSummary),
         decision.action,
         JSON.stringify(decision.resourceSummary),
         JSON.stringify(decision.contextSummary),
         decision.result,
         decision.reasonCode,
-        decision.enforcementPoint,
+        decision.mediation ? '' : decision.enforcementPoint,
         decision.mediation === undefined ? null : JSON.stringify(decision.mediation),
         decision.requiredApprovalKind,
         decision.approvalId,

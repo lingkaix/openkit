@@ -5,7 +5,6 @@ import {
   AuditEventIdSchema,
   AutomationIdSchema,
   CapabilityCallIdSchema,
-  KnowledgeBaseIdSchema,
   PermissionDecisionIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -121,6 +120,12 @@ const statementFields = {
   scope: PolicyScopeV1Schema,
   lifetime: PolicyLifetimeV1Schema,
 };
+/** Fixed I16 contracts for v1; unsupported transform has no replacement contract. */
+export const POLICY_MODE_CONTRACTS_V1 = {
+  observe: { input: 'mcp-tool-summary-v1', output: 'observation-v1' },
+  advise: { input: 'mcp-tool-summary-v1', output: 'advice-v1' },
+  gate: { input: 'mcp-tool-summary-v1', output: 'gate-v1' },
+} as const;
 /** A binding is a Policy statement, not a participant-owned registration. */
 export const PolicyBindingV1Schema = z
   .object({
@@ -129,7 +134,6 @@ export const PolicyBindingV1Schema = z
     state: z.enum(['inactive', 'shadow', 'active']),
     operation: z.string().min(1),
     stage: PolicyStageV1Schema,
-    point: z.string().min(1),
     mode: PolicyModeV1Schema,
     participant: z
       .object({
@@ -138,9 +142,7 @@ export const PolicyBindingV1Schema = z
         version: PolicyDigestV1Schema,
       })
       .strict(),
-    inputContract: z.literal('mcp-tool-summary-v1'),
     inputDisclosure: PolicyScopeV1Schema,
-    outputContract: z.enum(['observation-v1', 'advice-v1', 'gate-v1', 'replacement-v1']),
     order: z.number().int().nonnegative(),
     timeoutMs: z.number().int().min(1).max(60_000),
     failure: PolicyFailureV1Schema.default('escalate-to-human'),
@@ -153,24 +155,6 @@ export const PolicyBindingV1Schema = z
   })
   .strict()
   .superRefine((binding, context) => {
-    if (binding.point !== `${binding.operation}@${binding.stage}`)
-      context.addIssue({
-        code: 'custom',
-        path: ['point'],
-        message: 'Point must match operation and stage.',
-      });
-    const contract = {
-      observe: 'observation-v1',
-      advise: 'advice-v1',
-      gate: 'gate-v1',
-      transform: 'replacement-v1',
-    };
-    if (binding.outputContract !== contract[binding.mode])
-      context.addIssue({
-        code: 'custom',
-        path: ['outputContract'],
-        message: 'Output contract does not match mode.',
-      });
     if (binding.failure === 'continue' && (binding.mode === 'gate' || binding.mode === 'transform'))
       context.addIssue({
         code: 'custom',
@@ -187,27 +171,6 @@ export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
       toolNames: z.array(z.string().min(1)).min(1),
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal('storage-lease'),
-      knowledgeBaseId: KnowledgeBaseIdSchema,
-      mount: z.string().min(1),
-      /** Empty selects the mount root; other values are normalized relative prefixes. */
-      pathPrefix: z
-        .string()
-        .refine(
-          (value) =>
-            value === '' ||
-            (!value.includes('\\') &&
-              !value.includes('\0') &&
-              value
-                .split('/')
-                .every((segment) => segment !== '' && segment !== '.' && segment !== '..')),
-          'Lease prefix must be a normalized relative path.'
-        ),
-      mode: z.enum(['read-only', 'staged-write']),
-    })
-    .strict(),
 ]);
 /** Permission conditions include the existing approval-required Tool rule. */
 export const PolicyPermissionV1Schema = z
@@ -219,14 +182,14 @@ export const PolicyPermissionV1Schema = z
     grant: PolicyGrantV1Schema,
   })
   .strict();
-/** A proposed Goal domain is not proof of completed Plan approval or Task intersection. */
+/** Exact Goal delegation approved with its Plan in one existing Pending Request. */
 export const PolicyDelegationV1Schema = z
   .object({
     ...statementFields,
     kind: z.literal('delegation'),
     state: z.enum(['inactive', 'active']),
     delegate: PolicyPrincipalV1Schema,
-    purpose: z.enum(['goal-domain', 'participant-envelope']),
+    purpose: z.literal('goal-domain'),
     source: z
       .object({
         workspaceId: WorkspaceIdSchema,
@@ -235,27 +198,7 @@ export const PolicyDelegationV1Schema = z
         planDigest: PolicyDigestV1Schema,
         approvalRequestId: z.string().min(1),
       })
-      .strict()
-      .optional(),
-  })
-  .strict()
-  .superRefine((statement, context) => {
-    if (statement.purpose === 'goal-domain' && !statement.source)
-      context.addIssue({
-        code: 'custom',
-        path: ['source'],
-        message: 'Goal domain requires exact Plan approval lineage.',
-      });
-  });
-/** Native administration stamps creator; the responsibility edge supplies no inherited rights. */
-export const PolicyAgentPrincipalV1Schema = z
-  .object({
-    ...statementFields,
-    kind: z.literal('agent-principal'),
-    state: z.enum(['inactive', 'active']),
-    principal: z.object({ kind: z.literal('agent'), id: AgentIdSchema }).strict(),
-    creator: PolicyPrincipalV1Schema,
-    responsiblePrincipal: PolicyPrincipalV1Schema,
+      .strict(),
   })
   .strict();
 /** Shared authored Policy collection; resolved revision is its canonical content digest. */
@@ -263,12 +206,7 @@ export const PolicyDocumentV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     statements: z.array(
-      z.union([
-        PolicyBindingV1Schema,
-        PolicyPermissionV1Schema,
-        PolicyDelegationV1Schema,
-        PolicyAgentPrincipalV1Schema,
-      ])
+      z.union([PolicyBindingV1Schema, PolicyPermissionV1Schema, PolicyDelegationV1Schema])
     ),
   })
   .strict()
@@ -311,9 +249,7 @@ export const PolicyDecisionV1Schema = z
   .object({
     operation: z.string().min(1),
     stage: PolicyStageV1Schema,
-    point: z.string().min(1),
     proposalDigest: PolicyDigestV1Schema,
-    policyRevision: PolicyDigestV1Schema,
     authorizationRevision: PolicyDigestV1Schema,
     subject: PolicySubjectV1Schema,
     role: z.enum(['gate', 'final']),
@@ -324,12 +260,6 @@ export const PolicyDecisionV1Schema = z
   })
   .strict()
   .superRefine((decision, context) => {
-    if (decision.point !== `${decision.operation}@${decision.stage}`)
-      context.addIssue({
-        code: 'custom',
-        path: ['point'],
-        message: 'Point must match operation and stage.',
-      });
     if (decision.role === 'gate' && !decision.binding)
       context.addIssue({
         code: 'custom',
@@ -367,7 +297,6 @@ export const PolicyInvocationV1Schema = z
     binding: PolicyStatementReferenceV1Schema,
     operation: z.string().min(1),
     stage: PolicyStageV1Schema,
-    point: z.string().min(1),
     mode: PolicyModeV1Schema,
     policyRevision: PolicyDigestV1Schema,
     authorizationRevision: PolicyDigestV1Schema,
@@ -389,15 +318,7 @@ export const PolicyInvocationV1Schema = z
     completedAt: z.iso.datetime({ offset: true }),
     capabilityCallId: CapabilityCallIdSchema.nullable(),
   })
-  .strict()
-  .superRefine((invocation, context) => {
-    if (invocation.point !== `${invocation.operation}@${invocation.stage}`)
-      context.addIssue({
-        code: 'custom',
-        path: ['point'],
-        message: 'Point must match operation and stage.',
-      });
-  });
+  .strict();
 /** Approval pins the exact candidate and authority rather than approving a mutable selector. */
 export const PolicyApprovalBindingV1Schema = z
   .object({
@@ -414,14 +335,6 @@ export const PolicyWriteProposalV1Schema = z
     rationale: z.string().min(1),
     baseRevision: PolicyDigestV1Schema,
     proposed: PolicyDocumentV1Schema,
-    diff: z
-      .object({
-        added: z.array(z.string().min(1)),
-        changed: z.array(z.string().min(1)),
-        removed: z.array(z.string().min(1)),
-      })
-      .strict(),
-    classification: z.enum(['narrowing', 'widening', 'unchanged']),
     validation: z.enum(['valid', 'invalid']),
   })
   .strict();

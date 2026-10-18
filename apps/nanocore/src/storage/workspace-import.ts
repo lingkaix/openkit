@@ -128,6 +128,7 @@ import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import {
   AuditEventRetainedV1Schema,
   PermissionDecisionRetainedV1Schema,
+  projectPermissionDecision,
 } from '../policy/retained-records-v1.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
@@ -2365,7 +2366,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     'records/permission-decisions.jsonl'
   ).map((record) => {
     const parsed = readRetainedV1(record, (value) =>
-      ExportedWorkspacePermissionDecisionSchema.parse(value)
+      ExportedWorkspacePermissionDecisionSchema.parse(projectPermissionDecision(value))
     );
 
     return ExportedWorkspacePermissionDecisionSchema.parse({

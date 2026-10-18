@@ -248,6 +248,18 @@ Decision traces are required for development, tests, audit projection, and futur
 | Functional architecture entities | No current plan | Do not make PEP, PDP, PAP, PIP, RAP, or EPP public OpenKit product concepts unless a future product need requires it. |
 | Standards-level API and full conformance | No current plan | Do not claim complete ANSI/INCITS NGAC compatibility. Claim only the implemented NGAC subset that is verified against the standard. |
 
+## Joint Goal-Domain Publication
+
+The Coordinator proposes the exact inactive Goal-domain delegation with its exact Plan in one existing approval Pending Request. `governedIntent.goalDomain` contains the full typed `PolicyDelegationV1Schema` statement and `policyDigest(statement)`. Its purpose is `goal-domain`; its source identifies the Workspace, Goal, Plan version, exact Plan digest and approval request. A single authenticated human approves the joint preview. A separate human Policy candidate/apply is not required. Plan or Task-card prose supplies no authority.
+
+After the Goal transaction commits, the native Policy owner rereads that request and requires resolved, granted, finished and approved-executed. It verifies the exact current active Plan and retained bytes, the capture digest and source, the actual deciding user and full deciding credential context, and that user's current authority over the declared resources and actions. It may stamp the authenticated deciding human and decision time as author/authority/authoredAt. Approved scope, lifetime, delegate and source do not widen. The Goal's responsible human remains separate from the deciding human.
+
+The existing Policy collection and sole configuration CAS own publication. Existing PermissionDecision and Audit writers record its admission; reload must admit the saved revision before current readback supplies authority. Goal SQL completion and Policy publication are separate effects. A publication failure grants no Task authority, and a retry inspects current recorded state. No second grant store, receipt or recovery loop exists.
+
+The native read path rechecks the exact Plan, deciding credential, lifetime and saved/loaded revision on each use. An obsolete Plan, closed Goal, ended lifetime or lost human authority supplies no domain; a failed dependency read is an error. The close path withdraws only the Goal's statements and remains available after its old Plan or credential ends. Its current inactive statement prevents reactivation through the old approval. A new joint Plan approval may replace the Goal-owned identity. Generic Server Policy candidates must preserve these statements; the Goal owner supplies publication and withdrawal.
+
+Acceptance requires one joint human approval, no authority before successful publication, current readback inside Task admission, refusal after the human or Plan loses authority, closure without the old human credential, and truthful CAS/reload failures. Implementation status: native seam under qualification; the Goal producer, preview and Task join are Not Started in this slice. This does not implement general agent-principal responsibility chains or Coordinator administration.
+
 ## OpenKit Policy Domains
 
 OpenKit adapters should map product surfaces into these policy domains.

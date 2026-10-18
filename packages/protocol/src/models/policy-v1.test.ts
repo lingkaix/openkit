@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  POLICY_MODE_CONTRACTS_V1,
   PolicyBindingV1Schema,
   PolicyDecisionV1Schema,
+  PolicyDelegationV1Schema,
   PolicyDocumentV1Schema,
   PolicyGrantV1Schema,
   PolicyLifetimeV1Schema,
@@ -30,12 +32,12 @@ const binding = {
   state: 'active',
   operation: 'mcp.call-tool',
   stage: 'decide',
-  point: 'mcp.call-tool@decide',
+
   mode: 'gate',
   participant: { kind: 'deterministic', id: 'test-review', version: digest },
-  inputContract: 'mcp-tool-summary-v1',
+
   inputDisclosure: scope,
-  outputContract: 'gate-v1',
+
   order: 0,
   timeoutMs: 50,
   circuit: { failures: 2, recoveryAfterMs: 100 },
@@ -76,13 +78,24 @@ describe('retained Policy version-one contracts', () => {
     );
   });
 
+  it('fixes the v1 contracts by mode without retained independent selectors', () => {
+    expect(POLICY_MODE_CONTRACTS_V1).toEqual({
+      observe: { input: 'mcp-tool-summary-v1', output: 'observation-v1' },
+      advise: { input: 'mcp-tool-summary-v1', output: 'advice-v1' },
+      gate: { input: 'mcp-tool-summary-v1', output: 'gate-v1' },
+    });
+    const parsed = PolicyBindingV1Schema.parse(binding);
+    expect(parsed).not.toHaveProperty('point');
+    expect(parsed).not.toHaveProperty('inputContract');
+    expect(parsed).not.toHaveProperty('outputContract');
+  });
+
   it('retains real Kernel evidence separately and forbids gate use consumption', () => {
     const decision = {
       operation: binding.operation,
       stage: binding.stage,
-      point: binding.point,
+
       proposalDigest: digest,
-      policyRevision: digest,
       authorizationRevision: digest,
       subject: {
         principal,
@@ -118,27 +131,51 @@ describe('retained Policy version-one contracts', () => {
     ).toBe(false);
   });
 
-  it('keeps storage access in a typed Policy grant and rejects traversal prefixes', () => {
-    const lease = {
-      kind: 'storage-lease',
-      knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001',
-      mount: 'work',
-      pathPrefix: 'inputs/images',
-      mode: 'read-only',
+  it('retains one typed Goal domain for joint Plan approval without Plan or card fields', () => {
+    const statement = {
+      id: 'goal-domain',
+      kind: 'delegation',
+      state: 'inactive',
+      author: principal,
+      authority: { kind: 'human', userId },
+      authoredAt: binding.authoredAt,
+      scope,
+      lifetime: { anchor: { owner: { kind: 'workspace', workspaceId }, kind: 'goal', id: 'goal' } },
+      delegate: { kind: 'agent', id: 'goal-coordinator' },
+      purpose: 'goal-domain',
+      source: {
+        workspaceId,
+        goalId: 'goal',
+        planVersionId: 'plan',
+        planDigest: digest,
+        approvalRequestId: 'request',
+      },
     };
-    expect(PolicyGrantV1Schema.safeParse(lease).success).toBe(true);
-    for (const knowledgeBaseId of ['invalid-kb', workspaceId])
-      expect(PolicyGrantV1Schema.safeParse({ ...lease, knowledgeBaseId }).success).toBe(false);
-    expect(PolicyGrantV1Schema.safeParse({ ...lease, pathPrefix: '' }).success).toBe(true);
-    expect(PolicyGrantV1Schema.safeParse({ ...lease, audience: principal }).success).toBe(false);
     expect(
-      PolicyGrantV1Schema.safeParse({ ...lease, expiresAt: '2026-10-18T12:00:00Z' }).success
+      PolicyDocumentV1Schema.parse({ schemaVersion: 1, statements: [statement] }).statements
+    ).toEqual([statement]);
+    expect(PolicyDelegationV1Schema.safeParse({ ...statement, source: undefined }).success).toBe(
+      false
+    );
+    expect(
+      PolicyDelegationV1Schema.safeParse({ ...statement, purpose: 'participant-envelope' }).success
     ).toBe(false);
-    expect(PolicyGrantV1Schema.safeParse({ ...lease, pathPrefix: '../private' }).success).toBe(
-      false
-    );
-    expect(PolicyGrantV1Schema.safeParse({ ...lease, credentials: 'forbidden' }).success).toBe(
-      false
-    );
+  });
+
+  it('refuses deferred retained families until their activating behavior lands', () => {
+    expect(
+      PolicyGrantV1Schema.safeParse({
+        kind: 'storage-lease',
+        knowledgeBaseId: workspaceId,
+        mount: 'work',
+        pathPrefix: '',
+        mode: 'read-only',
+      }).success
+    ).toBe(false);
+    for (const kind of ['agent-principal'])
+      expect(
+        PolicyDocumentV1Schema.safeParse({ schemaVersion: 1, statements: [{ ...binding, kind }] })
+          .success
+      ).toBe(false);
   });
 });
