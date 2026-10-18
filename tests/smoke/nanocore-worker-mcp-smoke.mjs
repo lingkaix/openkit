@@ -10,6 +10,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import transportRevision from '../../apps/nanocore/src/auth/nanohost-transport-revision.json' with {
+  type: 'json',
+};
 import { seedDemoWorkspaceAuthority } from '../support/demo-data.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -66,9 +69,17 @@ async function main() {
       'POST',
       '/api/nanohost/transport/session/admit',
       '{}',
-      { authorization: `Bearer ${nanoHostSecret}`, 'content-type': 'application/json' }
+      {
+        authorization: `Bearer ${nanoHostSecret}`,
+        'content-type': 'application/json',
+        'x-openkit-nanohost-transport-revision': String(transportRevision),
+      }
     );
     assert.equal(admission.status, 200, responseFailure('NanoHost admission', admission));
+    assert.equal(
+      admission.headers['x-openkit-nanohost-transport-revision'],
+      String(transportRevision)
+    );
     const admissionProjection = pickJson(admission, ['mayCarryWork', 'role']);
     assert.deepEqual(admissionProjection, {
       mayCarryWork: true,
