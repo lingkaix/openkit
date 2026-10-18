@@ -1,3 +1,4 @@
+export * from './common/content-reference.js';
 export * from './common/entity-id.js';
 export * from './common/ids.js';
 export * from './common/item-delta.js';
