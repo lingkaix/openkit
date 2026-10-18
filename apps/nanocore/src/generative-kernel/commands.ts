@@ -107,6 +107,8 @@ export interface KernelCommandContext {
   readonly workspaceId: string;
   /** Authenticated actor. */
   readonly actor: ActorRef;
+  /** Actual executing Turn and Thread from trusted native invocation, independent of presentation Items. */
+  readonly execution?: { readonly threadId: string; readonly turnId: string };
   /** Caller request id. */
   readonly requestId: string;
 }
@@ -232,13 +234,11 @@ export async function createLightApp(
       responseKind: 'light_app',
       input: requestedDefinition ? { requestedDefinition } : { schema, sourceSelection },
       execute: () =>
-        commitNewApp(appDb, {
+        commitNewApp(appDb, context, {
           admitted,
           schemaDigest,
           schemaJson,
           ...(sourceSelection ? { sourceSelection } : {}),
-          actor: context.actor,
-          requestId: context.requestId,
         }),
       replay: () => projectApp(appDb),
       responseId: (result) => result.appId,
@@ -1017,18 +1017,18 @@ async function replayOrRecoverCreate(
  * Commits the first app metadata, DDL, and audit event.
  *
  * @param appDb Open app database.
- * @param input Admitted schema and lineage.
+ * @param context Trusted command execution context.
+ * @param input Admitted schema and source selection.
  * @returns Created app projection.
  */
 function commitNewApp(
   appDb: AppDb,
+  context: KernelCommandContext,
   input: {
     admitted: LightAppAdmittedSchema;
     schemaDigest: string;
     schemaJson: string;
     sourceSelection?: LightAppDefinitionSource;
-    actor: ActorRef;
-    requestId: string;
   }
 ): GetLightAppResponse {
   const now = new Date().toISOString();
@@ -1053,16 +1053,18 @@ function commitNewApp(
       input.sourceSelection ? JSON.stringify(input.sourceSelection) : null,
       now,
       now,
-      JSON.stringify(input.actor),
-      JSON.stringify(input.actor),
-      input.requestId,
-      input.requestId
+      JSON.stringify(context.actor),
+      JSON.stringify(context.actor),
+      context.requestId,
+      context.requestId
     );
   recordAppAuditEvent({
     sqlite: appDb.sqlite,
     workspaceId: appDb.workspaceId,
-    actor: input.actor,
-    requestId: input.requestId,
+    actor: context.actor,
+    requestId: context.requestId,
+    threadId: context.execution?.threadId ?? null,
+    turnId: context.execution?.turnId ?? null,
     category: 'system',
     action: 'kernel.apps.create',
     resource: `light-app:${input.admitted.appId}`,
@@ -1992,6 +1994,7 @@ function persistDefinition(appRoot: string, schemaJson: string): string {
  * @param action Audit action.
  * @param resource Resource reference.
  * @param resourceRevision Resource revision.
+ * @param itemId Optional presentation Item, separate from the executing Turn.
  */
 function recordKernelAudit(
   appDb: AppDb,
@@ -2006,6 +2009,8 @@ function recordKernelAudit(
     workspaceId: appDb.workspaceId,
     actor: context.actor,
     requestId: context.requestId,
+    threadId: context.execution?.threadId ?? null,
+    turnId: context.execution?.turnId ?? null,
     itemId: itemId ?? null,
     category: 'system',
     action,

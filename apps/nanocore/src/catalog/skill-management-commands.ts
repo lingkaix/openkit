@@ -295,7 +295,7 @@ export function createSkillManagementCommands(
               summary,
               true
             );
-          if (operation !== 'catalog.skill-purge') admit();
+          const admission = operation === 'catalog.skill-purge' ? undefined : admit();
           let next: ResourceCatalogDocument;
           if (operation === 'catalog.skill-select' && 'expectedCurrentDigest' in input) {
             next = selectWorkspaceSkillDefault({
@@ -308,6 +308,7 @@ export function createSkillManagementCommands(
               ...base,
               digest: input.digest,
               expectedPinDigest: input.expectedPinDigest,
+              pinAuditRef: admission!.id,
             });
           } else if (operation === 'catalog.skill-remove') {
             next = removeWorkspaceSkill(base);

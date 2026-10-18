@@ -72,6 +72,8 @@ The NanoHost deployment schema admits optional positive `maxActiveTurnsPerSandbo
 
 `knowledgeMaintenance.enabled` delegates ordinary notebook publication. The separate `knowledgeMaintenance.schedule.enabled` selects fixed daily Knowledge Manager execution and defaults to `false`; the omitted schedule object also resolves to disabled. Server, User and Workspace settings use this same shape with independent authority. Scheduling grants no publication delegation or source access.
 
+Workspace Skill pins optionally retain `pinAuditRef`, the existing admission Audit identity of the command that published that pin. Omission records unknown attribution. The field is evidence, not selection or operation authority, and the catalog's existing portable projection preserves source history without activating target pins.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

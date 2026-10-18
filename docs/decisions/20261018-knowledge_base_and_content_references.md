@@ -13,7 +13,7 @@ Core Protocol owns the exact page/raw scope grammar and `openkit:` serialization
 
 Default Knowledge Base Worker-delivered paths remain unchanged. Retained selection, deduplication, cursor and context-package identities carry the base ID. Additional bases can add delivered paths later. This avoids putting an otherwise unnecessary UUID into every model-visible default path.
 
-The pre-stable reset decision applies. This cutover adds no converter, dual write, alias or legacy reader. The coordinator sequences reset-dependent landings after the rc.10 cut and performs the single coordinated rc.11 reset; this decision performs no reset or host action.
+The pre-stable reset decision applies. This cutover adds no converter, dual write, alias or legacy reader. The coordinator sequences reset-dependent landings after the rc.9 pre-reset cut and performs the single coordinated rc.10 reset; this decision performs no reset or host action.
 
 ## Reason
 
