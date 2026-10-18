@@ -13,6 +13,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   listExportableWorkspacePermissionDecisions,
+  listPolicyApprovalSourceDecisions,
   listServerPermissionDecisions,
   recordBootPolicySelfCheckDecisions,
   recordPermissionDecision,
@@ -20,6 +21,46 @@ import {
 } from './permission-decisions.js';
 
 describe('permission decision recorder', () => {
+  it('checks an approval source marker before decoding authority facts', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-record-version-'));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordProductPermissionDecision({
+        workspaceDb,
+        workspaceId,
+        ownerScope: 'workspace',
+        decisionId: 'pd_00000000-0000-7000-8000-000000000001',
+        policyEngineVersion: 'fixture:v1',
+        policySnapshotId: 'fixture',
+        subjectSummary: {},
+        action: 'tool.use',
+        resourceSummary: {},
+        contextSummary: {},
+        result: 'require_approval',
+        requiredApprovalKind: 'tool',
+        approvalId: 'fixture',
+        reasonCode: 'require_approval',
+        enforcementPoint: 'tool.use',
+      });
+      expect(listPolicyApprovalSourceDecisions(workspaceDb, workspaceId, 'fixture')).toHaveLength(
+        1
+      );
+      workspaceDb.sqlite
+        .prepare(
+          "UPDATE permission_decisions SET schema_version = 2, subject_summary_json = 'not JSON'"
+        )
+        .run();
+      expect(() => listPolicyApprovalSourceDecisions(workspaceDb, workspaceId, 'fixture')).toThrow(
+        'Unsupported retained record format.'
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     'workspace',
     'server',
@@ -122,6 +163,7 @@ describe('permission decision recorder', () => {
       };
 
       expect(row).toMatchObject({
+        schema_version: 1,
         action: 'vault.use',
         created_at: '2026-07-05T00:00:00.000Z',
         enforcement_point: 'boot.policy.self_check',

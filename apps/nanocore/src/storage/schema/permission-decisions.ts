@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { index, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable product-level permission decision result. */
 export type PermissionDecisionResult =
@@ -17,6 +17,8 @@ export type PermissionDecisionResult =
 export const permissionDecisions = sqliteTable(
   'permission_decisions',
   {
+    /** Independent retained-family format, required on every native write. */
+    schemaVersion: integer('schema_version').notNull(),
     /** Stable decision id. */
     decisionId: text('decision_id').primaryKey().notNull(),
     /** Storage ownership scope for this decision. */

@@ -5,10 +5,10 @@ import {
   allocateEntityId,
   type KnowledgeOwnerScope,
   RequestIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
-
+import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
-import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
 
 /** Input for recording one server-owned audit event. */
 export interface RecordServerAuditEventInput {
@@ -260,6 +260,7 @@ export function listSqliteAuditEvents(
     .prepare(
       `SELECT
         audit_event_id,
+        schema_version,
         workspace_id,
         protocol_version,
         thread_id,
@@ -319,6 +320,7 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
     .prepare(
       `SELECT
         audit_event_id,
+        schema_version,
         workspace_id,
         protocol_version,
         thread_id,
@@ -431,10 +433,12 @@ function recordAuditEvent(
  * @param event Protocol audit event to insert.
  */
 function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
+  const retained = writeRetainedV1(event);
   sqlite
     .prepare(
       `INSERT INTO audit_events (
         audit_event_id,
+        schema_version,
         workspace_id,
         protocol_version,
         thread_id,
@@ -459,10 +463,11 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         error_code,
         created_at,
         occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.id,
+      retained.schemaVersion,
       event.workspaceId,
       event.protocolVersion ?? null,
       event.threadId,
@@ -490,43 +495,9 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
     );
 }
 
-/** Normalizes retained descriptive attribution before projecting one protocol-valid SQLite audit event. */
+/** Projects the frozen retained Audit core after validating its independent format marker. */
 function auditEventFromRow(row: unknown): AuditEvent {
-  const event = row as Record<string, unknown>;
-
-  return AuditEventSchema.parse({
-    id: event.audit_event_id,
-    workspaceId: event.workspace_id,
-    protocolVersion: event.protocol_version ?? undefined,
-    threadId: event.thread_id,
-    turnId: event.turn_id,
-    itemId: event.item_id,
-    capabilityCallId: event.capability_call_id,
-    permissionDecisionId: event.permission_decision_id,
-    vaultGrantId: event.vault_grant_id,
-    requestId: event.request_id,
-    actor: event.actor_json
-      ? ActorRefReaderSchema.parse(JSON.parse(String(event.actor_json)))
-      : null,
-    subject: event.subject_json
-      ? ActorRefReaderSchema.parse(JSON.parse(String(event.subject_json)))
-      : null,
-    agentId: event.agent_id,
-    agentSessionId: event.agent_session_id,
-    category: event.category,
-    action: event.action,
-    resource: event.resource,
-    resourceRevision: event.resource_revision ?? null,
-    ...(event.notebook_admission_json
-      ? { notebookAdmission: JSON.parse(String(event.notebook_admission_json)) }
-      : {}),
-    outcome: event.outcome,
-    severity: event.severity,
-    summary: event.summary,
-    errorCode: event.error_code,
-    createdAt: event.created_at,
-    occurredAt: event.occurred_at,
-  });
+  return readAuditEventRowV1(row);
 }
 
 /**

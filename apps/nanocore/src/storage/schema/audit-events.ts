@@ -19,6 +19,8 @@ export type AuditEventSeverity = 'info' | 'warning' | 'error';
 export const auditEvents = sqliteTable(
   'audit_events',
   {
+    /** Independent retained-family format, required on every native write. */
+    schemaVersion: integer('schema_version').notNull(),
     /** Stable audit event id. */
     auditEventId: text('audit_event_id').primaryKey().notNull(),
     /** Workspace that owns the event. */
