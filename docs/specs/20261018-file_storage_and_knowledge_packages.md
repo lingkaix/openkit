@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: "2026-10-18"
 ---
@@ -244,7 +244,7 @@ Acceptance observes one-to-one published-tree/package paths and justified differ
 
 Ablation: accepted contracts must remain distinct from implementation status.
 
-Storage package/local integration and these format extensions are not implemented by this documentation landing. Sources currently use an external registry and captured sibling text materials; the pointer cutover is not implemented. Context packages copy originals and require retained paths. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain the starting owners. No backend, host mount or media/model capability is activated here. Initial Storage implementation covers its contract, local backend and Knowledge Sources/raw namespace first; Artifact, Turn and Context adoption follows later.
+The Knowledge package v1 directory format is implemented in Core Storage: shared retained-v1 manifest, exact-byte inventory, fresh private writer and bounded integrity validator. Full Source/page/schema admission, identity remapping and the export/import round trip remain pending the Source pointer cutover. Sources currently use an external registry and captured sibling text materials. Context packages still copy originals and require retained paths. Storage integration and the remaining format adoptions are separate increments. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain the starting owners. The format module activates no backend, host mount or media/model capability.
 
 ## Derivation And Retrieval Interface
 
