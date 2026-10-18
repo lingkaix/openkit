@@ -77,7 +77,12 @@ export async function prepareCapturedPendingCall(input: {
       return { grants: [], failed: true };
     const reviewed = await input.reviewPolicy(record, input.actor);
     if (!reviewed) return { grants: [], failed: true };
-    const evaluation = readCapturedMediationAllow(record, input.workspaceDb.sqlite, source, reviewed);
+    const evaluation = readCapturedMediationAllow(
+      record,
+      input.workspaceDb.sqlite,
+      source,
+      reviewed
+    );
     if (!evaluation || evaluation.actor.id !== input.actor.userId)
       return { grants: [], failed: true };
     mediation = reviewed;
