@@ -1,4 +1,4 @@
-import { ResourceCandidateIdSchema } from '@openkit/protocol';
+import { AuditEventIdSchema, ResourceCandidateIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   digestMcpConfig,
@@ -81,6 +81,8 @@ export const SkillPinRecordSchema = z
   .object({
     digest: ResourceDigestSchema,
     entryId: ResourceCatalogIdSchema,
+    /** Existing admission Audit of the command that published this exact pin. */
+    pinAuditRef: AuditEventIdSchema.optional(),
   })
   .strict();
 

@@ -86309,6 +86309,10 @@
                     }
                   ]
                 },
+                "pinAuditRef": {
+                  "type": "string",
+                  "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
                 "versions": {
                   "type": "array",
                   "items": {
@@ -124312,5 +124316,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8f396a68922eb61fcdd159192034be9ad5e75e4d760f88aeb85829a0685abf32"
+  "x-openkit-source-digest": "sha256:eddfa8509fb59007cdd33c62c2b385882147f00da8ca176b1cb05525d7415b13"
 }

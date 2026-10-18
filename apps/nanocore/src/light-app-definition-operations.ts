@@ -33,7 +33,7 @@ import {
 } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { allocateAppId } from './generative-kernel/uuid.js';
-import { kernelOperationFailure } from './generative-operations.js';
+import { kernelExecutionLineage, kernelOperationFailure } from './generative-operations.js';
 import type { CommandRequestResponseKind } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import {
@@ -87,6 +87,7 @@ export function createLightAppDefinitionOperationImplementations(
       store: dependencies.store,
       inflightCommands: dependencies.inflightCommands,
       actor: context.actorRef,
+      ...kernelExecutionLineage(dependencies.store, input.workspaceId, context),
       requestId: input.requestId ?? '',
     };
   };

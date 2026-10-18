@@ -1,7 +1,7 @@
 import type { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { createRecord, getLightApp } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
-import { kernelOperationFailure } from './generative-operations.js';
+import { kernelExecutionLineage, kernelOperationFailure } from './generative-operations.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { FamilyImplementations } from './operation-contract.js';
 /** Joins only executable behavior to the definition's exact operation keys. */
@@ -27,6 +27,7 @@ export function createKernelOperationImplementations(
             workspaceId: input.workspaceId,
             requestId: input.requestId,
             actor,
+            ...kernelExecutionLineage(dependencies.store!, input.workspaceId, context),
           },
           input.appId,
           input.collection,
