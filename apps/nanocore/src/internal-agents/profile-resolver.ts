@@ -22,7 +22,8 @@ export interface ResolvedInternalRoleProfile {
 /** Resolves one role using explicit, User, Workspace, Server-profile, then Gateway preferences. */
 export function resolveInternalRoleProfile(input: {
   readonly roleId: string;
-  readonly workspaceId: string;
+  /** Absent for a Server-owned role; User Workspace preferences do not apply. */
+  readonly workspaceId?: string;
   readonly gatewayConfig: GatewayConfig;
   readonly profilesConfig: InternalRoleProfilesConfig;
   readonly providerRegistry: ProviderRegistry;

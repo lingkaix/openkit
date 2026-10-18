@@ -157,86 +157,110 @@ export type GatewayRouteLineageEntry = z.infer<typeof GatewayRouteLineageEntrySc
 /**
  * Product-visible capability call attribution and summary. `systemPromptDigest` is valid only on CapabilityCall records opened above the provider split (`llm.chat_completions` and `llm.responses`); other families and other family-llm usage rows omit it.
  */
-export const CapabilityCallSchema = z
-  .object({
-    id: CapabilityCallIdSchema,
-    workspaceId: WorkspaceIdSchema,
-    threadId: ThreadIdSchema.nullable(),
-    turnId: TurnIdSchema.nullable(),
-    itemId: ItemIdSchema.nullable().default(null),
-    agentId: AgentIdSchema.nullable().default(null),
-    agentSessionId: AgentSessionIdSchema.nullable(),
-    packageSnapshotId: z.string().min(1).nullable().default(null),
-    schemaSnapshotId: z.string().min(1).nullable().default(null),
-    runtimeOriginRef: z
-      .string()
-      .regex(/^rto_[a-f0-9]{24}$/)
-      .nullable()
-      .default(null),
-    runtimeCacheLineageRef: z
-      .string()
-      .regex(/^rcl_[a-f0-9]{24}$/)
-      .nullable()
-      .default(null),
-    requestId: RequestIdSchema.nullable().default(null),
-    sourceIds: z.array(z.string().min(1)).default([]),
-    capabilityId: z.string().min(1),
-    status: CapabilityCallStatusSchema,
-    summary: z.string().min(1).nullable(),
-    errorCode: z.string().min(1).nullable(),
-    startedAt: TimestampSchema.nullable(),
-    completedAt: TimestampSchema.nullable(),
-    systemPromptDigest: SystemPromptDigestSchema.optional(),
-    extensions: CapabilityCallExtensionsSchema.optional(),
-  })
-  .superRefine((call, context) => {
-    if (
-      call.systemPromptDigest !== undefined &&
-      !isGatewayEntryLlmCapabilityId(call.capabilityId)
-    ) {
+const capabilityCallFieldsSchema = z.object({
+  id: CapabilityCallIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema.nullable(),
+  turnId: TurnIdSchema.nullable(),
+  itemId: ItemIdSchema.nullable().default(null),
+  agentId: AgentIdSchema.nullable().default(null),
+  agentSessionId: AgentSessionIdSchema.nullable(),
+  packageSnapshotId: z.string().min(1).nullable().default(null),
+  schemaSnapshotId: z.string().min(1).nullable().default(null),
+  runtimeOriginRef: z
+    .string()
+    .regex(/^rto_[a-f0-9]{24}$/)
+    .nullable()
+    .default(null),
+  runtimeCacheLineageRef: z
+    .string()
+    .regex(/^rcl_[a-f0-9]{24}$/)
+    .nullable()
+    .default(null),
+  requestId: RequestIdSchema.nullable().default(null),
+  sourceIds: z.array(z.string().min(1)).default([]),
+  capabilityId: z.string().min(1),
+  status: CapabilityCallStatusSchema,
+  summary: z.string().min(1).nullable(),
+  errorCode: z.string().min(1).nullable(),
+  startedAt: TimestampSchema.nullable(),
+  completedAt: TimestampSchema.nullable(),
+  systemPromptDigest: SystemPromptDigestSchema.optional(),
+  extensions: CapabilityCallExtensionsSchema.optional(),
+});
+
+/** Validates the shared call lifecycle independently of its immutable owner. */
+function validateCapabilityCallLifecycle(
+  call: {
+    readonly capabilityId: string;
+    readonly systemPromptDigest?: string | undefined;
+    readonly status: string;
+    readonly startedAt: string | null;
+    readonly completedAt: string | null;
+  },
+  context: z.RefinementCtx
+): void {
+  if (call.systemPromptDigest !== undefined && !isGatewayEntryLlmCapabilityId(call.capabilityId)) {
+    context.addIssue({
+      code: 'custom',
+      message:
+        'System-prompt digest is carried only on CapabilityCall records opened above the provider split.',
+      path: ['systemPromptDigest'],
+    });
+  }
+  const startedAt = call.startedAt === null ? null : Date.parse(call.startedAt);
+  const completedAt = call.completedAt === null ? null : Date.parse(call.completedAt);
+  if (call.status === 'queued') {
+    if (call.startedAt !== null || call.completedAt !== null) {
       context.addIssue({
         code: 'custom',
-        message:
-          'System-prompt digest is carried only on CapabilityCall records opened above the provider split.',
-        path: ['systemPromptDigest'],
+        message: 'Queued capability calls have no timestamps.',
       });
     }
-    const startedAt = call.startedAt === null ? null : Date.parse(call.startedAt);
-    const completedAt = call.completedAt === null ? null : Date.parse(call.completedAt);
-    if (call.status === 'queued') {
-      if (call.startedAt !== null || call.completedAt !== null) {
-        context.addIssue({
-          code: 'custom',
-          message: 'Queued capability calls have no timestamps.',
-        });
-      }
-      return;
-    }
-    if (call.status === 'running') {
-      if (startedAt === null || !Number.isFinite(startedAt) || call.completedAt !== null) {
-        context.addIssue({
-          code: 'custom',
-          message: 'Running capability calls require only a start timestamp.',
-        });
-      }
-      return;
-    }
-    if (
-      startedAt === null ||
-      completedAt === null ||
-      !Number.isFinite(startedAt) ||
-      !Number.isFinite(completedAt) ||
-      completedAt < startedAt
-    ) {
+    return;
+  }
+  if (call.status === 'running') {
+    if (startedAt === null || !Number.isFinite(startedAt) || call.completedAt !== null) {
       context.addIssue({
         code: 'custom',
-        message: 'Terminal capability calls require ordered start and completion timestamps.',
+        message: 'Running capability calls require only a start timestamp.',
       });
     }
-  })
+    return;
+  }
+  if (
+    startedAt === null ||
+    completedAt === null ||
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(completedAt) ||
+    completedAt < startedAt
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Terminal capability calls require ordered start and completion timestamps.',
+    });
+  }
+}
+
+/** Product-visible Workspace capability call with the shared lifecycle constraints. */
+export const CapabilityCallSchema = capabilityCallFieldsSchema
+  .superRefine(validateCapabilityCallLifecycle)
   .meta(capabilityCallLifecycleProjection);
 
 /**
  * Product-visible capability call attribution and summary.
  */
 export type CapabilityCall = z.infer<typeof CapabilityCallSchema>;
+
+/** Server-owned capability call in the existing call record family, with no Workspace anchor. */
+export const ServerCapabilityCallSchema = capabilityCallFieldsSchema
+  .omit({ workspaceId: true })
+  .extend({
+    workspaceId: z.never().optional(),
+    owner: z.object({ kind: z.literal('server') }).strict(),
+  })
+  .superRefine(validateCapabilityCallLifecycle)
+  .meta(capabilityCallLifecycleProjection);
+
+/** Server-owned capability call attribution and lifecycle. */
+export type ServerCapabilityCall = z.infer<typeof ServerCapabilityCallSchema>;

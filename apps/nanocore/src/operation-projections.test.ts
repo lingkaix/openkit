@@ -1791,6 +1791,8 @@ describe('Goal definition projections', () => {
               'turn.read',
               'evidence.runtime-list',
               'agent.list',
+              'knowledge.ask',
+              'knowledge.tell',
             ],
           ].sort()
         );

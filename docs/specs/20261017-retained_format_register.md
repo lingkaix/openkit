@@ -58,7 +58,7 @@ Each row identifies location, owning contract, authority class, current marker, 
 
 Paths beginning with `C/` resolve under `apps/nanocore/src/`; `S/` under `docs/specs/`; `Q/` under `packages/config-schema/src/`; `API/` under `packages/app-api-schemas/src/`; `P/` under `packages/protocol/`; `H/` under `apps/nanohost/src/`; and `K/` under `packages/worker-shim/src/`. Other repository paths start at the repository root. Data paths are relative to Data Root unless marked external or execution-host.
 
-`W` means `workspaces/<workspaceId>`, `T` means `W/threads/<threadId>/turns/<turnId>`, and `A` means `W/runtime/agent-sessions/<agentSessionId>`. `N` means one notebook root: `users/<userId>/memory`, `W/knowledge` or `server/knowledge`. `J(scope)` means that database's `__drizzle_migrations` and the checked-in `apps/nanocore/drizzle/<scope>/meta/_journal.json`. SQL journals version DDL, not each JSON payload.
+`W` means `workspaces/<workspaceId>`, `T` means `W/threads/<threadId>/turns/<turnId>`, and `A` means `W/runtime/agent-sessions/<agentSessionId>`. `N` means one notebook root: `users/<userId>/memory`, `W/knowledge` or `server/knowledge`. `J(scope)` means that database's `__drizzle_migrations` and the checked-in `apps/nanocore/drizzle/<scope>/meta/_journal.json`. SQL journals version DDL, not each JSON payload. Server variants of the same Thread, Turn, Item, event and observation families use `server/threads/<threadId>/turns/<turnId>/` instead of `T`; their Thread envelope requires `openkit.server-threads.v1`. `C/storage/server-thread-records.ts` and `C/lib/store-server-threads.test.ts` cover that owner boundary. Server capability/usage and observation indexes use Core journal `0008_server_capability_usage`; Server EvidenceBundle bodies use `server/evidence/backend/`. Current Server administration admission is separate from retained ownership.
 
 | Owner | Document |
 | --- | --- |
@@ -123,7 +123,7 @@ Paths beginning with `C/` resolve under `apps/nanocore/src/`; `S/` under `docs/s
 
 ### SQLite Authority Families
 
-SQL columns and embedded JSON have separate reader boundaries. The general evolution rule applies; the split file envelope is not a blanket SQL implementation. Current native journals end at Core `0006_external_trigger_admissions`, User `0002_notebook_admission`, Workspace `0003_exact_review_feedback` and App `0001_notebook_admission`.
+SQL columns and embedded JSON have separate reader boundaries. The general evolution rule applies; the split file envelope is not a blanket SQL implementation. Current native journals end at Core `0008_server_capability_usage`, User `0002_notebook_admission`, Workspace `0003_exact_review_feedback` and App `0001_notebook_admission`.
 
 The rows cover all current product-table groups: Core identity/settings/decisions/Audit/Vault/scheduler/runtime/receipts/channel bindings/notification observations; User receipts and Audit; Workspace approval/content/Goal/evidence/synchronization/UI; and App metadata/business records. Retired Goal and host-repository setup tables do not become retained families because historical DDL mentions them. Native post-journal cutovers remove them. AEP snapshots and immutable App definitions remain files, not additional SQL content stores.
 

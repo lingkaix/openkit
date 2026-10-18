@@ -569,6 +569,8 @@ export function setWorkspaceSkillPin(input: {
   readonly entryId: string;
   readonly expectedRevision: number;
   readonly expectedPinDigest?: string | null;
+  /** Winning command admission; omitted attribution stays unknown. */
+  readonly pinAuditRef?: string;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
   const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
@@ -586,15 +588,19 @@ export function setWorkspaceSkillPin(input: {
       throw new CatalogNotFoundError(`Skill version not found: ${input.entryId}/${input.digest}`);
     verifySkillSnapshot(input, version);
   }
+  // A new publication cannot inherit a prior command's attribution, including an identical pin.
+  const { pinAuditRef: _priorAudit, ...retainedPin } =
+    current.skills.pins.find((pin) => pin.entryId === input.entryId) ?? {};
   const pins =
     input.digest === null
       ? current.skills.pins.filter((pin) => pin.entryId !== input.entryId)
       : [
           ...current.skills.pins.filter((pin) => pin.entryId !== input.entryId),
           {
-            ...current.skills.pins.find((pin) => pin.entryId === input.entryId),
+            ...retainedPin,
             digest: input.digest,
             entryId: input.entryId,
+            ...(input.pinAuditRef === undefined ? {} : { pinAuditRef: input.pinAuditRef }),
           },
         ];
   return publishWorkspaceResourceCatalog({
