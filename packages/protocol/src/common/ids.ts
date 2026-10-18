@@ -26,6 +26,9 @@ export const ApprovalRequestIdSchema = z.string().min(1);
  */
 export const UserInputRequestIdSchema = z.string().min(1);
 
+/** Canonical independent Knowledge Base identity; UUIDv5 derivation is not admitted. */
+export const KnowledgeBaseIdSchema = z.string().regex(entityIdPattern('kb'));
+
 /**
  * Owner-defined selector or request identity; excluded from entity allocation.
  */
@@ -72,6 +75,11 @@ export function isUserId(value: string): boolean {
 /** Checks canonical Workspace identity through the shared kind owner. */
 export function isWorkspaceId(value: string): boolean {
   return isEntityId('ws', value);
+}
+
+/** Checks independent Knowledge Base identity through the shared kind owner. */
+export function isKnowledgeBaseId(value: string): boolean {
+  return isEntityId('kb', value);
 }
 
 /** Checks canonical Thread identity through the shared kind owner. */

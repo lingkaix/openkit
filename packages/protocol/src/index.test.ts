@@ -305,6 +305,7 @@ describe('protocol schemas', () => {
 
   it('accepts knowledge list responses from the protocol package', () => {
     const parsed = ListKnowledgeEntriesResponseSchema.parse({
+      knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
       notebookRevision: 'opaque-retained-notebook-revision',
       items: [
         {
