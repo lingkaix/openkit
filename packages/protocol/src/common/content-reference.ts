@@ -6,7 +6,7 @@ import {
 import { KnowledgeBaseIdSchema } from './ids.js';
 import { RawContentReferenceSchema } from './object-reference.js';
 
-/** Explicit source coordinates; no range implies a conversion between coordinate spaces. */
+/** Current byte/page coordinates; unsupported coordinate kinds require a producer and owner. */
 export const ContentReferenceRangeSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -16,25 +16,6 @@ export const ContentReferenceRangeSchema = z.discriminatedUnion('kind', [
     })
     .refine((range) => range.end >= range.start, { message: 'Byte range ends before its start.' }),
   z.object({ kind: z.literal('page'), page: z.number().int().positive() }),
-  z
-    .object({
-      kind: z.literal('time'),
-      startSeconds: z.number().nonnegative(),
-      endSeconds: z.number().nonnegative(),
-    })
-    .refine((range) => range.endSeconds >= range.startSeconds, {
-      message: 'Time range ends before its start.',
-    }),
-  z
-    .object({
-      kind: z.literal('frame'),
-      frame: z.number().int().nonnegative(),
-      numbering: z.enum(['zero-based', 'one-based']),
-      coordinateSpace: z.string().min(1),
-    })
-    .refine((range) => range.numbering === 'zero-based' || range.frame >= 1, {
-      message: 'One-based frame numbering starts at one.',
-    }),
 ]);
 
 /**
