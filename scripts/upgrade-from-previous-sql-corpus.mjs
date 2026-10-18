@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -286,6 +287,132 @@ function retainedRuntimeTarget(target) {
     identityId: target.identityId,
     deploymentId: target.deploymentId,
   };
+}
+
+/** Captures the previous Worker's actual idle native binding through that revision's owners. */
+export async function captureIdleNativeBinding({ appRoot, dataRoot }, worker) {
+  const o = await owners(appRoot);
+  const core = o.db.openCoreDb(dataRoot);
+  const workspace = o.db.openWorkspaceDb(dataRoot, worker.workspaceId);
+  try {
+    const store = new o.store.FsStore({ dataRoot });
+    const turn = store.getTurn(worker.workspaceId, worker.threadId, worker.turnId);
+    const session = store.getAgentSession(
+      required(turn.agentSessionId, 'Previous Worker AgentSession')
+    );
+    const binding = required(
+      core.sqlite
+        .prepare(`
+      SELECT b.agent_session_runtime_binding_id AS bindingId,
+             s.sandbox_binding_ref AS sandboxBindingRef, s.runtime_target_id AS runtimeTargetId,
+             s.origin_physical_epoch AS physicalEpoch, b.native_handle_digest AS nativeHandleDigest
+      FROM agent_session_runtime_bindings b
+      JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+      WHERE b.agent_session_id = ? AND b.lifecycle_state = 'open'
+        AND b.native_handle_state = 'ready' AND b.current_attempt_id IS NULL
+        AND b.current_turn_id IS NULL AND h.active_turn_count = 0
+    `)
+        .get(session.id),
+      'Previous Worker idle native binding'
+    );
+    assert.equal(session.status, 'idle', 'Previous Worker AgentSession is not idle.');
+    assert.equal(session.nativeHandleDigest, binding.nativeHandleDigest);
+    assert.match(binding.physicalEpoch, /^[a-f0-9]{64}$/);
+    const storage = required(
+      o.bindings.getWorkerStorageBindingForSandbox(core, {
+        sandboxBindingRef: binding.sandboxBindingRef,
+      }),
+      'Previous Worker retained storage'
+    );
+    assert.equal(storage.state, 'attached');
+    assert.equal(session.retainedStorage?.storageRef, storage.storageRef);
+    assert.ok(
+      storage.contributors.some(
+        (contributor) =>
+          contributor.threadId === session.threadId &&
+          contributor.workSlotRef === session.retainedStorage?.workSlotRef
+      )
+    );
+    const aep = await o.load('runtime/aep-snapshot-ledger');
+    const snapshot = aep.requireAgentEnvironmentPackageSnapshot(
+      workspace,
+      worker.workspaceId,
+      session.environmentPackageSnapshotId
+    );
+    assert.equal(snapshot.agentSessionId, session.id);
+    return {
+      ...binding,
+      workspaceId: worker.workspaceId,
+      threadId: worker.threadId,
+      agentSessionId: session.id,
+      snapshotId: snapshot.snapshotId,
+      retainedStorage: session.retainedStorage,
+      aepBytes: fileBytes(
+        dataRoot,
+        join(
+          dataRoot,
+          'workspaces',
+          worker.workspaceId,
+          'runtime',
+          'agent-sessions',
+          session.id,
+          'aep-snapshots',
+          `${snapshot.snapshotId}.json`
+        )
+      ),
+    };
+  } finally {
+    workspace.sqlite.close();
+    core.sqlite.close();
+  }
+}
+
+/** Checks retained proof and opaque AEP bytes without admitting an old package for execution. */
+export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, retired = false) {
+  required(previous, 'Previous Worker idle native binding');
+  const o = await owners(appRoot);
+  const core = o.db.openCoreDb(dataRoot);
+  try {
+    const session = new o.store.FsStore({ dataRoot }).getAgentSession(previous.agentSessionId);
+    assert.equal(session.workspaceId, previous.workspaceId);
+    assert.equal(session.threadId, previous.threadId);
+    assert.equal(session.environmentPackageSnapshotId, previous.snapshotId);
+    assert.equal(session.nativeHandleDigest, previous.nativeHandleDigest);
+    assert.deepEqual(session.retainedStorage, previous.retainedStorage);
+    assert.deepEqual(
+      fileBytes(dataRoot, join(dataRoot, previous.aepBytes.path)),
+      previous.aepBytes,
+      'Previous Worker AEP bytes changed.'
+    );
+    if (retired) {
+      assert.equal(
+        core.sqlite
+          .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+        WHERE agent_session_runtime_binding_id = ?`)
+          .get(previous.bindingId),
+        undefined,
+        'Previous Worker idle binding was not retired.'
+      );
+      const target = required(
+        o.targets.getNanoHostRuntimeTarget(core, previous.runtimeTargetId),
+        'Candidate RuntimeTarget'
+      );
+      assert.ok(
+        target.ready && target.freshEmpty && target.predecessorFenced,
+        'Candidate retirement lacks fresh fenced readiness.'
+      );
+      assert.match(target.physicalEpoch, /^[a-f0-9]{64}$/);
+      assert.notEqual(
+        target.physicalEpoch,
+        previous.physicalEpoch,
+        'Candidate retirement did not cross a physical Epoch.'
+      );
+    }
+    return { nativeProofPreserved: true, aepBytesPreserved: true, idleBindingRetired: retired };
+  } finally {
+    core.sqlite.close();
+  }
 }
 
 /** Seeds current SQLite families with the previous revision's real producers and stopped writers. */

@@ -13,6 +13,8 @@ import {
 } from '../scripts/upgrade-from-previous.mjs';
 import { FILE_CORPUS_FAMILIES } from '../scripts/upgrade-from-previous-corpus.mjs';
 import {
+  captureIdleNativeBinding,
+  checkIdleNativeBinding,
   readSqlCorpus,
   SQL_CORPUS_FAMILIES,
   seedSqlCorpus,
@@ -305,4 +307,185 @@ test('detects changes in selected Discord disclosure values', async (t) => {
   }
   const changed = await readSqlCorpus(input);
   assert.throws(() => compareFamilies(baseline, changed, SQL_CORPUS_FAMILIES), /readback changed/);
+});
+
+test('idle native corpus preserves historical AEP bytes and requires fenced retirement evidence', async (t) => {
+  const input = await fixture(t);
+  const { openCoreDb, openWorkspaceDb } = await input.load('storage/db');
+  const { FsStore } = await input.load('lib/store');
+  const harness = await input.load('runtime/nanohost-harness-records');
+  const targets = await input.load('runtime/nanohost-runtime-target');
+  const bindings = await input.load('runtime/worker-storage-bindings');
+  const aep = await input.load('runtime/aep-snapshot-ledger');
+  const sql = input.selectors.sql;
+  const core = openCoreDb(input.dataRoot);
+  t.after(() => core.sqlite.close());
+  const target = targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
+  const store = new FsStore({ dataRoot: input.dataRoot });
+  const predecessor = store.getAgentSession(sql.contextAgentSessionId);
+  const session = store.createAgentSession({
+    ...predecessor,
+    id: 'as_00000000-0000-7000-8000-000000000902',
+    status: 'idle',
+    environmentPackageSnapshotId: 'aepsnap_idle-native-corpus',
+  });
+  store.updateTurn(sql.contextTurnId, { agentSessionId: session.id });
+  const snapshotDb = openWorkspaceDb(input.dataRoot, session.workspaceId);
+  try {
+    const original = aep.requireAgentEnvironmentPackageSnapshot(
+      snapshotDb,
+      session.workspaceId,
+      sql.aepSnapshotId
+    );
+    aep.recordAgentEnvironmentPackageSnapshot(snapshotDb, {
+      environmentPackage: {
+        ...original.snapshot,
+        snapshotId: session.environmentPackageSnapshotId,
+        scope: { ...original.snapshot.scope, agentSessionId: session.id },
+      },
+      createdAt: session.createdAt,
+    });
+  } finally {
+    snapshotDb.sqlite.close();
+  }
+  const now = target.observedAt;
+  targets.upsertNanoHostRuntimeTarget(core, {
+    ...target,
+    physicalEpoch: 'a'.repeat(64),
+    ready: true,
+    freshEmpty: true,
+    predecessorFenced: true,
+    observedAt: now,
+  });
+  const storage = bindings.getWorkerStorageBinding(core, { storageRef: sql.storageRef });
+  const reserved = bindings.reserveWorkerStorageAttachment(core, {
+    agentSessionId: session.id,
+    authorizeContributor: () => true,
+    expectedRevision: storage.revision,
+    layout: storage.layout,
+    purpose: 'work',
+    responsibleUserId: input.userId,
+    runtimeTargetId: target.targetId,
+    storageRef: storage.storageRef,
+    threadId: session.threadId,
+    workspaceId: session.workspaceId,
+    now,
+  });
+  const attached = bindings.activateWorkerStorageAttachment(core, {
+    attachmentGeneration: reserved.attachmentGeneration,
+    expectedRevision: reserved.revision,
+    sandboxBindingRef: 'idle-corpus-sandbox',
+    storageRef: storage.storageRef,
+    now,
+    targets: reserved.targets.map((entry) => ({ ...entry, initialized: true })),
+  });
+  store.updateAgentSession(session.id, {
+    status: 'idle',
+    nativeHandleDigest: 'd'.repeat(64),
+    retainedStorage: { storageRef: storage.storageRef, workSlotRef: attached.currentWorkSlotRef },
+  });
+  harness.createNanoHostHarnessRuntime(core, {
+    adapterId: 'codex',
+    adapterVersion: '0.153.4',
+    harnessBindingRef: 'idle-corpus-harness-binding',
+    harnessCompatibilityKey: 'b'.repeat(64),
+    harnessInstanceId: 'idle-corpus-harness',
+    imageDigest: `sha256:${'a'.repeat(64)}`,
+    originPhysicalEpoch: 'a'.repeat(64),
+    sandboxBindingRef: 'idle-corpus-sandbox',
+    sandboxCompatibilityKey: 'c'.repeat(64),
+    sandboxIntegrationBindingRef: 'idle-corpus-integration',
+    sandboxRuntimeId: 'idle-corpus-runtime',
+    runtimeTargetId: target.targetId,
+    timestamp: now,
+  });
+  const opening = {
+    agentSessionCompatibilityKey: 'e'.repeat(64),
+    agentSessionId: session.id,
+    agentSessionRuntimeBindingId: 'idle-corpus-binding',
+    effectiveSetupGeneration: 1,
+    harnessInstanceId: 'idle-corpus-harness',
+    threadId: session.threadId,
+    timestamp: now,
+    workspaceId: session.workspaceId,
+  };
+  harness.openNanoHostAgentSessionBinding(core, opening);
+  const { harnessInstanceId: _harness, timestamp: _time, ...body } = opening;
+  harness.queueNanoHostHarnessOperation(core, {
+    body: { ...body, adapterId: 'codex', resume: null },
+    harnessInstanceId: opening.harnessInstanceId,
+    operation: 'session.open',
+    timestamp: now,
+  });
+  const command = harness.dispatchNanoHostHarnessOperation(core, {
+    sandboxIntegrationBindingRef: 'idle-corpus-integration',
+    now: () => now,
+  });
+  harness.settleNanoHostHarnessOperation(core, {
+    sandboxIntegrationBindingRef: 'idle-corpus-integration',
+    timestamp: now,
+    result: {
+      schemaVersion: 2,
+      harnessInstanceId: opening.harnessInstanceId,
+      operationId: command.operationId,
+      sequence: command.sequence,
+      disposition: 'succeeded',
+      body: { state: 'open', nativeHandleState: 'ready', nativeHandleDigest: 'd'.repeat(64) },
+    },
+  });
+  const previous = await captureIdleNativeBinding(input, {
+    workspaceId: session.workspaceId,
+    threadId: session.threadId,
+    turnId: sql.contextTurnId,
+  });
+  // Only this synthetic oracle substitutes exact pre-naming bytes. Real upgrade runs use the old writer.
+  const snapshotPath = join(input.dataRoot, previous.aepBytes.path);
+  const record = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+  record.snapshot.capabilities.routes = ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'];
+  record.contentDigest = aep.snapshotDigest(record.snapshot);
+  const oldBytes = Buffer.from(`${JSON.stringify(record)}\n`);
+  writeFileSync(snapshotPath, oldBytes);
+  previous.aepBytes.byteLength = oldBytes.length;
+  previous.aepBytes.sha256 = createHash('sha256').update(oldBytes).digest('hex');
+  const workspace = openWorkspaceDb(input.dataRoot, session.workspaceId);
+  try {
+    assert.throws(
+      () =>
+        aep.requireAgentEnvironmentPackageSnapshot(
+          workspace,
+          session.workspaceId,
+          previous.snapshotId
+        ),
+      /retained record could not be read/i
+    );
+  } finally {
+    workspace.sqlite.close();
+  }
+  assert.equal((await checkIdleNativeBinding(input, previous)).aepBytesPreserved, true);
+  await assert.rejects(checkIdleNativeBinding(input, previous, true), /not retired/);
+  harness.removeNanoHostSandboxRuntimeByBinding(core, 'idle-corpus-sandbox');
+  await assert.rejects(checkIdleNativeBinding(input, previous, true), /physical Epoch/);
+  targets.fenceNanoHostRuntimeTargetAfterRestart(core, now);
+  const reconnected = targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+    targetId: target.targetId,
+    identityId: target.identityId,
+    deploymentId: target.deploymentId,
+    observedAt: now,
+  });
+  targets.upsertNanoHostRuntimeTarget(core, {
+    ...reconnected,
+    physicalEpoch: 'f'.repeat(64),
+    ready: true,
+    freshEmpty: true,
+    predecessorFenced: true,
+    observedAt: now,
+  });
+  assert.equal((await checkIdleNativeBinding(input, previous, true)).idleBindingRetired, true);
+  assert.deepEqual(readFileSync(snapshotPath), oldBytes);
+  writeFileSync(snapshotPath, Buffer.concat([oldBytes, Buffer.from(' ')]));
+  await assert.rejects(checkIdleNativeBinding(input, previous, true), /AEP bytes changed/);
+  await assert.rejects(
+    checkIdleNativeBinding(input, undefined, true),
+    /selected retained record is missing/
+  );
 });
