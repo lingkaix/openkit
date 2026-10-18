@@ -19,8 +19,6 @@ import {
   StagedWorkspaceReviewSchema,
   WorkerOutputManifestReaderSchema,
   WorkerOutputManifestSchema,
-  WorkspaceApplyResultReaderSchema,
-  WorkspaceApplyResultSchema,
   WorkspaceChangeSetReaderSchema,
   WorkspaceChangeSetSchema,
   WorkspaceInputSnapshotReaderSchema,
@@ -29,9 +27,6 @@ import {
   WorkspaceMaterializationRecordSchema,
   WorkspaceMaterialRevisionViewSchema,
   WorkspaceMaterialViewSchema,
-  WorkspaceQuarantineRecordSchema,
-  WorkspaceReconciliationRecordReaderSchema,
-  WorkspaceReconciliationRecordSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
 import type {
@@ -140,6 +135,11 @@ import {
 } from '../runtime/worker-runtime-provenance.js';
 import { StoredWorkspaceApplyPlanV1Schema } from '../runtime/workspace-apply-plans.js';
 import {
+  StoredWorkspaceApplyResultV1Schema,
+  StoredWorkspaceQuarantineRecordV1Schema,
+  StoredWorkspaceReconciliationRecordV1Schema,
+} from '../runtime/workspace-sync-outcomes-v1.js';
+import {
   RECURRING_PORTABLE_FEATURE,
   readRecurringPortableFiles,
   remapRecurringPortableHistory,
@@ -199,8 +199,8 @@ type BackendWorkspaceHandle = z.infer<typeof BackendWorkspaceHandleSchema>;
 type WorkerOutputManifest = z.infer<typeof WorkerOutputManifestSchema>;
 type WorkspaceChangeSet = z.infer<typeof WorkspaceChangeSetSchema>;
 type WorkspaceApplyPlan = z.infer<typeof StoredWorkspaceApplyPlanV1Schema>;
-type WorkspaceQuarantineRecord = z.infer<typeof WorkspaceQuarantineRecordSchema>;
-type WorkspaceReconciliationRecord = z.infer<typeof WorkspaceReconciliationRecordSchema>;
+type WorkspaceQuarantineRecord = z.infer<typeof StoredWorkspaceQuarantineRecordV1Schema>;
+type WorkspaceReconciliationRecord = z.infer<typeof StoredWorkspaceReconciliationRecordV1Schema>;
 
 const ImportedWorkspaceMaterialSchema = WorkspaceMaterialViewSchema.extend({
   lastMutationRequestId: z.string().min(1),
@@ -340,16 +340,11 @@ const ExportedStagedWorkspaceReviewReaderSchema = ExportedStagedWorkspaceReviewS
   review: StagedWorkspaceReviewReaderSchema,
 });
 
-const ExportedWorkspaceApplyResultSchema = WorkspaceApplyResultSchema.extend({
+const ExportedWorkspaceApplyResultSchema = StoredWorkspaceApplyResultV1Schema.extend({
   requestId: z.string().min(1),
 }).strip();
 
 type ExportedWorkspaceApplyResult = z.infer<typeof ExportedWorkspaceApplyResultSchema>;
-
-/** Portable apply-result observation with its required retained replay identity. */
-const ExportedWorkspaceApplyResultReaderSchema = WorkspaceApplyResultReaderSchema.safeExtend({
-  requestId: z.string().min(1),
-}).strip();
 
 const ExportedWorkspacePermissionDecisionSchema = z
   .object({
@@ -2581,7 +2576,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-apply-results.jsonl'
   ).map((record) => {
-    const parsed = ExportedWorkspaceApplyResultReaderSchema.parse(record);
+    const parsed = ExportedWorkspaceApplyResultSchema.parse(record);
 
     return ExportedWorkspaceApplyResultSchema.parse({
       ...parsed,
@@ -2603,9 +2598,9 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-reconciliation-records.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceReconciliationRecordReaderSchema.parse(record);
+    const parsed = StoredWorkspaceReconciliationRecordV1Schema.parse(record);
 
-    return WorkspaceReconciliationRecordSchema.parse({
+    return StoredWorkspaceReconciliationRecordV1Schema.parse({
       ...parsed,
       evidenceBundleIds: parsed.evidenceBundleIds.map((id) =>
         requiredMapValue(evidenceBundleIds, id, 'evidence bundle')
@@ -2617,9 +2612,9 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-quarantine-records.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceQuarantineRecordSchema.parse(record);
+    const parsed = StoredWorkspaceQuarantineRecordV1Schema.parse(record);
 
-    return WorkspaceQuarantineRecordSchema.parse({
+    return StoredWorkspaceQuarantineRecordV1Schema.parse({
       ...parsed,
       workspaceId: context.targetWorkspaceId,
     });

@@ -159,3 +159,5 @@ Artifact Review native SQL reads check the retained row marker before decoding r
 MCP Tool schema snapshots use the same SQL marker before retained and current reads, export, identity collision inspection or replacement. Their v1 native Tool decoder freezes captured name and input-schema meaning; new catalog admission remains separate. Nested input-schema annotations remain exact for the existing digest and captured approval checks.
 
 Goal and Task export rows come from the existing Goal owner through `listExportableGoalState`, which checks each SQL marker before its fixed v1 decoder. Transfer replay publishes explicit columns and v1 markers. An unsupported row cannot pass through an archive and return as current v1 authority.
+
+Apply Result, Reconciliation and Quarantine native SQL owners also check v1 before decoding or replay. Their fixed outcome schemas retain existing closed core predicates and normalized public/export projections; raw Reconciliation annotations keep the existing merge behavior. Workspace deletion checks Plan and Result markers before using their scalar lineage as cleanup proof.
