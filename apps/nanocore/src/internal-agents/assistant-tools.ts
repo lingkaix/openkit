@@ -69,6 +69,8 @@ export function createAssistantTools(input: {
         context.signal.throwIfAborted();
         try {
           input.assertCurrent();
+          if (name.startsWith('memory.') && !input.privateEntry)
+            return observe({ code: 'private_entry_required' }, true);
           const parsed = modelSchema.safeParse(value);
           if (!parsed.success) return observe({ code: 'invalid_tool_input' }, true);
           const requestId = uuidv5(
@@ -132,20 +134,6 @@ export function createAssistantTools(input: {
       },
     };
   };
-  const memory = (name: string): AgentTool => ({
-    name,
-    description:
-      'Current-user Memory operation. Requires the private entry and the scoped Memory owner.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    async execute(_value, context) {
-      context.signal.throwIfAborted();
-      input.assertCurrent();
-      return observe(
-        { code: input.privateEntry ? 'memory_unavailable' : 'private_entry_required' },
-        true
-      );
-    },
-  });
   return {
     tools: [
       native('workspace.dashboard'),
@@ -159,13 +147,8 @@ export function createAssistantTools(input: {
       native('goal.card.create'),
       native('goal.card.edit'),
       native('goal.card.cancel'),
-      ...[
-        'memory.page.read',
-        'memory.page.create',
-        'memory.page.update',
-        'memory.page.delete',
-        'memory.page.propose',
-      ].map(memory),
+      native('memory.ask'),
+      native('memory.tell'),
       input.skill,
       ...createAssistantGenerativeTools(async (id, value, context) => {
         input.assertCurrent();

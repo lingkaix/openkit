@@ -738,6 +738,7 @@ describe('Assistant semantic Task handoff', () => {
     expect(prepared.packageFiles.knowledgeSelections).toEqual([]);
     expect(prepared.packageFiles.fileInventory.map((entry) => entry.path)).toEqual([
       'instructions.md',
+      'knowledge-overview.md',
       'package.json',
     ]);
     expect(JSON.stringify(prepared.packageFiles.files)).not.toContain(privateMarker);

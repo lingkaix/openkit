@@ -103,6 +103,11 @@ import {
   prepareServerKnowledgeMaintenance,
   type ServerKnowledgeMaintenanceDependencies,
 } from './knowledge/server-knowledge-maintenance.js';
+import {
+  runUserMemoryMaintenanceCommand,
+  type UserMemoryMaintenanceDependencies,
+} from './knowledge/user-memory-agent-maintenance.js';
+import { scanUserMemoryMaintenance } from './knowledge/user-memory-schedule.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
@@ -1487,8 +1492,32 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           run: (run) => runServerKnowledgeManagerAgent(knowledgeDependencies, run),
         }
       : undefined;
+  const userMemoryDependencies = (
+    userDb: import('./storage/db.js').UserDb
+  ): UserMemoryMaintenanceDependencies => {
+    if (!options.coreDb) throw new Error('Memory storage is unavailable.');
+    ensureUserQuickChatWorkspace({
+      coreDb: options.coreDb,
+      store: sharedStore,
+      userId: userDb.userId,
+    });
+    return {
+      store: sharedStore,
+      coreDb: options.coreDb,
+      userDb,
+      runtimeConfigManager,
+      openWorkspace: repositoryWorkspaceDb,
+      inflightCommands,
+      pin: (run) => {
+        pinKnowledgeManagerExecution(knowledgeDependencies, run);
+      },
+      run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
+    };
+  };
   const knowledgeAgent: NonNullable<OperationInvocationDependencies['knowledgeAgent']> = {
     ask: (input) => askKnowledgeAgent(knowledgeDependencies, input),
+    maintainMemory: (input, userDb) =>
+      runUserMemoryMaintenanceCommand(userMemoryDependencies(userDb), input),
     maintain: (input) => {
       if (!options.coreDb) throw new Error('Knowledge Manager storage is unavailable.');
       return runKnowledgeMaintenanceCommand(
@@ -1511,6 +1540,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   options.onKnowledgeMaintenanceReady?.((instant) => {
     const coreDb = options.coreDb;
     if (!coreDb) return;
+    scanUserMemoryMaintenance({
+      now: instant,
+      store: sharedStore,
+      coreDb,
+      runtimeConfigManager,
+      ...(localUserId ? { localUserId } : {}),
+      dependencies: userMemoryDependencies,
+    });
     scanDailyKnowledgeMaintenance({
       now: instant,
       scopes: runtimeConfig().workspaceConfigs.map(({ workspaceId, config }) => ({
@@ -2088,6 +2125,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     resolveGatewayProvider,
     runtimeConfig,
+    runtimeConfigManager,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
     goalServices,

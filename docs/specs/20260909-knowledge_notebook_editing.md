@@ -99,6 +99,10 @@ Required Proposal review reads the saved candidate through the existing Proposal
 
 Restore computes a candidate diff from selected historical paths into the current base and publishes it through the same validation and authority checks as any edit. It adds a new commit, never rewinds published history or undoes external effects. No generic cherry-pick/rebase/reset API is exposed. Missing historical bytes, revoked source access or now-invalid schema produces an explicit unavailable/conflict result, not a lossy restore.
 
+## User Memory Maintenance Join
+
+The current User's bounded Knowledge Manager run uses the same publisher with an Agent producer and the actual responsible User actor. The User setting delegates ordinary publication; a protected or destructive change retains the exact candidate in the existing User Proposal family. Human Review binds the displayed Proposal digest and base/candidate commits, preserves Agent attribution, and cannot be supplied by the model. Current self authority, source-version suppression and the fixed base are rechecked at publication and preview. No User or Workspace selector in model text can widen that authority.
+
 ## Administrator Masking (Not Implemented)
 
 An administrator may mask a page's exact content in this notebook through the existing fixed-base publisher. The operation appends a tombstone to reserved `masks.json` at the notebook tree root and publishes an ordinary commit. It does not rewrite history or erase Git objects. This mechanism covers notebook content only; Items and backups remain with external tools. The [engineer's ruling](../decisions/20261017-knowledge_manager_agent_and_compaction.md) records the scope.
