@@ -20,8 +20,9 @@ export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Turn record',
   'Item revision log',
   'Stream event log',
-  'Artifact record and inline content',
-  'Artifact original file payload',
+  'Artifact current-head record',
+  'Immutable Artifact versions',
+  'Artifact original payload',
   'Conversation original file inputs',
   'Notebook content and history',
   'Notebook scope schema',
@@ -714,26 +715,32 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       [`${workspacePath}/runtime/agent-sessions/${selectors.agentSessionId}/session.json`]
     );
     const inline = ctx.store.getArtifact(selectors.workspaceId, selectors.inlineArtifactId);
+    const original = ctx.store.getArtifact(selectors.workspaceId, selectors.fileArtifactId);
+    const versions = [inline, original].map((artifact) =>
+      ctx.store.getArtifactVersion(selectors.workspaceId, artifact.id, artifact.version)
+    );
     record(
-      'Artifact record and inline content',
-      [inline],
+      'Artifact current-head record',
+      [inline, original],
       [
         `${workspacePath}/artifacts/${inline.id}/artifact.json`,
         `${workspacePath}/artifacts/${inline.id}/files`,
+        `${workspacePath}/artifacts/${original.id}/artifact.json`,
       ]
     );
-    const original = ctx.store.getArtifact(selectors.workspaceId, selectors.fileArtifactId);
-    o.fileRecords.verifyArtifactFilePayload({
-      workspaceRoot,
-      artifactId: original.id,
-      version: 1,
-      byteLength: original.content.byteLength,
-      contentDigest: original.contentDigest,
-    });
     record(
-      'Artifact original file payload',
-      [original],
-      [`${workspacePath}/artifacts/${original.id}/versions/1/payload`]
+      'Immutable Artifact versions',
+      versions,
+      versions.map(({ artifact }) =>
+        `${workspacePath}/artifacts/${artifact.id}/versions/${artifact.version}/version-record.json`
+      )
+    );
+    record(
+      'Artifact original payload',
+      versions.map(({ artifact }) => artifact),
+      versions.map(({ artifact }) =>
+        `${workspacePath}/artifacts/${artifact.id}/versions/${artifact.version}/payload`
+      )
     );
     const notebookValues = [],
       notebookPaths = [],
