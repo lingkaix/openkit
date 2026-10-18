@@ -61,6 +61,8 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     // transformation from a digest-only summary or expose argument bodies.
     if (statement.mode === 'transform')
       throw new Error('I16 replacement ownership is unavailable.');
+    if (statement.mode === 'observe' && statement.lifetime.uses !== undefined)
+      throw new Error('Finite-use completed observation is unavailable.');
     if (
       statement.author.kind !== 'human' ||
       statement.authority.kind !== 'human' ||

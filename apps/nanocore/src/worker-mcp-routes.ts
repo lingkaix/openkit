@@ -1374,7 +1374,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
 
   try {
     if (
-      currentMcpPolicyAuthority(input).kernel.effect !== 'allow' ||
+      !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
       !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
     ) {
       recordMcpToolUseDecision(input, call, 'deny', null);
@@ -1457,7 +1457,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     });
     observedCredentials = observed.credentials;
     assertValidMcpToolArguments(observed.snapshotTools, input.toolName, input.arguments);
-    if (!hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage)) {
+    if (!hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true)) {
       recordMcpToolUseDecision(input, call, 'deny', null);
       publishTerminalItem = false;
       if (observed.credentials) {
@@ -2549,7 +2549,8 @@ function requireCurrentArtifactWorkspaceAuthority(
 /** Returns whether current Workspace authority still permits this AEP actor to use tools. */
 function hasCurrentMcpWorkspaceAuthority(
   coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackage,
+  strict = false
 ): boolean {
   return Boolean(
     currentWorkerLineageWorkspaceAuthority(
@@ -2563,7 +2564,8 @@ function hasCurrentMcpWorkspaceAuthority(
         triggerActor: environmentPackage.scope.triggerActor,
       },
       'tool.use',
-      true
+      true,
+      strict ? { dependencyFailure: 'throw' } : undefined
     )
   );
 }
