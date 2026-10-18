@@ -1631,6 +1631,29 @@ describe('worker MCP routes', () => {
       app = register();
       expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
       store.updateTurn(firstTurnId, { status: 'completed', completedAt: new Date().toISOString() });
+      const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: testEntityId('attempt', `lease_${firstTurnId}`),
+        cause: 'worker-final-status',
+        outcomeRef: 'fixture-schema:completed',
+      });
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const correlation = schedulerExecutionCorrelation(closing);
+      const release = await new SimulatedTurnExecutor({ coreDb }).release({
+        ...correlation,
+        proof,
+      });
+      closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        proof,
+        fenceRef: release.fenceRef!,
+      });
       environmentPackage = makePackage('req_schema_second');
       expect(await request('tools/list')).toMatchObject({ result: { tools: changed } });
       expect(await request('tools/call', { name: 'echo', arguments: { count: 1 } })).toMatchObject({
