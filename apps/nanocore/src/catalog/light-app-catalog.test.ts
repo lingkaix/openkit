@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { stableJson } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   verifyWorkspaceExportTree,
@@ -85,10 +85,71 @@ function add(input: ReturnType<typeof fixture>, expectedRevision = 0, title = 'A
 }
 
 describe('Light App definition catalog', () => {
+  it('retains ordered pinned meaning references in immutable catalog bytes and list-only versions', () => {
+    const input = { ...fixture(), workspaceId: allocateEntityId('ws') };
+    const knowledgeBaseId = allocateEntityId('kb');
+    const digest = `sha256:${'ab'.repeat(32)}`;
+    const references = [
+      formatReferenceUri(
+        {
+          scopeId: `page/workspace/${input.workspaceId}/${knowledgeBaseId}`,
+          objectId: 'entities/customer',
+        },
+        digest
+      ),
+      formatReferenceUri(
+        { scopeId: `raw/server/${knowledgeBaseId}`, objectId: 'source evidence' },
+        digest
+      ),
+      formatReferenceUri(
+        { scopeId: `skill/workspace/${input.workspaceId}`, objectId: 'customer-process' },
+        digest
+      ),
+    ];
+    const first = importWorkspaceLightAppDefinition({
+      ...input,
+      expectedRevision: 0,
+      entryId: 'customers',
+      displayName: 'Customers',
+      definition: { ...definition(), references },
+      producer,
+      createdAt: '2026-10-17T00:00:00.000Z',
+      selectDefault: true,
+    });
+    const firstBytes = first.version.definitionJson;
+    const admitted = JSON.parse(firstBytes) as LightAppSchemaInput;
+    expect(admitted.references).toEqual(references);
+    const nextReferences = [...references].reverse();
+    const second = importWorkspaceLightAppDefinition({
+      ...input,
+      expectedRevision: first.catalog.revision,
+      entryId: 'customers',
+      displayName: 'Customers',
+      definition: { ...admitted, references: nextReferences },
+      producer,
+      createdAt: '2026-10-18T00:00:00.000Z',
+    });
+    const retained = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+    expect(
+      retained.lightApps.versions.find((version) => version.digest === first.version.digest)
+        ?.definitionJson
+    ).toBe(firstBytes);
+    expect(second.version.digest).not.toBe(first.version.digest);
+    expect(JSON.parse(second.version.definitionJson)).toEqual({
+      ...admitted,
+      references: nextReferences,
+    });
+    expect(
+      retained.lightApps.versions.find((version) => version.digest === second.version.digest)
+        ?.definitionJson
+    ).toBe(second.version.definitionJson);
+  });
+
   it('allocates stable definition identities once and reuses them for authored-name reimport', () => {
     const input = fixture();
     const first = add(input);
     const admitted = JSON.parse(first.version.definitionJson) as LightAppSchemaInput;
+    expect(admitted.references).toEqual([]);
     expect(admitted.collections[0].id).toMatch(/^col_/);
     expect(admitted.collections[0].fields[0].id).toMatch(/^fld_/);
     const repeated = add(input, first.catalog.revision);
@@ -503,11 +564,7 @@ describe('Light App definition catalog', () => {
         workerContextPackageFiles: new Map(),
         workspaceConfig: JSON.stringify({
           schemaVersion: 1,
-          workspace: {
-            name: 'Definition templates',
-            defaultAgentId: null,
-            defaultKnowledgeBaseId: allocateEntityId('kb'),
-          },
+          workspace: { name: 'Definition templates', defaultAgentId: null },
         }),
         workspaceSchema: null,
       },
