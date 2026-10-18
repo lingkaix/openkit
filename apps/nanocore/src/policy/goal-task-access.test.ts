@@ -47,6 +47,7 @@ function input(changes: Partial<GoalTaskAccessInput> = {}): GoalTaskAccessInput 
   return {
     domain,
     subject,
+    responsibleHumanId: humanId,
     resources: [resource],
     operation: 'tool.use',
     resource,
@@ -64,6 +65,20 @@ describe('Goal Task native Kernel projection', () => {
       'goal-envelope',
       'goal-task',
     ]);
+    expect(result.inGoalEnvelope).toBe(true);
+  });
+  it('preserves the Goal human separately from a different approving administrator', () => {
+    const approver = testEntityId('usr', 'approving-administrator');
+    const result = evaluateGoalTaskAccess(
+      input({
+        domain: {
+          ...domain,
+          author: { kind: 'human', id: approver },
+          authority: { kind: 'human', userId: approver },
+        },
+      })
+    );
+    expect(result.kernel.effect).toBe('allow');
     expect(result.inGoalEnvelope).toBe(true);
   });
   it('keeps a missing Task grant distinct from outside the Goal envelope', () => {

@@ -1,5 +1,5 @@
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
-import { PolicyResourceV1Schema, PolicySubjectV1Schema } from '@openkit/protocol';
+import { PolicyResourceV1Schema, PolicySubjectV1Schema, UserIdSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { GoalDomainStatement } from './goal-domains.js';
 import { policyDigest } from './statements.js';
@@ -11,6 +11,8 @@ export interface GoalTaskAccessInput {
   readonly domain: GoalDomainStatement | null;
   /** Actual agent principal, actor and process restored by the Worker lineage owner. */
   readonly subject: z.infer<typeof PolicySubjectV1Schema>;
+  /** Current Goal accountability owner; this can differ from the approving statement author. */
+  readonly responsibleHumanId: string;
   /** Only explicit Policy resources from the exact retained Task request. */
   readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
   readonly operation: string;
@@ -39,6 +41,7 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
   const resource = PolicyResourceV1Schema.parse(input.resource);
   const resources = input.resources.map((value) => PolicyResourceV1Schema.parse(value));
   const domain = input.domain;
+  const responsibleHumanId = UserIdSchema.parse(input.responsibleHumanId);
   const resourceDigest = policyDigest(resource);
   const inGoalEnvelope = Boolean(
     domain?.state === 'active' &&
@@ -47,8 +50,7 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
       subject.onBehalfOf === null &&
       subject.actor.kind === 'agent' &&
       subject.actor.id === subject.principal.id &&
-      subject.actor.responsibleUserId === subject.responsibleHumanId &&
-      subject.responsibleHumanId === domain.author.id &&
+      subject.responsibleHumanId === responsibleHumanId &&
       subject.process?.workspaceId === domain.source.workspaceId &&
       domain.scope.subjects.some(
         (value) => value.kind === 'agent' && value.id === subject.principal.id
@@ -101,6 +103,7 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
     authorizationRevision: policyDigest({
       domain: domain ? { id: domain.id, digest: policyDigest(domain) } : null,
       subject,
+      responsibleHumanId,
       resources,
       operation: input.operation,
       resource,
