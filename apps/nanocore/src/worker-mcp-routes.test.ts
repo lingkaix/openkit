@@ -478,7 +478,10 @@ describe('worker MCP routes', () => {
       updatedAt: '2026-09-03T00:00:00.000Z',
       workspaceId: turn.workspaceId,
     });
-    store.updateTurn(turn.id, { agentSessionId: testEntityId('as', 'as_mcp_era') });
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentSessionId: testEntityId('as', 'as_mcp_era'),
+    });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: testEntityId('as', 'as_mcp_era'),
@@ -1567,6 +1570,10 @@ describe('worker MCP routes', () => {
       workspaceMcpServerCatalog: catalog,
       workspaceRoots: [],
     });
+    store.updateTurn(turn.id, {
+      agentId: environmentPackage.agent.agentId,
+      agentSessionId: environmentPackage.scope.agentSessionId,
+    });
     recordMcpWorkerLineage(coreDb, environmentPackage, 'token_mcp_admin');
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const callTool = vi.spyOn(workerMcpGateway, 'callTool');
@@ -2493,6 +2500,7 @@ describe('worker MCP routes', () => {
     const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
       fileAdmission,
       coreDb,
+      readRuntimeConfig: () => runtimeConfigManager.current(),
       env: {},
       nanoHostSessionDispatch,
       store,
