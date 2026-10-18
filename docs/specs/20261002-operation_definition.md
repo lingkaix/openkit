@@ -10,6 +10,7 @@ updated: "2026-10-03"
 ## Owns
 
 - The declarative definition of each public operation, the exact implementation join, and the derivation of its projections.
+- The registry extension for Core-mediated non-API operation descriptors; Policy owns their crossing attributes and stage semantics.
 - The release-authored internal-only `skill.read` operation for the #144 selected-Skills family.
 - What a definition table may hold, the closed trusted resolvers and the behaviors they preserve, trusted invocation inputs, and the native invocation seam.
 - Canonical operation and release-owned agent-facing Tool IDs, their derived model spelling across surfaces, and the semantic lifecycle of an operation, including the rules reserved for a later data-defined source.
@@ -71,7 +72,15 @@ Core record and command schemas stay the protocol package's schemas. The declara
 
 The table does not hold private executable configuration, the policy graph, memberships, credentials, deployment paths, or any other live authority fact. Those facts and their procedures stay on the server. A descriptor selects a trusted procedure. It does not replace that procedure and it does not carry the procedure's secret or its result.
 
-The following are not part of the definition and are not built. There is no runtime registration API, no plugin mechanism inside the NanoCore process, no durable operation-registry state, no new permission engine, no generic RPC dependency, no alias for an old id, and no effect taxonomy beyond the mutation posture the operation already declares. The lifecycle field, the retirement mechanism, and a data-defined operation source wait for the conditions in Lifecycle and Data-Defined Sources. Blocking is the deployment decision Lifecycle states, not a definition mechanism waiting in that list.
+The following are not part of the definition and are not built. There is no runtime registration API, no plugin mechanism inside the NanoCore process, no durable operation-registry state, no new permission engine, no generic RPC dependency, no alias for an old id, and no second effect-risk taxonomy. The existing mutation posture remains separate from the Policy-owned crossing attributes. The lifecycle field, the retirement mechanism, and a data-defined operation source wait for the conditions in Lifecycle and Data-Defined Sources. Blocking is the deployment decision Lifecycle states, not a definition mechanism waiting in that list.
+
+### Mediation Registry Extension
+
+The accepted [unified mediation decision](../decisions/20261018-unified_mediation_and_policy.md) extends this existing registry to Core-mediated non-API operations: tool dispatch, model requests, context delivery and result ingress. It adds no separate point registry or durable registry state. A point combines the canonical operation id with propose, decide, commit or completed as `<operation>@<stage>`. [Policy Enforcement](20260703-policy_enforcement_mapping.md) owns the stage, binding and decision contracts.
+
+An operation descriptor carries its Policy-owned crossing attributes: admission, disclosure, dispatch, ingress, mutation, administration and decision. These classify the crossing; they do not replace mutation posture, effect risk or current authorization. A non-API descriptor creates no HTTP, CLI or MCP projection by default. Only an existing projection contract can expose it. Trusted native dispatch, input/output contracts and the registered primary Policy operation/right remain mandatory before activation. A nested operation reaches its own point rather than inheriting its wrapper's approval.
+
+This registry extension is Not Started. Existing public projections and canonical operation identifiers remain unchanged. No caller-authored descriptor, plugin loader, alias or runtime registration API is introduced.
 
 ## Implementation Join
 
