@@ -30,6 +30,7 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { FsStore } from '../lib/store.js';
+import type { GoalDomainPolicyService } from '../policy/goal-domains.js';
 import { policyDigest } from '../policy/statements.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
@@ -81,6 +82,11 @@ export interface GoalOwnerServices {
   readonly wake?: (workspaceId: string, goalId: string) => void;
   readonly interrupt?: (turn: Turn) => void;
   readonly grantAuthority?: (record: PendingRequestRecord) => boolean;
+  /** Native publication uses the recorded deciding credential and the caller-owned DB lifetime. */
+  readonly goalDomain?: {
+    readonly forActor: (actor: Actor, db: WorkspaceDb) => GoalDomainPolicyService;
+    readonly currentRevision: () => string;
+  };
 }
 /** Domain-owned outcomes, preserved by every projection. */
 export class GoalCommandError extends Error {
@@ -751,6 +757,18 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               'The Coordinator cannot resolve its own approval.',
               403
             );
+          // A new explicit publication attempt uses the committed outcome without consuming the grant again or restoring an obsolete Plan pointer.
+          if (
+            services.goalDomain &&
+            id === 'goal.plan.approve' &&
+            !goal.disposition &&
+            goal.activePlanVersionId === request.governedIntent.planVersionId &&
+            request.state === 'resolved' &&
+            request.resolution === 'granted' &&
+            request.claim === 'finished' &&
+            request.disposition === 'approved-executed'
+          )
+            return readGoalView(store, db, goalId);
           goal = consumeGrant(store, db, goal, request, services);
         } else {
           goal = requireOpen(readRecord(db, 'goals', 'goal_id', goalId, GoalRecordSchema));
@@ -1006,6 +1024,39 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       if (id === 'goal.cancel' || ('cardId' in input && link.cardId === input.cardId))
         for (const turn of store.listThreadTurns(input.workspaceId, link.threadId))
           if (!isSealedTurnTerminal(turn.status)) services.interrupt?.(turn);
+  if (services.goalDomain && result.goal) {
+    try {
+      if (result.goal.disposition) {
+        services.goalDomain.forActor(context.actor, db).close({
+          workspaceId: input.workspaceId,
+          goalId,
+        });
+      } else if (
+        id === 'goal.plan.approve' &&
+        context.coordinatorTurnId &&
+        input.pendingRequestId
+      ) {
+        const request = readPendingRequest(db.sqlite, input.pendingRequestId);
+        if (request?.governedIntent?.planVersionId === result.goal.activePlanVersionId) {
+          if (!request.decidingActorContext)
+            throw new Error('Goal-domain deciding credential is unavailable.');
+          const policy = services.goalDomain.forActor(request.decidingActorContext, db);
+          policy.activate({
+            workspaceId: input.workspaceId,
+            requestId: input.pendingRequestId,
+            expectedPolicyRevision: services.goalDomain.currentRevision(),
+          });
+          if (!policy.read({ workspaceId: input.workspaceId, goalId }))
+            throw new Error('Goal domain was not admitted; inspect Policy before retry.');
+        }
+      }
+    } catch (error) {
+      throw new GoalCommandError(
+        'goal_domain_publication_failed',
+        error instanceof Error ? error.message : 'Goal-domain publication failed.'
+      );
+    }
+  }
   services.wake?.(input.workspaceId, goalId);
   return result;
 }

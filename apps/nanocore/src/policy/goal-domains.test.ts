@@ -23,7 +23,7 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 
-/** Real Goal/Pending commits and config CAS; only the not-yet-joined capture producer is seeded. */
+/** Real capture and Goal/Pending commits exercise the service; full preview and product joins have separate Goal-owner regressions. */
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'goal-domain-policy-'));
   const coreDb = openCoreDb(dataRoot);
@@ -94,6 +94,23 @@ async function fixture() {
       ...goalScope,
       requestId: randomUUID(),
       expectedRevision: cardView.goal!.changeRevision,
+      goalDomain: {
+        id: 'design-goal-domain',
+        scope: {
+          subjects: [{ kind: 'agent', id: 'design-worker' }],
+          actions: ['tool.use'],
+          resources: [
+            { kind: 'mcp-tool', workspaceId: workspace.id, serverId: 'issues', toolName: 'read' },
+          ],
+        },
+        lifetime: {
+          anchor: {
+            owner: { kind: 'workspace', workspaceId: workspace.id },
+            kind: 'goal',
+            id: key.goalId,
+          },
+        },
+      },
       commitment: {
         intentBasis: { revision: 0, intent: created.goal!.intent },
         cards: [{ cardId: card.cardId, revision: 0, description: card.description, priority: 1 }],
@@ -108,46 +125,8 @@ async function fixture() {
     { coreDb }
   );
   const plan = proposed.versions.at(-1)!;
-  const statement: GoalDomainStatement = {
-    id: `domain-${plan.planVersionId}`,
-    kind: 'delegation',
-    state: 'inactive',
-    purpose: 'goal-domain',
-    author: { kind: 'human', id: userId },
-    authority: { kind: 'human', userId },
-    authoredAt: '2026-10-18T00:00:00Z',
-    delegate: { kind: 'agent', id: 'goal-coordinator' },
-    source: {
-      ...key,
-      planVersionId: plan.planVersionId,
-      planDigest: plan.digest,
-      approvalRequestId: plan.pendingRequestId,
-    },
-    scope: {
-      subjects: [{ kind: 'agent', id: 'design-worker' }],
-      actions: ['tool.use'],
-      resources: [
-        { kind: 'mcp-tool', workspaceId: workspace.id, serverId: 'issues', toolName: 'read' },
-      ],
-    },
-    lifetime: {
-      anchor: {
-        owner: { kind: 'workspace', workspaceId: workspace.id },
-        kind: 'goal',
-        id: key.goalId,
-      },
-    },
-  };
-  // L-GO owns the real capture/preview join. Seed its agreed existing intent key
-  // before human approval, never after the deciding actor or grant is recorded.
   const request = readPendingRequest(db.sqlite, plan.pendingRequestId)!;
-  db.sqlite.prepare('UPDATE pending_requests SET governed_intent_json=? WHERE request_id=?').run(
-    JSON.stringify({
-      ...request.governedIntent,
-      goalDomain: { statement, digest: policyDigest(statement) },
-    }),
-    request.requestId
-  );
+  const { statement } = request.governedIntent!.goalDomain as { statement: GoalDomainStatement };
   async function approve() {
     await executeGoalOperation(
       'goal.plan.approve',
