@@ -1,4 +1,5 @@
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import type { PolicyDecision } from '@openkit/policy-kernel';
 import { type ActorRef, responsibleUserIdForActor, WorkspaceIdSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -30,9 +31,11 @@ import {
   resolveWorkspaceMembershipRelation,
 } from '../workspace-membership.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { getWorkspaceMember } from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
 import {
   listOpenKitAccessTokenRecords,
+  type OpenKitAccessTokenRecord,
   resolveSessionDeploymentAdminTokenId,
 } from './access-token-store.js';
 import type { Actor } from './identity.js';
@@ -64,10 +67,46 @@ const GatewayWorkspaceAttributionSchema = z
 /** Current eligibility cause; ownership remains a separate registry identity. */
 export type WorkspaceAuthority = 'member' | 'administrator';
 
-/** Opt-in failure handling for governed effects that must distinguish unreadable authority from refusal. */
+/** Actual Kernel evaluation and current non-secret authority facts for one Workspace effect. */
+export interface WorkspaceAuthorityEvaluation {
+  /** Decision returned by the existing Policy adapter, before authority effect mapping. */
+  readonly decision: PolicyDecision;
+  /** Current canonical facts supplied only when evaluation capture is requested. */
+  readonly facts: {
+    /** Canonical addressed Workspace. */
+    readonly workspaceId: string;
+    /** Concrete requested product operation. */
+    readonly operation: string;
+    /** Canonical user responsible for this effect. */
+    readonly responsibleUserId: string;
+    /** Eligibility cause; this does not grant registry ownership. */
+    readonly relation: WorkspaceAuthority;
+    /** Exact presented bearer identity, absent for actors without a bearer. */
+    readonly presentedTokenId: string | null;
+    /** Current canonical membership revision, absent for administrator eligibility. */
+    readonly membershipRevision: number | null;
+    /** Safe presented Token lifecycle facts; never Token material or hashes. */
+    readonly presentedTokenState: Pick<
+      OpenKitAccessTokenRecord,
+      | 'tokenId'
+      | 'ownerUserId'
+      | 'scope'
+      | 'workspaceIds'
+      | 'status'
+      | 'expiresAt'
+      | 'revokedAt'
+      | 'predecessorTokenId'
+      | 'rotatedGraceExpiresAt'
+    > | null;
+  };
+}
+
+/** Opt-in failure handling and actual evaluation capture for governed Workspace effects. */
 export interface WorkspaceAuthorityOptions {
-  /** Propagates resolver failures; omitting the options keeps the existing transient refusal. */
-  readonly dependencyFailure: 'throw';
+  /** Propagates resolver and callback failures; omission keeps the existing transient refusal. */
+  readonly dependencyFailure?: 'throw';
+  /** Receives a real Kernel result and safe current facts; missing eligibility emits no event. */
+  readonly onEvaluation?: (event: WorkspaceAuthorityEvaluation) => void;
 }
 
 /** Authorized Workspace context exposed to one guarded handler. */
@@ -283,9 +322,9 @@ export function isWorkspaceOperationAuthorized(
  * @param operation Concrete product operation, including unknown values that must fail closed.
  * @param effectAuthority Whether the caller's existing effect-specific authority remains valid.
  * @param requestActor Optional authenticating request actor; a presented usable server-admin bearer grants administrator eligibility without membership.
- * @param options Optional propagation of dependency failures instead of a transient refusal.
+ * @param options Optional actual evaluation capture and propagation of dependency failures.
  * @returns The current effective Workspace eligibility, or null when any authority component denies the effect.
- * @throws The original dependency error when strict failure handling is requested.
+ * @throws The original dependency or capture error when strict failure handling is requested.
  */
 export function currentWorkspaceAuthority(
   coreDb: CoreDb,
@@ -300,6 +339,8 @@ export function currentWorkspaceAuthority(
     if (!effectAuthority) {
       return null;
     }
+    let relation: WorkspaceAuthority;
+    let responsibleUserId: string;
     if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
       if (
         actor.kind !== 'user' ||
@@ -309,20 +350,67 @@ export function currentWorkspaceAuthority(
       ) {
         return null;
       }
-      return evaluateAdministratorWorkspaceAccess({ operation, userId: actor.id, workspaceId })
-        .effect === 'allow'
-        ? 'administrator'
-        : null;
+      relation = 'administrator';
+      responsibleUserId = actor.id;
+    } else {
+      const userId = responsibleUserIdForActor(actor);
+      if (!userId || !resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId)) {
+        return null;
+      }
+      relation = 'member';
+      responsibleUserId = userId;
     }
-    const responsibleUserId = responsibleUserIdForActor(actor);
-    if (!responsibleUserId) {
-      return null;
+    const decision =
+      relation === 'administrator'
+        ? evaluateAdministratorWorkspaceAccess({
+            operation,
+            userId: responsibleUserId,
+            workspaceId,
+          })
+        : evaluateWorkspaceMemberAccess({ operation });
+    // A capture callback cannot change the already evaluated authority result.
+    const effect = decision.effect;
+    if (options?.onEvaluation) {
+      const member =
+        relation === 'member' ? getWorkspaceMember(coreDb, workspaceId, responsibleUserId) : null;
+      if (relation === 'member' && !member) {
+        throw new Error('Workspace authority evaluation lost its canonical membership facts.');
+      }
+      const token =
+        requestActor?.kind === 'token'
+          ? listOpenKitAccessTokenRecords(coreDb).find(
+              (record) => record.tokenId === requestActor.tokenId
+            )
+          : null;
+      if (requestActor?.kind === 'token' && !token) {
+        throw new Error('Workspace authority evaluation lost its presented Token facts.');
+      }
+      options.onEvaluation({
+        decision,
+        facts: {
+          workspaceId,
+          operation,
+          responsibleUserId,
+          relation,
+          presentedTokenId: token?.tokenId ?? null,
+          membershipRevision: member?.revision ?? null,
+          presentedTokenState: token
+            ? {
+                tokenId: token.tokenId,
+                ownerUserId: token.ownerUserId,
+                scope: token.scope,
+                workspaceIds: [...token.workspaceIds],
+                status: token.status,
+                expiresAt: token.expiresAt,
+                revokedAt: token.revokedAt,
+                predecessorTokenId: token.predecessorTokenId,
+                rotatedGraceExpiresAt: token.rotatedGraceExpiresAt,
+              }
+            : null,
+        },
+      });
     }
-    const role = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
-    if (!role || evaluateWorkspaceMemberAccess({ operation }).effect !== 'allow') {
-      return null;
-    }
-    return 'member';
+    return effect === 'allow' ? relation : null;
   } catch (error) {
     if (options?.dependencyFailure === 'throw') throw error;
     return null;
@@ -336,9 +424,9 @@ export function currentWorkspaceAuthority(
  * @param admission Exact originating admission context.
  * @param operation Product operation being attempted now.
  * @param effectAuthority Caller-owned effect authority.
- * @param options Optional propagation of Workspace authority dependency failures.
+ * @param options Optional actual evaluation capture and strict dependency failure handling.
  * @returns Current Workspace eligibility, or null if a recorded token is no longer usable.
- * @throws The original Workspace authority dependency error when strict failure handling is requested.
+ * @throws The original Workspace authority dependency or capture error in strict mode.
  */
 export function currentSchedulerAdmissionWorkspaceAuthority(
   coreDb: CoreDb,
@@ -388,9 +476,9 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
  * @param lineage Worker package lineage and its immutable trigger actor.
  * @param operation Product operation being attempted now.
  * @param effectAuthority Caller-owned effect authority.
- * @param options Optional propagation of Workspace authority dependency failures.
+ * @param options Optional actual evaluation capture and strict dependency failure handling.
  * @returns Current Workspace eligibility, or null when lineage or current authority is invalid.
- * @throws The original Workspace authority dependency error when strict failure handling is requested.
+ * @throws The original Workspace authority dependency or capture error in strict mode.
  */
 export function currentWorkerLineageWorkspaceAuthority(
   coreDb: CoreDb,
