@@ -2782,6 +2782,12 @@ function readWorkResourceImportState(
     if (canonicalJson(originalManifest) !== sourceManifestText) {
       throw new Error('Worker Context Package source manifest is not canonical.');
     }
+    if (
+      [...sourceTrace.knowledgeSelections, ...sourceTrace.knowledgeExclusions].some(
+        (entry) => entry.knowledgeBaseId !== context.sourceKnowledgeBaseId
+      )
+    )
+      throw new Error('Worker Context Package Knowledge belongs to another base.');
     const knowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => ({
       ...selection,
       content: requiredExportFile(
@@ -2814,6 +2820,7 @@ function readWorkResourceImportState(
       return {
         content: target.content,
         contentDigest: target.contentDigest,
+        knowledgeBaseId: context.targetKnowledgeBaseId,
         knowledgePageId: selection.knowledgePageId,
         sourceRefs: target.targetSourceReferences,
       };
@@ -3143,7 +3150,11 @@ function readWorkResourceImportState(
               'Worker Context Package Knowledge exclusion contradicts its retrieval trace.'
             );
           }
-          return { ...exclusion, contentDigest: target.contentDigest };
+          return {
+            ...exclusion,
+            knowledgeBaseId: context.targetKnowledgeBaseId,
+            contentDigest: target.contentDigest,
+          };
         }),
         knowledgeSelectionInput: targetRetrievalReference
           ? { retrievalTraceRef: targetRetrievalReference }
@@ -3418,6 +3429,7 @@ function remintKnowledgeDelivery(
   target: {
     content: string;
     contentDigest: string;
+    knowledgeBaseId: string;
     knowledgePageId: string;
     sourceRefs: readonly string[];
   },
@@ -4376,6 +4388,27 @@ function readRetrievalTraceImportState(
       );
     const targetSelections = new Map<string, ImportedRetrievalSelectedPage>();
     const selected = sourceTrace.selected.map((entry) => {
+      const original = entry.contentRef;
+      const targetEntry =
+        original &&
+        original.knowledgeBaseId === context.sourceKnowledgeBaseId &&
+        original.locator.ownerScope.kind === 'workspace' &&
+        original.locator.ownerScope.workspaceId === context.report.exportedWorkspaceId
+          ? {
+              ...entry,
+              contentRef: {
+                ...original,
+                knowledgeBaseId: context.targetKnowledgeBaseId,
+                locator: {
+                  ...original.locator,
+                  ownerScope: {
+                    kind: 'workspace' as const,
+                    workspaceId: context.targetWorkspaceId,
+                  },
+                },
+              },
+            }
+          : entry;
       const reference = remintImportedPageReference(
         entry.reference,
         sourceTrace.sourceScope,
@@ -4384,7 +4417,7 @@ function readRetrievalTraceImportState(
       );
       if (!sourceTrace.sourceScope.startsWith('page/workspace/')) {
         return {
-          ...entry,
+          ...targetEntry,
           reference,
           sourceReferences: userSelection
             ? entry.sourceReferences
@@ -4426,7 +4459,7 @@ function readRetrievalTraceImportState(
         targetSourceReferences,
       });
       return {
-        ...entry,
+        ...targetEntry,
         reference,
         revision: sourceTrace.notebookRevision,
         contentDigest: targetContentDigest,
