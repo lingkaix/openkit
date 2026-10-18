@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deriveEntityId } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
   createStructuredWorkerDelegationRequest,
   type StructuredWorkerDelegationRequest,
@@ -31,7 +32,13 @@ import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import { commandInputHash } from './idempotent-command.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
 import { raiseRecordedPendingRequest } from './pending-request-flow.js';
-import { readPendingRequest } from './pending-requests.js';
+import {
+  denyPendingRequest,
+  freezeReadyOutcomes,
+  frozenPendingOutcomeInput,
+  pendingRequestSystemActor,
+  readPendingRequest,
+} from './pending-requests.js';
 import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 const cleanups: (() => void)[] = [];
@@ -126,10 +133,17 @@ async function fixture(typed = true, linked = true) {
     store,
     db
   );
-  const thread = store.createThread(workspace.id, 'Review', undefined, 'conversation', {
-    visibility: 'workspace',
-    threadSource: 'worker',
-  });
+  const requestId = randomUUID();
+  const thread = store.createThread(
+    workspace.id,
+    'Review',
+    deriveEntityId('th', ['task', requestId]),
+    'conversation',
+    {
+      visibility: 'workspace',
+      threadSource: 'worker',
+    }
+  );
   if (linked)
     db.sqlite.transaction(() =>
       reserveGoalTask(
@@ -174,7 +188,6 @@ async function fixture(typed = true, linked = true) {
     reviewContext: null,
   });
   const turnInput = serializeStructuredWorkerDelegationRequest(request);
-  const requestId = randomUUID();
   const agentId = 'application-worker';
   const agentSessionId = testEntityId('as', root);
   const turn = store.createTurn(
@@ -183,7 +196,18 @@ async function fixture(typed = true, linked = true) {
     turnInput,
     { kind: 'user', id: actor.userId },
     undefined,
-    { agentId, agentSessionId, executorKind: 'worker' }
+    {
+      agentId,
+      agentSessionId,
+      executorKind: 'worker',
+      turnId: deriveEntityId('tu', {
+        command: 'task.start',
+        actorId: actor.userId,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        requestId,
+      }),
+    }
   );
   store.createItem({
     id: deriveEntityId('it', ['task-user', turn.id]),
@@ -342,6 +366,93 @@ async function fixture(typed = true, linked = true) {
       });
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
     },
+    outcome: (pendingRequestId: string, administrator = false) => {
+      const now = new Date().toISOString();
+      const decidingUserId = administrator ? testEntityId('usr', 'outcome-admin') : actor.userId;
+      if (administrator)
+        coreDb.sqlite
+          .prepare(
+            "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,status) VALUES (?,'human','Outcome administrator','',0,?,?,'active')"
+          )
+          .run(decidingUserId, now, now);
+      const adminTokenId = administrator
+        ? createOpenKitAccessTokenRecord(coreDb, {
+            ownerUserId: decidingUserId,
+            scope: 'server-admin',
+            workspaceIds: [],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          }).tokenId
+        : null;
+      expect(
+        denyPendingRequest(db.sqlite, pendingRequestId, { kind: 'user', id: decidingUserId }, now)
+      ).not.toBeNull();
+      const outcomeSessionId = testEntityId('as', `${root}:outcome`);
+      const outcomeInput = 'Receive pending request outcomes.';
+      const outcomeTurn = store.createTurn(
+        workspace.id,
+        thread.id,
+        'Approval outcomes',
+        { kind: 'user', id: decidingUserId },
+        null,
+        {
+          agentId,
+          agentSessionId: outcomeSessionId,
+          executorKind: 'worker',
+          triggerSource: { kind: 'approval-resolution', summary: 'Approval outcomes are ready.' },
+        }
+      );
+      expect(
+        freezeReadyOutcomes(db.sqlite, {
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: outcomeTurn.id,
+          executor: 'worker',
+          agentId,
+          cause: 'outcome',
+          now,
+        })
+      ).toHaveLength(1);
+      store.createItem({
+        id: deriveEntityId('it', ['task-user', outcomeTurn.id]),
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: outcomeTurn.id,
+        type: 'user-message',
+        status: 'completed',
+        actor: pendingRequestSystemActor(decidingUserId),
+        text: frozenPendingOutcomeInput(db.sqlite, outcomeTurn.id, outcomeInput),
+        createdAt: now,
+        completedAt: now,
+      });
+      const outcomeAdmission = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_${outcomeTurn.id}`,
+        requestId: randomUUID(),
+        triggerActor: outcomeTurn.triggerActor,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: outcomeTurn.id,
+        turnInput: outcomeInput,
+        requestedAgentId: agentId,
+        serverAdminTokenId: adminTokenId,
+      });
+      recordTestExecutionAttempt(coreDb, {
+        entry: outcomeAdmission,
+        attemptId: testEntityId('attempt', `${root}:outcome`),
+        agentSessionId: outcomeSessionId,
+        inputRef: 'outcome-package',
+        bindingRef: `outcome-binding:${root}`,
+        sessionCompatibilityKey: 'task-context',
+        now: () => now,
+      });
+      return {
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: outcomeTurn.id,
+        agentSessionId: outcomeSessionId,
+        packageSnapshotId: 'outcome-package',
+      };
+    },
     reopen: () => {
       db.sqlite.close();
       coreDb.sqlite.close();
@@ -366,6 +477,84 @@ it('reads only typed resources from exact retained Task lineage after database r
     resources: [f.resource],
     requestInputHash: f.admission.inputHash,
   });
+});
+
+it.each([
+  false,
+  true,
+])('retains original Task bounds for a later outcome Turn (administrator=%s)', async (administrator) => {
+  const f = await fixture();
+  const original = f.read()!;
+  const captured = f.capture();
+  f.closeSource();
+  clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
+  const lineage = f.outcome(captured.requestId, administrator);
+  f.reopen();
+  expect(
+    readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage })
+  ).toEqual({
+    ...original,
+    turnId: lineage.turnId,
+  });
+});
+
+it.each([
+  'changed-original-input',
+  'wrong-current-package',
+  'missing-current-attempt',
+  'missing-original-attempt',
+  'missing-outcome-cause',
+  'cancelled-card',
+  'closed-goal',
+  'stale-plan',
+] as const)('refuses later outcome context with %s', async (corruption) => {
+  const f = await fixture();
+  const captured = f.capture();
+  f.closeSource();
+  clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
+  const lineage = f.outcome(captured.requestId, true);
+  if (corruption === 'changed-original-input')
+    f.coreDb.sqlite
+      .prepare('UPDATE scheduler_admission_entries SET turn_input=? WHERE turn_id=?')
+      .run('{}', f.lineage.turnId);
+  if (corruption === 'wrong-current-package') lineage.packageSnapshotId = 'wrong-package';
+  if (corruption === 'missing-current-attempt' || corruption === 'missing-original-attempt')
+    f.coreDb.sqlite
+      .prepare('DELETE FROM scheduler_execution_attempts WHERE turn_id=?')
+      .run(corruption === 'missing-current-attempt' ? lineage.turnId : f.lineage.turnId);
+  if (corruption === 'missing-outcome-cause')
+    f.db.sqlite
+      .prepare('UPDATE pending_requests SET delivery_cause=NULL WHERE request_id=?')
+      .run(captured.requestId);
+  if (corruption === 'cancelled-card')
+    f.db.sqlite
+      .prepare(
+        "UPDATE goal_cards SET payload_json=json_set(payload_json,'$.cancelled',json('true')) WHERE card_id=?"
+      )
+      .run(f.card.cardId);
+  if (corruption === 'closed-goal')
+    f.db.sqlite
+      .prepare(
+        "UPDATE goals SET payload_json=json_set(payload_json,'$.disposition',json(?)) WHERE goal_id=?"
+      )
+      .run(
+        JSON.stringify({
+          kind: 'cancelled',
+          reason: 'Stop',
+          actorId: f.actor.userId,
+          at: new Date().toISOString(),
+        }),
+        f.scope.goalId
+      );
+  if (corruption === 'stale-plan')
+    f.db.sqlite
+      .prepare(
+        "UPDATE goals SET payload_json=json_set(payload_json,'$.activePlanVersionId',NULL) WHERE goal_id=?"
+      )
+      .run(f.scope.goalId);
+  expect(() =>
+    readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage })
+  ).toThrow();
 });
 
 it('keeps identical retained context for a real captured request after source closure and cleanup', async () => {
