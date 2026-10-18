@@ -1,3 +1,4 @@
+import { PolicyInvocationV1Schema, PolicyWriteOutcomeV1Schema } from './policy-v1.js';
 import { z } from 'zod';
 
 import {
@@ -48,6 +49,8 @@ export const AuditEventSchema = z
     resource: z.string().min(1).nullable().default(null),
     resourceRevision: z.number().int().positive().nullable().default(null),
     notebookAdmission: KnowledgeNotebookAdmissionSchema.optional(),
+    policyInvocation: PolicyInvocationV1Schema.optional(),
+    policyWriteOutcome: PolicyWriteOutcomeV1Schema.optional(),
     outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled', 'unknown']),
     severity: AuditSeveritySchema.default('info'),
     summary: z.string().min(1),

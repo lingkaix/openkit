@@ -1,3 +1,4 @@
+import { policyDigest } from '../policy/statements.js';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -279,9 +280,13 @@ export class RuntimeConfigFileService {
    * Updates one supported runtime config file using optimistic revision checking.
    *
    * @param input Update request.
+   * @param admission Internal Policy-owner admission after the current human decision; transports cannot supply it.
    * @returns Write response with the updated file summary.
    */
-  public updateFile(input: RuntimeConfigFileWriteInput): RuntimeConfigFileWriteResponse {
+  public updateFile(
+    input: RuntimeConfigFileWriteInput,
+    admission?: { readonly policyWrite: true }
+  ): RuntimeConfigFileWriteResponse {
     if (input.content === undefined) {
       throw new RuntimeConfigFileServiceError(
         'config_file_content_required',
@@ -313,6 +318,17 @@ export class RuntimeConfigFileService {
       ? readFileSync(spec.absolutePath, 'utf8')
       : null;
 
+    if (spec.kind === 'server' && !admission?.policyWrite) {
+      const previous = currentContent ? parse(currentContent) as { policy?: { mediation?: unknown } } : null;
+      const next = parse(input.content) as { policy?: { mediation?: unknown } };
+      if (policyDigest(previous?.policy?.mediation ?? null) !== policyDigest(next?.policy?.mediation ?? null)) {
+        throw new RuntimeConfigFileServiceError(
+          'policy_write_required',
+          'Policy statements require the governed Policy candidate and human application path.',
+          403
+        );
+      }
+    }
     this.assertSupportedWorkspaceMaterialization(spec, input.content);
     this.writeFileAtomically(spec, input.content);
     this.auditCatalogAuthorityChanges(spec, currentContent, input.content);

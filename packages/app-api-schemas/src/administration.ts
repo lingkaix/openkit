@@ -1,3 +1,4 @@
+import { PolicyDocumentV1Schema, PolicyWriteProposalV1Schema } from '@openkit/protocol';
 import {
   AgentSessionIdSchema,
   ArtifactIdSchema,
@@ -85,10 +86,18 @@ export const WorkerGitReadConfigurationProposalSchema = z
   })
   .strict();
 
+/** Only the registered Policy section is proposed; paths and unrelated server fields are absent. */
+const PolicyConfigurationProposalSchema = z.object({
+  targetFamily: z.literal('policy'),
+  targetId: z.literal('server'),
+  expectedRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  changes: z.object({ proposed: PolicyDocumentV1Schema, rationale: z.string().min(1) }).strict(),
+}).strict();
+
 /** Closed registered target families admitted by the configuration proposal owner. */
 export const ProposeAdministrationConfigurationRequestSchema = z.discriminatedUnion(
   'targetFamily',
-  [CatalogConfigurationProposalSchema, WorkerGitReadConfigurationProposalSchema]
+  [CatalogConfigurationProposalSchema, WorkerGitReadConfigurationProposalSchema, PolicyConfigurationProposalSchema]
 );
 
 const CandidateFields = {
@@ -102,6 +111,7 @@ const CandidateFields = {
 
 /** Immutable private candidate with server-derived retained failure evidence for Worker repairs. */
 export const ConfigurationCandidateArtifactSchema = z.discriminatedUnion('targetFamily', [
+  PolicyConfigurationProposalSchema.extend({ ...CandidateFields, policyProposal: PolicyWriteProposalV1Schema }).strict(),
   CatalogConfigurationProposalSchema.extend(CandidateFields).strict(),
   WorkerGitReadConfigurationProposalSchema.extend({
     ...CandidateFields,

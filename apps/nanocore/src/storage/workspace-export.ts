@@ -11,6 +11,7 @@ import {
 } from '@openkit/config-schema';
 import {
   deriveEntityId,
+  writeRetainedV1,
   ItemSchema,
   KnowledgeEntrySchema,
   ThreadSchema,
@@ -621,7 +622,7 @@ export function writeWorkspaceExportTree(
       }
     }
     if (input.auditEvents?.length) {
-      writeJsonl(join(recordsRoot, 'audit-events.jsonl'), input.auditEvents);
+      writeJsonl(join(recordsRoot, 'audit-events.jsonl'), input.auditEvents.map((event) => writeRetainedV1(event)));
     }
     if (input.capabilityCalls?.length) {
       writeJsonl(join(recordsRoot, 'capability-calls.jsonl'), input.capabilityCalls);
@@ -777,7 +778,7 @@ export function writeWorkspaceExportTree(
       );
     }
     if (input.permissionDecisions?.length) {
-      writeJsonl(join(recordsRoot, 'permission-decisions.jsonl'), input.permissionDecisions);
+      writeJsonl(join(recordsRoot, 'permission-decisions.jsonl'), input.permissionDecisions.map((decision) => writeRetainedV1(decision)));
     }
     if (input.goalState) writeJson(join(recordsRoot, 'goal-state.json'), input.goalState);
     if (input.workerCheckpoints?.length) {

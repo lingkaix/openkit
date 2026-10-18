@@ -1,3 +1,4 @@
+import type { PolicyModeV1Schema, PolicyStageV1Schema } from '@openkit/protocol';
 import type { z } from 'zod';
 
 /** Release-coupled authentication procedures; actual authority remains server-owned. */
@@ -118,6 +119,32 @@ export interface OperationProjectionFacts {
   readonly successStatuses?: readonly (200 | 201 | 202 | 204)[];
   readonly invalidInputCode?: string;
 }
+/** Stages of one Core-held operation; completion cannot undo a released effect. */
+export type OperationStage = z.infer<typeof PolicyStageV1Schema>;
+/** Crossing attributes classify boundaries without supplying access rights. */
+export type OperationCrossing =
+  | 'admission'
+  | 'disclosure'
+  | 'dispatch'
+  | 'ingress'
+  | 'mutation'
+  | 'administration'
+  | 'decision';
+/** Closed modes accepted by the native owner's participant contract. */
+export type OperationParticipationMode = z.infer<typeof PolicyModeV1Schema>;
+/** Core-mediated native contracts have no implicit HTTP, CLI or model projection. */
+export interface NativeOperationDefinition {
+  readonly binding: 'native';
+  readonly description: string;
+  readonly inputSchema: z.ZodObject;
+  readonly outputSchema: z.ZodType;
+  readonly policyOperation: OperationPolicy;
+  readonly crossings: readonly OperationCrossing[];
+  readonly stages: readonly OperationStage[];
+  readonly modes: readonly OperationParticipationMode[];
+  readonly participantKinds: readonly 'deterministic'[];
+}
+
 /** Browser-safe declaration vocabulary; no live dependencies or authority facts. */
 export interface OperationDefinition extends OperationProjectionFacts {
   readonly description: string;
