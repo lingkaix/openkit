@@ -37,6 +37,8 @@ import {
   ItemSchema,
   isSealedTurnTerminal,
   PROTOCOL_VERSION,
+  parseReferenceScope,
+  parseReferenceUri,
   RequestIdSchema,
   responsibleUserIdForActor,
   SseEventEnvelopeSchema,
@@ -45,7 +47,10 @@ import {
   type TurnStatus,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
-import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from '../config/knowledge-base.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
@@ -1600,8 +1605,9 @@ export class FsStore {
           scopeSchemaText = readCanonicalTextFile(schemaPath);
         }
       }
-      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter((reference) =>
-        /^(?:source|knowledge):.+@sha256:[a-f0-9]{64}$/.test(reference)
+      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter(
+        (reference) =>
+          /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
       );
       if (qualifiedLocalReferences.length > 0) {
         resolvedReferences = this.resolveKnowledgePageSourceReferences(
@@ -1689,7 +1695,8 @@ export class FsStore {
       const resolved = this.resolveKnowledgePageSourceReferences(
         proposal.workspaceId,
         proposal.sourceReferences,
-        verifiedExternalReferences
+        verifiedExternalReferences,
+        proposal.baseRevision
       );
       const result = validateNotebookCandidate({
         ownerScope: proposal.ownerScope,
@@ -1746,7 +1753,8 @@ export class FsStore {
     const resolvedReferences = this.resolveKnowledgePageSourceReferences(
       proposal.workspaceId,
       proposal.sourceReferences,
-      verifiedExternalReferences
+      verifiedExternalReferences,
+      proposal.baseRevision
     );
 
     const report = validateKnowledgePageCandidate({
@@ -1783,13 +1791,15 @@ export class FsStore {
    * @param workspaceId Workspace that must own every local reference.
    * @param sourceReferences Complete source references carried by the page.
    * @param verifiedExternalReferences Exact work-history references verified outside the store.
+   * @param notebookRevision Immutable Proposal base, or the current published revision for direct edits.
    * @returns Complete reference set after every current owner is verified.
    * @throws KnowledgePageValidationError when any reference is missing or contradictory.
    */
   private resolveKnowledgePageSourceReferences(
     workspaceId: string,
     sourceReferences: readonly string[],
-    verifiedExternalReferences: readonly string[]
+    verifiedExternalReferences: readonly string[],
+    notebookRevision?: string
   ): ReadonlySet<string> {
     const externalReferences = new Set(verifiedExternalReferences);
     if (
@@ -1803,18 +1813,45 @@ export class FsStore {
       throw new KnowledgePageValidationError();
     }
 
-    const knowledge = this.getWorkspaceResources(workspaceId).knowledge;
     const resolvedReferences = new Set(externalReferences);
     for (const reference of sourceReferences) {
-      const qualifiedReference = /^(source|knowledge):(.+)@(sha256:[a-f0-9]{64})$/.exec(reference);
-      if (!qualifiedReference) {
-        if (!externalReferences.has(reference)) {
-          throw new KnowledgePageValidationError();
-        }
+      const qualifiedSource = /^source:(.+)@(sha256:[a-f0-9]{64})$/.exec(reference);
+      const pagePin = parseReferenceUri(reference);
+      const pageScope = pagePin && parseReferenceScope(pagePin.reference.scopeId);
+      if (!qualifiedSource && !pagePin) {
+        if (!externalReferences.has(reference)) throw new KnowledgePageValidationError();
         continue;
       }
-      const [, family, ownerId, expectedDigest] = qualifiedReference;
-      if (family === 'source') {
+      let ownerId: string;
+      let expectedDigest: string;
+      if (qualifiedSource) {
+        ownerId = qualifiedSource[1]!;
+        expectedDigest = qualifiedSource[2]!;
+      } else {
+        if (
+          !pagePin?.contentDigest ||
+          pageScope?.family !== 'page' ||
+          pageScope.kind !== 'workspace' ||
+          pageScope.workspaceId !== workspaceId ||
+          !this.dataRoot
+        )
+          throw new KnowledgePageValidationError();
+        try {
+          if (
+            pageScope.knowledgeBaseId !==
+            readDefaultKnowledgeBaseId({
+              dataRoot: this.dataRoot,
+              scope: { kind: 'workspace', workspaceId },
+            })
+          )
+            throw new KnowledgePageValidationError();
+        } catch {
+          throw new KnowledgePageValidationError();
+        }
+        ownerId = pagePin.reference.objectId;
+        expectedDigest = pagePin.contentDigest;
+      }
+      if (qualifiedSource) {
         const source = this.knowledgeSources.get(ownerId!);
         if (
           !source ||
@@ -1838,14 +1875,11 @@ export class FsStore {
 
       let pageBytes: string | null;
       try {
-        pageBytes = this.dataRoot
-          ? readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), ownerId!)
-          : (() => {
-              const entry = knowledge.find((candidate) => candidate.id === ownerId);
-              return entry
-                ? serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId })
-                : null;
-            })();
+        pageBytes = readWorkspaceKnowledgePage(
+          this.workspaceRootPath(workspaceId),
+          ownerId,
+          notebookRevision
+        );
       } catch {
         throw new KnowledgePageValidationError();
       }
@@ -1864,7 +1898,8 @@ export class FsStore {
         parsed.document.frontmatter.openkit_status !== 'active' ||
         (parsed.document.frontmatter.status !== undefined &&
           parsed.document.frontmatter.status !== 'stable') ||
-        parsed.document.frontmatter.review_state !== 'user-authored'
+        parsed.document.frontmatter.review_state !== 'user-authored' ||
+        !isDeepStrictEqual(parsed.document.frontmatter.scope, { kind: 'workspace', workspaceId })
       ) {
         throw new KnowledgePageValidationError();
       }
