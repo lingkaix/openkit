@@ -32,6 +32,7 @@ class StandIn(DRIVER.Boundary):
         self.id = "old-container"
         self.bad_proof = False
         self.failed_worker = None
+        self.failed_retirement = False
         self.downgrade_prior_image = False
         self.reader = None
         self.live_app_reads = 0
@@ -174,6 +175,8 @@ class StandIn(DRIVER.Boundary):
                 "passed": False, "requestId": value["requestId"], "workspaceId": "synthetic-workspace",
                 "threadId": "synthetic-thread", "turnId": "synthetic-turn", "cause": "PRIVATE secret unknown-effect",
             }))
+        if phase == "retirement" and self.failed_retirement:
+            return json.dumps({"passed": False})
         if phase == "fixtures":
             return json.dumps({"passed": True, "externalSelections": {
                 "App update helper settings and receipts": ["external/retained-sample"],
@@ -280,11 +283,12 @@ class LifecycleTests(unittest.TestCase):
         result = DRIVER.run_upgrade(self.input, self.boundary)
         self.assertTrue(result["passed"], result)
         events = self.boundary.events
-        self.assertEqual([e for e in events if e in ("seed", "worker-before", "snapshot", "compare", "worker")],
-                         ["seed", "worker-before", "snapshot", "compare", "worker"])
+        self.assertEqual([e for e in events if e in ("seed", "worker-before", "snapshot", "compare", "worker", "retirement")],
+                         ["seed", "worker-before", "snapshot", "compare", "worker", "retirement"])
         self.assertLess(events.index("host-stop"), events.index("kernel-proof"))
         self.assertLess(events.index("kernel-proof"), events.index("app-stop"))
         self.assertLess(events.index("snapshot"), events.index("candidate-mutation"))
+        self.assertLess(events.index("worker"), events.index("retirement"))
         self.assertEqual((Path(self.input["dataRoot"]) / "synthetic-corpus").read_text(), "retained")
         self.assertFalse(self.boundary.running)
         self.assertNotEqual(result["workers"]["worker-before"]["requestId"], result["workers"]["worker"]["requestId"])
@@ -315,6 +319,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["effect"], "unknown_until_inspected")
         self.assertEqual(self.boundary.events.count("worker"), 1)
+        self.assertNotIn("retirement", self.boundary.events)
         self.assertEqual(result["workers"]["worker"]["turnId"], "synthetic-turn")
         self.assertFalse(self.boundary.running)
         self.assertTrue((Path(self.input["retainedRoot"]) / "whole-state/recovery.json").exists())
@@ -329,6 +334,16 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("candidate-previous-image-read", self.boundary.events)
         self.assertNotIn("candidate-app-start", self.boundary.events)
         self.assertNotIn("compare", self.boundary.events)
+
+    def test_failed_retirement_keeps_upgrade_nonpass_after_completed_worker(self):
+        """Historical retirement is a required stopped-reader gate after the one candidate Worker."""
+        self.boundary.failed_retirement = True
+        result = DRIVER.run_upgrade(self.input, self.boundary)
+        self.assertFalse(result["passed"])
+        self.assertEqual(self.boundary.events.count("worker"), 1)
+        self.assertEqual(self.boundary.events.count("retirement"), 1)
+        self.assertFalse(self.boundary.running)
+        self.assertFalse(self.boundary.host_active)
 
     def test_changed_live_app_process_is_rejected_with_unchanged_health(self):
         """A new App start time fails unchanged-live proof despite equal health and Host state."""

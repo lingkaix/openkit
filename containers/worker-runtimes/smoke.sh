@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Image-owned supply must be readable by USER 1000 even from a private checkout.
+for path in \
+  /usr/local/bin/openkit-file-effect \
+  /usr/local/bin/openkit-worker-shim \
+  /usr/local/bin/openkit-worker-common-smoke \
+  /usr/local/bin/openkit-worker-common-base-smoke \
+  /usr/local/bin/openkit-worker-runtimes-smoke \
+  /usr/local/lib/openkit/worker-runtimes-versions.json \
+  /usr/local/lib/openkit/image-smoke-package.json \
+  /usr/local/lib/openkit/pi-native-state.patch; do
+  test -r "${path}"
+  test ! -w "${path}"
+done
+
 openkit-worker-common-smoke
 test "$(codex --version)" = "codex-cli 0.160.0"
 test "$(dsh --version)" = "0.2.0-rc.2"
