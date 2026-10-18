@@ -1068,14 +1068,7 @@ export function readWorkspaceImportSnapshot(
         );
     }
   }
-  const knowledgeReferenceReplacements = [
-    [context.sourceKnowledgeBaseId, context.targetKnowledgeBaseId] as const,
-    ...context.contextPackageReferences,
-    ...context.turnIds,
-    ...context.itemIds,
-    ...context.knowledgeSourceIds,
-    ...context.knowledgePageReferences,
-  ] as const;
+  const knowledgeReferenceReplacements = portableReferenceReplacements(context);
   const knowledge = canonical.knowledge.map((entry) =>
     KnowledgeEntrySchema.parse({
       ...entry,
