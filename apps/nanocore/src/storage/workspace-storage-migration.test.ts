@@ -14,10 +14,16 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import { AgentEnvironmentPackageSchema, WorkspaceConfigSchema } from '@openkit/config-schema';
+import { KnowledgeBaseIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
+import { parseJsoncObject } from '../config/jsonc.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from '../config/knowledge-base.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -104,6 +110,17 @@ function createOwnerNestedWorkspaceRoot(
       2
     )}\n`
   );
+
+  mkdirSync(join(workspaceRoot, 'config'), { recursive: true });
+  writeFileSync(
+    join(workspaceRoot, 'config', 'workspace.jsonc'),
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: workspaceId, defaultAgentId: null } })}\n`
+  );
+  initializeDefaultKnowledgeBaseId({
+    dataRoot,
+    workspaceRoot,
+    scope: { kind: 'workspace', workspaceId },
+  });
 
   // This fixture varies the outer storage layout, not the current Notebook content format.
   new KnowledgeNotebook({
@@ -698,6 +715,30 @@ describe('workspace storage migration', () => {
     }
   });
 
+  it('refuses invalid existing Workspace configuration before publication or source removal', () => {
+    const fixture = createMigrationFixture();
+    const sourceRoot = sourceWorkspaceRoot(fixture);
+    const configPath = join(sourceRoot, 'config', 'workspace.jsonc');
+    const config = WorkspaceConfigSchema.parse(parseJsoncObject(readFileSync(configPath, 'utf8')));
+    writeFileSync(
+      configPath,
+      `${JSON.stringify({ ...config, workspace: { ...config.workspace, name: 17 } })}\n`
+    );
+    const invalidConfigBytes = readFileSync(configPath);
+    const backupRoot = join(
+      mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-invalid-config-')),
+      'backup'
+    );
+    fixture.coreDb.sqlite.close();
+
+    expect(() =>
+      migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+    ).toThrow();
+    expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
+    expect(existsSync(sourceRoot)).toBe(true);
+    expect(readFileSync(configPath)).toEqual(invalidConfigBytes);
+  });
+
   it('publishes two Workspaces as one root and retains one verified external predecessor backup', () => {
     const fixture = createMigrationFixture();
     const secondWorkspaceId = 'ws_00000000-0000-768f-80f6-8bbf108cc9a9';
@@ -712,6 +753,21 @@ describe('workspace storage migration', () => {
       'backup'
     );
 
+    const sourceConfigurations = [
+      { workspaceId: fixture.workspaceId, sourceRoot: firstSourceRoot },
+      { workspaceId: secondWorkspaceId, sourceRoot: secondSourceRoot },
+    ].map(({ workspaceId, sourceRoot }) => {
+      const bytes = readFileSync(join(sourceRoot, 'config', 'workspace.jsonc'));
+      const config = WorkspaceConfigSchema.parse(parseJsoncObject(bytes.toString('utf8')));
+      return {
+        workspaceId,
+        bytes,
+        knowledgeBaseId: KnowledgeBaseIdSchema.parse(config.workspace.defaultKnowledgeBaseId),
+      };
+    });
+    expect(sourceConfigurations[0]!.knowledgeBaseId).not.toBe(
+      sourceConfigurations[1]!.knowledgeBaseId
+    );
     writeFileSync(join(firstSourceRoot, 'files', 'first.txt'), 'first\n');
     writeFileSync(join(secondSourceRoot, 'files', 'second.txt'), 'second\n');
     fixture.coreDb.sqlite.close();
@@ -722,6 +778,19 @@ describe('workspace storage migration', () => {
       now: () => timestamp,
     });
 
+    for (const source of sourceConfigurations) {
+      expect(
+        readFileSync(
+          join(fixture.dataRoot, 'workspaces', source.workspaceId, 'config', 'workspace.jsonc')
+        )
+      ).toEqual(source.bytes);
+      expect(
+        readDefaultKnowledgeBaseId({
+          dataRoot: fixture.dataRoot,
+          scope: { kind: 'workspace', workspaceId: source.workspaceId },
+        })
+      ).toBe(source.knowledgeBaseId);
+    }
     const verifiedBackup = verifyDataRootBackupManifest({ backupRoot });
     expect(result.backupId).toMatch(
       /^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
