@@ -4,7 +4,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ApiErrorSchema, deriveEntityId, formatReferenceUri } from '@openkit/protocol';
+import {
+  ApiErrorSchema,
+  deriveEntityId,
+  formatReferenceUri,
+  parseReferenceUri,
+} from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -284,6 +289,35 @@ function conflict(f: Fixture, subject: string, label: string) {
 }
 
 describe('knowledge proposal authority', () => {
+  it('accepts the canonical page pin and refuses a different Workspace, base or digest', async () => {
+    const f = await createFixture('canonical-page-consumer');
+    const pin = parseReferenceUri(f.sourceReference)!;
+    expect(f.proposal.sourceReferences).toEqual([f.sourceReference]);
+    const otherWorkspace = testEntityId('ws', 'foreign-proposal-page-owner');
+    const otherBase = testEntityId('kb', 'foreign-proposal-page-base');
+    const references = [
+      formatReferenceUri(
+        {
+          ...pin.reference,
+          scopeId: `page/workspace/${otherWorkspace}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspaceId } })}`,
+        },
+        pin.contentDigest
+      ),
+      formatReferenceUri(
+        { ...pin.reference, scopeId: `page/workspace/${f.workspaceId}/${otherBase}` },
+        pin.contentDigest
+      ),
+      formatReferenceUri(pin.reference, `sha256:${'0'.repeat(64)}`),
+    ];
+    const before = f.notebook.publishedRevision();
+    for (const [index, reference] of references.entries()) {
+      expect(() =>
+        draft(f, reference, `invalid-page-pin-${index}`, `review/refused-pin-${index}`)
+      ).toThrow(KnowledgePageValidationError);
+      expect(f.notebook.publishedRevision()).toBe(before);
+      expect(currentPage(f, `review/refused-pin-${index}`)).toBeUndefined();
+    }
+  });
   it('derives deterministic ids and freezes the exact owner, base, candidate and byte tuple', async () => {
     const f = await createFixture();
     const bytes = readFileSync(f.proposalPath, 'utf8');
