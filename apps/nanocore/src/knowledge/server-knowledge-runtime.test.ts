@@ -19,7 +19,9 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
+import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { KnowledgeNotebook } from './notebook.js';
 import {
   recoverServerKnowledgeManagerTurns,
@@ -134,6 +136,8 @@ it('executes a Server request on the configured role model with its own captured
       baseUrl: 'https://provider.invalid/v1',
       apiKey: 'public-test-key',
       models: ['server-model', 'ordinary-model'],
+      gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+      modelMetadata: { 'server-model': metadata, 'ordinary-model': metadata },
     }),
   };
   const dependencies: ServerKnowledgeMaintenanceDependencies = {
@@ -151,13 +155,16 @@ it('executes a Server request on the configured role model with its own captured
     requestActor: { kind: 'local' as const, userId },
     actor: { kind: 'user' as const, id: userId },
     trigger: 'request' as const,
-    instructions: 'Integrate this explicit Server fact and keep the overview current.',
+    instructions: 'Integrate this explicit request and keep the Server notebook overview current.',
     sources: [],
     tellContent: 'The Server fact is BLUE-HERON-7.',
     signal: new AbortController().signal,
   };
   const result = await runServerKnowledgeMaintenanceCommand(dependencies, input);
-  expect(result.outcome).toBe('published');
+  expect(
+    result.outcome,
+    JSON.stringify({ result, calls, turn: store.getServerTurnById(result.turnId).error })
+  ).toBe('published');
   expect(createResponses).toHaveBeenCalledTimes(3);
   expect(await runServerKnowledgeMaintenanceCommand(dependencies, input)).toEqual(result);
   expect(createResponses).toHaveBeenCalledTimes(3);
@@ -200,6 +207,28 @@ it('executes a Server request on the configured role model with its own captured
   expect(notebook.readRevision(result.notebookRevision).files['index.md']).toContain(
     'BLUE-HERON-7'
   );
+  const app = createApp({
+    coreDb,
+    dataRoot,
+    store,
+    runtimeConfigManager,
+    llmGatewayDispatcher: { createResponses } as unknown as LLMGatewayProviderDispatcher,
+  });
+  const replay = await app.request(
+    ...operationRequest(
+      'knowledge.server.tell',
+      {},
+      {
+        body: JSON.stringify({
+          requestId: input.requestId,
+          content: input.tellContent,
+          sources: [],
+        }),
+      }
+    )
+  );
+  expect(replay.status, await replay.clone().text()).toBe(200);
+  expect(await replay.json()).toEqual(result);
   const next = store.createServerTurn(turn.threadId, 'Interrupted future run', input.actor, null, {
     agentId: 'knowledge-manager',
   });

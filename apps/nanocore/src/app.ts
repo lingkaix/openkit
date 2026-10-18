@@ -1982,6 +1982,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
   });
   const goalCoordinator = createGoalCoordinator({
+    knowledgeAgent,
     workspaceMutationAdmission,
     store: sharedStore,
     coreDb: options.coreDb,

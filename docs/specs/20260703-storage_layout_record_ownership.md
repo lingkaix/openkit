@@ -164,6 +164,8 @@ DATA_ROOT/
 
 ## Source Of Truth Rules
 
+General Server Threads, Turns, Items and events use the existing canonical record families under `server/threads/<threadId>/`. Their immutable Server owner has no Workspace anchor. Workspace listing, portability and deletion do not traverse this root. Current Server administration authority governs history and effects; placement grants no permission. Only Knowledge Manager work uses this general owner in the current increment.
+
 File-backed source-of-truth records:
 
 - system-owned Workspace identity, ownership, lifecycle, revision, and timestamp facts in `workspace-record.json`

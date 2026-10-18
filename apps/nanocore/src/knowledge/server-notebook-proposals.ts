@@ -213,7 +213,11 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
 /** Uses the existing bounded Unicode candidate preview rather than exposing the private complete record. */
 export function readServerNotebookProposalPreview(
   context: ServerNotebookProposalContext,
-  input: { readonly proposalId: string; readonly path?: string; readonly offset: number }
+  input: {
+    readonly proposalId: string;
+    readonly path?: string | undefined;
+    readonly offset: number;
+  }
 ) {
   const selected = readServerNotebookProposal(context, input.proposalId);
   const before = Object.fromEntries(

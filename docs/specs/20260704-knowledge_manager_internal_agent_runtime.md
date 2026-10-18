@@ -22,7 +22,7 @@ kind: boundary
 - Semantic worker-context composition, which Workflow Coordinator owns, or final worker-context persistence, materialization, delivery, and delivery proof, which the owning Task or Goal mode service and `docs/specs/20260703-worker_context_package.md` own.
 - Assistant direct answers outside knowledge query support.
 - Generic provider execution, the shared internal Agent loop, role-profile resolution, event hooks, or scheduling. `docs/specs/20260813-internal_agent_runtime.md` owns the role-agnostic provider and loop mechanism; this specification owns only when and how the Knowledge Manager role may use it.
-- Goal Mode Knowledge calls or a `goal-mode` caller value; both require a separately accepted Goal-owner update.
+- Goal progression, Task admission or a separate `goal-mode` caller value; the Goal Coordinator uses the admitted `internal-agent` ask/tell path.
 
 ## Core References
 
@@ -162,7 +162,7 @@ Entry paths use `assistant`, `task-mode`, `app-api`, `internal-agent` and `worke
 - `answer` and both Task and public `prepare-context-material` share the `knowledge.read` admission in [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) and the one governed retrieval in [Knowledge Store Implementation](20260703-knowledge_store_implementation.md). They keep the caller rows and output views in this section. `task-mode` remains trusted caller context assigned by the Task service and is never a caller-supplied field. Source and audience rules remain in force. The S61 trace remains selection evidence only. Retrieval keeps the mutating posture [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) states when the call updates an authoritative index or trace, and `answer` still never mutates knowledge.
 - Daily scheduled `maintain` uses the trusted `internal-agent` caller and the existing recurring schedule owner. It binds current scope and responsible authority without fabricating a Worker or Automation identity. No passive learning hook or other trigger is admitted.
 
-The caller table constrains the operation entries. Worker ask/tell and native internal-role ask/tell are the admitted integrations; they do not broaden the older operation rows. Goal Mode Knowledge calls require a separately accepted update to the Goal owner and this specification before `goal-mode` can enter the caller vocabulary.
+The caller table constrains the operation entries. Worker ask/tell and native internal-role ask/tell, including the Goal Coordinator, are admitted integrations. Goal Tools bind the responsible actor, current Goal Workspace and Coordinator Thread/Turn through native assembly and recheck current Goal authority before execution and delivery. They ask Workspace Knowledge plus currently admitted Server Knowledge with scope-labelled citations; they tell only Workspace Knowledge. Model arguments cannot select a scope or owner. User Memory remains excluded from shared work. No `goal-mode` caller value is added.
 
 ### Write rules
 

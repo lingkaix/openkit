@@ -8,6 +8,10 @@ status: in-progress
 
 The coordinator approved the eight-line plan on 2026-10-17 at 15:4xZ under the engineer's 12:42Z ruling. Add the general `server` Thread owner and implement only Server Knowledge maintenance. Current Server administration authority controls visibility. Reuse the existing Thread, Turn, Item, capability/usage, model resolver, notebook publisher, Proposal and recurring trigger owners. Add no parallel store, registry, scheduler, ledger or framework.
 
+## Intent Revision 2
+
+On 2026-10-18 the coordinator authorized the normal naming-branch merge before main and completion of the held Server joins plus Goal Coordinator native knowledge.ask/tell integration. No User Memory branch is imported. Scheduled Server work must use actual current authority or retain a visible failure; stored administrator Tokens cannot supply timer authority.
+
 ## Owners
 
 [Core Concepts](../../core/core-concepts.md#thread) owns the general Thread owner. [Knowledge](../../core/knowledge.md) and [Knowledge Manager](../../specs/20260704-knowledge_manager_internal_agent_runtime.md#server-maintenance-thread) own the maintenance role. [Notebook Editing](../../specs/20260909-knowledge_notebook_editing.md), [Context Management](../../specs/20260902-agent_runtime_context_compaction.md) and [Recurring Triggers](../../specs/20260711-scheduler_recurring_event_triggers.md) retain their existing boundaries. The [Server Knowledge decision](../../decisions/20261017-server_knowledge_is_shared_knowledge.md#general-server-thread-owner) records the reason.
@@ -30,7 +34,7 @@ Core Concepts, Thread: replace exactly-one-Workspace placement with exactly one 
 
 ## Implementation Boundary
 
-Coordinator GO on 2026-10-17 releases P18 paths; L-ID naming paths remain held until its main landing. Root joins Server maintenance and the existing operation composition. Two built-in Sol builders own separate storage and shared usage/capture branches, merged normally. Memory, Skills and Web remain with their assigned lanes.
+Coordinator GO releases P18 paths and, under Intent Revision 2, the held naming joins after a normal merge of the named branch. Root joins Server maintenance and the existing operation composition. Two built-in Sol builders own separate storage and shared usage/capture branches, merged normally. Memory, Skills and Web remain with their assigned lanes.
 
 Server Thread, Turn, Item and event variants add `owner: {kind: server}` and omit Workspace identity. Existing Workspace schemas remain unchanged. Canonical Server history uses `server/threads/<thread>/turns/<turn>/` and the same envelope, Item revision and event families. The supported required feature is `openkit.server-threads.v1`. Server capability/usage, work observations and evidence bundles extend their existing families in the Core database and Server evidence root; they do not allocate a new ledger or store. Ordinary Core migration adds the existing table families with a null Workspace column. Server observations bind the same capture coverage and environment record to their actual owner.
 

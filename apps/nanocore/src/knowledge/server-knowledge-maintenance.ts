@@ -7,7 +7,6 @@ import {
   responsibleUserIdForActor,
   type ServerItem,
 } from '@openkit/protocol';
-import { listOpenKitAccessTokenRecords } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -65,29 +64,19 @@ export interface ServerKnowledgeMaintenanceInput {
   readonly signal: AbortSignal;
 }
 
-/** Selects existing current Server administration responsibility for the trusted daily trigger. */
+/** Uses only the actual local process authority; stored credentials are never presented by a timer. */
 export function currentServerMaintenanceActor(
   coreDb: CoreDb,
   localUserId?: string
 ): Actor | undefined {
-  const candidates: Actor[] = localUserId
-    ? [{ kind: 'local', userId: localUserId }]
-    : listOpenKitAccessTokenRecords(coreDb)
-        .filter((token) => token.scope === 'server-admin')
-        .map((token) => ({
-          kind: 'token',
-          userId: token.ownerUserId,
-          tokenId: token.tokenId,
-          tokenScope: 'server-admin',
-        }));
-  return candidates.find((actor) => {
-    try {
-      requireCurrentDeploymentAdmin(coreDb, actor);
-      return true;
-    } catch {
-      return false;
-    }
-  });
+  if (!localUserId) return undefined;
+  const actor: Actor = { kind: 'local', userId: localUserId };
+  try {
+    requireCurrentDeploymentAdmin(coreDb, actor);
+    return actor;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Current Server notebook/schema and Source bytes are checked at each disclosure/effect boundary. */
