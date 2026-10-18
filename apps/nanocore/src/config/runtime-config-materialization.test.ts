@@ -16,6 +16,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   catalogDocumentPath,
@@ -121,7 +122,10 @@ function fixture(withOtherWorkspace = false) {
   };
   write(
     'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc',
-    JSON.stringify({ workspace: { name: 'Team', roots: [] } })
+    JSON.stringify({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      workspace: { name: 'Team', roots: [] },
+    })
   );
   const manager = createRuntimeConfigManager({ initialSnapshot: loadRuntimeConfig(dataRoot) });
   const files = new RuntimeConfigFileService({
@@ -171,8 +175,10 @@ describe('registered config detail read coherence', () => {
   it('binds the revision to one actual source read when an external writer replaces the file', () => {
     const f = fixture();
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
-    const original = '// Original café\n{"workspace":{"name":"Original","roots":[]}}\n';
-    const replacement = '// Replacement\n{"workspace":{"name":"Replacement","roots":[]}}\n';
+    const original =
+      '// Original café\n{"schemaVersion":1,"workspace":{"name":"Original","roots":[]}}\n';
+    const replacement =
+      '// Replacement\n{"schemaVersion":1,"workspace":{"name":"Replacement","roots":[]}}\n';
     const path = f.write(id, original);
     const incoming = `${path}.external`;
     writeFileSync(incoming, replacement);
@@ -209,7 +215,7 @@ describe('registered config detail read coherence', () => {
   it('propagates source read failure without changing authored bytes', () => {
     const f = fixture();
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
-    const original = '{"workspace":{"name":"Unreadable","roots":[]}}\n';
+    const original = '{"schemaVersion":1,"workspace":{"name":"Unreadable","roots":[]}}\n';
     const path = f.write(id, original);
     durability.readFailurePath = path;
 
@@ -225,7 +231,7 @@ describe('registered config detail read coherence', () => {
       f.dataRoot,
       'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
     );
-    const foreignContent = '{"workspace":{"name":"Foreign","roots":[]}}\n';
+    const foreignContent = '{"schemaVersion":1,"workspace":{"name":"Foreign","roots":[]}}\n';
     const foreignPath = f.write(`workspaces/${f.otherWorkspaceId}/workspace.jsonc`, foreignContent);
     rmSync(path);
     symlinkSync(foreignPath, path);
@@ -429,6 +435,7 @@ describe('configuration-stage work-slot source refusal', () => {
       id,
       kind: 'workspace' as const,
       content: JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Team',
           roots: [{ id: 'files', kind: 'host-dir', path: 'files/contracts', access: 'read-write' }],
@@ -516,6 +523,7 @@ describe('configuration-stage work-slot source refusal', () => {
     f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc',
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Team',
           roots: [{ id: 'files', kind: 'host-dir', path: 'files/contracts', access: 'read-write' }],
@@ -690,6 +698,7 @@ describe('authored configuration durability', () => {
 /** Builds authored Assistant selection without introducing version or runtime authority. */
 function assistantSelectionContent(skillIds?: readonly unknown[]): string {
   return JSON.stringify({
+    schemaVersion: RETAINED_FORMAT_VERSION,
     workspace: {
       name: 'Assistant selection',
       roots: [],
