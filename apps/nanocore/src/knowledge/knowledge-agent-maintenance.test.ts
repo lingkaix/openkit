@@ -123,6 +123,10 @@ function fixture(enabled = true, protectedPages: string[] = []) {
         strategy: 'compaction',
       })
     );
+    expect(payload.sourceHistory).toBe(
+      'Supplied Source content is the authorized retained human input. Source material digests and Turn IDs are not history Item range coordinates. thread.history.read accepts only exact current-run compaction ranges.'
+    );
+    expect(payload.sources[0].content).toContain('The project uses green labels.');
     const ref = payload.sources[0].reference;
     const page = `---\ntype: KnowledgePage\ntitle: Labels\nschema_version: openkit-scope-knowledge-schema-v4\nrequiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]\nopenkit_status: active\nstatus: stable\nscope: {kind: workspace, workspaceId: ${workspace.id}}\nsource_refs: [${JSON.stringify(ref)}]\nreview_state: user-authored\nsensitivity: normal\nfreshness: current\ncreated_at: "2026-10-17T00:00:00.000Z"\nupdated_at: "2026-10-17T00:00:00.000Z"\n---\nThe project uses green labels.\n`;
     const execute = async (name: string, args: unknown) =>
@@ -184,6 +188,31 @@ function fixture(enabled = true, protectedPages: string[] = []) {
 }
 
 describe('Workspace Knowledge Manager maintenance admission', () => {
+  it('returns actionable feedback until a native notebook outcome exists', async () => {
+    const f = fixture();
+    f.run.mockImplementationOnce(async (run) => {
+      expect(run.validateResult(JSON.stringify({ summary: 'No changes are needed.' }))).toBe(
+        'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.'
+      );
+      await run.tools
+        .find((tool) => tool.name === 'knowledge.notebook.update')!
+        .execute(
+          { summary: 'No changes are needed.' },
+          { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
+        );
+      expect(
+        run.validateResult(JSON.stringify({ summary: 'No changes are needed.' }))
+      ).toBeUndefined();
+      f.store.updateTurn(run.turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      return { turnId: run.turn.id, text: 'No changes are needed.' };
+    });
+    const result = await maintainKnowledgeAgent(f.dependencies, f.input);
+    expect(result.outcome).toBe('no-change');
+    expect(f.notebook.publishedRevision()).toBe(f.humanRevision);
+  });
   it('narrows the editable snapshot and human diffs to explicitly selected archived pages plus the overview', async () => {
     const f = fixture();
     const page = (id: string) =>

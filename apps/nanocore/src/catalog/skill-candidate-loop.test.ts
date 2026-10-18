@@ -24,6 +24,7 @@ import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import { readSkillCandidateArtifact } from '../skill-candidate-artifact.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -214,6 +215,7 @@ const request = {
 };
 
 describe('synthetic Skill Artifact/catalog component', () => {
+  // Main takes 29.4 s alone (version stack: 28.1 s); allow headroom for sequential Turns under load.
   it('runs the synthetic native Task, Artifact, human promotion and later pinned-use loop', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-candidate-native-'));
     cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
@@ -269,8 +271,10 @@ describe('synthetic Skill Artifact/catalog component', () => {
       join(dataRoot, 'config/gateway.jsonc'),
       JSON.stringify(createTestGatewayConfig())
     );
-    const executor = new SimulatedTurnExecutor({ coreDb });
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
+    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     const app = createApp({
+      fileAdmission,
       coreDb,
       dataRoot,
       store,
@@ -402,7 +406,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
       id: LOCAL_USER_ID,
     });
     expect(catalog.skills.pins[0]?.digest).toBe(submitted.candidate.candidateDigest);
-  }, 30_000);
+  }, 60_000);
 
   it('admits only the test fixture without activation and keeps the retired author package absent', () => {
     expect(

@@ -397,6 +397,7 @@ describe('SimulatedTurnExecutor', () => {
     }
   });
 
+  // Two real S39 publication and native execution lifecycles use this local runner budget; product deadlines stay unchanged.
   it('reuses one compatible current AgentSession across sequential simulator Turns', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -530,7 +531,7 @@ describe('SimulatedTurnExecutor', () => {
       executions.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('terminalizes an incompatible idle predecessor before a later Turn starts', async () => {
     const imageRefA = 'openkit/worker-codex:image-a';

@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Using OpenKit
 
-Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP guide, search, describe and call to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
+Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP `openkit_guide`, `openkit_search`, `openkit_describe` and `openkit_call` to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
 
 Select the intended Workspace and inspect the data sources selected for the task, Agent and model before a source task. Quick conversation is for short assistance; use a Worker task for bounded execution and Goal Mode for planned work requiring coordination. In the current Web composer, the Worker target may be presented as **New Shard + Worker**, which creates a linked execution Thread. Follow that receiving Thread rather than treating submission as completion.
 
@@ -117,6 +117,18 @@ Open **Workspace → Vault → Credential-use requests**. Select a conversation 
 The responsible user or an eligible administrator can inspect the complete captured effect, deny it or withdraw it. Only a currently eligible administrator can approve this administrative grant issue. If complete effect detail is unavailable, approval stays disabled while deny and withdrawal remain available. Approval does not create a grant. An administrator uses **Issue approved grant**, then inspects the actual grant ID and binds it explicitly through the owning MCP or Agent configuration.
 
 The panel labels requested terms, actual grant, deciding actor, claim/disposition and decision delivery separately. After an uncertain result, refresh requests and inspect current grant inventory and Audit before another effect. Narrowing creates a replacement grant and requires an explicit binding update. Plans, successful backend resolution, completed delivery receipts and completed upstream work prove different facts. See [the credential-use procedure](nanocore-operations.en.md#request-and-review-credential-use) for the same App API, remote MCP and administrator CLI operations.
+
+## Use Discord Attention
+
+Open **Settings → Channels**. If the deployment has Discord configured, select **Pair Discord account**. Send the displayed one-use command in a private direct message to the configured bot. The challenge expires shortly. Select **Refresh** to confirm the account binding. Pairing permits attention links to your own direct messages; it grants no Workspace access.
+
+Attention messages contain App links only. Open the authenticated link to inspect the exact request in its Thread. The notification does not prove that anyone read or decided the request. Email carries digest or attention links only; a Discord connection does not mean Email, Slack, or Signal is implemented.
+
+When Discord is configured and your account is paired, each notification card in **Settings → Channels** shows the exact inspection command. Copy `/openkit inspect workspace:<id> thread:<id> request:<id>` from that card into a private direct message to the configured bot. For a supported request, read the complete current effect or non-secret questions that the bot returns. Copy the returned disclosure value into `/openkit deny` or `/openkit answer`. Supply the exact answer map for a non-secret question. The channel checks current responsibility, source access, audience, and request identity again. Approval grants and secret questions return to the App. If the exact disclosure is too large, use the App.
+
+Use **Revoke Discord binding** to prevent later channel responses and sends. Rebinding requires a new challenge. Pairing never retains an administrator credential. A revoked account cannot reuse an earlier disclosure.
+
+The delivery list distinguishes **Queued**, **Sending**, **Sent**, **Not sent**, and **Delivery unknown**. Retry is available only after a definite no-send result and uses that exact attempt. An unknown result can mean the message arrived. Inspect the request before another action; the system does not automatically resend or infer a Core outcome. A channel response that stays unknown also requires Core inspection before a new attempt.
 
 ## Knowledge Guidance
 

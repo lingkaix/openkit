@@ -136,7 +136,7 @@ export async function previewMcpDiscovery(
         reference.userId !== null ||
         grant.targetAgentId !== null ||
         grant.targetAgentSessionId !== null ||
-        (grant.targetCapabilityId !== null && grant.targetCapabilityId !== 'mcp.list_tools') ||
+        (grant.targetCapabilityId !== null && grant.targetCapabilityId !== 'mcp.list-tools') ||
         grant.allowedInjectionPaths.length !== 1 ||
         grant.allowedInjectionPaths[0] !== 'gateway-only' ||
         reference.backendKind !== backend.kind ||
@@ -269,7 +269,7 @@ export async function previewMcpDiscovery(
         createVaultInjectionPlan(coreDb, {
           planId,
           grantId: grant.grantId,
-          capabilityId: 'mcp.list_tools',
+          capabilityId: 'mcp.list-tools',
           injectionVisibility: 'gateway-only',
           expirationBehavior: grant.expiresAt ? `expires-at:${grant.expiresAt}` : 'grant-lifetime',
           revocationBehavior: 'close-temporary-gateway-session',

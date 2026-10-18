@@ -308,10 +308,11 @@ fn mcp(kernel: &Kernel, directory: &Directory, value: Value) -> Option<Value> {
             }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(
-                json!({"tools":[{"name":"search","description":"Search the startup-bound directory's prepared index and current text or identity sidecars.","inputSchema":{"type":"object","properties":{"mode":{"type":"string","enum":["lexical","exact","regex"]},"query":{"type":"string","minLength":1,"maxLength":4096},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["mode","query","limit"],"additionalProperties":false}}]}),
+                json!({"tools":[{"name":"retrieval_search","description":"Search the startup-bound directory's prepared index and current text or identity sidecars.","inputSchema":{"type":"object","properties":{"mode":{"type":"string","enum":["lexical","exact","regex"]},"query":{"type":"string","minLength":1,"maxLength":4096},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["mode","query","limit"],"additionalProperties":false}}]}),
             ),
             "tools/call" => {
-                if value.pointer("/params/name").and_then(Value::as_str) != Some("search") {
+                if value.pointer("/params/name").and_then(Value::as_str) != Some("retrieval_search")
+                {
                     return Err(error("invalid-request", "unknown MCP tool"));
                 }
                 let args: SearchArguments = serde_json::from_value(

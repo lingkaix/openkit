@@ -236,7 +236,7 @@ async function mcpRead(f: Awaited<ReturnType<typeof fixture>>, secret: string, i
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'call', arguments: { operation: 'caller.read', input } },
+      params: { name: 'openkit_call', arguments: { operation: 'caller.read', input } },
     }),
   });
 }

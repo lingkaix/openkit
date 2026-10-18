@@ -238,7 +238,14 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
 test('keeps a tall dialog action reachable by normal pointer interaction', async ({ page }) => {
   stack = await startIsolatedWebStack({ mode: 'server', useSimulator: true });
   await page.setViewportSize({ width: 800, height: 600 });
+  // Wait for actual browser admission before checking the unauthenticated account surface.
+  const admission = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/app/operations/workspace.list') &&
+      response.request().method() === 'POST'
+  );
   await page.goto(stack.webUrl);
+  expect((await admission).status()).toBe(401);
   await expect(page.getByRole('heading', { name: 'Account access' })).toBeVisible();
   await page.getByRole('button', { name: 'Sign up' }).click();
   await page.getByRole('textbox', { name: 'Name' }).fill('Dialog Test User');

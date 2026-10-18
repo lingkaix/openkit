@@ -9703,6 +9703,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // Two real Task/source-package/native lifecycles use this local runner budget; product deadlines stay unchanged.
   it.each([
     'active',
     'closeout',
@@ -10107,7 +10108,7 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it.each([
     'eviction',

@@ -902,7 +902,7 @@ async function readDurableOutcome(dataRoot, turnId) {
     const calls = workspaceDb.sqlite
       .prepare(
         `SELECT call_id AS callId, item_id AS itemId, schema_snapshot_id AS schemaSnapshotId, status
-         FROM capability_calls WHERE operation = 'mcp.call_tool' AND provider_ref = 'echo'`
+         FROM capability_calls WHERE operation = 'mcp.call-tool' AND provider_ref = 'echo'`
       )
       .all();
     if (calls.length === 1) {

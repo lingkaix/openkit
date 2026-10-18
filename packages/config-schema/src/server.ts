@@ -232,6 +232,23 @@ export const OpenKitAppUpdateConfigSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
+/** Public Discord identity and an operator-held environment reference, consumed only at startup. */
+export const OpenKitChannelsConfigSchema = z
+  .object({
+    discord: z
+      .object({
+        applicationId: z.string().regex(/^[0-9]{1,20}$/),
+        publicKey: z.string().regex(/^[a-fA-F0-9]{64}$/),
+        botTokenRef: z
+          .string()
+          .regex(/^env:[A-Z][A-Z0-9_]*$/)
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 /** One exact repository path; glob and URL aliases cannot enlarge maintenance authority. */
 const MaintenanceRepositoryPathSchema = z
   .string()
@@ -316,6 +333,7 @@ export const OpenKitConfigSchema = z
   .object({
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     appUpdate: OpenKitAppUpdateConfigSchema.optional(),
+    channels: OpenKitChannelsConfigSchema.optional(),
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),
     mode: CoreModeSchema.optional(),
@@ -358,7 +376,15 @@ export const OpenKitConfigSchema = z
     server: OpenKitServerRuntimeSchema.optional(),
     vault: OpenKitVaultConfigSchema.optional(),
   })
-  .strip();
+  .strip()
+  .superRefine((config, context) => {
+    if (config.channels?.discord && !config.server?.publicBaseUrl?.startsWith('https://'))
+      context.addIssue({
+        code: 'custom',
+        path: ['server', 'publicBaseUrl'],
+        message: 'Discord requires a public HTTPS App origin for authenticated request links.',
+      });
+  });
 
 /**
  * File-backed NanoCore configuration.

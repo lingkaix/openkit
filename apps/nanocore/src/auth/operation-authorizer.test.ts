@@ -7,6 +7,7 @@ import {
   type OperationDefinition,
   PRODUCT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
+import * as policyKernel from '@openkit/policy-kernel';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -267,6 +268,95 @@ afterEach(() => {
 });
 
 describe('central Workspace operation authorizer', () => {
+  it('propagates canonical-user storage failures instead of reporting a Policy denial', () => {
+    const failure = new Error('injected canonical-user read failure');
+    const read = vi.spyOn(fixture.coreDb.sqlite, 'prepare').mockImplementationOnce(() => {
+      throw failure;
+    });
+    try {
+      expect(() =>
+        isCanonicalUserOperationAuthorized(fixture.coreDb, fixture.actorState.current)
+      ).toThrow(failure);
+      expect(read).toHaveBeenCalledWith(expect.stringMatching(/users/));
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('keeps a canonical-user Kernel denial as a non-enumerating HTTP 403', async () => {
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const evaluate = vi
+      .spyOn(policyKernel, 'evaluateAccess')
+      .mockImplementation((policy, request) =>
+        actualEvaluate({ ...policy, associations: [] }, request)
+      );
+    try {
+      const denied = await fixture.app.request(...operationRequest('caller.read', {}));
+      expect(denied.status).toBe(403);
+      await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      expect(evaluate).toHaveBeenCalledTimes(1);
+    } finally {
+      evaluate.mockRestore();
+    }
+  });
+
+  it.each([
+    'user',
+    'unattributed Gateway',
+    'Workspace member',
+    'Workspace administrator',
+  ] as const)('requires the current Kernel decision after %s eligibility', async (scope) => {
+    if (scope === 'Workspace administrator') {
+      const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
+        ownerUserId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      fixture.actorState.current = {
+        kind: 'token',
+        userId: issued.record.ownerUserId,
+        tokenId: issued.record.tokenId,
+        tokenScope: 'server-admin',
+        tokenWorkspaceIds: [],
+      };
+    }
+    const send = () => {
+      if (scope === 'unattributed Gateway')
+        return fixture.app.request('/v1/responses', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+      return fixture.app.request(
+        ...(scope === 'user'
+          ? operationRequest('caller.read', {})
+          : operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id }))
+      );
+    };
+    // Establish current eligibility with the real policy before replacing only its mandatory input.
+    expect((await send()).status).toBe(200);
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const evaluate = vi.spyOn(policyKernel, 'evaluateAccess');
+    try {
+      evaluate.mockImplementation((policy, request) =>
+        actualEvaluate({ ...policy, associations: [] }, request)
+      );
+      const denied = await send();
+      expect(denied.status).toBe(403);
+      await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      expect(evaluate).toHaveBeenCalled();
+      evaluate.mockImplementation(() => {
+        throw new Error('Policy dependency unavailable.');
+      });
+      const failed = await send();
+      expect(failed.status).toBe(403);
+      await expect(failed.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    } finally {
+      evaluate.mockRestore();
+    }
+  });
+
   it.each([
     {
       actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
@@ -1519,7 +1609,7 @@ async function submitAdministrationConversationMcp(input: Record<string, unknown
       id: 1,
       method: 'tools/call',
       params: {
-        name: 'call',
+        name: 'openkit_call',
         arguments: { operation: 'administration.conversation-submit', input },
       },
     }),
@@ -1660,7 +1750,7 @@ describe('canonical administration Workspace admission', () => {
                     jsonrpc: '2.0',
                     id: 1,
                     method: 'tools/call',
-                    params: { name: 'call', arguments: { operation: id, input } },
+                    params: { name: 'openkit_call', arguments: { operation: id, input } },
                   }
             ),
           }

@@ -36,11 +36,13 @@ The primary owns owner text, integration and held paths after release. A separat
 
 The coordinator released P18 Producer, Text and Vision together on main `9a22e82b6cb5ffc6740b8ffd6b6bd0d503cbee2a`. Join main normally and complete Landing 1 publication, all-version portability and historical Context admission first. Independent Sol review covers the join delta. The exact local gate covers complete test directories of touched modules and Web e2e; express landing requires green main. End the work session after Landing 1 lands or report a blocker. Storage Layout and naming-held paths remain reserved to L-ID until its landing.
 
+## Intent Revision 4
+
+The coordinator released the naming-held paths on main `fe05c77bf` on 2026-10-18. Merge main normally into both evaluation branches, complete the released Storage Layout and generated CLI seams, and apply Express rule 8 only to actual incoming overlap. The large Landing 1 cut requires one exact branch CI after independent review and its local gate. Landing 1 precedes Landing 2 and the native-resume fix.
+
 ## Current Checkpoint
 
-Landing 1 joined P18 as `a5a73d7e`, resolving generated OpenAPI and operation-inventory conflicts. Two isolated Builder branches implement initial atomic publication and complete version transfer. The primary aligns S16/S39, Context admission, guides and generated projections. The external lane checkpoint names exact integration commits and checks. No final gate or landing is claimed while naming holds Storage Layout and generated CLI.
-
-The Context reader regression failed as expected after v2 replaced the head while v1 remained selected. A later combined conversation run lacked the private retrieval-kernel executable and was stopped as setup-invalid; its raw log remains preserved. Publication checks exposed and corrected an existing symlink invariant without weakening its oracle. The final composed gate must use the complete affected directories after all held integration paths release.
+Landing 1 preserves real immutable initial versions and every historical original through native publication and Workspace transfer. The mixed file-to-inline-to-file regression exposed a physical-header parser mismatch; the correction shares the existing body-free physical reader without relaxing public schemas, digest checks or retained history. Complete direct version and public projection suites passed 52 cases on `1b50b2949fc9755745e9fa7f1fde0eb5ba2d1adf`. The naming join aligns Storage Layout, exact operation inventories and regenerated projections. The external lane checkpoint names current heads, reviews and gates; no final qualification or landing is claimed here.
 
 ## Effect Boundary
 

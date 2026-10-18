@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
@@ -50,7 +50,7 @@ type Transport = Parameters<LLMGatewayProviderDispatcher['createResponses']>[2];
 type ProviderResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>;
 
 /** Only the external Responses transport is replaced; Core, publication and the retrieval Kernel are real. */
-async function fixture(withServerKnowledge = false) {
+async function fixture(withServerKnowledge = false, emptyOverview = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-query-proof-'));
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Knowledge query proof');
@@ -135,6 +135,21 @@ async function fixture(withServerKnowledge = false) {
   );
   // A valid shared publication does not retain disclosure authority after its Source becomes private.
   Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: userId });
+  if (emptyOverview) {
+    const baseRevision = notebook.publishedRevision();
+    const candidateRevision = notebook.prepare({
+      baseRevision,
+      changes: { 'index.md': '---\nokf_version: "0.2"\n---\n# Notebook\n' },
+      metadata: {
+        summary: 'Retain an empty overview beside the human fact',
+        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'a'.repeat(64)}` },
+        producer: actor,
+        authority: { kind: 'direct', instructionReference: 'fixture:empty-overview' },
+        sourceReferences: [],
+      },
+    });
+    notebook.publish({ baseRevision, candidateRevision });
+  }
   const revision = notebook.publishedRevision();
   const workspaceFiles = notebook.readRevision(revision, ['launch-evidence.md', 'index.md']).files;
   const page = workspaceFiles['launch-evidence.md']!;
@@ -824,6 +839,7 @@ it('repairs a markdown answer once through the schema-validated result Tool', as
         { type: 'message', content: [{ type: 'output_text', text: '**Answer:** No evidence.' }] },
       ],
     })
+    .mockResolvedValueOnce(call('knowledge.retrieval', { query: 'missing evidence' }))
     .mockResolvedValueOnce(
       call(
         'knowledge.result',
@@ -841,7 +857,7 @@ it('repairs a markdown answer once through the schema-validated result Tool', as
     citations: [],
     uncertainty: 'No page was read.',
   });
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  expect(f.createResponses).toHaveBeenCalledTimes(3);
   const turn = f.store.getTurnById(answer.turnId);
   expect(turn.status).toBe('completed');
   expect(turn.items).toContainEqual(
@@ -888,6 +904,7 @@ it('enforces the result Tool schema and allows only one repair for rejected argu
     .mockResolvedValueOnce(
       call('knowledge.result', { answer: 'Missing required result fields.' }, 'invalid-result')
     )
+    .mockResolvedValueOnce(call('knowledge.retrieval', { query: 'missing evidence' }))
     .mockResolvedValueOnce(
       call(
         'knowledge.result',
@@ -901,7 +918,7 @@ it('enforces the result Tool schema and allows only one repair for rejected argu
     citations: [],
     uncertainty: 'No page was read.',
   });
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  expect(f.createResponses).toHaveBeenCalledTimes(3);
   const turn = f.store.getTurnById(answer.turnId);
   expect(
     turn.items
@@ -940,4 +957,61 @@ it('refuses a reused call id during output repair without losing the original To
     'knowledge.page.read',
   ]);
   expect(f.createResponses).toHaveBeenCalledTimes(3);
+});
+
+it('repairs an unsearched absence by indexing the pinned notebook, reading the unlinked fact and citing it', async () => {
+  const f = await fixture(false, true);
+  const retrievalRoot = join(f.dataRoot, 'workspaces', f.workspace.id, 'indexes', 'retrieval');
+  expect(existsSync(retrievalRoot)).toBe(false);
+  const pageId = `page/workspace/${f.workspace.id}/launch-evidence`;
+  f.createResponses
+    .mockResolvedValueOnce(message('The notebook is empty.', [], 'Only the overview was read.'))
+    .mockResolvedValueOnce(call('knowledge.retrieval', { query: 'heliotrope cobalt' }))
+    .mockResolvedValueOnce(call('knowledge.page.read', { pageId }))
+    .mockResolvedValueOnce(message('The heliotrope launch uses the cobalt gate.', [pageId]));
+  const answer = await f.ask();
+  expect(answer).toMatchObject({
+    answer: 'The heliotrope launch uses the cobalt gate.',
+    citations: [{ revision: f.revision, contentDigest: f.contentDigest }],
+  });
+  expect(existsSync(retrievalRoot)).toBe(true);
+  const initial = f.createResponses.mock.calls[0]![1].input as Array<{
+    role?: string;
+    content?: Array<{ text?: string }>;
+  }>;
+  const payload = JSON.parse(initial.find((entry) => entry.role === 'user')!.content![0]!.text!);
+  expect(payload.overviews[0].content).not.toContain('launch-evidence');
+  const search = JSON.parse(toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.retrieval'));
+  expect(search.sources[0]).toMatchObject({
+    notebookRevision: f.revision,
+    selected: [expect.objectContaining({ pageId, contentDigest: f.contentDigest })],
+  });
+  const turn = f.store.getTurnById(answer.turnId);
+  expect(turn.status).toBe('completed');
+  expect(
+    turn.items
+      .filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
+      .map((item) => item.status)
+  ).toEqual(['failed', 'completed']);
+  expect(f.createResponses).toHaveBeenCalledTimes(4);
+}, 120_000);
+
+it('refuses a second unsearched absence after one bounded repair with retained work and no delivery', async () => {
+  const f = await fixture(false, true);
+  f.createResponses.mockImplementation(async () => message('No evidence.', [], 'No search.'));
+  const error = await f.ask().catch((error: unknown) => error);
+  expect(error).toMatchObject({ code: 'knowledge_query_failed', status: 422 });
+  const turn = f.store.getTurnById(error.details.turnId);
+  expect(turn.status).toBe('failed');
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  expect(
+    turn.items.filter((item) => item.type === 'tool-call').map((item) => [item.tool, item.status])
+  ).toEqual([
+    ['knowledge.result', 'failed'],
+    ['knowledge.result', 'failed'],
+  ]);
+  const asking = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id).find(
+    (call) => call.id === f.askingCall.id
+  );
+  expect(asking!.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
 });
