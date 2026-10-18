@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -14,6 +15,26 @@ export const WorkerCapabilityMcpToolSchema = z.object({
   name: WorkspaceMcpToolNameSchema,
   inputSchema: z.record(z.string(), z.unknown()),
 });
+
+/** Frozen v1 retained Tool meaning; current catalog admission cannot reinterpret captured input schemas. */
+const StoredMcpToolV1Schema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine((value) => value === value.trim(), 'MCP tool names must not have outer whitespace.'),
+  inputSchema: z.record(z.string(), z.unknown()),
+});
+
+/** Checks a native row header before decoding its complete retained Tool schemas. */
+function readStoredMcpToolsV1(row: {
+  readonly schemaVersion: unknown;
+  readonly tools_json: string;
+}): z.infer<typeof StoredMcpToolV1Schema>[] {
+  return readRetainedV1(row, () =>
+    z.array(StoredMcpToolV1Schema).parse(JSON.parse(row.tools_json))
+  );
+}
 
 /** Product-safe MCP tool schema snapshot retained for workspace export and import. */
 export interface ExportableMcpToolSchemaSnapshot {
@@ -73,20 +94,23 @@ export function recordMcpToolSchemaSnapshot(input: {
     .transaction(() => {
       const previous = input.workspaceDb.sqlite
         .prepare(
-          `SELECT captured_at
+          `SELECT schema_version AS schemaVersion, captured_at
            FROM mcp_tool_schema_snapshots
            WHERE workspace_id = ? AND catalog_entry_id = ? AND source = ?
            ORDER BY captured_at DESC, snapshot_id DESC
            LIMIT 1`
         )
-        .get(input.workspaceId, server.id, input.source) as { captured_at: string } | undefined;
+        .get(input.workspaceId, server.id, input.source) as
+        | { schemaVersion: unknown; captured_at: string }
+        | undefined;
+      if (previous) readRetainedV1(previous, () => undefined);
       const previousAt = previous ? Date.parse(previous.captured_at) : Number.NaN;
       const capturedAt = new Date(
         Number.isFinite(previousAt) ? Math.max(Date.now(), previousAt + 1) : Date.now()
       );
       const existing = input.workspaceDb.sqlite
         .prepare(
-          `SELECT snapshot_id
+          `SELECT schema_version AS schemaVersion, snapshot_id
            FROM mcp_tool_schema_snapshots
            WHERE workspace_id = ?
              AND catalog_entry_id = ?
@@ -94,11 +118,13 @@ export function recordMcpToolSchemaSnapshot(input: {
              AND content_digest = ?`
         )
         .get(input.workspaceId, server.id, input.source, contentDigest) as
-        | { snapshot_id: string }
+        | { schemaVersion: unknown; snapshot_id: string }
         | undefined;
+      if (existing) readRetainedV1(existing, () => undefined);
       const inserted = input.workspaceDb.sqlite
         .prepare(
           `INSERT OR IGNORE INTO mcp_tool_schema_snapshots (
+            schema_version,
             snapshot_id,
             workspace_id,
             catalog_entry_id,
@@ -108,9 +134,10 @@ export function recordMcpToolSchemaSnapshot(input: {
             tools_json,
             source,
             captured_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
+          writeRetainedV1({}).schemaVersion,
           input.schemaSnapshotId,
           input.workspaceId,
           server.id,
@@ -125,12 +152,13 @@ export function recordMcpToolSchemaSnapshot(input: {
         inserted.changes === 0
           ? (input.workspaceDb.sqlite
               .prepare(
-                `SELECT snapshot_id, workspace_id, catalog_entry_id, content_digest, tools_json, source
+                `SELECT schema_version AS schemaVersion, snapshot_id, workspace_id, catalog_entry_id, content_digest, tools_json, source
                  FROM mcp_tool_schema_snapshots
                  WHERE snapshot_id = ?`
               )
               .get(input.schemaSnapshotId) as
               | {
+                  schemaVersion: unknown;
                   catalog_entry_id: string;
                   content_digest: string;
                   snapshot_id: string;
@@ -142,11 +170,12 @@ export function recordMcpToolSchemaSnapshot(input: {
           : undefined;
       let collisionToolsMatch = false;
       if (collision) {
+        readRetainedV1(collision, () => undefined);
         try {
           collisionToolsMatch =
             JSON.stringify(
               canonicalMcpToolSchemas(
-                z.array(WorkerCapabilityMcpToolSchema).parse(JSON.parse(collision.tools_json))
+                z.array(StoredMcpToolV1Schema).parse(JSON.parse(collision.tools_json))
               )
             ) === toolsJson;
         } catch {}
@@ -227,7 +256,7 @@ export function listExportableMcpToolSchemaSnapshots(
 ): ExportableMcpToolSchemaSnapshot[] {
   const rows = workspaceDb.sqlite
     .prepare(
-      `SELECT
+      `SELECT schema_version AS schemaVersion,
         snapshot_id,
         workspace_id,
         catalog_entry_id,
@@ -242,6 +271,7 @@ export function listExportableMcpToolSchemaSnapshots(
       ORDER BY captured_at ASC, snapshot_id ASC`
     )
     .all(workspaceId) as Array<{
+    schemaVersion: unknown;
     captured_at: string;
     catalog_entry_id: string;
     content_digest: string;
@@ -261,7 +291,7 @@ export function listExportableMcpToolSchemaSnapshots(
     serverVersion: row.server_version,
     source: row.source,
     sourceRef: row.source_ref,
-    tools: z.array(WorkerCapabilityMcpToolSchema).parse(JSON.parse(row.tools_json)),
+    tools: readStoredMcpToolsV1(row),
     workspaceId: row.workspace_id,
   }));
 }
@@ -277,6 +307,12 @@ export function importMcpToolSchemaSnapshots(
   snapshots: readonly ExportableMcpToolSchemaSnapshot[]
 ): void {
   for (const snapshot of snapshots) {
+    const existing = workspaceDb.sqlite
+      .prepare(
+        'SELECT schema_version AS schemaVersion FROM mcp_tool_schema_snapshots WHERE snapshot_id=?'
+      )
+      .get(snapshot.schemaSnapshotId);
+    if (existing) readRetainedV1(existing, () => undefined);
     const tools = z.array(WorkerCapabilityMcpToolSchema).parse(snapshot.tools);
     if (mcpToolSchemaContentDigest(tools) !== snapshot.contentDigest) {
       throw new Error(`MCP schema snapshot digest mismatch: ${snapshot.schemaSnapshotId}`);
@@ -284,6 +320,7 @@ export function importMcpToolSchemaSnapshots(
     workspaceDb.sqlite
       .prepare(
         `INSERT OR IGNORE INTO mcp_tool_schema_snapshots (
+          schema_version,
           snapshot_id,
           workspace_id,
           catalog_entry_id,
@@ -293,9 +330,10 @@ export function importMcpToolSchemaSnapshots(
           tools_json,
           source,
           captured_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        writeRetainedV1({}).schemaVersion,
         snapshot.schemaSnapshotId,
         snapshot.workspaceId,
         snapshot.catalogEntryId,
@@ -339,19 +377,19 @@ export function readRetainedMcpToolSchemaSnapshot(input: {
 }): Pick<ExportableMcpToolSchemaSnapshot, 'schemaSnapshotId' | 'tools'> | null {
   const row = input.workspaceDb.sqlite
     .prepare(
-      `SELECT snapshot_id, tools_json
+      `SELECT schema_version AS schemaVersion, snapshot_id, tools_json
        FROM mcp_tool_schema_snapshots
        WHERE workspace_id = ? AND catalog_entry_id = ? AND snapshot_id = ?
          AND source IN ('aep', 'live')`
     )
     .get(input.workspaceId, input.catalogEntryId, input.schemaSnapshotId) as
-    | { snapshot_id: string; tools_json: string }
+    | { schemaVersion: unknown; snapshot_id: string; tools_json: string }
     | undefined;
 
   return row
     ? {
         schemaSnapshotId: row.snapshot_id,
-        tools: z.array(WorkerCapabilityMcpToolSchema).parse(JSON.parse(row.tools_json)),
+        tools: readStoredMcpToolsV1(row),
       }
     : null;
 }
@@ -365,7 +403,7 @@ export function readCurrentMcpToolSchemaSnapshot(input: {
 }): Pick<ExportableMcpToolSchemaSnapshot, 'schemaSnapshotId' | 'tools'> | null {
   const row = input.workspaceDb.sqlite
     .prepare(
-      `SELECT snapshot_id, tools_json
+      `SELECT schema_version AS schemaVersion, snapshot_id, tools_json
        FROM mcp_tool_schema_snapshots
        WHERE workspace_id = ?
          AND catalog_entry_id = ?
@@ -379,12 +417,12 @@ export function readCurrentMcpToolSchemaSnapshot(input: {
       input.catalogEntryId,
       input.pinnedSchemaSnapshotId,
       input.pinnedSchemaSnapshotId
-    ) as { snapshot_id: string; tools_json: string } | undefined;
+    ) as { schemaVersion: unknown; snapshot_id: string; tools_json: string } | undefined;
 
   return row
     ? {
         schemaSnapshotId: row.snapshot_id,
-        tools: z.array(WorkerCapabilityMcpToolSchema).parse(JSON.parse(row.tools_json)),
+        tools: readStoredMcpToolsV1(row),
       }
     : null;
 }
