@@ -1572,6 +1572,21 @@ export class FsStore {
   }
 
   /**
+   * Returns the retained page scope used by Workspace citation admission.
+   *
+   * @param workspaceId Workspace whose default Knowledge Base owns the pages.
+   * @returns Exact retained scope, or undefined for a store without a data root.
+   */
+  private workspaceKnowledgePageScopeId(workspaceId: string): string | undefined {
+    if (!this.dataRoot) return undefined;
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: this.dataRoot,
+      scope: { kind: 'workspace', workspaceId },
+    });
+    return `page/workspace/${workspaceId}/${knowledgeBaseId}`;
+  }
+
+  /**
    * Validates exact direct-write Knowledge Page bytes before store mutation.
    *
    * @param workspaceId Workspace that owns the candidate page.
@@ -1623,6 +1638,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: `knowledge/pages/${candidate.id}.md`,
       content: candidateContent,
+      pageScopeId: this.workspaceKnowledgePageScopeId(workspaceId),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
@@ -1700,6 +1716,7 @@ export class FsStore {
       );
       const result = validateNotebookCandidate({
         ownerScope: proposal.ownerScope,
+        pageScopeId: this.workspaceKnowledgePageScopeId(proposal.workspaceId),
         base,
         candidate: { files },
         scopeSchemaText: scopeSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -1760,6 +1777,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: candidatePath,
       content: proposal.canonicalPageBytes,
+      pageScopeId: this.workspaceKnowledgePageScopeId(proposal.workspaceId),
       expectedOwnerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
@@ -1837,13 +1855,7 @@ export class FsStore {
         )
           throw new KnowledgePageValidationError();
         try {
-          if (
-            pageScope.knowledgeBaseId !==
-            readDefaultKnowledgeBaseId({
-              dataRoot: this.dataRoot,
-              scope: { kind: 'workspace', workspaceId },
-            })
-          )
+          if (pagePin.reference.scopeId !== this.workspaceKnowledgePageScopeId(workspaceId))
             throw new KnowledgePageValidationError();
         } catch {
           throw new KnowledgePageValidationError();
@@ -4281,6 +4293,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path,
       content,
+      pageScopeId: this.workspaceKnowledgePageScopeId(workspaceId),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
