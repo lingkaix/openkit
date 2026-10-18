@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 /** Real catalog snapshots and command storage meet the existing modeled Worker boundary. */
-function fixture() {
+function fixture(explicitSetupVersion = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-run-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -75,7 +75,9 @@ function fixture() {
   });
   const outside = version('Outside composed setup', 3, 'outside-skill');
   const manifest = createTestAgentSetup({ skillIds: ['run-skill'] }).manifest;
-  manifest.skills = [{ id: 'run-skill', digest: second.version.digest }];
+  manifest.skills = [
+    { id: 'run-skill', ...(explicitSetupVersion ? { digest: second.version.digest } : {}) },
+  ];
   // Catalog reload must see the same authored setup rather than discard inline test options.
   mkdirSync(join(dataRoot, 'config', 'agents'), { recursive: true });
   mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
@@ -210,3 +212,78 @@ it('refuses an available Skill outside composed setup before Worker preparation 
   expect(f.submit).not.toHaveBeenCalled();
   expect(f.store.listThreadTurns(f.workspace.id, input.threadId)).toEqual([]);
 });
+
+it('retains the winning pin Audit only for pin-selected supply, without copying procedure bodies', async () => {
+  const f = fixture(false);
+  const pin = async (digest: string | null) => {
+    const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+    const requestId = randomUUID();
+    const response = await f.app.request(
+      ...operationRequest(
+        'catalog.skill-pin',
+        {},
+        {
+          body: JSON.stringify({
+            workspaceId: f.workspace.id,
+            requestId,
+            expectedRevision: catalog.revision,
+            expectedPinDigest: catalog.skills.pins[0]?.digest ?? null,
+            skillId: 'run-skill',
+            digest,
+          }),
+        }
+      )
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    return f.workspaceDb.sqlite
+      .prepare('SELECT audit_event_id AS id FROM audit_events WHERE request_id = ? AND action = ?')
+      .get(requestId, 'catalog.skill-pin.admit') as { id: string };
+  };
+  const firstPin = await pin(f.first.version.digest);
+  const winner = await pin(f.first.version.digest);
+  expect(winner.id).not.toBe(firstPin.id);
+  const run = async (source: 'pin' | 'run') => {
+    const { skillSelections, ...input } = f.request(f.first.version.digest);
+    const response = await f.call(source === 'run' ? { ...input, skillSelections } : input);
+    expect(response.status, await response.clone().text()).toBe(202);
+    const { id: turnId } = await response.json();
+    await expect
+      .poll(() => f.store.getTurnById(turnId).status, { timeout: 10_000 })
+      .toBe('completed');
+    await expect
+      .poll(
+        () =>
+          listSchedulerExecutionAttemptsForTurn(f.coreDb, {
+            workspaceId: f.workspace.id,
+            threadId: input.threadId,
+            turnId,
+          })[0]?.phase
+      )
+      .toBe('closed');
+    const attempt = listSchedulerExecutionAttemptsForTurn(f.coreDb, {
+      workspaceId: f.workspace.id,
+      threadId: input.threadId,
+      turnId,
+    })[0]!;
+    const snapshot = requireAgentEnvironmentPackageSnapshot(
+      f.workspaceDb,
+      f.workspace.id,
+      attempt.inputRef!
+    ).snapshot;
+    expect(snapshot.supply.skills).toEqual([
+      expect.objectContaining({
+        id: 'run-skill',
+        integrity: { sha256: f.first.version.digest },
+        selectionSource: source,
+      }),
+    ]);
+    if (source === 'pin')
+      expect(snapshot.supply.skills[0]?.lineage).toHaveProperty('pinAuditRef', winner.id);
+    else expect(snapshot.supply.skills[0]?.lineage).not.toHaveProperty('pinAuditRef');
+    expect(snapshot.agent.instructions).toEqual([]);
+    expect(JSON.stringify(snapshot)).not.toContain('Version A');
+    expect(JSON.stringify(snapshot)).not.toContain('Version B');
+  };
+  await run('pin');
+  await run('run');
+}, 30_000);
