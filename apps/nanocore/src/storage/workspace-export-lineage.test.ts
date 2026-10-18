@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   constants,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RuntimeEvidenceRecordSchema } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { ArtifactSchema, ArtifactVersionRecordSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   ArtifactReviewFollowUpRequestSchema,
@@ -63,6 +64,7 @@ import {
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { publishArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
@@ -117,6 +119,32 @@ function annotateSyncSource(value: unknown): unknown {
   return value;
 }
 
+/** Publishes an explicitly created fixture v1 through the immutable version owner before any export. */
+function retainInitialArtifact(workspaceRoot: string, value: unknown, actor: unknown): void {
+  const artifact = ArtifactSchema.parse(value);
+  if (artifact.version !== 1) throw new Error('The fixture producer requires an initial Artifact.');
+  publishArtifactVersionRecord({
+    workspaceRoot,
+    record: ArtifactVersionRecordSchema.parse({
+      artifact,
+      version: {
+        artifactId: artifact.id,
+        workspaceId: artifact.workspaceId,
+        artifactVersion: 1,
+        parentVersion: null,
+        title: artifact.title,
+        summary: artifact.summary,
+        contentDigest: artifact.contentDigest,
+        actor: artifact.origin.kind === 'imported' ? artifact.origin.actor : actor,
+        threadId: artifact.threadId,
+        turnId: artifact.turnId,
+        requestId: artifact.lastMutationRequestId,
+        recordedAt: artifact.updatedAt,
+      },
+    }),
+  });
+}
+
 /** Builds one export containing every auxiliary record family that refers to canonical history. */
 function createLineageExportInput(
   missing?:
@@ -135,7 +163,11 @@ function createLineageExportInput(
     | 'usage-session'
     | 'vault-approval'
     | 'vault-session',
-  captureValue: 'off' | 'on' = 'off'
+  captureValue: 'off' | 'on' = 'off',
+  artifactContent: { format: 'markdown' | 'text'; body: string } = {
+    format: 'markdown',
+    body: '# Portable',
+  }
 ): WriteWorkspaceExportTreeInput {
   const agentSetup = createTestAgentSetup();
   const item = {
@@ -186,8 +218,8 @@ function createLineageExportInput(
     status: 'ready',
     summary: 'Portable artifact.',
     version: 1,
-    content: { format: 'markdown', body: '# Portable' },
-    contentDigest: `sha256:${createHash('sha256').update('# Portable', 'utf8').digest('hex')}`,
+    content: artifactContent,
+    contentDigest: `sha256:${createHash('sha256').update(artifactContent.body, 'utf8').digest('hex')}`,
     lastMutationRequestId: 'request_source',
     origin: {
       kind: 'turn-output',
@@ -314,8 +346,13 @@ function createLineageExportInput(
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-lineage-'));
+  const sourceWorkspaceRoot = join(fixtureRoot, 'source');
+  retainInitialArtifact(sourceWorkspaceRoot, artifact, turn.triggerActor);
+  onTestFinished(() => rmSync(fixtureRoot, { recursive: true, force: true }));
   return {
-    exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-workspace-lineage-')), 'export'),
+    exportRoot: join(fixtureRoot, 'export'),
+    sourceWorkspaceRoot,
     exportId: 'wsexp_00000000-0000-79ba-8f8a-90eaf5674095',
     sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
     createdAt: timestamp,
@@ -750,6 +787,8 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
  * @param followUp Optional exact Artifact Review follow-up fixture.
  * @param sourceSnapshotRoot Optional original snapshot fixture root.
  * @param retainRepresentation Whether the binary source retains a separate UTF-8 representation.
+ * @param knowledgeExcerpt Whether retained Knowledge uses a bounded excerpt.
+ * @param artifactFormat Actual initial media used by the proposal compatibility fixture.
  * @returns Complete export fixture covering the accepted work-resource lineage.
  * @throws Error when the structured worker request or package fixture cannot be built.
  */
@@ -760,14 +799,18 @@ function createWorkResourceLineageExportInput(
   },
   sourceSnapshotRoot?: string,
   retainRepresentation = false,
-  knowledgeExcerpt = false
+  knowledgeExcerpt = false,
+  artifactFormat: 'markdown' | 'text' = 'markdown'
 ): WriteWorkspaceExportTreeInput {
-  const input = createLineageExportInput();
+  const appliedContent = '# Portable\n';
+  const input = createLineageExportInput(undefined, 'off', {
+    format: artifactFormat,
+    body: appliedContent,
+  });
   const materialId = 'mat_00000000-0000-7807-b767-6378f3fcdcf3';
   const baseRevisionId = 'mrev_00000000-0000-72e5-99f1-5042ef903012';
   const appliedRevisionId = 'mrev_00000000-0000-713f-80f9-10c92c9be966';
   const baseContent = '# Portable base\n';
-  const appliedContent = '# Portable\n';
   const baseContentDigest = `sha256:${createHash('sha256').update(baseContent).digest('hex')}`;
   const appliedContentDigest = `sha256:${createHash('sha256').update(appliedContent).digest('hex')}`;
   const knowledgePageId = 'knowledge_portable_source';
@@ -953,6 +996,9 @@ function createWorkResourceLineageExportInput(
         mediaType: 'application/octet-stream',
       });
   if (sourceSnapshotRoot) {
+    cpSync(join(input.sourceWorkspaceRoot!, 'artifacts'), join(sourceSnapshotRoot, 'artifacts'), {
+      recursive: true,
+    });
     input.sourceWorkspaceRoot = sourceSnapshotRoot;
     input.turns = input.turns.map((turn) => ({
       ...(turn as Record<string, unknown>),
@@ -2824,7 +2870,16 @@ describe('workspace auxiliary lineage reminting', () => {
         traces: imported.portableFileState.retrievalTraceFiles,
       }),
     };
+    for (const [path, text] of imported.artifactVersionRecords) {
+      mkdirSync(dirname(join(stagedRoot, path)), { recursive: true });
+      writeFileSync(join(stagedRoot, path), text);
+    }
+    for (const [path, original] of imported.artifactPayloadFiles) {
+      mkdirSync(dirname(join(stagedRoot, path)), { recursive: true });
+      copyFileSync(original, join(stagedRoot, path), constants.COPYFILE_EXCL);
+    }
     const reExported = writeWorkspaceExportTree({
+      sourceWorkspaceRoot: stagedRoot,
       agentEnvironmentPackageSnapshots: imported.agentEnvironmentPackageSnapshots,
       agentSessions: imported.agentSessions,
       artifactReviews: imported.artifactReviews,
@@ -2969,7 +3024,7 @@ describe('workspace auxiliary lineage reminting', () => {
         workspaceId: source.workspaceId,
         threadId: null,
         turnId: null,
-        kind: 'summary',
+        kind: 'file',
         title: 'Other Artifact',
         status: 'ready',
         summary: null,
@@ -2990,6 +3045,7 @@ describe('workspace auxiliary lineage reminting', () => {
         updatedAt: timestamp,
       },
     ];
+    retainInitialArtifact(input.sourceWorkspaceRoot!, input.artifacts.at(-1), null);
     input.turnEvents = input.turnEvents.map(([turnId, events]) => [
       turnId,
       events.map((event) =>
@@ -3118,6 +3174,9 @@ describe('workspace auxiliary lineage reminting', () => {
     },
     {
       name: 'media-incompatible unresolved proposal',
+      error: 'Artifact Review proposal media type is contradictory.',
+      createInput: () =>
+        createWorkResourceLineageExportInput(undefined, undefined, false, false, 'text'),
       alter: (input: WriteWorkspaceExportTreeInput) => {
         const baseRevision = input.workspaceMaterialRevisions?.[0] as Record<string, unknown>;
         input.workspaceMaterialRevisions = [baseRevision];
@@ -3130,10 +3189,6 @@ describe('workspace auxiliary lineage reminting', () => {
           ...(binding as Record<string, unknown>),
           latestQueuedRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
         }));
-        input.artifacts = input.artifacts.map((artifact) => ({
-          ...(artifact as Record<string, unknown>),
-          content: { format: 'text', body: '# Portable' },
-        }));
         input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
           ...(review as Record<string, unknown>),
           decision: null,
@@ -3141,6 +3196,7 @@ describe('workspace auxiliary lineage reminting', () => {
           decisionRequestId: null,
           decidedAt: null,
           appliedMaterialRevisionId: null,
+          rangeFeedback: null,
         }));
       },
     },
