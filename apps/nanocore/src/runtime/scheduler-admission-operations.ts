@@ -22,7 +22,9 @@ import {
   SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 /** Joins scheduler views and mutations without changing queue or audit ownership. */
@@ -178,12 +180,13 @@ export function createSchedulerAdmissionOperationImplementations(
         );
 
         const source = findAcceptedRecurringOccurrenceForQueue(coreDb, queueEntryId);
+        const eventSource = findExternalTriggerAdmissionForQueue(coreDb, queueEntryId);
         const publicationIssue = source
           ? recurringTurnPublicationIssue(
               store,
               requireSchedulerAdmissionEntry(coreDb, queueEntryId)
             )
-          : null;
+          : eventSource && !externalTriggerTurnPublicationComplete(coreDb, store, eventSource);
         const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
           queueEntryId,
           workspaceId,

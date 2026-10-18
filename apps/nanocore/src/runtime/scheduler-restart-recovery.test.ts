@@ -660,6 +660,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
     }
   });
 
+  // Three migrated fixtures and 37,800 history rows need setup time; SQL reads remain the oracle.
   it('bounds executed SQL reads across 0, 378 and 37800 settled siblings on repeated passes', async () => {
     const measurements: Array<{
       siblings: number;
@@ -719,7 +720,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
       )!;
       expect(observation.reads, JSON.stringify(observation)).toBeLessThanOrEqual(fixed.reads + 5);
     }
-  });
+  }, 60_000);
 
   it.each([
     ['phase-open', 'phase', 'open'],
