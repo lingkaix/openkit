@@ -2285,7 +2285,7 @@ describe('Task durable admission response', () => {
             id: 1,
             method: 'tools/call',
             params: {
-              name: 'call',
+              name: 'openkit_call',
               arguments: {
                 operation: 'task.start',
                 input: {
@@ -4466,7 +4466,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());
       expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
-        'workspace_state_read',
+        'workspace_dashboard',
         'thread_history_read',
         'knowledge_ask',
         'knowledge_tell',
@@ -4493,7 +4493,7 @@ describe('#144 real Assistant command wiring', () => {
         'kernel_records_create',
         'kernel_records_update',
         'kernel_records_batch',
-        'generative_ui_publish',
+        'generative-ui_publish',
       ]);
       const requestId = uuidv5(
         JSON.stringify([

@@ -41,14 +41,14 @@ export function createAdministrationEnvironmentTools(
   input: CreateAdministrationEnvironmentToolsInput
 ): AdministrationEnvironmentTools {
   if (
-    input.candidateTools[0].name !== 'worker_environment.prepare' ||
-    input.candidateTools[1].name !== 'worker_environment.recover'
+    input.candidateTools[0].name !== 'worker-environment.prepare' ||
+    input.candidateTools[1].name !== 'worker-environment.recover'
   ) {
     throw new Error('Administration prepare Tool identity is invalid.');
   }
   return [
     {
-      name: 'worker_environment.list',
+      name: 'worker-environment.list',
       description:
         'List a bounded page of retained Worker environments currently visible to the administrator in one exact Workspace.',
       inputSchema: {
@@ -71,7 +71,7 @@ export function createAdministrationEnvironmentTools(
         }),
     },
     {
-      name: 'worker_environment.status',
+      name: 'worker-environment.status',
       description:
         'Inspect current Core and host status for one exact retained Worker environment in one exact Workspace.',
       inputSchema: {
@@ -113,7 +113,7 @@ export function createAdministrationEnvironmentCandidateTools(input: {
       'requestId',
     ]);
     return {
-      name: `worker_environment.${mode}`,
+      name: `worker-environment.${mode}`,
       description: definition.description,
       inputSchema: z.toJSONSchema(schema),
       execute: async (value, context) =>

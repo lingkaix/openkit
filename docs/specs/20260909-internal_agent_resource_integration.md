@@ -113,23 +113,23 @@ The ordinary Assistant exposes the following Core identities in this order after
 
 | Core Tool ID | Owning operation |
 | --- | --- |
-| `kernel.apps.search` | `kernel.apps.list` |
+| `kernel.apps.list` | `kernel.apps.list` |
 | `kernel.apps.create` | `kernel.apps.create` |
-| `kernel.apps.read` | `kernel.apps.get` |
+| `kernel.apps.get` | `kernel.apps.get` |
 | `kernel.schema.update` | `kernel.schema.update` |
-| `kernel.apps.delete` | `kernel.apps.retire`; retirement only, no database-file purge |
-| `kernel.records.search` | `kernel.records.list` |
-| `kernel.records.read` | `kernel.records.get` |
+| `kernel.apps.retire` | `kernel.apps.retire`; retirement only, no database-file purge |
+| `kernel.records.list` | `kernel.records.list` |
+| `kernel.records.get` | `kernel.records.get` |
 | `kernel.records.create` | `kernel.records.create` |
 | `kernel.records.update` | `kernel.records.update` |
-| `kernel.records.dispatch` | `kernel.records.batch`; the owner's closed transactional data commands only |
-| `generative.ui.create` | `generative-ui.publish`; native declaration admission and owned publication |
+| `kernel.records.batch` | `kernel.records.batch`; the owner's closed transactional data commands only |
+| `generative-ui.publish` | `generative-ui.publish`; native declaration admission and owned publication |
 
 Until this resource family is cut over, reuse strict owner request/response schemas, removing authority fields the internal closure supplies. Workspace, actor, Thread, Turn and command request identities come from trusted context, and model Tool call IDs supply correlation only. Exact command request identities derive from the owning conversation request and accepted Tool occurrence, remain stable for that occurrence, and cannot be supplied or reused by model arguments. Trusted assembly uses the existing URL-namespace UUIDv5 API over the exact UTF-8 JSON array `["assistant-generative", workspaceId, threadId, actor.userId, conversationRequestId, toolOccurrence]`. `toolOccurrence` is the one-based accepted Tool touch from the shared loop's existing counter, across the entire fixed Tool array; unavailable Tools and invalid arguments do not consume it. Model call IDs remain correlation only, and their global uniqueness guard is unchanged. When the family is cut over, those bound inputs follow Operation Invocation, including omission of bound fields and rejection of a conflicting argument before any effect. The derivation and stability of the command identity remain this specification's rule. Commands retain their own receipts and authoritative results independently of the enclosing conversation result; the Assistant's handoff-specific single-receipt exception does not absorb Kernel or UI effects.
 
 The Agent first discovers exact Light App schema and meaning, then uses expressive owner-bounded queries and mutations. No bespoke Tool is needed per app/table/business action and no direct SQLite handle or SQL/CLI executor is exposed. Ordinary Workspace membership is the current resource-access basis; existing Policy and sensitive-operation previews/confirmations still apply. This integration creates no blanket new confirmation for ordinary permitted CRUD and no exception to a required confirmation. Model prose cannot satisfy a human decision.
 
-Headless data calls do not force UI. `generative.ui.create` delegates to the UI owner's native A2UI source/admission/publication contract; accepted content is rendered through its existing Item/resource path, never through loop streaming callbacks. The UI owner specifies how current generated text and completed MCP observations become sources. Tools return safe operation outcomes and exact admitted references to the model; renderer payload may stay in private `details` and is released only through current audience admission. An action invokes its existing Core owner, not a hidden continuation of this run. Saved views, HTML delegates and structured MCP-result data bindings remain their separately scoped UI extensions.
+Headless data calls do not force UI. `generative-ui.publish` delegates to the UI owner's native A2UI source/admission/publication contract; accepted content is rendered through its existing Item/resource path, never through loop streaming callbacks. The UI owner specifies how current generated text and completed MCP observations become sources. Tools return safe operation outcomes and exact admitted references to the model; renderer payload may stay in private `details` and is released only through current audience admission. An action invokes its existing Core owner, not a hidden continuation of this run. Saved views, HTML delegates and structured MCP-result data bindings remain their separately scoped UI extensions.
 
 ## Internal MCP Invocation
 

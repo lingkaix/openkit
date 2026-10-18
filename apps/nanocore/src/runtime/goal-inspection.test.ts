@@ -400,15 +400,15 @@ it.each([
               role: 'assistant' as const,
               truncated: false,
               content: [
-                call('items', 'thread_items', { threadId: completed.id }),
-                call('terminal', 'turn_read', {
+                call('items', 'thread.items', { threadId: completed.id }),
+                call('terminal', 'turn.read', {
                   threadId: completed.id,
                   turnId: taskTurn.id,
                 }),
-                call('refusal', 'evidence_runtime_list', {}),
-                call('unrelated', 'thread_items', { threadId: unrelated.id }),
-                call('unlinked-artifact', 'artifact_read', { artifactId: unrelatedArtifact.id }),
-                call('private', 'artifact_read', { artifactId: privateArtifact.id }),
+                call('refusal', 'evidence.runtime-list', {}),
+                call('unrelated', 'thread.items', { threadId: unrelated.id }),
+                call('unlinked-artifact', 'artifact.read', { artifactId: unrelatedArtifact.id }),
+                call('private', 'artifact.read', { artifactId: privateArtifact.id }),
               ],
             },
           };
@@ -437,7 +437,7 @@ it.each([
             message: {
               role: 'assistant' as const,
               truncated: false,
-              content: [call('note', 'artifact_read', { artifactId: artifact.id })],
+              content: [call('note', 'artifact.read', { artifactId: artifact.id })],
             },
           };
         }
@@ -457,7 +457,7 @@ it.each([
               role: 'assistant' as const,
               truncated: false,
               content: [
-                call('completion', 'goal_completion_accept', {
+                call('completion', 'goal.completion.accept', {
                   candidate: {
                     intentRevision: goal.intentRevision,
                     intent: goal.intent,
@@ -525,7 +525,7 @@ it.each([
     });
     expect(
       (
-        await read('turn_read', {
+        await read('turn.read', {
           threadId: completed.id,
           turnId: failedTurn.id,
         })
@@ -539,20 +539,20 @@ it.each([
     });
     expect(
       (
-        await read('turn_read', {
+        await read('turn.read', {
           threadId: completed.id,
           turnId: privateTurn.id,
         })
       ).isError
     ).toBe(true);
-    expect((await read('thread_items', { threadId: privateThread.id })).isError).toBe(true);
+    expect((await read('thread.items', { threadId: privateThread.id })).isError).toBe(true);
     for (const [name, args] of [
       [
-        'thread_items',
+        'thread.items',
         { threadId: completed.id, workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405' },
       ],
       [
-        'artifact_read',
+        'artifact.read',
         {
           artifactId: artifact.id,
           actor: { kind: 'local', userId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
@@ -563,10 +563,10 @@ it.each([
     // Presence of the fixed Tools cannot cache authority after the responsible user is disabled.
     coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, actor.userId))();
     for (const [name, args] of [
-      ['thread_items', { threadId: completed.id }],
-      ['artifact_read', { artifactId: artifact.id }],
-      ['turn_read', { threadId: completed.id, turnId: taskTurn.id }],
-      ['evidence_runtime_list', {}],
+      ['thread.items', { threadId: completed.id }],
+      ['artifact.read', { artifactId: artifact.id }],
+      ['turn.read', { threadId: completed.id, turnId: taskTurn.id }],
+      ['evidence.runtime-list', {}],
     ] as const)
       expect((await read(name, args)).output).toMatchObject({ code: 'workspace_access_denied' });
   } finally {

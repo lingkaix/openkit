@@ -327,7 +327,7 @@ scripts/openkit ops describe vault.grant-narrow
 printf '%s' '{"workspaceId":"<workspace-id>"}' | scripts/openkit ops call vault.grant-list --input -
 ```
 
-Replace placeholders with retained identities from the supported inventory. Review the reference, target Agent, target AgentSession, capability, visibility, lifetime, expiry and status. An omitted target adds no restriction. Creation can restrict Agent and AgentSession exactly. A gateway-only capability target is either `mcp.list_tools` or `mcp.call_tool`; it does not replace MCP tool Policy. Runtime-env accepts only the supported GitHub token path and rejects capability targets. This surface issues Workspace-lifetime grants; expiry can bound that lifetime further.
+Replace placeholders with retained identities from the supported inventory. Review the reference, target Agent, target AgentSession, capability, visibility, lifetime, expiry and status. An omitted target adds no restriction. Creation can restrict Agent and AgentSession exactly. A gateway-only capability target is either `mcp.list-tools` or `mcp.call-tool`; it does not replace MCP tool Policy. Runtime-env accepts only the supported GitHub token path and rejects capability targets. This surface issues Workspace-lifetime grants; expiry can bound that lifetime further.
 
 To reduce an existing supported grant to one Agent, submit its exact identity and the new restriction:
 

@@ -1609,7 +1609,7 @@ async function submitAdministrationConversationMcp(input: Record<string, unknown
       id: 1,
       method: 'tools/call',
       params: {
-        name: 'call',
+        name: 'openkit_call',
         arguments: { operation: 'administration.conversation-submit', input },
       },
     }),
@@ -1750,7 +1750,7 @@ describe('canonical administration Workspace admission', () => {
                     jsonrpc: '2.0',
                     id: 1,
                     method: 'tools/call',
-                    params: { name: 'call', arguments: { operation: id, input } },
+                    params: { name: 'openkit_call', arguments: { operation: id, input } },
                   }
             ),
           }
