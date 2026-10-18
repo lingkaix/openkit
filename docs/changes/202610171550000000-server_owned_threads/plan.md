@@ -12,6 +12,10 @@ The coordinator approved the eight-line plan on 2026-10-17 at 15:4xZ under the e
 
 On 2026-10-18 the coordinator authorized the normal naming-branch merge before main and completion of the held Server joins plus Goal Coordinator native knowledge.ask/tell integration. No User Memory branch is imported. Scheduled Server work must use actual current authority or retain a visible failure; stored administrator Tokens cannot supply timer authority.
 
+## Intent Revision 3
+
+The coordinator authorized normal main and reviewed overview/User Memory dependency merges before the final Server gate. The shared attribution helper correction is imported from Memory, with no duplicate edit. Current selected-administrator browser sessions now reach the existing Server administrator check and lose admission after revocation. Human-review candidates freeze accepted page state before their exact bytes and digest are shown; they remain unpublished until native human acceptance. The regression checks unchanged preview/publication/resolved bytes, actual Kernel selection and decision replay. The queued pre-edit probe was cancelled before execution after the coordinator removed the optional observed-red wait; it supplies no test verdict. Complete owned suites, shared inventories and independent review remain mandatory. Memory implementation and landing stay with their separate owner.
+
 ## Owners
 
 [Core Concepts](../../core/core-concepts.md#thread) owns the general Thread owner. [Knowledge](../../core/knowledge.md) and [Knowledge Manager](../../specs/20260704-knowledge_manager_internal_agent_runtime.md#server-maintenance-thread) own the maintenance role. [Notebook Editing](../../specs/20260909-knowledge_notebook_editing.md), [Context Management](../../specs/20260902-agent_runtime_context_compaction.md) and [Recurring Triggers](../../specs/20260711-scheduler_recurring_event_triggers.md) retain their existing boundaries. The [Server Knowledge decision](../../decisions/20261017-server_knowledge_is_shared_knowledge.md#general-server-thread-owner) records the reason.
