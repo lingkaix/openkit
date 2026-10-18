@@ -130,6 +130,9 @@ describe('permission decision recorder', () => {
         uses: [{ statement, limit: 1 }],
       };
       expect(() =>
+        recordProductPermissionDecision({ ...final, policySnapshotId: 'mutable-label' })
+      ).toThrow('Mediated Policy snapshot requires its content digest.');
+      expect(() =>
         recordProductPermissionDecision({ ...final, enforcementPoint: 'wrong@decide' })
       ).toThrow();
       expect(() =>

@@ -6,6 +6,7 @@ import {
   ItemIdSchema,
   PermissionDecisionIdSchema,
   PolicyDecisionV1Schema,
+  PolicyDigestV1Schema,
   PolicyInvocationV1Schema,
   PolicyWriteOutcomeV1Schema,
   RequestIdSchema,
@@ -136,6 +137,11 @@ export const PermissionDecisionRetainedV1Schema = z
   .superRefine((decision, context) => {
     if (decision.mediation) {
       const mediation = decision.mediation;
+      if (!PolicyDigestV1Schema.safeParse(decision.policySnapshotId).success)
+        context.addIssue({
+          code: 'custom',
+          message: 'Mediated Policy snapshot requires its content digest.',
+        });
       if (mediation.role === 'gate' && decision.approvalId)
         context.addIssue({
           code: 'custom',
