@@ -364,12 +364,12 @@ describe('worker MCP routes', () => {
               state: 'active',
               operation: 'mcp.call-tool',
               stage: 'decide',
-              point: 'mcp.call-tool@decide',
+
               mode: 'gate',
               participant: { kind: 'deterministic', id: 'i16-fixture', version },
-              inputContract: 'mcp-tool-summary-v1',
+
               inputDisclosure: scope,
-              outputContract: 'gate-v1',
+
               order: 0,
               timeoutMs: 10000,
               ...(failure ? { failure } : {}),
@@ -492,9 +492,7 @@ describe('worker MCP routes', () => {
           catalogRevision: resolveWorkspaceMcpServer({ catalog, serverId }).catalogDigest,
         },
         mediation: {
-          point: 'mcp.call-tool@decide',
           subject: expectedSubject,
-          policyRevision: policyDigest(document),
           kernel: kernel ? { effect: kernel } : null,
           invocations: [{ kind: 'decision', id: gateRow.decisionId }],
         },
@@ -503,10 +501,9 @@ describe('worker MCP routes', () => {
       expect(final.mediation?.authorizationRevision).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(gateRow.mediation).toMatchObject({
         binding: bindingRef,
-        point: 'mcp.call-tool@decide',
+
         subject: expectedSubject,
         proposalDigest: final.mediation?.proposalDigest,
-        policyRevision: final.mediation?.policyRevision,
         authorizationRevision: final.mediation?.authorizationRevision,
       });
       const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
@@ -514,7 +511,6 @@ describe('worker MCP routes', () => {
         permissionDecisionId: gateRow.decisionId,
         capabilityCallId: context.capabilityCallId,
         policyInvocation: {
-          point: 'mcp.call-tool@decide',
           mode: 'gate',
           outcome,
           binding: bindingRef,
@@ -522,7 +518,6 @@ describe('worker MCP routes', () => {
           subject: expectedSubject,
           capabilityCallId: context.capabilityCallId,
           proposalDigest: final.mediation?.proposalDigest,
-          policyRevision: final.mediation?.policyRevision,
           authorizationRevision: final.mediation?.authorizationRevision,
         },
       });

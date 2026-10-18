@@ -176,8 +176,6 @@ function fixture(
   const sourceMediation: PolicyDecisionV1 = {
     operation: 'mcp.call-tool',
     stage: 'decide',
-    point: 'mcp.call-tool@decide',
-    policyRevision: digest,
     authorizationRevision: digest,
     proposalDigest: digest,
     role: 'final',
@@ -208,7 +206,7 @@ function fixture(
     resourceSummary: { serverId: 'echo-server', toolName: 'echo' },
     action: 'tool.use',
     reasonCode: 'granted',
-    enforcementPoint: sourceMediation.point,
+    enforcementPoint: 'mcp.call-tool@decide',
     auditActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
   };
   if (sourceDecisionId)
@@ -345,7 +343,7 @@ function fixture(
         const mediation = { ...sourceMediation, ...changes };
         recordProductPermissionDecision({
           ...decisionBase,
-          policySnapshotId: mediation.policyRevision,
+          policySnapshotId: digest,
           decisionId,
           result: 'allow',
           mediation,

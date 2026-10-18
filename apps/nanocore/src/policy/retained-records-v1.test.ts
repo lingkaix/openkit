@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { readAuditEventRowV1, readPermissionDecisionRowV1 } from './retained-records-v1.js';
+import {
+  projectPermissionDecision,
+  readAuditEventRowV1,
+  readPermissionDecisionRowV1,
+} from './retained-records-v1.js';
 
 const decisionRow = {
   schema_version: 1,
@@ -63,6 +67,65 @@ describe('independent version-one Policy and Audit decoders', () => {
     expect(audit).not.toHaveProperty('annotation');
     expect(() => readAuditEventRowV1({ ...auditRow, outcome: 'unsupported' })).toThrow();
     expect(() => readPermissionDecisionRowV1({ ...decisionRow, result: 'unsupported' })).toThrow();
+  });
+
+  it('ignores nested invocation annotations while refusing unknown required meanings', () => {
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const invocation = {
+      binding: { id: 'gate', digest, note: 'annotation' },
+      operation: 'mcp.call-tool',
+      stage: 'decide',
+      mode: 'gate',
+      policyRevision: digest,
+      authorizationRevision: digest,
+      proposalDigest: digest,
+      subject: {
+        principal: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        onBehalfOf: null,
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        process: null,
+        credentialKind: 'local',
+        responsibleHumanId: 'usr_00000000-0000-7000-8000-000000000001',
+        note: 'annotation',
+      },
+      participant: { id: 'test', version: digest, note: 'annotation' },
+      inputDigest: digest,
+      outputDigest: null,
+      outcome: 'error',
+      startedAt: decisionRow.created_at,
+      completedAt: decisionRow.created_at,
+      capabilityCallId: null,
+      note: 'annotation',
+    };
+    const read = (value: unknown) =>
+      readAuditEventRowV1({ ...auditRow, policy_invocation_json: JSON.stringify(value) })
+        .policyInvocation;
+    expect(read(invocation)).not.toHaveProperty('note');
+    expect(read(invocation)?.participant).not.toHaveProperty('note');
+    expect(read(invocation)?.subject).not.toHaveProperty('note');
+    expect(() => read({ ...invocation, mode: 'unknown' })).toThrow();
+    expect(() => read({ ...invocation, outcome: 'unknown' })).toThrow();
+    const mediation = {
+      operation: invocation.operation,
+      stage: invocation.stage,
+      proposalDigest: digest,
+      authorizationRevision: digest,
+      subject: invocation.subject,
+      role: 'final',
+      kernel: { effect: 'allow', reason: 'granted' },
+      invocations: [],
+      consumedStatements: [],
+      note: 'annotation',
+    };
+    const portable = projectPermissionDecision({ mediation }) as {
+      mediation: unknown;
+      enforcementPoint: string;
+    };
+    expect(portable.mediation).not.toHaveProperty('note');
+    expect(portable.enforcementPoint).toBe('mcp.call-tool@decide');
+    expect(() =>
+      projectPermissionDecision({ mediation: { ...mediation, stage: 'unknown' } })
+    ).toThrow();
   });
 
   it('refuses missing and unknown markers before decoding either family JSON', () => {

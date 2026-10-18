@@ -3,6 +3,7 @@ import { OpenKitConfigSchema } from '@openkit/config-schema';
 import {
   allocateEntityId,
   type PolicyDocumentV1,
+  PolicyDigestV1Schema,
   PolicyDelegationV1Schema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -18,6 +19,7 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import {
+  listServerPermissionDecisions,
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
@@ -26,10 +28,7 @@ import { EMPTY_POLICY_DOCUMENT, policyDigest, validatePolicyDocument } from './s
 import { evaluateWorkspaceMemberAccess, PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
 
 /** Existing delegation format with the Goal lineage required by its native consumer. */
-export type GoalDomainStatement = z.infer<typeof PolicyDelegationV1Schema> & {
-  purpose: 'goal-domain';
-  source: NonNullable<z.infer<typeof PolicyDelegationV1Schema>['source']>;
-};
+export type GoalDomainStatement = z.infer<typeof PolicyDelegationV1Schema>;
 
 /** A Goal and its jointly approved request remain in their existing Workspace owner. */
 export interface GoalDomainKey {
@@ -49,7 +48,7 @@ export interface GoalDomainPolicyDependencies {
 
 const CapturedDomain = z.object({
   statement: PolicyDelegationV1Schema,
-  digest: z.string(),
+  digest: PolicyDigestV1Schema,
 }).strict();
 
 /** Publishes only a committed, jointly approved Plan/domain through the sole config CAS writer. */
@@ -102,7 +101,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       !view.goal || view.goal.workspaceId !== workspaceId || view.goal.disposition !== null ||
       view.goal.threadId !== request.threadId ||
       view.goal.activePlanVersionId !== source.planVersionId || !version ||
-      version.pendingRequestId !== requestId || version.digest !== source.planDigest ||
+      version.goalId !== source.goalId || version.pendingRequestId !== requestId || version.digest !== source.planDigest ||
       version.bytes !== intent.bytes ||
       `sha256:${createHash('sha256').update(version.bytes).digest('hex')}` !== source.planDigest
     ) throw new Error('Goal-domain Plan is absent, obsolete or closed.');
@@ -178,15 +177,18 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       policyEngineVersion: 'nanocore-policy:v1', policySnapshotId: current.revision,
       subjectSummary: { principal: context.actor ? { kind: 'human', id: context.actor.userId } : null,
         responsibleHumanId: context.responsibleUserId },
-      resourceSummary: { kind: 'policy', policyRevision: revision },
+      resourceSummary: { kind: 'policy', policyRevision: revision,
+        ...(!context.actor ? { withdrawnStatements: current.document.statements
+          .filter((statement) => statement.kind === 'delegation' && statement.state === 'active' &&
+            statement.source.workspaceId === context.key.workspaceId && statement.source.goalId === context.key.goalId)
+          .map((statement) => ({ id: statement.id, digest: policyDigest(statement) })) } : {}),
+      },
       contextSummary: { operation: 'policy.write', cause: context.actor ? 'goal-domain.activate' :
         'goal-domain.close', ...context.key, requestId: context.requestId ?? null,
         responsibleUserId: context.responsibleUserId },
       enforcementPoint: 'policy.write@decide',
       ...(context.actor ? { mediation: {
-        operation: 'policy.write', stage: 'decide' as const, point: 'policy.write@decide',
-        proposalDigest: policyDigest({ requestId: context.requestId, proposed: document }),
-        policyRevision: current.revision,
+        operation: 'policy.write', stage: 'decide' as const,         proposalDigest: policyDigest({ requestId: context.requestId, proposed: document }),
         authorizationRevision: policyDigest({ actor: context.actor, kernel }),
         subject: { principal: { kind: 'human' as const, id: context.actor.userId }, onBehalfOf: null,
           actor: { kind: 'user' as const, id: context.actor.userId }, process: null,
@@ -217,6 +219,12 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       const existing = current.document.statements.find(({ id }) => id === statement.id);
       if (existing && policyDigest(existing) === policyDigest(statement))
         return { statement, policyRevision: current.revision };
+      if (existing?.state === 'inactive' && listServerPermissionDecisions(deps.coreDb).some((decision) => {
+        const context = decision.contextSummary as { cause?: unknown } | null;
+        const resource = decision.resourceSummary as { withdrawnStatements?: { id: string; digest: string }[] } | null;
+        return context?.cause === 'goal-domain.close' && resource?.withdrawnStatements?.some(
+          (reference) => reference.id === statement.id && reference.digest === policyDigest(statement));
+      })) throw new Error('Goal-domain publication was withdrawn; a new joint approval is required.');
       if (existing && policyDigest(existing) !== policyDigest(CapturedDomain.parse(
         approval.request.governedIntent!.goalDomain).statement))
         throw new Error('Goal-domain statement identity already has different content.');
@@ -238,12 +246,14 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         statement.kind === 'delegation' && statement.purpose === 'goal-domain' &&
         statement.state === 'active' && statement.source?.workspaceId === key.workspaceId &&
         statement.source.goalId === key.goalId);
-      if (candidates.length !== 1) return null;
-      const statement = candidates[0]! as GoalDomainStatement;
-      try {
-        const approval = approved(key.workspaceId, statement.source.approvalRequestId);
-        return policyDigest(approval.statement) === policyDigest(statement) ? statement : null;
-      } catch { return null; }
+      const currentStatements = candidates.filter((value) => {
+        const statement = value as GoalDomainStatement;
+        try {
+          const approval = approved(key.workspaceId, statement.source.approvalRequestId);
+          return policyDigest(approval.statement) === policyDigest(statement);
+        } catch { return false; }
+      });
+      return currentStatements.length === 1 ? currentStatements[0]! as GoalDomainStatement : null;
     },
 
     /** Withdraws only this Goal without requiring its old Plan or human credential to remain valid. */
@@ -258,7 +268,8 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       const previous = current.document.statements.find((statement) => statement.kind === 'delegation' &&
         statement.source?.workspaceId === key.workspaceId && statement.source.goalId === key.goalId)!;
       const policyRevision = persist(current, validatePolicyDocument({ schemaVersion: 1, statements }), {
-        key, responsibleUserId: previous.author.id,
+        key, responsibleUserId: readGoalView(deps.store, deps.repositoryWorkspaceDb(key.workspaceId),
+          key.goalId).goal?.responsibleUserId ?? previous.author.id,
       });
       return { changed: true, policyRevision };
     },

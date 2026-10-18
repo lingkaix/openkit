@@ -336,7 +336,8 @@ function readCapturedMediationSource(
     source.action !== 'tool.use' ||
     !['require_escalation', 'require_approval'].includes(source.result) ||
     source.mediation.role !== 'final' ||
-    source.mediation.point !== 'mcp.call-tool@decide' ||
+    source.mediation.operation !== 'mcp.call-tool' ||
+    source.mediation.stage !== 'decide' ||
     source.mediation.kernel?.effect !== 'allow' ||
     target?.serverId !== record.serverId ||
     target?.toolName !== record.toolName ||
@@ -381,8 +382,9 @@ function readCapturedMediationAllow(
     decision.approvalId !== null ||
     mediation?.role !== 'final' ||
     mediation.kernel?.effect !== 'allow' ||
-    mediation.point !== original.point ||
-    mediation.policyRevision !== original.policyRevision ||
+    mediation.operation !== original.operation ||
+    mediation.stage !== original.stage ||
+    decision.policySnapshotId !== source.policySnapshotId ||
     mediation.authorizationRevision !== original.authorizationRevision ||
     mediation.proposalDigest !== original.proposalDigest ||
     !isDeepStrictEqual(mediation.subject, original.subject) ||

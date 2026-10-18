@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { OpenKitConfigSchema } from '@openkit/config-schema';
 import {
   allocateEntityId,
@@ -12,7 +11,6 @@ import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
-import { readGoalView } from '../runtime/goal-owner.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   listServerPermissionDecisions,
@@ -76,37 +74,10 @@ export function preparePolicyConfiguration(input: {
   });
   if (prepared.classification === 'unchanged') throw new Error('Policy changes are required.');
   for (const statement of prepared.document.statements) {
-    if (statement.kind !== 'delegation' || statement.purpose !== 'goal-domain') continue;
+    if (statement.kind !== 'delegation' || statement.state !== 'active') continue;
     const previous = currentDocument.statements.find(({ id }) => id === statement.id);
-    if (previous && policyDigest(previous) === policyDigest(statement)) continue;
-    if (statement.state === 'active')
+    if (!previous || policyDigest(previous) !== policyDigest(statement))
       throw new Error('Goal-domain activation requires its jointly approved Goal request.');
-    // A human withdrawal must still work after its Goal or approval has ended.
-    if (previous?.kind === 'delegation' && previous.state === 'active') continue;
-    const source = statement.source!;
-    const view = readGoalView(
-      input.store,
-      input.repositoryWorkspaceDb(source.workspaceId),
-      source.goalId
-    );
-    const version = view.versions.find((item) => item.planVersionId === source.planVersionId);
-    const request = view.requests.find((item) => item.requestId === source.approvalRequestId);
-    if (
-      !view.goal ||
-      view.goal.workspaceId !== source.workspaceId ||
-      view.goal.disposition !== null ||
-      view.goal.activePlanVersionId !== source.planVersionId ||
-      !version ||
-      version.digest !== source.planDigest ||
-      `sha256:${createHash('sha256').update(version.bytes).digest('hex')}` !== source.planDigest ||
-      version.pendingRequestId !== source.approvalRequestId ||
-      request?.state !== 'resolved' ||
-      request.resolution !== 'granted' ||
-      request.disposition !== 'approved-executed'
-    )
-      throw new Error(
-        'Goal domain requires the exact current approved Plan and completed approval.'
-      );
   }
 
   const proposal = PolicyWriteProposalV1Schema.parse({
@@ -115,8 +86,6 @@ export function preparePolicyConfiguration(input: {
     rationale: input.request.changes.rationale,
     baseRevision: policyDigest(currentDocument),
     proposed: prepared.document,
-    diff: prepared.diff,
-    classification: prepared.classification,
     validation: 'valid',
   });
   if (input.candidate && policyDigest(input.candidate) !== policyDigest(proposal))
@@ -228,8 +197,8 @@ export function recordPolicyWriteDecision(input: {
     mediation: {
       operation: 'policy.write',
       stage: 'decide',
-      point: 'policy.write@decide',
-      ...approval,
+      proposalDigest: approval.proposalDigest,
+      authorizationRevision: approval.authorizationRevision,
       subject,
       role: 'final',
       kernel: { effect: kernel.effect, reason: kernel.reasons[0]?.code ?? 'not_granted' },

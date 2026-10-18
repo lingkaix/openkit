@@ -33,10 +33,6 @@
         "completed"
       ]
     },
-    "point": {
-      "type": "string",
-      "minLength": 1
-    },
     "mode": {
       "type": "string",
       "enum": [
@@ -323,7 +319,6 @@
     "binding",
     "operation",
     "stage",
-    "point",
     "mode",
     "policyRevision",
     "authorizationRevision",

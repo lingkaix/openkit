@@ -88,6 +88,15 @@ export class PolicyInterception {
 
   /** Runs the supported pilot modes and retains evidence before releasing a result. */
   async decide(input: InterceptionInput): Promise<InterceptionDecision> {
+    if (
+      input.document.statements.some(
+        (statement) =>
+          statement.kind === 'binding' &&
+          statement.state !== 'inactive' &&
+          (statement.mode === 'advise' || statement.mode === 'transform')
+      )
+    )
+      throw new Error('I16 safe participant output reference is unavailable.');
     const policyRevision = policyDigest(input.document);
     const proposalDigest = policyProposalDigest(input.proposal);
     const bindings = selectPolicyBindings({ ...input, now: Date.now() });
@@ -167,9 +176,7 @@ export class PolicyInterception {
       mediation: {
         operation: input.proposal.operation,
         stage: 'decide',
-        point: `${input.proposal.operation}@decide`,
         proposalDigest,
-        policyRevision,
         authorizationRevision: input.authorizationRevision,
         subject: input.proposal.subject,
         role: 'final',
@@ -323,7 +330,6 @@ export class PolicyInterception {
       binding: bindingRef,
       operation: binding.operation,
       stage: binding.stage,
-      point: binding.point,
       mode: binding.mode,
       policyRevision,
       authorizationRevision: input.authorizationRevision,
@@ -355,8 +361,6 @@ export class PolicyInterception {
         mediation: {
           operation: binding.operation,
           stage: binding.stage,
-          point: binding.point,
-          policyRevision,
           authorizationRevision: input.authorizationRevision,
           proposalDigest,
           subject: input.proposal.subject,
