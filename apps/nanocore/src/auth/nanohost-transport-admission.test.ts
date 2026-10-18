@@ -13,6 +13,7 @@ import {
   admitNanoHostTransportConnection,
   registerNanoHostTransportAdmissionRoutes,
 } from './nanohost-transport-admission.js';
+import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import { createNanoHostTransportTokenRecord } from './nanohost-transport-token-store.js';
 
@@ -59,7 +60,7 @@ function issueTransportToken(
 }
 
 describe('NanoHost transport production admission', () => {
-  it('reads admission additions on the native route without body-supplied authority', async () => {
+  it('requires the shared transport revision before allocation and accepts a matching native admission', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-admit-reader-')));
     applyMigrations(coreDb);
     const token = issueTransportToken(coreDb, new Date());
@@ -72,13 +73,22 @@ describe('NanoHost transport production admission', () => {
       const result = await app.fetch(
         new Request('http://nano/api/nanohost/transport/session/admit', {
           method: 'POST',
-          headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
+          headers: {
+            authorization: request.headers.authorization ?? '',
+            'content-type': 'application/json',
+            ...(typeof request.headers['x-openkit-nanohost-transport-revision'] === 'string'
+              ? {
+                  'x-openkit-nanohost-transport-revision':
+                    request.headers['x-openkit-nanohost-transport-revision'],
+                }
+              : {}),
+          },
           body: Buffer.concat(chunks),
         }),
         { incoming: request }
       );
       response
-        .writeHead(result.status, { 'content-type': 'application/json' })
+        .writeHead(result.status, Object.fromEntries(result.headers))
         .end(await result.text());
     });
     let client: ReturnType<typeof connect> | undefined;
@@ -89,11 +99,22 @@ describe('NanoHost transport production admission', () => {
       if (!address || typeof address === 'string')
         throw new Error('Missing native admission address.');
       client = connect(`http://127.0.0.1:${address.port}`);
-      const post = async (body: unknown) => {
-        const request = client!.request({ ':method': 'POST', ':path': '/' });
+      const post = async (
+        body: unknown,
+        revision: string | null = String(transportRevision),
+        secret = token.secret
+      ) => {
+        const request = client!.request({
+          ':method': 'POST',
+          ':path': '/',
+          authorization: `Bearer ${secret}`,
+          ...(revision === null ? {} : { 'x-openkit-nanohost-transport-revision': revision }),
+        });
         let status: unknown;
+        let revisionEcho: unknown;
         request.on('response', (headers) => {
           status = headers[':status'];
+          revisionEcho = headers['x-openkit-nanohost-transport-revision'];
         });
         const chunks: Buffer[] = [];
         request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -101,10 +122,29 @@ describe('NanoHost transport production admission', () => {
         await once(request, 'end');
         return {
           status,
+          revisionEcho,
           body: JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>,
         };
       };
       for (const body of [null, [], 'invalid']) expect((await post(body)).status).toBe(400);
+      const unauthorized = await post(
+        {},
+        'unsupported',
+        'okt_not_a_real_nanohost_transport_token_aaaaaaaaaaaa'
+      );
+      expect(unauthorized.status).toBe(401);
+      for (const revision of [
+        null,
+        String(transportRevision + 1),
+        'unsupported',
+        `${transportRevision}, ${transportRevision}`,
+      ]) {
+        const refused = await post({}, revision);
+        expect(refused.status).toBe(409);
+        expect(refused.body).toMatchObject({ code: 'nanohost_protocol_mismatch' });
+        expect(getNanoHostRuntimeTarget(coreDb, token.identityId)).toBeNull();
+        expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
+      }
       const accepted = await post({
         note: 'ignored',
         identityId: 'body-cannot-select',
@@ -112,6 +152,7 @@ describe('NanoHost transport production admission', () => {
         mayCarryWork: false,
       });
       expect(accepted.status).toBe(200);
+      expect(accepted.revisionEcho).toBe(String(transportRevision));
       expect(accepted.body).toMatchObject({
         identityId: token.identityId,
         deploymentId: token.deploymentId,
@@ -142,6 +183,7 @@ describe('NanoHost transport production admission', () => {
       const authority = createNanoHostTransportSessionAuthority();
 
       const denied = admitNanoHostTransportConnection(coreDb, authority, {
+        transportRevision: String(transportRevision),
         physicalConnection: null as never,
         secret: 'okt_not_a_real_nanohost_transport_token_aaaaaaaaaaaa',
         targetId: 'runtime-target-primary',
@@ -153,6 +195,7 @@ describe('NanoHost transport production admission', () => {
       expect(getNanoHostRuntimeTarget(coreDb, 'runtime-target-primary')).toBeNull();
 
       const missingContext = admitNanoHostTransportConnection(coreDb, authority, {
+        transportRevision: String(transportRevision),
         physicalConnection: null as never,
         secret,
         targetId: 'runtime-target-primary',

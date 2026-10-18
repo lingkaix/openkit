@@ -47,3 +47,7 @@ Server Proposal and Review variants omit Workspace identity and retain `ownerSco
 ## Verification And Closeout
 
 Add the lowest-sufficient regressions, inspect actual source and retained bytes, run complete changed-owner and package suites through the exact-head local gate, obtain independent Sol approval, push and express-land only on green main. Retain named logs and all out-of-area paths in the review. L-OPS owns deployment and real-provider acceptance. Server administration/evaluation roles, automatic cross-Workspace consolidation and User Memory remain outside this increment.
+
+## Current Main Join
+
+The normal main merge after the approved03ef local gate imports the landed transport and Discord origin changes. Landed Core migration0007 remains byte-identical; the unlanded Server additive migration becomes0008 with a strictly later journal timestamp and a snapshot linked to0007. Existing upgrade cases remain, with the post-Discord upgrade added. Strict ledgers include both families. Native transport revision1 is imported unchanged because this join changes no native framing or command contract. Complete Runtime and Storage suites and the affected shared consumers run again on the merged exact head; unchanged complete module proofs retain their named earlier executions.

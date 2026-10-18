@@ -50,7 +50,8 @@ describe('storage layout report', () => {
 
         'core_0005_channel_notifications',
         'core_0006_external_trigger_admissions',
-        'core_0007_server_capability_usage',
+        'core_0007_discord_capture_origin',
+        'core_0008_server_capability_usage',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

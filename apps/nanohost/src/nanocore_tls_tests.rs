@@ -344,7 +344,17 @@ async fn ready_session_outlives_startup_deadline() {
             }
             if request.uri().path().ends_with("/admit") {
                 let mut body = response
-                    .send_response(Response::builder().status(200).body(()).unwrap(), false)
+                    .send_response(
+                        Response::builder()
+                            .status(200)
+                            .header(
+                                NANOHOST_TRANSPORT_REVISION_HEADER,
+                                NANOHOST_TRANSPORT_REVISION.trim(),
+                            )
+                            .body(())
+                            .unwrap(),
+                        false,
+                    )
                     .unwrap();
                 body.send_data(Bytes::from_static(br#"{"connectionGeneration":1,"identityId":"nanohost-a","deploymentId":"deployment-a","role":"authoritative","mayCarryWork":true}"#), true).unwrap();
             } else {
