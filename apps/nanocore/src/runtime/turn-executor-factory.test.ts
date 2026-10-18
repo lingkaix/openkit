@@ -4101,6 +4101,18 @@ describe('createConfiguredTurnExecutor', () => {
             .all()
         )
       ).not.toContain('original-injected-value');
+      f.coreDb.sqlite
+        .prepare(
+          "UPDATE agent_session_runtime_bindings SET schema_version = 2, runtime_env_check_versions_json = '{' WHERE agent_session_runtime_binding_id = ?"
+        )
+        .run(real.agentSessionRuntimeBindingId);
+      const retained = f.coreDb.sqlite.serialize();
+      const resolutions = resolve.mock.calls.length;
+      expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(resolve).toHaveBeenCalledTimes(resolutions);
+      expect(f.coreDb.sqlite.serialize().equals(retained)).toBe(true);
     } finally {
       f.coreDb.sqlite.close();
     }
