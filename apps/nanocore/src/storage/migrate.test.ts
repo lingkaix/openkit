@@ -192,7 +192,9 @@ function listColumnNames(
 }
 
 describe('database setup', () => {
-  it.each([5, 7, 8])('extends Core before migration %s without changing retained users', (cutoff) => {
+  it.each([
+    5, 7, 8,
+  ])('extends Core before migration %s without changing retained users', (cutoff) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-channel-migration-'));
     const legacyFolder = join(dataRoot, 'legacy-core');
     const productionFolder = join(process.cwd(), 'drizzle', 'core');
