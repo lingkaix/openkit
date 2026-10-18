@@ -459,9 +459,9 @@ describe('Discord trusted capture origin', () => {
       turn_id: null,
     });
     expect(f.invoke).not.toHaveBeenCalled();
-    await expect(
+    expect(() =>
       f.channel.handleSignedInteraction({ ...f.signed(input), signature: '00'.repeat(64) })
-    ).rejects.toThrow();
+    ).toThrow('Discord authentication failed.');
     expect(
       f.sqlite.prepare('SELECT count(*) AS count FROM discord_inbound_receipts').get()
     ).toEqual({ count: 1 });
