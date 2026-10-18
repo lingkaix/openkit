@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ReadArtifactVersionResponseSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   artifactVersionRecordPath,
@@ -282,6 +283,40 @@ describe('Artifact immutable version authority', () => {
       2
     );
     const corrupted = JSON.parse(readFileSync(path, 'utf8'));
+    expect(Object.keys(corrupted.version).sort()).toEqual([
+      'actor',
+      'parentVersion',
+      'recordedAt',
+      'requestId',
+      'threadId',
+      'turnId',
+    ]);
+    expect(ReadArtifactVersionResponseSchema.parse(result)).toEqual(result);
+    expect(
+      ReadArtifactVersionResponseSchema.safeParse({
+        ...result,
+        version: { ...result.version, title: 'Contradictory public summary' },
+      }).success
+    ).toBe(false);
+    expect(corrupted.artifact.content).toEqual({ format: 'text' });
+    expect(readFileSync(join(path, '..', 'payload'))).toEqual(Buffer.from(input.content.body));
+    expect(reopened.listArtifactVersions(state.workspace.id, state.artifact.id)).toEqual([
+      { ...original.version },
+      {
+        artifactId: state.artifact.id,
+        workspaceId: state.workspace.id,
+        artifactVersion: 2,
+        parentVersion: 1,
+        title: input.title,
+        summary: input.summary,
+        contentDigest: digest(input.content.body),
+        actor,
+        threadId: state.thread.id,
+        turnId: result.version.turnId,
+        requestId: input.requestId,
+        recordedAt: input.recordedAt,
+      },
+    ]);
     corrupted.version.turnId = state.turn.id;
     writeFileSync(path, JSON.stringify(corrupted));
     expect(() => new FsStore({ dataRoot: state.dataRoot })).toThrow(

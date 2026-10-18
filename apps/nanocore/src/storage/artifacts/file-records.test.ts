@@ -34,13 +34,7 @@ function initialRecord(artifact: z.infer<typeof ArtifactSchema>): ArtifactVersio
   return {
     artifact,
     version: {
-      artifactId: artifact.id,
-      workspaceId: artifact.workspaceId,
-      artifactVersion: 1,
       parentVersion: null,
-      title: artifact.title,
-      summary: artifact.summary,
-      contentDigest: artifact.contentDigest,
       actor: artifact.origin.actor,
       threadId: null,
       turnId: null,

@@ -1,10 +1,11 @@
+import { CommitArtifactVersionResponseSchema } from '@openkit/app-api-schemas';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { fstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { ArtifactVersionRecordSchema, allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { importArtifactFile } from './artifact-file-commands.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
@@ -149,7 +150,7 @@ describe('exact Artifact file import and download', () => {
       }
     );
     expect(response.status, await response.clone().text()).toBe(201);
-    const committed = ArtifactVersionRecordSchema.parse(await response.json());
+    const committed = CommitArtifactVersionResponseSchema.parse(await response.json());
     expect(committed.artifact).toMatchObject({
       id: artifactId,
       version: 2,

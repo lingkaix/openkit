@@ -2,9 +2,9 @@ import type { Readable } from 'node:stream';
 import type {
   CommitArtifactFileVersionRequest,
   CommitArtifactVersionRequest,
+  CommitArtifactVersionResponse,
 } from '@openkit/app-api-schemas';
 import {
-  type ArtifactVersionRecord,
   canonicalIdentifierName,
   deriveEntityId,
   responsibleUserIdForActor,
@@ -56,7 +56,7 @@ export async function commitArtifactVersionCommand(
         readonly admission?: never;
       }
   )
-): Promise<ArtifactVersionRecord> {
+): Promise<CommitArtifactVersionResponse> {
   const { store, metadata, context, workspaceDb } = input;
   const actorId = responsibleUserIdForActor(context.actorRef);
   if (!actorId || metadata.workspaceId !== workspaceDb.workspaceId)
@@ -73,7 +73,7 @@ export async function commitArtifactVersionCommand(
   let staged: Awaited<ReturnType<typeof stageArtifactPayload>> | undefined;
   let cleanupUnproved = false;
   const failures: unknown[] = [];
-  let response: ArtifactVersionRecord | undefined;
+  let response: CommitArtifactVersionResponse | undefined;
   try {
     input.assertAuthorized();
     response = await runIdempotentCommand({

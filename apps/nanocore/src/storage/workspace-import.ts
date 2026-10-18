@@ -1639,8 +1639,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
     });
     const version = {
       ...record.version,
-      workspaceId: context.targetWorkspaceId,
-      artifactId: artifact.id,
       threadId: record.version.threadId
         ? requiredMapValue(threadIds, record.version.threadId, 'thread')
         : null,
@@ -1669,8 +1667,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
       },
       version: {
         ...(raw.version as Record<string, unknown>),
-        workspaceId: version.workspaceId,
-        artifactId: version.artifactId,
         threadId: version.threadId,
         turnId: version.turnId,
       },

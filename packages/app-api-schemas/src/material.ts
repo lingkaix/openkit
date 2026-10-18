@@ -16,6 +16,9 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { ArtifactReviewDecisionSchema } from './action-center.js';
+import { ArtifactReviewRangeFeedbackSchema } from './material-range.js';
+
+export { ArtifactReviewRangeFeedbackSchema } from './material-range.js';
 
 /** Opaque non-empty identifier used by app-local Material contracts. */
 const opaqueIdSchema = z.string().min(1);
@@ -34,7 +37,24 @@ export const ListArtifactVersionsResponseSchema = z.object({
 });
 
 /** Exact historical Artifact state and the immutable lineage of that version. */
-export const ReadArtifactVersionResponseSchema = ArtifactVersionRecordSchema;
+export const ReadArtifactVersionResponseSchema = ArtifactVersionRecordSchema.safeExtend({
+  version: ArtifactVersionSchema,
+}).superRefine(({ artifact, version }, context) => {
+  if (
+    artifact.id !== version.artifactId ||
+    artifact.workspaceId !== version.workspaceId ||
+    artifact.version !== version.artifactVersion ||
+    artifact.title !== version.title ||
+    artifact.summary !== version.summary ||
+    artifact.contentDigest !== version.contentDigest
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['version'],
+      message: 'Artifact version summary must match its exact Artifact snapshot.',
+    });
+  }
+});
 
 /** One manual inline revision, communicated by a new Core-local Turn in the selected idle Thread. */
 export const CommitArtifactVersionRequestSchema = z
@@ -57,7 +77,7 @@ export const CommitArtifactFileVersionRequestSchema = CommitArtifactVersionReque
 });
 
 /** Exact version result shared by inline and streamed publication. */
-export const CommitArtifactVersionResponseSchema = ArtifactVersionRecordSchema;
+export const CommitArtifactVersionResponseSchema = ReadArtifactVersionResponseSchema;
 
 /** Public retained-version inventory. */
 export type ListArtifactVersionsResponse = z.infer<typeof ListArtifactVersionsResponseSchema>;
@@ -122,22 +142,6 @@ export const ArtifactMaterialProposalSchema = z
     baseContentDigest: contentDigestSchema,
   })
   .strict();
-
-/** Exact original-source UTF-16 range on one immutable Material proposal base. */
-export const ArtifactReviewRangeFeedbackSchema = z
-  .object({
-    materialId: MaterialIdSchema,
-    revisionId: MaterialRevisionIdSchema,
-    contentDigest: contentDigestSchema,
-    start: z.number().int().nonnegative(),
-    end: z.number().int().positive(),
-    originalText: z.string().min(1),
-  })
-  .strict()
-  .refine((range) => range.start < range.end, {
-    message: 'The range end must follow its start.',
-    path: ['end'],
-  });
 
 /** Attributable choice evidence retained on its exact version-owned Review. */
 export const ArtifactReviewCandidateSelectionSchema = z

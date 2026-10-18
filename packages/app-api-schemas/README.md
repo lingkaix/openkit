@@ -222,3 +222,5 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 `memory.ask` and `memory.tell` project bounded User Knowledge Manager query and maintenance. Their strict schemas accept no User selector. `memory.maintain`, `memory.proposal.read` and `memory.proposal.decide` reuse the fixed-base notebook and human Review contracts. NanoCore binds the actual private Timeline, rejects shared delivery, and keeps required human Review unavailable to model callers.
 
 `external-trigger.ts` and `external-trigger-operations.ts` declare the scheduled poll event admission input and its ordinary Worker references. The operation accepts only Worker-package credentials. Native invocation binds source scope; model arguments cannot select another schedule or target Thread. `external-trigger.test.ts` checks that boundary without adding event execution states.
+
+`material.ts` keeps the existing Artifact version list, detail and commit response fields as derived projections of the retained snapshot and producing facts. `material-range.ts` owns the unchanged exact Material-base UTF-16 range schema, which `material.ts` imports and re-exports.
