@@ -82,7 +82,7 @@ async function fixture(references: readonly string[]) {
       workspaceDb: {} as Parameters<typeof readWorkspaceNotebookAdmission>[0]['workspaceDb'],
       currentAuthority: () => {},
       actor: { kind: 'user', id: userId },
-      runtimeConfigManager: { current: () => ({ workspaces: [] }) } as unknown as Parameters<
+      runtimeConfigManager: { current: () => ({ workspaceConfigs: [] }) } as unknown as Parameters<
         typeof readWorkspaceNotebookAdmission
       >[0]['runtimeConfigManager'],
       workspaceMutationAdmission: { isClosed: () => false } as unknown as Parameters<
@@ -126,7 +126,10 @@ describe('Workspace canonical page source proof', () => {
   });
 
   it.each([
-    `openkit:page/workspace/ws_00000000-0000-7000-8000-000000000002/${knowledgeBaseId}/group/note`,
+    formatReferenceUri({
+      scopeId: `page/workspace/ws_00000000-0000-7000-8000-000000000002/${knowledgeBaseId}`,
+      objectId: targetId,
+    }),
     formatReferenceUri({
       scopeId: pageScopeId.replace(knowledgeBaseId, 'kb_00000000-0000-7000-8000-000000000002'),
       objectId: targetId,
