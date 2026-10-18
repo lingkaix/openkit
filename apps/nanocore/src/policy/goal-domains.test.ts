@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -222,6 +221,7 @@ describe('jointly approved Goal-domain publication', () => {
       authoredAt: request.decidedAt,
     });
     expect(f.service().read(f.key)).toEqual(result.statement);
+    expect(f.db.sqlite.transaction(() => f.service().read(f.key))()).toEqual(result.statement);
     const count = listServerPermissionDecisions(f.coreDb).length;
     expect(f.activate()).toEqual(result);
     expect(listServerPermissionDecisions(f.coreDb)).toHaveLength(count);

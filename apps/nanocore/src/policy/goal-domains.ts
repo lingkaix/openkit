@@ -79,10 +79,6 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
 
   function approved(workspaceId: string, requestId: string) {
     const db = deps.repositoryWorkspaceDb(workspaceId);
-    // Goal completion and the Server file are separate commits. Never publish from
-    // an in-flight Goal transaction or turn a recorded grant into a completed effect.
-    if (db.sqlite.inTransaction)
-      throw new Error('Goal-domain publication requires the committed Goal transaction.');
     const request = readPendingRequest(db.sqlite, requestId);
     const intent = request?.governedIntent;
     const capture = CapturedDomain.parse(intent?.goalDomain);
@@ -333,6 +329,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       readonly requestId: string;
       readonly expectedPolicyRevision: string;
     }) {
+      // Publication is a Server file effect and must follow the Goal SQL commit.
+      if (deps.repositoryWorkspaceDb(input.workspaceId).sqlite.inTransaction)
+        throw new Error('Goal-domain publication requires the committed Goal transaction.');
       const current = loaded();
       if (current.revision !== input.expectedPolicyRevision)
         throw new Error('Goal-domain Policy revision changed.');
