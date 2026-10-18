@@ -8,6 +8,10 @@ import {
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from '../config/knowledge-base.js';
 import type { CoreDb, UserDb } from '../storage/db.js';
 import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
 import { KnowledgeNotebook, NotebookError, type NotebookRevision } from './notebook.js';
@@ -34,6 +38,8 @@ export interface ScopedNotebookContext {
 
 /** Scope-only raw content boundary; it is not a Source, output-audience, sensitivity or suppression grant. */
 export interface PinnedScopedNotebook {
+  /** Exact retained default base; canonical owner admission remains separate. */
+  readonly knowledgeBaseId: string;
   readonly ownerScope: Exclude<KnowledgeOwnerScope, { kind: 'workspace' }>;
   readonly notebookRevision: string;
   /** Internal exact-byte read; native consumers must apply current Source/audience/suppression admission before public or model disclosure. */
@@ -95,15 +101,25 @@ export function pinScopedNotebook(input: ScopedNotebookContext): PinnedScopedNot
     target: { ...input.target },
   };
   const owner = resolveScopedNotebookOwner(context);
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: input.coreDb.dataRoot,
+    scope: owner.ownerScope,
+  });
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
   });
   const notebookRevision = notebook.publishedRevision();
   return {
     ownerScope: owner.ownerScope,
+    knowledgeBaseId,
     notebookRevision,
     read: (paths) => {
       resolveScopedNotebookOwner(context);
+      if (
+        readDefaultKnowledgeBaseId({ dataRoot: input.coreDb.dataRoot, scope: owner.ownerScope }) !==
+        knowledgeBaseId
+      )
+        throw new NotebookError('recovery_required');
       let schemaText: string;
       try {
         schemaText = readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8');
@@ -150,6 +166,7 @@ export function initializeScopedNotebook(
       resolve(userDb.dataRoot) !== resolve(input.coreDb.dataRoot))
   )
     throw new NotebookError('invalid_request');
+  initializeDefaultKnowledgeBaseId({ dataRoot: input.coreDb.dataRoot, scope: owner.ownerScope });
   return initializeNotebook({
     notebookRoot: owner.notebookRoot,
     owner: userDb ? { kind: 'user', userDb } : { kind: 'server', coreDb: input.coreDb },
