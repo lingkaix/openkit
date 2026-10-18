@@ -39,6 +39,12 @@ describe('canonical Knowledge Agent page citations', () => {
     if (!parsed.success) expect(parsed.error.issues[0]?.path).toEqual(['reference']);
   });
 
+  it('rejects a final newline in an unpinned citation content digest', () => {
+    expect(
+      KnowledgeAgentCitationSchema.safeParse({ ...citation, contentDigest: `${digest}\n` }).success
+    ).toBe(false);
+  });
+
   it.each([
     'notes/release',
     `page/workspace/${workspaceId}/notes/release`,
