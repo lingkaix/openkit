@@ -197,6 +197,26 @@ describe('canonical reference URI codec', () => {
     ).toBe(false);
   });
 
+  it('validates the known retrieval-trace object kind at the URI boundary', () => {
+    for (const traceScope of [
+      `retrieval-trace/thread/${workspaceId}/th_${uuid7}`,
+      `retrieval-trace/turn/${workspaceId}/th_${uuid7}/tu_${uuid7}`,
+    ]) {
+      for (const objectId of [
+        'topic',
+        `ar_${uuid7}`,
+        `krt_${uuid7.replace('-7000-', '-4000-')}`,
+        `krt_${uuid7}/extra`,
+      ]) {
+        const reference = { scopeId: traceScope, objectId };
+        const uri = `openkit:${traceScope}/${objectId}`;
+        expect(() => formatReferenceUri(reference)).toThrow();
+        expect(parseReferenceUri(uri)).toBeNull();
+        expect(ReferenceUriSchema.safeParse(uri).success).toBe(false);
+      }
+    }
+  });
+
   it.each([
     { scopeId: `artifact/workspace/${workspaceId}`, objectId: `ar_${uuid7}` },
     { scopeId: `material/workspace/${workspaceId}`, objectId: `mat_${uuid7}` },
