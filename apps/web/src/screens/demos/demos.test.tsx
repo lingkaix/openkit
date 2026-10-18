@@ -8,10 +8,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { isSurfaceLive } from '../../app/flags';
 import { SURFACES, surfaceById, surfacesInGroup } from '../../app/surfaces';
 import { AutomationsScreen } from './AutomationsScreen';
-import { ChannelsScreen } from './ChannelsScreen';
 import { TIER_B_SURFACE_IDS } from './data';
-
-const EXPECTED_TIER_B_SURFACE_IDS = ['channels'] as const;
 
 /** Minimal client — Tier-B demos use sample fixtures, not live reads. */
 function makeClient(): CoreClient {
@@ -50,7 +47,7 @@ function Providers({ children, path }: { children?: ReactNode; path: string }) {
 
 describe('WP-8 Tier-B surface catalog', () => {
   it('keeps the existing sample fixture inventory separate from live publication', () => {
-    expect(TIER_B_SURFACE_IDS).toEqual(['automations', 'channels']);
+    expect(TIER_B_SURFACE_IDS).toEqual(['automations']);
   });
 
   it('publishes durable automations as a live Workspace surface', () => {
@@ -59,30 +56,24 @@ describe('WP-8 Tier-B surface catalog', () => {
     expect(isSurfaceLive(surface!)).toBe(true);
   });
 
-  it.each(EXPECTED_TIER_B_SURFACE_IDS)('keeps %s flag-off (isSurfaceLive false)', (id) => {
-    const surface = surfaceById(id);
-    expect(surface).toBeDefined();
-    expect(surface?.tier).toBe('B');
-    expect(isSurfaceLive(surface!)).toBe(false);
+  it('publishes Channels as a live Settings surface', () => {
+    const surface = surfaceById('channels');
+    expect(surface).toMatchObject({ tier: 'A', nav: 'settings-user' });
+    expect(isSurfaceLive(surface!)).toBe(true);
   });
 
-  it('keeps Tier-B surfaces out of primary navigation', () => {
-    const primaryIds = surfacesInGroup('primary').map((s) => s.id);
-    for (const id of EXPECTED_TIER_B_SURFACE_IDS) {
-      expect(primaryIds).not.toContain(id);
-    }
+  it('keeps published surfaces out of demo navigation', () => {
     const demoIds = [
       ...surfacesInGroup('demos').map((s) => s.id),
       ...surfacesInGroup('settings-demos').map((s) => s.id),
     ];
-    for (const id of EXPECTED_TIER_B_SURFACE_IDS) {
-      expect(demoIds).toContain(id);
-    }
+    expect(demoIds).not.toContain('automations');
+    expect(demoIds).not.toContain('channels');
   });
 
   it('registers every Tier-B WP-8 surface in the catalog', () => {
     const wp8 = SURFACES.filter((s) => s.wp === 'WP-8' && s.tier === 'B');
-    expect(wp8.map((s) => s.id).sort()).toEqual([...EXPECTED_TIER_B_SURFACE_IDS].sort());
+    expect(wp8).toEqual([]);
   });
 });
 
@@ -97,18 +88,5 @@ describe('WP-8 Tier-B screens — frame headings', () => {
     expect(screen.getByText('Monday interview digest')).toBeInTheDocument();
     expect(screen.getByText('New automation')).toBeInTheDocument();
     expect(screen.getByText('Ask me before sharing results')).toBeInTheDocument();
-  });
-
-  it('Channels renders connected channels and interrupt preview', async () => {
-    render(
-      <Providers path="/settings/channels">
-        <ChannelsScreen />
-      </Providers>
-    );
-    expect(await screen.findByRole('heading', { name: 'Channels' })).toBeInTheDocument();
-    expect(screen.getByText('Connected channels')).toBeInTheDocument();
-    expect(screen.getByText('What travels out')).toBeInTheDocument();
-    expect(screen.getByText('How an interrupt looks in a channel')).toBeInTheDocument();
-    expect(screen.getByText('Slack')).toBeInTheDocument();
   });
 });
