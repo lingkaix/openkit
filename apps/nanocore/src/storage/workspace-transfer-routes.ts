@@ -28,6 +28,7 @@ import {
   deriveEntityId,
   type Item,
   isEntityId,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import {
@@ -716,6 +717,7 @@ function importWorkspaceDatabaseRows({
           .values(
             snapshot.artifactReviews.map(({ materialProposal, ...review }) => ({
               ...review,
+              schemaVersion: writeRetainedV1({}).schemaVersion,
               rangeFeedback: review.rangeFeedback ?? null,
               candidateSelections: review.candidateSelections,
               proposalMaterialId: materialProposal?.materialId ?? null,
@@ -754,31 +756,55 @@ function importWorkspaceDatabaseRows({
     importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
     workspaceDb.sqlite.transaction(() => {
       for (const goal of snapshot.goalState.goals)
-        workspaceDb.sqlite.prepare('INSERT INTO goals VALUES (?,?,?)').run(
-          goal.goalId,
-          goal.threadId,
-          JSON.stringify({
-            ...goal,
-            responsibleUserId: ownerUserId,
-            responsibleActorContext: { kind: 'session', userId: ownerUserId },
-          })
-        );
+        workspaceDb.sqlite
+          .prepare(
+            'INSERT INTO goals (goal_id,thread_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(
+            goal.goalId,
+            goal.threadId,
+            JSON.stringify({
+              ...goal,
+              responsibleUserId: ownerUserId,
+              responsibleActorContext: { kind: 'session', userId: ownerUserId },
+            }),
+            writeRetainedV1({}).schemaVersion
+          );
       for (const card of snapshot.goalState.cards)
         workspaceDb.sqlite
-          .prepare('INSERT INTO goal_cards VALUES (?,?,?)')
-          .run(card.cardId, card.goalId, JSON.stringify(card));
+          .prepare(
+            'INSERT INTO goal_cards (card_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(card.cardId, card.goalId, JSON.stringify(card), writeRetainedV1({}).schemaVersion);
       for (const version of snapshot.goalState.versions)
         workspaceDb.sqlite
-          .prepare('INSERT INTO goal_plan_versions VALUES (?,?,?)')
-          .run(version.planVersionId, version.goalId, JSON.stringify(version));
+          .prepare(
+            'INSERT INTO goal_plan_versions (plan_version_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(
+            version.planVersionId,
+            version.goalId,
+            JSON.stringify(version),
+            writeRetainedV1({}).schemaVersion
+          );
       for (const link of snapshot.goalState.tasks)
         workspaceDb.sqlite
-          .prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)')
-          .run(link.threadId, link.goalId, link.cardId, JSON.stringify(link));
+          .prepare(
+            'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json,schema_version) VALUES (?,?,?,?,?)'
+          )
+          .run(
+            link.threadId,
+            link.goalId,
+            link.cardId,
+            JSON.stringify(link),
+            writeRetainedV1({}).schemaVersion
+          );
       for (const fact of snapshot.goalState.terminalFacts)
         workspaceDb.sqlite
-          .prepare('INSERT INTO task_turn_terminal_facts VALUES (?,?,?)')
-          .run(fact.id, fact.threadId, JSON.stringify(fact));
+          .prepare(
+            'INSERT INTO task_turn_terminal_facts (turn_id,thread_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(fact.id, fact.threadId, JSON.stringify(fact), writeRetainedV1({}).schemaVersion);
     })();
     importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
     importGenerativePresentations({
