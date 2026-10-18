@@ -828,3 +828,26 @@ test('gates that compile or import a workspace package build its dependencies fi
     Object.fromEntries(Object.keys(exercisedPackages).map((scriptName) => [scriptName, []]))
   );
 });
+
+// Rust embeds this Core-owned value, so both cached compilation paths must hash it.
+test('NanoHost build and lint cache inputs include the shared transport revision', () => {
+  const result = spawnSync(
+    join(repoRoot, 'node_modules/.bin/turbo'),
+    ['run', 'build', 'lint', '--filter=@openkit/nanohost', '--only', '--dry=json'],
+    { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const tasks = JSON.parse(result.stdout.slice(result.stdout.indexOf('{'))).tasks;
+  for (const name of ['build', 'lint']) {
+    const task = tasks.find((candidate) => candidate.taskId === `@openkit/nanohost#${name}`);
+    assert.ok(task, `NanoHost ${name} task is missing`);
+    assert.ok(
+      Object.keys(task.inputs).some(
+        (input) =>
+          resolve(repoRoot, 'apps/nanohost', input) ===
+          join(repoRoot, 'apps/nanocore/src/auth/nanohost-transport-revision.json')
+      ),
+      `NanoHost ${name} cache omits its embedded transport revision`
+    );
+  }
+});

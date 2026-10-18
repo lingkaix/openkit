@@ -25,12 +25,14 @@ import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-re
 import {
   editMemoryPage,
   listMemoryPages,
+  memoryPageFacts,
   readMemoryPage,
   recordMemorySuppression,
   saveMemoryPage,
 } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { registerUserKnowledgeSource } from './scoped-knowledge-sources.js';
+import { updateOkfFrontmatter } from './okf.js';
+import { admitUserMemorySources, registerUserKnowledgeSource } from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
 
@@ -98,6 +100,36 @@ function fixture() {
 }
 
 describe('explicit native self Memory', () => {
+  it('admits delegated Memory with current self Sources while keeping pending pages unavailable', async () => {
+    const f = fixture();
+    const source = await registerUserKnowledgeSource(f.input, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Personal fact',
+      content: 'I prefer short answers.',
+    });
+    const request = f.request(f.baseRevision, 'preferences', 'Use short answers.', [
+      `source:${source.id}@${source.contentDigest}`,
+    ]);
+    const delegated = updateOkfFrontmatter({
+      path: 'preferences.md',
+      content: request.content,
+      updates: { review_state: 'delegated' },
+    });
+    expect(memoryPageFacts('preferences.md', delegated)?.id).toBe('preferences');
+    expect(
+      admitUserMemorySources(f.input, { 'preferences.md': delegated }).registeredSources.get(
+        source.id
+      )
+    ).toBe(source.contentDigest);
+    const pending = updateOkfFrontmatter({
+      path: 'preferences.md',
+      content: delegated,
+      updates: { review_state: 'needs-review' },
+    });
+    expect(memoryPageFacts('preferences.md', pending)).toBeNull();
+  });
+
   it('saves, lists, reads and edits exact User-authored bytes with current self literal Source citations', async () => {
     const f = fixture();
     const source = await registerUserKnowledgeSource(f.input, {

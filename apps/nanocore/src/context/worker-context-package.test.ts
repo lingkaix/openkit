@@ -168,10 +168,12 @@ async function createPackage(
   writeFiles = true,
   turnId = 'tu_00000000-0000-71df-9e29-90f5b5578e47',
   threadId = 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
-  sourceFiles?: readonly WorkerContextPackageSourceFileInput[]
+  sourceFiles?: readonly WorkerContextPackageSourceFileInput[],
+  knowledgeOverview?: string
 ): Promise<WorkerContextPackageFiles> {
   const packageFiles = createWorkerContextPackageFiles({
     sourceFiles,
+    knowledgeOverview,
     contextBudgetTokens: 4_096,
     includedItemIds: [
       'it_00000000-0000-7a3c-ae74-d9d096838a5d',
@@ -782,6 +784,44 @@ describe('worker request source selector projection', () => {
 });
 
 describe('worker Context Package owner', () => {
+  it('inventories exact bounded overview bytes without changing the worker request', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-overview-'));
+    const baseline = await createPackage(workspaceRoot, false);
+    const overview =
+      '<knowledge_overviews>{"overviews":[{"path":"index.md","notebookRevision":"abc123","truncated":true,"content":"Bounded scope overview.\\n"}]}</knowledge_overviews>';
+    const supplied = await createPackage(
+      workspaceRoot,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      overview
+    );
+    expect(baseline.fileInventory.some((file) => file.path === 'knowledge-overview.md')).toBe(
+      false
+    );
+    expect(supplied.files.find((file) => file.path === 'knowledge-overview.md')?.bytes).toEqual(
+      Buffer.from(overview)
+    );
+    const expected = {
+      path: 'knowledge-overview.md',
+      byteLength: Buffer.byteLength(overview),
+      contentDigest: sha256(overview),
+    };
+    expect(supplied.fileInventory).toContainEqual(expected);
+    const manifest = JSON.parse(
+      Buffer.from(supplied.files.find((file) => file.path === 'package.json')!.bytes).toString(
+        'utf8'
+      )
+    );
+    expect(manifest.fileInventory).toContainEqual(expected);
+    expect(supplied.files.find((file) => file.path === 'instructions.md')?.bytes).toEqual(
+      Buffer.from(WORKER_REQUEST_BYTES)
+    );
+    expect(supplied.workerRequestDigest).toBe(baseline.workerRequestDigest);
+    expect(supplied.packageRootDigest).not.toBe(baseline.packageRootDigest);
+  });
+
   it.each([
     false,
     true,

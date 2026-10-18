@@ -230,15 +230,25 @@ export function knowledgePageDelegated(
   input: Target,
   pageId: string,
   content: string,
-  sourceScope: 'workspace' | 'server' = 'workspace'
+  sourceScope: 'workspace' | 'server' | 'user' = 'workspace'
 ): boolean {
-  if (sourceScope === 'server') admitServerKnowledgeRetrieval(input);
+  if (sourceScope === 'user') admitUserMemoryRetrieval(input);
+  else if (sourceScope === 'server') admitServerKnowledgeRetrieval(input);
   else admitKnowledgeRetrieval(input);
   const notebook = new KnowledgeNotebook({
     repositoryPath:
-      sourceScope === 'server'
-        ? join(input.dataRoot, 'server', 'knowledge', 'notebook.git')
-        : join(input.dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
+      sourceScope === 'user'
+        ? join(
+            resolveScopedNotebookOwner({
+              coreDb: input.access.coreDb!,
+              actor: input.access.requestActor,
+              target: { kind: 'user' },
+            }).notebookRoot,
+            'notebook.git'
+          )
+        : sourceScope === 'server'
+          ? join(input.dataRoot, 'server', 'knowledge', 'notebook.git')
+          : join(input.dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
   });
   const revision = input.notebookRevision ?? notebook.publishedRevision();
   notebook.history({ revision, limit: 1 });
@@ -254,6 +264,8 @@ export function knowledgePageDelegated(
   return (
     record.metadata.producer.kind === 'agent' &&
     record.metadata.producer.responsibleUserId !== null &&
+    (sourceScope !== 'user' ||
+      record.metadata.producer.responsibleUserId === input.access.requestActor!.userId) &&
     (record.metadata.authority.kind === 'delegated' || record.metadata.authority.kind === 'direct')
   );
 }
@@ -372,6 +384,16 @@ export function readAuthorizedUserMemoryPages(input: Target) {
     );
     const registeredSources = new Map<string, string | null>();
     const eligible = (id: string, content: string) => {
+      if (id === 'index' && input.pageIds?.includes('index')) {
+        // The existing User overview is navigation only. Until explicitly cleaned, a forgotten
+        // page can still have prose in that root; withhold it rather than leak suppressed content.
+        const parsed = parseOkfDocument({ path: 'index.md', content });
+        if (suppressed.size || !parsed.ok || !parsed.document.reserved) return false;
+        const refs = stringListFrontmatterField(parsed.document, 'source_refs');
+        return refs === null
+          ? !Object.hasOwn(parsed.document.frontmatter, 'source_refs')
+          : refs.length === 0;
+      }
       if (suppressed.has(id) || !memoryPageFacts(`${id}.md`, content)) return false;
       const parsed = parseOkfDocument({ path: `${id}.md`, content });
       if (!parsed.ok) throw new NotebookError('recovery_required');
@@ -414,7 +436,27 @@ export function readAuthorizedUserMemoryPages(input: Target) {
       pages,
       scopeSchemaText,
       registeredSources,
-      referenceProofs: new Map<string, KnowledgePageReferenceProof>(),
+      referenceProofs: new Map<string, KnowledgePageReferenceProof>(
+        pages.map(({ id, content, contentDigest }) => {
+          const refs = [
+            ...new Set(
+              stringListFrontmatterField(
+                parseOkfDocument({ path: `${id}.md`, content }).document!,
+                'source_refs'
+              ) ?? []
+            ),
+          ].sort();
+          return [
+            id,
+            {
+              knowledgePageId: id,
+              contentDigest,
+              sourceReferences: refs,
+              resolvedReferences: new Set(refs),
+            },
+          ];
+        })
+      ),
     };
   } catch (error) {
     if (error instanceof OperationError || error instanceof NotebookError) throw error;

@@ -8,6 +8,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import type { CoreDb } from '../storage/db.js';
 import type { AuthVariables } from './middleware.js';
+import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
   isNanoHostPhysicalConnectionContext,
@@ -21,6 +22,8 @@ export interface AdmitNanoHostTransportConnectionInput {
   readonly secret: string;
   /** Opaque physical connection from the native HTTP/2 server context. */
   readonly physicalConnection: object | null;
+  /** Exact compiled transport revision presented on the native admission header. */
+  readonly transportRevision: string | undefined;
   /** Durable RuntimeTarget id selected by deployment configuration. */
   readonly targetId?: string;
   /** Optional verification clock. */
@@ -54,7 +57,11 @@ export interface AdmitNanoHostTransportConnectionFailure {
   /** Admission failed. */
   readonly ok: false;
   /** Stable machine-readable failure reason (no secret material). */
-  readonly reason: 'missing_connection_context' | 'unauthorized' | 'rejected';
+  readonly reason:
+    | 'missing_connection_context'
+    | 'unauthorized'
+    | 'rejected'
+    | 'nanohost_protocol_mismatch';
 }
 
 /** Result of admitting one NanoHost transport connection generation. */
@@ -66,7 +73,7 @@ export type AdmitNanoHostTransportConnectionResult =
  * Admits one NanoHost transport connection after hash-only Token verification.
  *
  * Production admission path for NanoHost→NanoCore session establishment: verifies
- * the presented `nanohost-transport` secret before durable allocation, allocates
+ * the presented `nanohost-transport` secret and exact compiled revision before durable allocation, allocates
  * generation one or high-water plus one, then binds it to the exact native
  * physical connection. Successors remain non-authoritative until server-observed
  * predecessor close fencing promotes them.
@@ -96,6 +103,10 @@ export function admitNanoHostTransportConnection(
   }
   if (authority.connectionGeneration(input.physicalConnection) !== null) {
     return { ok: false, reason: 'rejected' };
+  }
+
+  if (input.transportRevision !== String(transportRevision)) {
+    return { ok: false, reason: 'nanohost_protocol_mismatch' };
   }
 
   const targetId = input.targetId?.trim() || verified.ownerNanoHostIdentityId;
@@ -206,12 +217,20 @@ export function registerNanoHostTransportAdmissionRoutes({
     const admitted = admitNanoHostTransportConnection(coreDb!, sessionAuthority, {
       channel: 'nanohost-transport',
       physicalConnection,
+      transportRevision: c.req.header('x-openkit-nanohost-transport-revision'),
       secret,
       source: 'session-admit-http',
       ...(nanoHostConfig?.identityId ? { targetId: nanoHostConfig.identityId } : {}),
     });
 
     if (!admitted.ok) {
+      if (admitted.reason === 'nanohost_protocol_mismatch') {
+        return asApiError(
+          'NanoHost transport revision does not match NanoCore.',
+          'nanohost_protocol_mismatch',
+          409
+        );
+      }
       const status = admitted.reason === 'unauthorized' ? 401 : 409;
       return asApiError(
         admitted.reason === 'unauthorized'
@@ -228,6 +247,7 @@ export function registerNanoHostTransportAdmissionRoutes({
       );
     }
 
+    c.header('x-openkit-nanohost-transport-revision', String(transportRevision));
     return c.json({
       tokenId: admitted.tokenId,
       identityId: admitted.identityId,

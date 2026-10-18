@@ -10,6 +10,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
@@ -19,6 +20,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
+import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -29,7 +31,7 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
@@ -39,9 +41,15 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
+import { saveMemoryPage } from './memory-lifecycle.js';
+import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import {
+  readUserKnowledgeSource,
+  registerUserKnowledgeSource,
+} from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
 
@@ -1014,4 +1022,217 @@ it('refuses a second unsearched absence after one bounded repair with retained w
     (call) => call.id === f.askingCall.id
   );
   expect(asking!.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
+});
+
+/** Uses real private Timeline, User Source and User notebook owners around the existing fake transport. */
+async function memoryFixture() {
+  const f = await fixture(true);
+  const userDb = openUserDb(f.dataRoot, f.userId);
+  applyScopedMigrations(userDb);
+  onTestFinished(() => userDb.sqlite.close());
+  const requestActor = { kind: 'local' as const, userId: f.userId };
+  const writer = {
+    coreDb: f.coreDb,
+    userDb,
+    workspaceDb: f.workspaceDb,
+    store: f.store,
+    actor: requestActor,
+    runtimeConfigManager: createRuntimeConfigManager({ dataRoot: f.dataRoot }),
+    inflightCommands: new WeakMap(),
+  };
+  const baseRevision = initializeScopedNotebook({
+    ...writer,
+    target: { kind: 'user' },
+    initialization: { requestId: randomUUID(), instructionReference: 'test:private-km' },
+  });
+  const source = await registerUserKnowledgeSource(writer, {
+    requestId: randomUUID(),
+    kind: 'document',
+    title: 'Private User preference',
+    content: 'I prefer the meridian violet tea. USER_PRIVATE_SOURCE',
+  });
+  const pageId = 'preferences';
+  const publication = await saveMemoryPage(writer, {
+    requestId: randomUUID(),
+    baseRevision,
+    pageId,
+    summary: 'Save private preference',
+    content: serializeUserAuthoredKnowledgePage(
+      {
+        id: pageId,
+        kind: 'preference',
+        title: 'Meridian tea preference',
+        content: 'I prefer meridian violet tea. USER_PRIVATE_PAGE',
+        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      { kind: 'user', userId: f.userId }
+    ),
+  });
+  const timeline = openAssistantTimeline(f.store, f.workspace.id, f.userId, 'Private Assistant');
+  const turn = f.store.createTurn(f.workspace.id, timeline.id, 'Which tea?', f.actor);
+  const access = {
+    ...f.access,
+    userDb,
+    requestActor,
+    outputThreadId: timeline.id,
+    outputTurnId: turn.id,
+  };
+  const question = {
+    workspaceId: f.workspace.id,
+    question: 'Which meridian tea do I prefer?',
+    caller: 'internal-agent' as const,
+    source: 'memory' as const,
+    access,
+    signal: new AbortController().signal,
+  };
+  return {
+    ...f,
+    writer,
+    source,
+    publication,
+    timeline,
+    question,
+    pageId,
+    citation: `page/user/${f.userId}/${pageId}`,
+    askMemory: () => askKnowledgeAgent(f.dependencies, question),
+  };
+}
+
+it('answers from only current-self Memory through actual search, page and model-admitted Source reads', async () => {
+  const f = await memoryFixture();
+  let step = 0;
+  f.createResponses.mockImplementation(async (_provider, _request, context) => {
+    context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+    if (++step === 1) return call('knowledge.retrieval', { query: 'meridian violet tea' });
+    if (step === 2) return call('knowledge.page.read', { pageId: f.citation });
+    if (step === 3)
+      return call('knowledge.source.read', { pageId: f.citation, sourceId: f.source.id });
+    return message('You prefer violet tea.', [f.citation], null);
+  });
+  const answer = await f.askMemory();
+  expect(answer).toMatchObject({
+    answer: 'You prefer violet tea.',
+    citations: [
+      {
+        reference: `${f.citation}@${f.publication.notebookRevision}`,
+        sourceReferences: [`source:${f.source.id}@${f.source.contentDigest}`],
+      },
+    ],
+  });
+  const search = toolOutput(f.createResponses.mock.calls[1]![1], 'knowledge.retrieval');
+  expect(JSON.parse(search).sources).toMatchObject([
+    { source: 'memory', sourceScope: `page/user/${f.userId}`, selected: [{ pageId: f.citation }] },
+  ]);
+  expect(search).not.toContain('page/workspace/');
+  expect(search).not.toContain('page/server');
+  expect(toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.page.read')).toContain(
+    'USER_PRIVATE_PAGE'
+  );
+  expect(toolOutput(f.createResponses.mock.calls[3]![1], 'knowledge.source.read')).toContain(
+    'USER_PRIVATE_SOURCE'
+  );
+  expect(
+    readTurnRetrievalTraces(
+      join(f.dataRoot, 'workspaces', f.workspace.id),
+      f.workspace.id,
+      f.timeline.id,
+      f.question.access.outputTurnId
+    )
+  ).toMatchObject([
+    {
+      trace: {
+        sourceScope: `page/user/${f.userId}`,
+        queryContext: { threadId: f.timeline.id, turnId: f.question.access.outputTurnId },
+      },
+    },
+  ]);
+  const workThread = f.store.getThread(f.workspace.id, answer.threadId);
+  expect(workThread).toMatchObject({ visibility: 'private', privateOwnerUserId: f.userId });
+  const workTurn = f.store.getTurnById(answer.turnId);
+  expect(workTurn.internalExecution?.knowledge?.ownerScope).toEqual({
+    kind: 'user',
+    userId: f.userId,
+  });
+  expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id).length).toBeGreaterThan(0);
+  expect(
+    listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id).every(
+      (record) => record.turnId === answer.turnId
+    )
+  ).toBe(true);
+  const initial = JSON.stringify(f.createResponses.mock.calls[0]![1]);
+  expect(initial).not.toContain('page/workspace/');
+  expect(initial).not.toContain('page/server');
+  expect(initial).not.toContain('knowledge_notebook_history');
+  expect(initial).not.toContain('cobalt');
+});
+
+it('refuses Memory for shared work, another User or a Worker before Provider dispatch', async () => {
+  const f = await memoryFixture();
+  const shared = f.store.createThread(f.workspace.id, 'Shared work', undefined, 'conversation', {
+    visibility: 'workspace',
+  });
+  for (const question of [
+    {
+      ...f.question,
+      access: { ...f.question.access, outputThreadId: shared.id, outputTurnId: undefined },
+    },
+    {
+      ...f.question,
+      access: {
+        ...f.question.access,
+        actor: { kind: 'user' as const, id: allocateEntityId('usr') },
+      },
+    },
+    { ...f.question, caller: 'worker' as const },
+  ])
+    await expect(askKnowledgeAgent(f.dependencies, question)).rejects.toMatchObject({
+      code: 'memory_access_denied',
+    });
+  expect(f.createResponses).not.toHaveBeenCalled();
+});
+
+it('rechecks Memory page suppression before delivering a synthesized answer', async () => {
+  const f = await memoryFixture();
+  let step = 0;
+  let readPage = '';
+  f.createResponses.mockImplementation(async (_provider, request) => {
+    if (++step === 1) return call('knowledge.retrieval', { query: 'meridian violet tea' });
+    if (step === 2) return call('knowledge.page.read', { pageId: f.citation });
+    readPage = toolOutput(request, 'knowledge.page.read');
+    const owner = resolveScopedNotebookOwner({ ...f.writer, target: { kind: 'user' } });
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(owner.notebookRoot, 'notebook.git'),
+    });
+    const content = notebook.readRevision(f.publication.notebookRevision).files['preferences.md']!;
+    appendMemorySuppression(owner.notebookRoot, {
+      userId: f.userId,
+      actorId: f.userId,
+      requestId: randomUUID(),
+      pageId: f.pageId,
+      lastRevision: f.publication.notebookRevision,
+      digest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      sourceFingerprints: [`source:${f.source.id}@${f.source.contentDigest}`],
+    });
+    return message('You prefer violet tea.', [f.citation], null);
+  });
+  await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
+  expect(readPage).toContain('USER_PRIVATE_PAGE');
+  expect(readUserKnowledgeSource(f.writer, f.source.id, 'model')).toBeNull();
+});
+
+it('rechecks current User authority after Memory page reads before answer delivery', async () => {
+  const f = await memoryFixture();
+  let step = 0;
+  let readPage = '';
+  f.createResponses.mockImplementation(async (_provider, request) => {
+    if (++step === 1) return call('knowledge.retrieval', { query: 'meridian violet tea' });
+    if (step === 2) return call('knowledge.page.read', { pageId: f.citation });
+    readPage = toolOutput(request, 'knowledge.page.read');
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
+    return message('You prefer violet tea.', [f.citation], null);
+  });
+  await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
+  expect(readPage).toContain('USER_PRIVATE_PAGE');
 });
