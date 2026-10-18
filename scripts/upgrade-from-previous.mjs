@@ -311,7 +311,7 @@ async function collect(input, selectors) {
 /** Saves only synthetic selectors and safe family digests, never requests or credentials. */
 export async function runPhase(phase, input) {
   admitPair(input.previous, input.candidate);
-  if (phase === 'worker') {
+  if (phase === 'worker' || phase === 'worker-before') {
     // nsenter changes only this process's network namespace. The existing P14
     // guest/carrier owns it; a mistaken invocation on live dev must fail early.
     assert.notEqual(
@@ -319,8 +319,8 @@ export async function runPhase(phase, input) {
       await readlink('/proc/1/ns/net'),
       'Enter the prepared disposable guest network namespace first.'
     );
-    const baseline = JSON.parse(await readFile(input.baseline, 'utf8'));
-    assert.deepEqual(baseline.candidate, input.candidate, 'Candidate artifact pins changed.');
+    const baseline = JSON.parse(await readFile(phase === 'worker' ? input.baseline : `${input.baseline}.selectors.json`, 'utf8'));
+    if (phase === 'worker') assert.deepEqual(baseline.candidate, input.candidate, 'Candidate artifact pins changed.');
     return checkWorker({
       ...input,
       workspaceId: baseline.selectors.workspaceId,
@@ -333,13 +333,18 @@ export async function runPhase(phase, input) {
     const { seedSqlCorpus } = await import('./upgrade-from-previous-sql-corpus.mjs');
     const selectors = await seedFileCorpus(input);
     Object.assign(selectors, await seedSqlCorpus({ ...input, selectors }));
-    const families = summarizeFamilies(await collect(input, selectors), required);
     await mkdir(dirname(input.baseline), { recursive: true, mode: 0o700 });
     await writeFile(
-      input.baseline,
-      `${JSON.stringify({ previous: input.previous, candidate: input.candidate, selectors, families }, null, 2)}\n`,
+      `${input.baseline}.selectors.json`,
+      `${JSON.stringify({ selectors }, null, 2)}\n`,
       { mode: 0o600, flag: 'wx' }
     );
+    return { phase, workspaceId: selectors.workspaceId, passed: true };
+  }
+  if (phase === 'snapshot') {
+    const { selectors } = JSON.parse(await readFile(`${input.baseline}.selectors.json`, 'utf8'));
+    const families = summarizeFamilies(await collect(input, selectors), required);
+    await writeFile(input.baseline, `${JSON.stringify({ previous: input.previous, candidate: input.candidate, selectors, families }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     return { phase, families: Object.keys(families).length, passed: true };
   }
   assert.equal(phase, 'compare', 'Expected seed or compare.');
@@ -359,7 +364,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const [phase, inputPath, ...extra] = process.argv.slice(2);
     assert(
       inputPath && extra.length === 0,
-      'Usage: node scripts/upgrade-from-previous.mjs <seed|compare|worker> <private-input.json>'
+      'Usage: node scripts/upgrade-from-previous.mjs <seed|worker-before|snapshot|compare|worker> <private-input.json>'
     );
     const input = JSON.parse(await readFile(inputPath, 'utf8'));
     console.log(JSON.stringify(await runPhase(phase, input)));
