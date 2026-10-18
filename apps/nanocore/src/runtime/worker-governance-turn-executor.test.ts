@@ -82,6 +82,7 @@ import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -455,6 +456,8 @@ async function createWorkerContextExecutorFixture(
     readonly materialContent?: string;
     readonly maxContextTokens?: number;
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
+    /** The caller publishes its own Knowledge and binds its selected trace before launch. */
+    readonly skipInitialKnowledgeSelection?: boolean;
     readonly turnId?: string;
     readonly originatingThreadId?: string;
     readonly workerRequest?: string;
@@ -489,7 +492,7 @@ async function createWorkerContextExecutorFixture(
 
   const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000397';
   const retrievalTraceOwner = options.retrievalTraceOwner ?? 'turn';
-  if (retrievalTraceOwner === 'thread-before-turn') {
+  if (retrievalTraceOwner === 'thread-before-turn' && !options.skipInitialKnowledgeSelection) {
     await retrieveWorkspaceKnowledge({
       access: {
         actor: { kind: 'user', id: LOCAL_USER_ID },
@@ -563,7 +566,7 @@ async function createWorkerContextExecutorFixture(
         : `retrieval-trace/turn/${turn.workspaceId}/${turn.threadId}/${turn.id}`,
     objectId: retrievalTraceId,
   };
-  if (retrievalTraceOwner === 'turn') {
+  if (retrievalTraceOwner === 'turn' && !options.skipInitialKnowledgeSelection) {
     await retrieveWorkspaceKnowledge({
       access: {
         actor: turn.triggerActor,
@@ -595,7 +598,8 @@ async function createWorkerContextExecutorFixture(
     diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
       contextDigest: commandInputHash(workerRequest),
       contextRefs: [{ kind: 'item', id: contextItemId }],
-      knowledgeSelectionInput: options.workerRequest ? null : { retrievalTraceRef },
+      knowledgeSelectionInput:
+        options.workerRequest || options.skipInitialKnowledgeSelection ? null : { retrievalTraceRef },
       repositoryResourceId: 'repo_default',
     }),
   });
@@ -8863,6 +8867,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
       maxContextTokens: 240_000,
+      skipInitialKnowledgeSelection: true,
     });
     const app = createApp({
       coreDb: fixture.coreDb,
@@ -8879,37 +8884,44 @@ describe('WorkerGovernanceTurnExecutor', () => {
         'notebook.git'
       ),
     });
-    /** Publishes the exact evidence through current native authority and its fixed-base command. */
-    async function createKnowledge(id: string, title: string, content: string) {
-      const response = await app.request(
-        ...knowledgeOperationRequest(
-          'knowledge.create',
-          { workspaceId: fixture.turn.workspaceId },
-          {
-            body: JSON.stringify({
-              requestId: randomUUID(),
-              baseRevision: notebook.publishedRevision(),
-              knowledgePageId: id,
-              content,
-              kind: 'project-context',
-              title,
-            }),
-          }
-        )
-      );
-      expect(response.status, await response.clone().text()).toBe(200);
-      return (await response.json()) as { id: string };
-    }
-    const knowledge = await createKnowledge(
-      'worker-guidance',
-      'Zygomorphic worker guidance',
-      'Zygomorphic worker guidance belongs in the existing Context Package.'
+    const knowledge = {
+      id: 'worker-guidance',
+      title: 'Zygomorphic worker guidance',
+      content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
+    };
+    const oversizedKnowledge = {
+      id: 'oversized-worker-guidance',
+      title: 'Oversized zygomorphic worker guidance',
+      content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`,
+    };
+    // One native human publication preserves both pages' authority without repeating the Git/Audit setup.
+    const authoredAt = new Date().toISOString();
+    const seeded = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.notebook.update',
+        { workspaceId: fixture.turn.workspaceId },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            baseRevision: notebook.publishedRevision(),
+            changes: [knowledge, oversizedKnowledge].map((entry) => ({
+              path: `${entry.id}.md`,
+              content: serializeUserAuthoredKnowledgePage(
+                {
+                  ...entry,
+                  kind: 'project-context',
+                  createdAt: authoredAt,
+                  updatedAt: authoredAt,
+                },
+                { kind: 'workspace', workspaceId: fixture.turn.workspaceId }
+              ),
+            })),
+            summary: 'Seed human-authored Knowledge for direct Task delivery.',
+          }),
+        }
+      )
     );
-    const oversizedKnowledge = await createKnowledge(
-      'oversized-worker-guidance',
-      'Oversized zygomorphic worker guidance',
-      `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`
-    );
+    expect(seeded.status, await seeded.clone().text()).toBe(200);
     const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
     const retrievalTraceRef = {
       scopeId: `retrieval-trace/turn/${fixture.turn.workspaceId}/${fixture.turn.threadId}/${fixture.turn.id}`,
@@ -8931,7 +8943,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       traceId: retrievalTraceId,
       workspaceId: fixture.turn.workspaceId,
     });
-    const publishedPages = notebook.readRevision(notebook.publishedRevision()).files;
+    const publishedNotebook = notebook.readRevision(notebook.publishedRevision());
+    expect(publishedNotebook.metadata.producer).toEqual({ kind: 'user', id: LOCAL_USER_ID });
+    const publishedPages = publishedNotebook.files;
     const knowledgePageBytes = publishedPages[`${knowledge.id}.md`]!;
     const knowledgePageDigest = turnRuntimeSha256(Buffer.from(knowledgePageBytes, 'utf8'));
     const oversizedKnowledgePageBytes = publishedPages[`${oversizedKnowledge.id}.md`]!;
@@ -9319,7 +9333,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       launchSpy.mockRestore();
       fixture.coreDb.sqlite.close();
     }
-  });
+    // This harness covers real Kernel, Git, S39 launch and Review recovery; it is not a product latency oracle.
+  }, 60_000);
 
   it('fails closed when a direct Task checkpoint lacks its governed Knowledge selection', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge-missing');
