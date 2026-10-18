@@ -230,7 +230,7 @@ export const PolicyDelegationV1Schema = z
     source: z
       .object({
         workspaceId: WorkspaceIdSchema,
-    goalId: z.string().min(1),
+        goalId: z.string().min(1),
         planVersionId: z.string().min(1),
         planDigest: PolicyDigestV1Schema,
         approvalRequestId: z.string().min(1),
@@ -318,7 +318,7 @@ export const PolicyDecisionV1Schema = z
     subject: PolicySubjectV1Schema,
     role: z.enum(['gate', 'final']),
     binding: PolicyStatementReferenceV1Schema.optional(),
-    kernel: PolicyKernelResultV1Schema.optional(),
+    kernel: PolicyKernelResultV1Schema.nullable().optional(),
     invocations: z.array(PolicyInvocationReferenceV1Schema),
     consumedStatements: z.array(PolicyStatementReferenceV1Schema),
   })
@@ -336,11 +336,23 @@ export const PolicyDecisionV1Schema = z
         path: ['binding'],
         message: 'Gate decision requires its binding.',
       });
-    if (decision.role === 'final' && !decision.kernel)
+    if (decision.role === 'final' && decision.kernel === undefined)
       context.addIssue({
         code: 'custom',
         path: ['kernel'],
-        message: 'Final decision requires the actual Kernel result.',
+        message: 'Final decision requires the actual Kernel result or explicit unavailability.',
+      });
+    if (decision.role === 'gate' && decision.kernel !== undefined)
+      context.addIssue({
+        code: 'custom',
+        path: ['kernel'],
+        message: 'A participant cannot claim a Kernel result.',
+      });
+    if (decision.consumedStatements.length && decision.kernel?.effect !== 'allow')
+      context.addIssue({
+        code: 'custom',
+        path: ['consumedStatements'],
+        message: 'Consumption requires an actual Kernel allow.',
       });
     if (decision.role !== 'final' && decision.consumedStatements.length)
       context.addIssue({

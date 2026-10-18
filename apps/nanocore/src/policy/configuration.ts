@@ -1,8 +1,9 @@
 import { OpenKitConfigSchema } from '@openkit/config-schema';
 import {
+  allocateEntityId,
+  type PolicyDocumentV1,
   PolicyDocumentV1Schema,
   PolicyWriteProposalV1Schema,
-  type PolicyDocumentV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -10,7 +11,11 @@ import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { CoreDb } from '../storage/db.js';
-import { listServerPermissionDecisions } from './permission-decisions.js';
+import {
+  listServerPermissionDecisions,
+  recordProductPermissionDecision,
+} from './permission-decisions.js';
+import { evaluateServerAccess } from './server-access.js';
 import {
   EMPTY_POLICY_DOCUMENT,
   policyDigest,
@@ -36,6 +41,7 @@ export function preparePolicyConfiguration(input: {
   readonly coreDb: CoreDb;
   readonly files: Pick<RuntimeConfigFileService, 'readFile' | 'validate'>;
   readonly candidate?: z.infer<typeof PolicyWriteProposalV1Schema>;
+  readonly loadedPolicy: unknown;
 }) {
   requireCurrentDeploymentAdmin(input.coreDb, input.actor);
   const read = input.files.readFile('server.jsonc');
@@ -44,6 +50,11 @@ export function preparePolicyConfiguration(input: {
   const raw = parseJsoncObject(read.content, 'server.jsonc');
   const config = OpenKitConfigSchema.parse(raw);
   const currentDocument = validatePolicyDocument(config.policy?.mediation ?? EMPTY_POLICY_DOCUMENT);
+  if (
+    policyDigest(currentDocument) !==
+    policyDigest(validatePolicyDocument(input.loadedPolicy ?? EMPTY_POLICY_DOCUMENT))
+  )
+    throw new Error('Policy file and loaded revision differ; inspect and reload first.');
   const proposed = PolicyDocumentV1Schema.parse(input.request.changes.proposed);
   const changed = proposed.statements.find((statement) => {
     const previous = currentDocument.statements.find(({ id }) => id === statement.id);
@@ -71,9 +82,15 @@ export function preparePolicyConfiguration(input: {
   });
   if (input.candidate && policyDigest(input.candidate) !== policyDigest(proposal))
     throw new Error('Policy candidate changed during revalidation.');
-  const nextPolicy = { ...(raw.policy as Record<string, unknown> | undefined), mediation: prepared.document };
+  const nextPolicy = {
+    ...(raw.policy as Record<string, unknown> | undefined),
+    mediation: prepared.document,
+  };
   const content = `${JSON.stringify({ ...raw, policy: nextPolicy }, null, 2)}\n`;
-  const validation = input.files.validate({ files: [{ id: 'server.jsonc', content }], mode: 'safe' });
+  const validation = input.files.validate({
+    files: [{ id: 'server.jsonc', content }],
+    mode: 'safe',
+  });
   if (!validation.valid) throw new Error('Policy configuration validation failed.');
   return {
     current: { read, value: currentDocument },
@@ -93,7 +110,12 @@ export function readAdmittedPolicyDocument(coreDb: CoreDb, input: unknown): Poli
   const revision = policyDigest(document);
   const admitted = listServerPermissionDecisions(coreDb).some((decision) => {
     const context = decision.contextSummary as { operation?: unknown } | null;
-    if (decision.action !== 'workspace.configure' || context?.operation !== 'policy.write' || decision.result !== 'allow') return false;
+    if (
+      decision.action !== 'workspace.configure' ||
+      context?.operation !== 'policy.write' ||
+      decision.result !== 'allow'
+    )
+      return false;
     const resource = decision.resourceSummary as { policyRevision?: unknown } | null;
     return resource?.policyRevision === revision;
   });
@@ -101,4 +123,82 @@ export function readAdmittedPolicyDocument(coreDb: CoreDb, input: unknown): Poli
   // The current authored collection, anchor and human authority remain the grant.
   // A historical decision alone never makes an absent statement active.
   return document;
+}
+
+/** Records the current human admission before the existing file writer can persist Policy. */
+export function recordPolicyWriteDecision(input: {
+  readonly coreDb: CoreDb;
+  readonly actor: Actor;
+  readonly candidate: { readonly artifactId: string; readonly contentDigest: string };
+  readonly proposal: z.infer<typeof PolicyWriteProposalV1Schema>;
+  readonly requestId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+}) {
+  const administrator = requireCurrentDeploymentAdmin(input.coreDb, input.actor);
+  const kernel = evaluateServerAccess({
+    userId: input.actor.userId,
+    operation: 'workspace.configure',
+  });
+  const policyRevision = input.proposal.baseRevision;
+  const authorizationRevision = policyDigest({
+    administrator,
+    credentialKind: input.actor.kind,
+    operation: 'workspace.configure',
+    kernel,
+  });
+  const approval = {
+    proposalDigest: input.candidate.contentDigest,
+    policyRevision,
+    authorizationRevision,
+  };
+  const subject = {
+    principal: { kind: 'human' as const, id: input.actor.userId },
+    onBehalfOf: null,
+    actor: { kind: 'user' as const, id: input.actor.userId },
+    process: null,
+    credentialKind: input.actor.kind,
+    responsibleHumanId: input.actor.userId,
+  };
+  const decisionId = allocateEntityId('pd');
+  recordProductPermissionDecision({
+    coreDb: input.coreDb,
+    decisionId,
+    ownerScope: 'server',
+    action: 'workspace.configure',
+    result: kernel.effect,
+    reasonCode: kernel.effect === 'allow' ? 'granted' : 'not_granted',
+    policyEngineVersion: 'nanocore-policy:v1',
+    policySnapshotId: policyRevision,
+    subjectSummary: {
+      principal: subject.principal,
+      responsibleHumanId: subject.responsibleHumanId,
+    },
+    resourceSummary: {
+      kind: 'policy',
+      policyRevision: policyDigest(input.proposal.proposed),
+      candidateArtifactId: input.candidate.artifactId,
+    },
+    contextSummary: {
+      operation: 'policy.write',
+      requestId: input.requestId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+    },
+    enforcementPoint: 'policy.write@decide',
+    mediation: {
+      operation: 'policy.write',
+      stage: 'decide',
+      point: 'policy.write@decide',
+      ...approval,
+      subject,
+      role: 'final',
+      kernel: { effect: kernel.effect, reason: kernel.reasons[0]?.code ?? 'not_granted' },
+      invocations: [],
+      consumedStatements: [],
+    },
+    auditActor: subject.actor,
+  });
+  if (kernel.effect !== 'allow') throw new Error('Policy write was not granted.');
+  return { decisionId, approval };
 }
