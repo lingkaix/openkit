@@ -438,6 +438,8 @@ export function createMemoryOperationImplementations(
             query: input.query,
             limit: input.limit,
             pinnedReferences: input.pinnedReferences,
+            types: input.types,
+            appliesTo: input.appliesTo,
             states: input.states,
             access: {
               store: writer.store,

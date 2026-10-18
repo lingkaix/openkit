@@ -390,6 +390,9 @@ export const KnowledgePageReferenceSchema = PageReferenceSchema.safeExtend({
   objectId: KnowledgePageObjectIdSchema,
 });
 
+// Optional exact metadata selectors narrow eligibility; absent selectors preserve unfiltered requests.
+const KnowledgeSelectionValuesSchema = z.array(z.string().min(1).regex(/\S/)).min(1);
+
 /** Request may narrow context-derived sources; it carries no actor or query lineage. */
 export const RetrieveKnowledgeRequestSchema = z
   .object({
@@ -401,6 +404,12 @@ export const RetrieveKnowledgeRequestSchema = z
       .min(1)
       .default(['active']),
     sourceScope: z.enum(['workspace', 'server']).optional(),
+    types: KnowledgeSelectionValuesSchema.optional().describe(
+      'Match any exact governed page type; supplied selectors intersect.'
+    ),
+    appliesTo: KnowledgeSelectionValuesSchema.optional().describe(
+      'Match any exact declared tool/work-step identifier on Rule, Effect or Objective pages; no prose inference or authority grant.'
+    ),
   })
   .strict();
 
@@ -462,6 +471,8 @@ const RetrievalSelectionMetadataSchema = z.object({
       pinnedReferences: z.array(KnowledgePageReferenceSchema),
       states: z.array(z.enum(['active', 'draft', 'archived', 'superseded'])).min(1),
       sourceScope: z.enum(['workspace', 'server', 'user']),
+      types: KnowledgeSelectionValuesSchema.optional(),
+      appliesTo: KnowledgeSelectionValuesSchema.optional(),
     })
     .strict(),
   createdAt: z.string().min(1),
