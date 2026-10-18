@@ -168,6 +168,7 @@ function fixture() {
 describe('administration catalog configuration', () => {
   it('retains inactive Policy forms through the exact human candidate and records actual activation', async () => {
     const f = fixture();
+    const leaseKnowledgeBaseId = allocateEntityId('kb');
     const principal = { kind: 'human' as const, id: f.actor.userId };
     const fields = {
       author: principal,
@@ -213,7 +214,7 @@ describe('administration catalog configuration', () => {
           lifetime: { ...fields.lifetime, notAfter: '2999-01-01T00:00:00Z' },
           grant: {
             kind: 'storage-lease' as const,
-            knowledgeBaseId: 'registered-kb',
+            knowledgeBaseId: leaseKnowledgeBaseId,
             mount: 'work',
             pathPrefix: 'inputs',
             mode: 'read-only' as const,
@@ -231,6 +232,32 @@ describe('administration catalog configuration', () => {
     };
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
+    for (const knowledgeBaseId of ['invalid-kb', f.workspaceId]) {
+      const invalid = {
+        ...proposed,
+        statements: proposed.statements.map((statement) =>
+          statement.kind === 'permission' && statement.grant.kind === 'storage-lease'
+            ? { ...statement, grant: { ...statement.grant, knowledgeBaseId } }
+            : statement
+        ),
+      };
+      expect(() =>
+        f.service.propose(
+          {
+            targetFamily: 'policy',
+            targetId: 'server',
+            expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+            changes: {
+              proposed: invalid,
+              rationale: 'Reject a malformed or wrong-kind lease target.',
+            },
+          },
+          f.home
+        )
+      ).toThrow(/knowledgeBaseId/);
+      expect(readFileSync(serverPath, 'utf8')).toBe(original);
+      expect(f.reload).not.toHaveBeenCalled();
+    }
     const proposal = f.service.propose(
       {
         targetFamily: 'policy',
@@ -256,7 +283,7 @@ describe('administration catalog configuration', () => {
     expect(candidate.after.statements[2].creator).toEqual(principal);
     expect(candidate.after.statements[1].grant).toEqual({
       kind: 'storage-lease',
-      knowledgeBaseId: 'registered-kb',
+      knowledgeBaseId: leaseKnowledgeBaseId,
       mount: 'work',
       pathPrefix: 'inputs',
       mode: 'read-only',

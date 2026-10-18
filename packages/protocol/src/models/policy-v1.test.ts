@@ -121,12 +121,14 @@ describe('retained Policy version-one contracts', () => {
   it('keeps storage access in a typed Policy grant and rejects traversal prefixes', () => {
     const lease = {
       kind: 'storage-lease',
-      knowledgeBaseId: 'owner-registered-kb',
+      knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001',
       mount: 'work',
       pathPrefix: 'inputs/images',
       mode: 'read-only',
     };
     expect(PolicyGrantV1Schema.safeParse(lease).success).toBe(true);
+    for (const knowledgeBaseId of ['invalid-kb', workspaceId])
+      expect(PolicyGrantV1Schema.safeParse({ ...lease, knowledgeBaseId }).success).toBe(false);
     expect(PolicyGrantV1Schema.safeParse({ ...lease, pathPrefix: '' }).success).toBe(true);
     expect(PolicyGrantV1Schema.safeParse({ ...lease, audience: principal }).success).toBe(false);
     expect(
