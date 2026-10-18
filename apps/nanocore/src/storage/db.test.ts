@@ -113,6 +113,7 @@ describe('scoped storage databases', () => {
         'audit_events',
         'backend_workspace_handles',
         'capability_calls',
+        'evaluation_candidate_sets',
         'evidence_bundles',
         'generative_presentations',
 
@@ -152,6 +153,8 @@ describe('scoped storage databases', () => {
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
+        'workspace_0004_evaluation_candidates',
+        'workspace_0005_evaluation_judgements',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -338,6 +341,8 @@ describe('scoped storage databases', () => {
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
+        'workspace_0004_evaluation_candidates',
+        'workspace_0005_evaluation_judgements',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -389,6 +394,7 @@ describe('scoped storage databases', () => {
         'author_id',
         'created_by_request_id',
         'created_at',
+        'judgements',
       ]);
       expect(
         workspaceDb.sqlite
@@ -650,6 +656,8 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
+        'workspace_0004_evaluation_candidates',
+        'workspace_0005_evaluation_judgements',
       ]);
     } finally {
       userDb.sqlite.close();

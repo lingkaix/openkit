@@ -404,6 +404,7 @@ describe('workspace export verifier', () => {
       'records/agent-resource-catalog.json',
       'records/agent-sessions.jsonl',
       'records/artifact-reviews.jsonl',
+      'records/evaluation-candidate-sets.jsonl',
       'records/item-revisions.jsonl',
       'records/knowledge-claims.jsonl',
       'records/knowledge-conflicts.jsonl',
@@ -1219,6 +1220,8 @@ describe('workspace export verifier', () => {
     ).id;
     workspaceDb.sqlite
       .prepare(`INSERT INTO workspace_material_revisions
+      (workspace_id, material_id, revision_id, parent_revision_id, media_type,
+       content_digest, content, author_id, created_by_request_id, created_at)
       SELECT workspace_id, ?, revision_id, parent_revision_id, media_type,
         content_digest, content, author_id, ?, created_at
       FROM workspace_material_revisions WHERE material_id = ?`)
@@ -1443,11 +1446,12 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
       },
       verification: {
-        fileCount: 21,
+        fileCount: 22,
         checkedFiles: [
           'records/agent-resource-catalog.json',
           'records/agent-sessions.jsonl',
           'records/artifact-reviews.jsonl',
+          'records/evaluation-candidate-sets.jsonl',
           'records/item-revisions.jsonl',
           'records/knowledge-claims.jsonl',
           'records/knowledge-conflicts.jsonl',

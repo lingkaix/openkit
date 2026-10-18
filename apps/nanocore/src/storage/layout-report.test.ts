@@ -64,6 +64,8 @@ describe('storage layout report', () => {
               'workspace_0001_assistant_handoff',
               'workspace_0002_notebook_admission',
               'workspace_0003_exact_review_feedback',
+              'workspace_0004_evaluation_candidates',
+              'workspace_0005_evaluation_judgements',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
