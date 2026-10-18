@@ -56,6 +56,7 @@ import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import * as snapshotLedger from './runtime/aep-snapshot-ledger.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import { evaluateCapturedPendingCall } from './runtime/captured-pending-call.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
@@ -1499,6 +1500,245 @@ describe('worker MCP routes', () => {
       await client.close();
       await workerMcpGateway.close();
       workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a tracking server schema fixed within a Turn and refreshes it on the next Turn', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-turn-schema-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
+    const catalog = {
+      schemaVersion: 1 as const,
+      servers: [
+        {
+          id: 'echo',
+          enabled: true,
+          allowedTools: ['echo', 'review-echo'],
+          deniedTools: [],
+          approvalRequiredTools: ['review-echo'],
+          credentialBindings: [],
+          pinnedSchemaSnapshotId: null,
+          schemaPolicy: 'tracking' as const,
+          timeoutMs: 2_000,
+          transport: {
+            kind: 'stdio' as const,
+            command: process.execPath,
+            args: [],
+            environment: {},
+          },
+        },
+      ],
+    };
+    const setup = createTestAgentSetup({ mcpIds: ['echo'] });
+    const makePackage = (requestId: string) => {
+      const turn = store.createTurn(workspaceId, threadId, 'Use current MCP schema', actor);
+      const pkg = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: testEntityId('as', requestId),
+        agentSetup: setup,
+        backend: { kind: 'openshell' },
+        createdAt: new Date().toISOString(),
+        requestId,
+        triggerActor: actor,
+        turn,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+        workspaceMcpServerCatalog: catalog,
+      });
+      store.updateTurn(turn.id, {
+        agentId: pkg.agent.agentId,
+        agentSessionId: pkg.scope.agentSessionId,
+      });
+      recordMcpWorkerLineage(coreDb, pkg);
+      return pkg;
+    };
+    let environmentPackage = makePackage('req_schema_first');
+    const firstTurnId = environmentPackage.scope.turnId;
+    const original = [mcpEchoTool(), { ...mcpEchoTool(), name: 'review-echo' }];
+    const changed = [
+      {
+        name: 'echo',
+        inputSchema: {
+          type: 'object',
+          properties: { count: { type: 'integer' } },
+          required: ['count'],
+          additionalProperties: false,
+        },
+      },
+    ];
+    let tools: Array<{ inputSchema: Record<string, unknown>; name: string }> = original;
+    const workerMcpGateway = {
+      callTool: vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'called' }] })),
+      listTools: vi.fn(async () => ({ tools, serverVersion: '1' })),
+      close: vi.fn(async () => undefined),
+      closeServer: vi.fn(async () => undefined),
+      closeServerIfIdle: vi.fn(async () => undefined),
+      closeWorkspace: vi.fn(async () => undefined),
+      getServerHealth: vi.fn(() => 'inactive' as const),
+    } satisfies WorkerMcpGateway;
+    const runtimeConfig = createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      agentManifests: [],
+      workspaceMcpServerCatalogs: [
+        {
+          catalog,
+          path: join(dataRoot, 'catalog.json'),
+          workspaceId,
+        },
+      ],
+    });
+    const register = () => {
+      const app = new Hono();
+      registerWorkerMcpRoutes({
+        app,
+        coreDb,
+        runtimeConfig: () => runtimeConfig,
+        store,
+        workerMcpGateway,
+        workerControlGateway: {
+          authenticatePackageToken: vi.fn(() => environmentPackage),
+        } as unknown as WorkerControlGateway,
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      });
+      return app;
+    };
+    let app = register();
+    let requestId = 0;
+    const request = async (method: string, params: Record<string, unknown> = {}) => {
+      const response = await app.request('/api/worker-capabilities/mcp/echo', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          authorization: 'Bearer capability-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, method, params }),
+      });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    try {
+      expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
+      const pending = await request('tools/call', {
+        name: 'review-echo',
+        arguments: { message: 'captured approval' },
+      });
+      expect(pending).toMatchObject({
+        result: { isError: true, structuredContent: { status: 'pending-approval' } },
+      });
+      expect(workerMcpGateway.callTool).not.toHaveBeenCalled();
+      const currentSchemaDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        const record = readPendingRequest(
+          currentSchemaDb.sqlite,
+          pending.result.structuredContent.requestId
+        )!;
+        expect(
+          evaluateCapturedPendingCall({
+            manifest: setup.manifest,
+            catalog,
+            coreDb,
+            record,
+            sqlite: currentSchemaDb.sqlite,
+          }).schemaCurrent
+        ).toBe(true);
+        tools = changed;
+        expect(
+          await request('tools/call', { name: 'echo', arguments: { message: 'original' } })
+        ).toMatchObject({ result: { content: [{ text: 'called' }] } });
+        expect(
+          readCurrentMcpToolSchemaSnapshot({
+            catalogEntryId: 'echo',
+            pinnedSchemaSnapshotId: null,
+            workspaceDb: currentSchemaDb,
+            workspaceId,
+          })?.tools
+        ).toEqual(changed);
+        expect(
+          evaluateCapturedPendingCall({
+            manifest: setup.manifest,
+            catalog,
+            coreDb,
+            record,
+            sqlite: currentSchemaDb.sqlite,
+          }).schemaCurrent
+        ).toBe(false);
+      } finally {
+        currentSchemaDb.sqlite.close();
+      }
+      expect(await request('tools/call', { name: 'echo', arguments: { count: 1 } })).toMatchObject({
+        error: { data: { code: 'mcp-invalid-arguments' } },
+      });
+      expect(workerMcpGateway.callTool).toHaveBeenCalledTimes(1);
+      // Route reconstruction loses process-local state but must keep the Turn selection.
+      app = register();
+      expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
+      store.updateTurn(firstTurnId, { status: 'completed', completedAt: new Date().toISOString() });
+      const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: testEntityId('attempt', `lease_${firstTurnId}`),
+        cause: 'worker-final-status',
+        outcomeRef: 'fixture-schema:completed',
+      });
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const correlation = schedulerExecutionCorrelation(closing);
+      const release = await new SimulatedTurnExecutor({ coreDb }).release({
+        ...correlation,
+        proof,
+      });
+      closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        proof,
+        fenceRef: release.fenceRef!,
+      });
+      environmentPackage = makePackage('req_schema_second');
+      expect(await request('tools/list')).toMatchObject({ result: { tools: changed } });
+      expect(await request('tools/call', { name: 'echo', arguments: { count: 1 } })).toMatchObject({
+        result: { content: [{ text: 'called' }] },
+      });
+      expect(
+        await request('tools/call', { name: 'echo', arguments: { message: 'obsolete' } })
+      ).toMatchObject({ error: { data: { code: 'mcp-invalid-arguments' } } });
+      expect(workerMcpGateway.callTool).toHaveBeenCalledTimes(2);
+      const db = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        const bindings = db.sqlite
+          .prepare(`
+          SELECT turn_id, schema_snapshot_id FROM capability_calls
+          WHERE family = 'mcp' ORDER BY rowid
+        `)
+          .all() as Array<{ turn_id: string; schema_snapshot_id: string | null }>;
+        for (const [turnId, expected] of [
+          [firstTurnId, original],
+          [environmentPackage.scope.turnId, changed],
+        ] as const) {
+          const ids = bindings
+            .filter((row) => row.turn_id === turnId)
+            .map((row) => row.schema_snapshot_id);
+          expect(ids.length).toBeGreaterThan(0);
+          expect(new Set(ids)).toEqual(
+            new Set([`mcpsnap_echo_${mcpToolSchemaContentDigest(expected)}`])
+          );
+        }
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      await workerMcpGateway.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -3227,6 +3467,7 @@ describe('worker MCP routes', () => {
         server('authority-race'),
         server('gate-race'),
         server('schema-cancel'),
+        server('near-limit'),
       ],
     };
     let environmentPackage = resolveAgentEnvironmentPackage({
@@ -3242,6 +3483,7 @@ describe('worker MCP routes', () => {
           'authority-race',
           'gate-race',
           'schema-cancel',
+          'near-limit',
         ],
       }),
       backend: { kind: 'openshell' },
@@ -3370,7 +3612,11 @@ describe('worker MCP routes', () => {
       listBarrier = { entered: markEntered, released, serverId };
       return { entered, release };
     };
+    let nearLimitListing: Awaited<ReturnType<WorkerMcpGateway['listTools']>>['tools'] = [];
     const listTools = vi.fn(async (request: Parameters<WorkerMcpGateway['listTools']>[0]) => {
+      if (request.server.id === 'near-limit') {
+        return { serverVersion: '1.0.0', tools: nearLimitListing };
+      }
       if (listBarrier?.serverId === request.server.id) {
         listBarrier.entered(request.signal);
         await listBarrier.released;
@@ -3862,22 +4108,10 @@ describe('worker MCP routes', () => {
           name: 'echo',
         },
       ];
-      const nearLimitSchemaDb = openWorkspaceDb(
-        dataRoot,
-        'ws_00000000-0000-7000-8000-000000000001'
-      );
-      recordMcpToolSchemaSnapshot({
-        environmentPackage,
-        schemaSnapshotId: 'mcpschema_near_limit',
-        serverId: 'echo',
-        source: 'live',
-        tools: nearLimitTools,
-        workspaceDb: nearLimitSchemaDb,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      nearLimitSchemaDb.sqlite.close();
+      nearLimitListing = nearLimitTools;
+      const nearLimit = await connect('near-limit');
       expect(Buffer.byteLength(JSON.stringify(nearLimitTools), 'utf8')).toBe(512 * 1024);
-      const nearLimitList = await echo.listTools();
+      const nearLimitList = await nearLimit.listTools();
       expect(Buffer.byteLength(JSON.stringify(nearLimitList.tools), 'utf8')).toBe(512 * 1024);
       const nearLimitListDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(

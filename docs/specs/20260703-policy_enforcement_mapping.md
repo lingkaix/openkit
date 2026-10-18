@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-updated: 2026-09-30
+updated: 2026-10-18
 ---
 # Policy Enforcement Mapping
 
@@ -25,6 +25,8 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 ## Owns
 
 - Product fact vocabulary for mapping NanoCore subjects, actions, resources, and context into policy evaluation.
+- The shared versioned Policy statements, binding and delegation projection, Policy review/update path, and retained decision envelope.
+- The extension of the existing operation registry to Core-mediated non-API operations and their stages.
 - `PermissionDecision` as the durable bridge between policy evaluation, product workflow, approvals, audit, and backend policy derivation.
 - Mapping policy decisions to product behavior, approval gates, Action Center rows, launch blocking, degraded readiness, and fail-closed errors.
 - Deriving runtime backend policy from canonical NanoCore decisions without making backend policy canonical.
@@ -70,6 +72,8 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 ## Policy Fact Vocabulary
 
 NanoCore product vocabulary is adapter input, not kernel truth. Subjects, actions, resources, and context MUST be translated into the standard-aligned NGAC subset owned by `docs/specs/20260629-openkit_policy_model.md`. Product actions may remain stable API names, but the policy-kernel request must evaluate the required NGAC access rights and restrictions rather than treating product actions as association rights.
+
+[Permissions](../core/permissions.md#subject) owns principal and actor semantics. Agent principals use their own human-domain-derived grants; a User-principal call by an agent intersects User rights with agent restrictions. Direct human calls record no process when none exists; agent work records its actual Turn. These identities remain distinct in the retained subject below.
 
 Subjects:
 
@@ -145,11 +149,84 @@ Context:
 - request origin
 - time and retention class
 
+## Unified Policy Statements And Revisions
+
+[Permissions](../core/permissions.md#policy-statements-and-administration) owns the shared authority and administration rules. Permission, binding, and envelope/delegation statements use one versioned Policy store and snapshot. A revision MUST identify its author, delegation source, scope, lifetime, and activation. One snapshot pins all three statement kinds for an evaluation. [The accepted decision](../decisions/20261018-unified_mediation_and_policy.md) records the reason for this shared base.
+
+A binding MUST retain:
+
+- The operation/stage selector and any subject, resource, crossing, or effect-attribute conditions.
+- The scope and separate lifetime attribute, including its anchor and optional expiry/use bounds.
+- The mode, participant identity and version, and binding version.
+- The permitted input disclosure scope and typed input/output contract.
+- Explicit ordering, failure behavior, and shadow or active state.
+- The real author, responsible user, and delegation or human-envelope references.
+
+Binding creation, replacement, narrowing, activation, and revocation use `policy.write`. Its invocation cannot derive disclosure authority from participant availability or Tool presence. Validation MUST check the proposed input scope and participant grant before committing the binding. At invocation, Core MUST recheck current disclosure and acting authority with the Kernel only. A participant's investigative calls also use Kernel-only checks with its own grant; neither path permits another binding or recursive approval. The owning human's root decision terminates the authority chain.
+
+Permission statements include Gateway Tool allow, deny, and approval-required rules; these use the ordinary Kernel check at dispatch. They do not create another Tool-rule format. Storage leases remain the grant kind above. Existing finite Worker Git-read assignments retain their exact authority and application boundary below; this design does not widen that exception.
+
+## Point And Evaluation Contract
+
+[Permissions](../core/permissions.md#enforcement-points) owns the point dimensions and pipeline. A retained point identifier MUST be `<operation>@<stage>`, using the actual registered operation ID, not a module label or an independent point registry. `PermissionDecision.enforcementPoint` and binding selectors MUST use this same identifier. The retained stage is exactly `propose`, `decide`, `commit`, or `completed` and MUST agree with the point identifier.
+
+Extend the existing [Operation Definition](20261002-operation_definition.md) registry to Core-mediated Tool dispatch, model requests, context delivery, and result ingress. A non-API entry does not acquire a public endpoint or another primary admission by registration. It keeps the exact owning effect, target, audience, and required access-right checks. The existing operation-to-access-right mapping below remains the unique primary mapping; a new family still requires its owning registration before publication.
+
+The operation's built-in crossing attributes are `admission`, `disclosure`, `dispatch`, `ingress`, `mutation`, `administration`, and `decision`. Policy/delegation/binding/membership/credential-grant changes are administration crossings. Crossing attributes remain separate from mutation posture, static effect class, sensitivity, dynamic risk, and authorization. They MUST NOT supply an access right.
+
+### Proposal, Decision, Commit, And Completion
+
+At propose, Core MUST construct the canonical subject, operation, resource, payload reference, and context, including authoritative authorization sources. It pins the Policy revision, binding versions, and input versions. The admitted post-transform proposal has a digest. Original and replacement references remain with their safe existing content owners.
+
+At decide, Core runs the Permissions pipeline over that admitted proposal. Transforms run in explicit order. Advice may run in parallel and becomes attributed context for the later gates and Kernel; it never grants. Gates run in explicit order. The mandatory final Kernel remains pure and synchronous; the orchestrating Core owner handles participant invocation, deadlines, and circuits. No participant result can skip that final evaluation or override the closed result precedence. Before commit, changed input or Policy/authorization/binding revisions invalidate the admitted evaluation and require a fresh pipeline.
+
+At commit, only the final combined `allow` permits the owner's effect and declared commit obligations. Credential injection is Core-only and occurs after the final allow, bound to the approved target, account, and action. A participant cannot inspect secret values or produce an injection grant. No new cross-domain atomicity, effect receipt, or retry lifecycle is introduced.
+
+At completed, observe may record the outcome without veto or mutation. Returning external content enters its own ingress operation before any separate disclosure. A wrapper that calls several Tools retains each nested dispatch check; authorizing the wrapper does not authorize its nested effects.
+
+Each operation declares allowed modes and provider kinds. Boot admission and the centralized Workspace resolver accept no participant bindings. Participant invocation and investigative calls accept none. The existing transient resolver behavior below remains unchanged, including no per-request durable decision.
+
+### Participant Results And Failure
+
+A gate's valid result uses the existing closed `PermissionDecision` result set. Core maps the final low-level Kernel result through the owning product rules, then combines mandatory product results under the existing precedence below. Only the defined Goal missing-grant case maps `not_granted` to escalation; a prohibition never does. An agent approver's typed output is allow, deny, or escalate-to-human, plus risk, authorization assessment, and rationale. Core maps escalation to `require_escalation`; the agent cannot invent another result or impersonate a human. Shadow output is retained evidence without decisive authority. Activation requires the owning human's separate bounded `policy.write` after inspecting shadow evidence.
+
+Timeout, malformed output, unavailable provider, refusal to perform the job, or an open circuit follows the binding's declared failure behavior:
+
+| Failure behavior | Product result and limit |
+| --- | --- |
+| Escalate to human, the default | `require_escalation` through the existing Pending Request path. |
+| Continue | Neutral `not_applicable`, permitted only for a non-decisive step. It grants nothing. |
+| Error | `error`; block the effect and retain the failure. |
+
+A failed participant MUST NOT be recorded as a substantive deny or an inferred allow. Missing mandatory authorization facts remain `error` under the existing result contract. A required gate without a valid result cannot release an effect. Retries stay within one bounded invocation deadline; availability circuits remain distinct from any Turn-level substantive-denial circuit. Restart loads current Policy and preserves evidence without replaying participant effects or restoring old authority.
+
+## Policy Review And Update
+
+The pre-v0.1.0 `policy.write` administration path MUST carry the same governed proposal, decision, and commit boundary as other effects. The proposal retains the exact diff, proposer, rationale, affected scope, lifetime, and expected Policy revision. Validation MUST check the closed required shape, conflicts, current author/delegation authority, input disclosure, and whether the change narrows or widens authority.
+
+The deciding authority follows [Permissions](../core/permissions.md#policy-statements-and-administration): an authorized author may narrow directly; a delegated supervising agent may widen within its envelope; the owning human decides outside-envelope changes, envelope/delegation changes, and agent-approver activation. Observe and advise additions count as disclosure widening. A Worker may submit only a suggestion, retained as a proposal through the existing candidate owner. No principal approves a change that widens its own authority.
+
+Agent-principal creation and domain-grant administration MUST retain the creator, responsible human, and responsibility-chain references. Validation and evaluation use the [Permissions accountability contract](../core/permissions.md#subject), including agent-creator propagation, explicit human assignment, and finite acyclic termination. The current terminal human's domain authority is a mandatory evaluation fact; missing or invalid chain facts suspend the agent's grants until human reassignment. This does not map the responsible human's rights into the agent's grants.
+
+The decision MUST retain the approver or delegated author and validation outcome. The commit MUST identify the activation revision. Proposal saved, validation failed, commit failed, and active revision are distinct outcomes. Saving a proposal does not activate it. Stale expected revisions, conflicting scope, revoked delegation, or missing mandatory facts block activation. After a lost response or restart, inspect the exact recorded outcome and current revision before a new authorized request; an unknown write MUST NOT be repeated automatically.
+
+Impact simulation against recent decisions and open Pending Requests is later work. It is not a prerequisite for this accepted review path. Meta-Skill Gateway-rule proposals use this same path rather than applying model suggestions directly.
+
+### Goal Domain And Container Projection
+
+Plan approval MUST retain an envelope/delegation statement for the Goal domain, naming its Workers, resources, approved rights, responsible human, and administering Coordinator. The Task Worker receives that envelope intersected with its Task-card resources. The Coordinator narrows by exception; inheritance does not expand the approved domain.
+
+Within the envelope, a missing-grant reason `not_granted` maps to `require_escalation` addressed to the Coordinator. The Coordinator may extend the Task or Goal container within current delegation; Core then reruns the full current evaluation. A matching prohibition remains `prohibited` and blocks. A distinct `require_approval` condition remains required. Outside-envelope requests go to the owning human for a Plan revision. A Coordinator's grant is Policy administration, not an agent-approver decision or a replacement for a human-only gate.
+
+[Permissions](../core/permissions.md#delegated-goal-domain-and-statement-lifetime) owns lifetime semantics. The retained attribute is `lifetime = { anchor, notAfter?, uses? }`; `anchor` references any container, not a closed lifetime enum. Scope and lifetime remain independent: Worker W's Tool X grant may be anchored on Task T or bounded by time or uses. An unknown required anchor or bound fails closed under the existing authority-bearing shape rule.
+
+Anchor closure, `notAfter`, use exhaustion, or loss of the author's authority ends the statement. `uses: 1` means once, consumed atomically by the allowing decision; that one approval creates no Policy change. An anchor on the scope owner with neither optional bound means persistent authority. A Coordinator's chosen lifetime MUST remain within its Goal domain and end with it at the latest. Longer authority needs the domain owner's human-approved promotion. These are authorization predicates, not cleanup jobs.
+
 ## V1 Product Operation And Access-Right Registry
 
 The following registry is the unique owner of the closed V1 product-operation to access-right mapping for centralized Workspace authorization and the governed effects already named by current specifications. A concrete public operation maps to exactly one primary product operation below. Operation identifiers and access-right identifiers are intentionally distinct. Active-membership associations are owned separately by `docs/specs/20260715-multi_user_workspace_system.md` and may narrow through current Policy, credentials, gate eligibility, and lifecycle facts. Earlier fixed-role terminology in concrete runtime projections identifies the pre-cutover implementation, not an additional target ceiling.
 
-This specification keeps this registry. That one primary product operation is the primary policy operation named by [Operation Definition](20261002-operation_definition.md). The access right is the right this table assigns to that product operation. Invocation performs one primary admission through that primary policy operation. This specification's existing enforcement decides that admission. This specification does not define a second primary admission for the same call. Deeper effect checks already named here, including `runtime.launch`, `vault.use`, and `network.egress`, stay with their effect owners. Named Workspace Resource Access below activates the first resource-scoped restriction slice for shared Threads. Permission-based blocking for other resource families remains deferred. An owner's or administrator's choice to keep users from an operation through the Policy Kernel uses that named slice where applicable. The deny, approval, and launch-blocking outcomes in this specification are a different fact, and they stay as written.
+This specification keeps this registry. That one primary product operation is the primary policy operation named by [Operation Definition](20261002-operation_definition.md). The access right is the right this table assigns to that product operation. Invocation performs one primary admission through that primary policy operation. This specification's existing enforcement decides that admission. This specification does not define a second primary admission for the same call. Deeper effect checks already named here, including `runtime.launch`, `vault.use`, and `network.egress`, stay with their effect owners. Named Workspace Resource Access below activates the first resource-scoped restriction slice for shared Threads. Permission-based blocking for other resource families remains deferred. An owner's or administrator's choice to keep users from an operation through the Policy Kernel uses that named slice where applicable. The approved unified Policy path adds the binding, review, and delegated-domain contracts above. Routing every existing operation through that path follows the rollout below. Existing deny, approval, and launch-blocking outcomes remain mandatory throughout that rollout.
 
 | Product operation | Required access right | Operation boundary |
 | --- | --- | --- |
@@ -282,19 +359,22 @@ Acceptance requires an exact failed-Turn/Agent/package/repository lineage, immut
 - decision id
 - policy engine version
 - policy snapshot id
-- subject summary
+- subject summary: principal kind and identity, optional on-behalf-of principal, actual actor, actual process or explicit absence, responsible human resolved at decision time for an agent, and credential kind
 - action
 - resource summary
 - context summary
 - result
 - reason code
-- enforcement point
+- enforcement point and stage
+- admitted proposal digest
+- Policy revision and current authorization revision
+- participant invocation references, including mode, participant identity/version, and binding version
 - required approval kind when applicable
 - approval id when applicable
 - audit event id
 - created timestamp
 
-Decisions are immutable.
+Decisions are immutable. Responsibility reassignment MUST NOT replace the human retained on an earlier agent decision. Gate and Kernel evaluations use this envelope. Observe, advise, and transform invocation evidence uses the existing Audit owner with the same point, revision, participant, and safe input/output references. This adds no record family or second transcript. Required safe evidence must be retained before releasing a participant result. Historical records without a formerly unrecorded edge remain unknown; a fixed snapshot label is not proof of an immutable historical version.
 
 Boot policy self-check decisions for Core API allow and baseline Vault-use deny each allocate an independent `pd` UUIDv7 at the existing baseline recording trigger. Retain the exact `(bootId, action)` correlation as `contextSummary.bootId` and `action`, with `contextSummary.boot = true`; it is not a UUIDv5 name. Exact retry after reopen retains the original decision and linked Audit without another allocation or publication. Multiple matches, an incomplete retained pair, a missing linked Audit or changed known decision facts fail closed before writes. A distinct boot allocates fresh decisions. The pair and its Audit rows use the existing Core SQLite transaction boundary; entropy failure publishes neither new decision nor Audit. This adds no cross-domain atomicity, namespace admission, boot retry loop or policy evaluation trigger.
 
@@ -361,7 +441,13 @@ When approval resolves, NanoCore records:
 
 Approval is policy-originated only; runtime-native approval prompts are never imported as requests.
 
+`require_approval` and `require_escalation` use the existing Pending Request and Action Center owners; approval is their resolution path, not a pipeline stage. The request MUST bind to the admitted post-transform proposal digest, Policy revision, and authorization revision. A changed proposal, target, binding, Policy, or authorization revision invalidates its authority. Captured execution reruns the current pipeline with the granted approval as context; the requester does not re-issue the call. An agent approver may satisfy only its explicitly activated existing condition and never a human-only requirement.
+
+Once means consuming this proposal approval without a Policy write. Work-unit or persistent authority requires a `policy.write` proposal under the scope and lifetime rules above. An approval control MUST distinguish these outcomes; it cannot silently convert a once-only decision into persistent authority.
+
 ## Current Implementation Projection
+
+Unified mediation, the retained operation/stage envelope, shared binding/delegation revisions, agent-native subject projection and responsibility-chain validation, lifetime attributes, Goal domains, and the `policy.write` review path are Not Started. The existing specialized producers below do not implement these accepted contracts. No agent approver is activated.
 
 The migrated process-local automation definitions retain `workspace.read` for inventory and `workspace.write` for create/update/delete; this is not the recurring schedule contract above. Scheduler listing retains `workspace.read`, while retry/cancel and interrupted checkpoint release retain `turn.run`. Recovery inventory retains `workspace.read`. These classifications derive from the family definition tables; the removed route catalog declarations and automation-specific guard branches are absent. Native invocation supplies one primary Workspace admission and preserves the existing owner effect checks, readonly ceiling and current administrator audience predicate.
 
@@ -410,6 +496,8 @@ Each worker session should bind to a policy snapshot id.
 
 The snapshot includes:
 
+- permission, binding, and envelope/delegation statements under their common revision
+- statement scope and lifetime attributes
 - policy kernel version
 - relevant assignments
 - relevant associations
@@ -469,15 +557,34 @@ The active-member association is adapter vocabulary for full Workspace operation
 
 - Extend the accepted V1 product-operation registry only when a new owning specification introduces a materially different authorization family.
 - Resource-specific permission administration outside the first shared-Thread R033 slice remains deferred; it must use the same kernel and accepted target owners when activated.
+- Route remaining existing enforcement producers through the approved common pipeline after the pre-v0.1.0 pilot; retain their current checks until each cutover.
 - Add broader product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests outside the active-membership Workspace authorization slice.
-- Extend or wrap the policy kernel itself to produce `require_approval`, `require_escalation`, `defer`, `not_applicable`, and policy errors instead of mapping those product outcomes in NanoCore helper code.
+- Keep product result mapping in NanoCore; the pure synchronous Kernel continues to return only allow or deny.
+- Defer post-success `react` participation and NGAC-style Policy obligations until after v0.1.0 under issue #375. A future reaction acts under its defining author's current authority; the present modes do not implement it.
 - Bind future worker-session families and future AEP snapshot producers to policy snapshot ids as they ship.
 - Keep every adapter free of runtime-native approval prompts; policy-originated pending approvals are the only approval mechanism.
 - Add policy-change handling for stale, interrupted, or recycled worker sessions.
 - Compile complete backend enforcement material from canonical policy-kernel outcomes once full fact mapping exists.
 
+## Rollout / Migration Plan
+
+Before v0.1.0, define and retain operation/stage point identity, binding state and disclosure scope, envelope/delegation statements, agent-native subject identity, lifetime attributes with anchor/time/use bounds, and revisions with author/delegation/activation. Extend the existing `PermissionDecision` envelope with proposal digest, Policy/authorization revisions, and participant references. Approval binding, the Goal-domain statement created by Plan approval, the `policy.write` review path, and the I16 MCP `tool.use` pilot are in that scope.
+
+The shared retained formats freeze with the reset RC. A non-additive pre-stable shape change rides the single authorized reset after the coordinator announces the pre-reset cut; this design adds no legacy reader or compatibility layer. After the continuity boundary, additive evolution or an accepted one-way migration follows [Contract Evolution](../core/contract-evolution.md). Preserve immutable historical decision facts, allocation rules, and imported non-authority.
+
+Routing all remaining producers, impact simulation, adaptive or cached review, external participant adapters, and the Turn substantive-denial circuit follow later unless separately required earlier. Post-success `react` remains after v0.1.0 under issue #375. Boot and Workspace resolver exclusions remain intentional coverage limits, not missing durable-decision producers.
+
 ## Testing Strategy
 
+- Operation/stage identity tests prove that binding selectors and decisions resolve the same registered operation without a second registry.
+- Pipeline tests prove ordered transforms, attributed advice, ordered gates, final synchronous Kernel evaluation, and secret injection only after the combined allow.
+- Binding tests cover write-time disclosure authority, invocation-time revocation, depth-one Kernel-only investigative calls, default human escalation, non-decisive continuation, and failure without fabricated deny or allow.
+- Policy review tests cover direct authorized narrowing, delegated in-envelope widening, human-only envelope/delegation changes and activation, disclosure widening, stale revisions, failed commit, and activation readback.
+- Goal tests distinguish missing grant, prohibition, and required approval; prove Task-card intersection, Coordinator escalation, current re-evaluation, outside-envelope Plan revision, and anchor closure, time/use bounds, atomic once-only consumption, author-authority bounds, and human-approved promotion without cleanup jobs.
+- Approval tests reject changed post-transform proposal digests and Policy/authorization revisions, and distinguish once-only approval from a Policy proposal.
+- Evidence tests preserve immutable allocation and imported-history rules, while retaining participant references through existing Policy/Audit owners.
+- Subject tests distinguish agent-principal grants from User-principal calls by an agent, preserve actual actor/credential kind, and leave process absent for direct human calls.
+- Accountability tests cover creator and responsible-human attribution, agent-creator propagation, explicit human assignment, finite acyclic chains, removed or no-longer-authorized humans, fail-closed grant suspension, human reassignment, and immutable decision-time human attribution.
 - Fact mapping tests for each product object family.
 - Decision tests for allow, deny, approval, and escalation outcomes.
 - Approval linkage tests proving only a target-issued approval satisfies a specific policy requirement and imported authority remains readable but effect-inert after repository or Vault re-binding.
@@ -491,7 +598,7 @@ The active-member association is adapter vocabulary for full Workspace operation
 
 ## Risks & Mitigations
 
-- Risk: Approval stays runtime-driven forever. Mitigation: make policy-originated approval the target and treat runtime prompts as imported compatibility signals.
+- Risk: Approval stays runtime-driven. Mitigation: require Policy-originated approval and refuse runtime-native approval prompts under the existing boundary.
 - Risk: OpenShell policy becomes product truth. Mitigation: store derived backend policy as evidence linked to NanoCore decisions.
 - Risk: Policy vocabulary becomes too generic. Mitigation: use product nouns from core docs and keep every action resource-scoped.
 - Risk: Decisions are hard to debug. Mitigation: retain redacted decision traces for development and audit.
