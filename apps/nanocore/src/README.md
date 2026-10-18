@@ -149,3 +149,5 @@ Assistant native invocation receives the existing runtime configuration manager 
 Light App recovery-copy metadata has its own retained v1 marker and fixed decoder in `generative-kernel/snapshots.ts`. The reader checks the marker before payload decoding, ignores descriptive additions and leaves the copied SQLite bytes unchanged. Current API projections omit the retained header.
 
 Capability calls, usage records, evidence bundles, and generated presentations write format 1 with the shared retained-record helper and reject unsupported markers before retained JSON decoding or same-key replay. Their existing domain decoders, redaction, and lifecycle owners remain in place.
+
+The first explicit public Memory save initializes its admitted User default Knowledge Base before Notebook publication and validates against that exact page scope. Later reads use the retained binding and never allocate a replacement. The public create/read regression in `memory-operation-projections.test.ts` checks exact published bytes and a stable binding.

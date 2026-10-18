@@ -66,6 +66,27 @@ function fixture() {
 }
 
 describe('public explicit self Memory', () => {
+  it('retains the first-save User base before public reads of its exact published bytes', async () => {
+    const f = fixture();
+    const owner = { dataRoot: f.dataRoot, scope: { kind: 'user' as const, userId: f.userId } };
+    expect(() => readDefaultKnowledgeBaseId(owner)).toThrow();
+    const content = f.content('Keep this first preference exactly.\r\n');
+    const saved = await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'preferences',
+      content,
+      summary: 'First public save',
+    });
+    expect(saved.status).toBe(200);
+    const knowledgeBaseId = readDefaultKnowledgeBaseId(owner);
+    expect(await f.call('memory.read', { pageId: 'preferences' })).toMatchObject({
+      status: 200,
+      body: { page: { content, notebookRevision: saved.body.notebookRevision } },
+    });
+    expect(readDefaultKnowledgeBaseId(owner)).toBe(knowledgeBaseId);
+  });
+
   it('publishes exact personally authored bytes through self-only operations and refuses a stale edit', async () => {
     const f = fixture();
     const content = f.content('Keep this exact personal preference.\r\n');

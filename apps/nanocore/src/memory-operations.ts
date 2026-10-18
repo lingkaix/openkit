@@ -118,6 +118,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
           .get()
       )
         throw new NotebookError('recovery_required');
+      // The explicit first save binds its base before Notebook publication; readers never allocate it.
       const knowledgeBaseId = initializeDefaultKnowledgeBaseId({
         dataRoot: writer.coreDb.dataRoot,
         scope: ownerScope,
