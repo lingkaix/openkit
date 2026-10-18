@@ -7,6 +7,10 @@ updated: "2026-10-15"
 ---
 # NanoHost Runtime And Transport
 
+## Cold Gateway Startup
+
+Gateway connection and health during cold supervisor preparation MUST use the remaining existing absolute startup readiness budget, including any shorter rebuild deadline. Cold image pull, extraction and initialization MUST NOT be cut off by a separate ten-second Gateway health wait. This does not extend the overall startup bound, grant readiness before verified health and Core acknowledgement, or weaken partial-start invalidation and fencing.
+
 ## Startup Failure Diagnostic Carriage
 
 A `turn.start` dependency refusal may carry the closed startup explanation owned by the [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation). Existing exact operation identity, sequence, identical-result redelivery, durable result-before-acknowledgement and cleanup/fence rules apply unchanged. Core rejects a mismatched outer stage/reason or malformed explanation before settlement. Diagnostic collection adds no replay, extra result channel, disk spool or wait beyond existing deadlines. Absence of this observation is unavailable cause, not proof of network policy or credential failure. Private Epoch report restrictions are unchanged; full trusted enforcement correlation is outside this carriage contract.
