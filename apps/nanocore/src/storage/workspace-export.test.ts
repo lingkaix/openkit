@@ -64,7 +64,6 @@ import {
 const timestamp = '2026-07-05T00:00:00.000Z';
 const localActor = { kind: 'user', id: LOCAL_USER_ID } as const;
 const workspaceKnowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
-const serverKnowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000002';
 
 /** Export fixture input with empty Material owner families supplied by the local writer wrapper. */
 type WorkspaceExportTestInput = Omit<

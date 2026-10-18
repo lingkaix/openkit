@@ -50,11 +50,9 @@ The shared citable `contentRef` carries `knowledgeBaseId`, `contentDigest`, `loc
 | `range: null` | Whole source. |
 | Byte range | `{kind: bytes, start, end}`; nonnegative integer half-open raw-byte offsets, end not before start. |
 | Page | `{kind: page, page}`; positive integer page number. |
-| Time range | `{kind: time, startSeconds, endSeconds}`; finite nonnegative seconds, end not before start. |
-| Frame | `{kind: frame, frame, numbering, coordinateSpace}`; integer frame, explicit zero/one-based numbering and source space. |
 | `availability` | `available` or `unavailable`; observed, not permission or a future guarantee. Preserve descriptive metadata, digest and captured locator. |
 
-Tagged values and coordinate-space names are strings; frame values respect their declared numbering. Ranges cannot silently change coordinate systems. Storage range reads accept byte coordinates, not an implicit media conversion.
+Time and frame coordinates are deferred until an active producer requires them. Tagged values and coordinate-space names are strings. Ranges cannot silently change coordinate systems. Storage range reads accept byte coordinates, not an implicit media conversion.
 
 Reuse existing qualified Source ID/digest and versioned Artifact references as attachment identities; allocate no parallel attachment ID. Source pointers bind logical mount paths only; backend locations belong to mount declarations. Other owners may retain verified `locations`. Reuse capture/publication timestamps. Digests and locators are citable facts, not authority.
 
@@ -199,7 +197,7 @@ Ablation: indexable media outputs need source coordinates and production identit
 
 Extend existing representation metadata. `sourceContentDigest` identifies exact original bytes; `sourceReference` is its existing qualified owner/version reference. `recipe` carries string `id`, string `version` and JSON-object `parameters` for output-changing settings. `provider` and `model` identify model use, or are null for deterministic local tools. Vectors also record exact `embeddingSpace` identity.
 
-`sourceLocator` declares page, time, frame, byte or whole-source coordinates using the shared coordinate rules. Output `contentRef`, size and media facts identify derived bytes separately from the original. Explicit output unavailability preserves lineage without claiming byte retention. `coverage: complete | incomplete` preserves truncation and existing processing-failure evidence. Output offsets never claim original coordinates.
+`sourceLocator` declares page, byte or whole-source coordinates using the shared coordinate rules. Media coordinates can be added when an active producer requires them. Output `contentRef`, size and media facts identify derived bytes separately from the original. Explicit output unavailability preserves lineage without claiming byte retention. `coverage: complete | incomplete` preserves truncation and existing processing-failure evidence. Output offsets never claim original coordinates.
 
 Text layers, transcripts, keyframes, thumbnails, vectors and short summaries are derived data. Recipe selection comes from a media-handling Skill used by the Knowledge Manager, not a hard-coded file-extension pipeline. A derived summary is not accepted Knowledge. Equal vector dimensions do not establish model/space compatibility.
 

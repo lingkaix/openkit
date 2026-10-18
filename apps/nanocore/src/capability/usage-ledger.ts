@@ -1,6 +1,5 @@
 import {
   type ActorRef,
-  AuditAuthenticationSchema,
   type AuditEvent,
   allocateEntityId,
   type CapabilityCall,
