@@ -660,7 +660,6 @@ describe('Workspace Material Plane 1 S11', () => {
     const request = rangeCorrect.mock.calls[0][0];
     expect(request.target).toEqual({
       kind: 'material-range',
-      offsetUnit: 'utf-16',
       materialId: MATERIAL_ID,
       revisionId: REVISION_2.revisionId,
       contentDigest: REVISION_2.contentDigest,
