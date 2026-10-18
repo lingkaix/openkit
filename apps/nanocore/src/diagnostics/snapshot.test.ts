@@ -65,6 +65,7 @@ describe('createDiagnosticsSnapshot', () => {
             'core_0005_channel_notifications',
             'core_0006_external_trigger_admissions',
             'core_0007_discord_capture_origin',
+            'core_0008_server_capability_usage',
           ],
         },
         mode: 'local',

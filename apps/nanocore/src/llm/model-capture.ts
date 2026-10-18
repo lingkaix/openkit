@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { ServerTurn } from '@openkit/protocol';
 import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { FsStore } from '../lib/store.js';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   type AdmittedWorkBody,
   type AssistantSkillAdmission,
@@ -16,8 +17,8 @@ import type { ModelSemanticEvent } from './model-semantic-content.js';
 import { digestLlmSystemPrompt } from './system-prompt-digest.js';
 
 /** Exact trusted entry-owned Turn and logical call; never populated from provider metadata alone. */
-export interface ModelCaptureContext {
-  readonly workspaceDb: WorkspaceDb;
+export interface ModelCaptureContext<D extends WorkspaceDb | CoreDb = WorkspaceDb | CoreDb> {
+  readonly workspaceDb: D;
   readonly threadId: string;
   readonly turnId: string;
   readonly corr: string;
@@ -35,8 +36,24 @@ export class ModelCaptureError extends Error {
   }
 }
 
+/** Shared capture admission options; the Turn fixes the immutable storage owner. */
+interface TurnModelCaptureOptions {
+  readonly store: FsStore;
+  /** Requires the producer's selected Skills tuple, including an explicit empty selection. */
+  readonly requireAssistantSkillAdmission?: boolean;
+  readonly environment?: {
+    /** Historical identity from the same fixed assembly as the prompt and Tool closure. */
+    readonly assistantSkillAdmission?: AssistantSkillAdmission;
+    readonly systemPrompt: string;
+    readonly tools: readonly {
+      readonly name: string;
+      readonly inputSchema: Readonly<Record<string, unknown>>;
+    }[];
+  };
+}
+
 /**
- * Runs one model effect with the exact admitted Turn binding and owns any Workspace database it opens.
+ * Runs one model effect with the exact admitted Turn binding and owns any scoped database it opens.
  *
  * Optional internal-agent environment metadata commits before the effect, independently of full I/O capture. Its version identifies the admitted build; absent source identity stays unknown.
  *
@@ -47,48 +64,73 @@ export class ModelCaptureError extends Error {
  * @returns The model effect's result.
  * @throws ModelCaptureError when durable lineage, coverage or required environment retention cannot be verified.
  */
-export async function withTurnModelCapture<T>(
-  input: {
-    readonly store: FsStore;
+export function withTurnModelCapture<T>(
+  input: TurnModelCaptureOptions & {
     readonly turn: ReturnType<FsStore['createTurn']>;
     readonly workspaceDb?: WorkspaceDb;
-    /** Requires the producer's selected Skills tuple, including an explicit empty selection. */
-    readonly requireAssistantSkillAdmission?: boolean;
-    readonly environment?: {
-      /** Historical identity from the same fixed assembly as the prompt and Tool closure. */
-      readonly assistantSkillAdmission?: AssistantSkillAdmission;
-      readonly systemPrompt: string;
-      readonly tools: readonly {
-        readonly name: string;
-        readonly inputSchema: Readonly<Record<string, unknown>>;
-      }[];
-    };
   },
+  run: (capture: Omit<ModelCaptureContext<WorkspaceDb>, 'corr'>) => Promise<T>
+): Promise<T>;
+/** Runs a Server model effect with its Core database and no Workspace anchor. */
+export function withTurnModelCapture<T>(
+  input: TurnModelCaptureOptions & { readonly turn: ServerTurn; readonly coreDb?: CoreDb },
+  run: (capture: Omit<ModelCaptureContext<CoreDb>, 'corr'>) => Promise<T>
+): Promise<T>;
+/** Accepts a role owner's already-discriminated Workspace or Server run. */
+export function withTurnModelCapture<T>(
+  input: TurnModelCaptureOptions &
+    (
+      | { readonly turn: ReturnType<FsStore['createTurn']>; readonly workspaceDb?: WorkspaceDb }
+      | { readonly turn: ServerTurn; readonly coreDb?: CoreDb }
+    ),
   run: (capture: Omit<ModelCaptureContext, 'corr'>) => Promise<T>
+): Promise<T>;
+export async function withTurnModelCapture<T>(
+  input: TurnModelCaptureOptions &
+    (
+      | { readonly turn: ReturnType<FsStore['createTurn']>; readonly workspaceDb?: WorkspaceDb }
+      | { readonly turn: ServerTurn; readonly coreDb?: CoreDb }
+    ),
+  run:
+    | ((capture: Omit<ModelCaptureContext<WorkspaceDb>, 'corr'>) => Promise<T>)
+    | ((capture: Omit<ModelCaptureContext<CoreDb>, 'corr'>) => Promise<T>)
 ): Promise<T> {
-  const { store, turn, workspaceDb } = input;
+  const { store, turn } = input;
+  const borrowedDb =
+    'coreDb' in input ? input.coreDb : 'workspaceDb' in input ? input.workspaceDb : undefined;
+  const server = turn.workspaceId === undefined;
   const dataRoot = store.getDataRoot();
   if (
     !dataRoot ||
-    (workspaceDb &&
-      (workspaceDb.dataRoot !== dataRoot || workspaceDb.workspaceId !== turn.workspaceId))
-  ) {
+    (borrowedDb &&
+      (borrowedDb.dataRoot !== dataRoot ||
+        (server
+          ? borrowedDb.scope !== 'core'
+          : borrowedDb.scope !== 'workspace' || borrowedDb.workspaceId !== turn.workspaceId)))
+  )
     throw new ModelCaptureError();
-  }
   try {
-    store.getTurn(turn.workspaceId, turn.threadId, turn.id);
+    if (turn.workspaceId === undefined) store.getServerTurn(turn.threadId, turn.id);
+    else store.getTurn(turn.workspaceId, turn.threadId, turn.id);
   } catch {
     throw new ModelCaptureError();
   }
-  let captureDb: WorkspaceDb;
+  let captureDb: WorkspaceDb | CoreDb;
   try {
-    captureDb = workspaceDb ?? openWorkspaceDb(dataRoot, turn.workspaceId);
+    captureDb =
+      borrowedDb ??
+      (turn.workspaceId === undefined
+        ? openCoreDb(dataRoot)
+        : openWorkspaceDb(dataRoot, turn.workspaceId));
   } catch {
     throw new ModelCaptureError();
   }
   try {
     try {
-      if (!workspaceDb) applyScopedMigrations(captureDb);
+      if (!borrowedDb) {
+        if (captureDb.scope === 'core') applyMigrations(captureDb);
+        else applyScopedMigrations(captureDb);
+      }
       const binding = readWorkObservationTurnBinding(captureDb, {
         threadId: turn.threadId,
         turnId: turn.id,
@@ -122,7 +164,9 @@ export async function withTurnModelCapture<T>(
             ret: 'turn-evidence',
             payload: {
               version,
-              workspaceId: captureDb.workspaceId,
+              ...(captureDb.scope === 'core'
+                ? { owner: { kind: 'server' } }
+                : { workspaceId: captureDb.workspaceId }),
               ...(assistantSkillAdmission === undefined ? {} : { assistantSkillAdmission }),
               systemPromptDigest: digestLlmSystemPrompt({
                 endpoint: 'responses',
@@ -142,9 +186,13 @@ export async function withTurnModelCapture<T>(
     } catch {
       throw new ModelCaptureError();
     }
-    return await run({ workspaceDb: captureDb, threadId: turn.threadId, turnId: turn.id });
+    return await (run as (capture: Omit<ModelCaptureContext, 'corr'>) => Promise<T>)({
+      workspaceDb: captureDb,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
   } finally {
-    if (!workspaceDb) captureDb.sqlite.close();
+    if (!borrowedDb) captureDb.sqlite.close();
   }
 }
 
@@ -308,7 +356,10 @@ export class ModelCapture {
             refs: [
               {
                 kind: 'capability-call',
-                scope: { workspaceId: this.context.workspaceDb.workspaceId },
+                scope:
+                  this.context.workspaceDb.scope === 'core'
+                    ? { owner: 'server' }
+                    : { workspaceId: this.context.workspaceDb.workspaceId },
                 locator: this.context.capabilityCallId,
                 edge: 'association' as const,
               },

@@ -389,3 +389,5 @@ Rejected because rewriting a one-million-token model as 400,000 tokens corrupts 
 ## Open Questions
 
 None.
+
+Server-owned Knowledge Manager Turns use this same compaction strategy and `context-summary` Item format. Their Thread and Item owner is the Server, with no Workspace anchor. Reconstruction and exact range reads remain limited to the current run. The pinned role, model, threshold and strategy, canonical source bytes, shared model evidence and usage retain their existing owners.

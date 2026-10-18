@@ -6,6 +6,8 @@ import { zstdDecompressSync } from 'node:zlib';
 import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { expect, it, vi } from 'vitest';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import { FsStore } from '../lib/store.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -20,6 +22,158 @@ import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readGoalView } from './goal-owner.js';
+
+it('uses native Goal knowledge ask and tell with fixed shared lineage and separate KM work', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'goal-knowledge-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Goal Knowledge');
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  initializeScopedNotebook({
+    coreDb,
+    actor: { kind: 'local', userId },
+    target: { kind: 'server' },
+    initialization: {
+      requestId: randomUUID(),
+      instructionReference: 'Initialize Goal Knowledge test.',
+    },
+  });
+  const gatewayConfig = createTestGatewayConfig();
+  gatewayConfig.logicalModels[0]!.contextManagement = [
+    { type: 'compaction', compactThreshold: 64000 },
+  ];
+  let coordinatorCalls = 0;
+  let maintenanceCalls = 0;
+  let queryCalls = 0;
+  const coordinatorInputs: string[] = [];
+  const queryInputs: string[] = [];
+  const call = (name: string, value: unknown) => ({
+    id: randomUUID(),
+    object: 'response',
+    output: [
+      { type: 'function_call', call_id: randomUUID(), name, arguments: JSON.stringify(value) },
+    ],
+  });
+  const dispatch = vi.fn(
+    async (
+      _provider: Parameters<LLMGatewayProviderDispatcher['createResponses']>[0],
+      request: Parameters<LLMGatewayProviderDispatcher['createResponses']>[1]
+    ) => {
+      const names = request.tools.map((tool: { name: string }) => tool.name);
+      if (names.includes('goal_card_create')) {
+        coordinatorInputs.push(JSON.stringify(request.input));
+        if (++coordinatorCalls === 1)
+          return call('knowledge_ask', { question: 'What is known about this Goal?' });
+        if (coordinatorCalls === 2) {
+          return call('knowledge_tell', { content: 'Explicit Goal fact.', sources: [] });
+        }
+        if (coordinatorCalls === 3)
+          return call('knowledge_ask', {
+            question: 'Forbidden scope.',
+            ownerScope: { kind: 'user', userId },
+          });
+        return {
+          id: randomUUID(),
+          object: 'response',
+          output: [
+            {
+              type: 'message',
+              content: [{ type: 'output_text', text: 'Finished this bounded Goal Turn.' }],
+            },
+          ],
+        };
+      }
+      if (names.includes('knowledge_notebook-workspace_update')) {
+        return ++maintenanceCalls === 1
+          ? call('knowledge_notebook_update', { summary: 'No changes are needed.' })
+          : call('knowledge_result', { summary: 'No changes are needed.' });
+      }
+      queryInputs.push(JSON.stringify(request.input));
+      if (++queryCalls <= 2)
+        return call('knowledge_page_read', {
+          pageId: queryCalls === 1 ? `page/workspace/${workspace.id}/index` : 'page/server/index',
+        });
+      return call('knowledge_result', {
+        answer: 'Goal knowledge answer',
+        citationIds: [`page/workspace/${workspace.id}/index`, 'page/server/index'],
+        uncertainty: null,
+      });
+    }
+  );
+  const app = createApp({
+    coreDb,
+    dataRoot,
+    store,
+    gatewayConfig,
+    providerRegistry: new ProviderRegistry([
+      {
+        id: 'agent-openrouter',
+        kind: 'local',
+        displayName: 'Fake Goal transport',
+        models: ['openai/gpt-5.2'],
+      },
+    ]),
+    llmGatewayDispatcher: { createResponses: dispatch } as never,
+  });
+  const db = openWorkspaceDb(dataRoot, workspace.id);
+  applyScopedMigrations(db);
+  try {
+    const response = await app.request('/api/app/operations/goal.create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+      body: JSON.stringify({ workspaceId: workspace.id, intent: 'Inspect Goal Knowledge' }),
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    const created = await response.json();
+    await vi.waitFor(
+      () => {
+        expect(store.listThreadTurns(workspace.id, created.goal.threadId)).toContainEqual(
+          expect.objectContaining({ status: 'completed' })
+        );
+      },
+      { timeout: 15000 }
+    );
+    expect(coordinatorCalls).toBe(4);
+    expect(coordinatorInputs[1]).toContain('Goal knowledge answer');
+    expect(coordinatorInputs[2]).toContain('no-change');
+    expect(coordinatorInputs[3]).toContain('The Tool arguments do not match the required schema.');
+    expect(queryInputs[0]).toContain('page/server/index');
+    expect(queryCalls).toBe(3);
+    const turn = store.listThreadTurns(workspace.id, created.goal.threadId)[0]!;
+    const calls = listWorkspaceCapabilityCalls(db, workspace.id);
+    const asking = calls.filter((entry) => entry.operation === 'knowledge.ask');
+    expect(asking).toEqual([
+      expect.objectContaining({
+        threadId: created.goal.threadId,
+        turnId: turn.id,
+        status: 'succeeded',
+      }),
+    ]);
+    expect(JSON.stringify(asking[0]!.extensions)).toContain('Goal knowledge answer');
+    const maintenance = store
+      .listThreads(workspace.id)
+      .filter((thread) => thread.entryPath === 'knowledge-manager');
+    const kmTurns = maintenance.flatMap((thread) => store.listThreadTurns(workspace.id, thread.id));
+    expect(kmTurns).toContainEqual(
+      expect.objectContaining({
+        status: 'completed',
+        internalExecution: expect.objectContaining({
+          knowledge: expect.objectContaining({
+            purpose: 'maintenance',
+            ownerScope: { kind: 'workspace', workspaceId: workspace.id },
+          }),
+        }),
+      })
+    );
+    expect(store.listServerThreads()).toEqual([]);
+  } finally {
+    db.sqlite.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+}, 30000);
 
 it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-derived Goal Tool', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'goal-gateway-'));

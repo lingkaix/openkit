@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
+import { listSqliteAuditEvents } from './audit-events.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
+import { openExistingAppDb } from './storage/app-db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -526,6 +528,20 @@ it('preserves publication, JSON resources, refresh and conditional action receip
       recordId: record.id,
     });
     expect(observed).toMatchObject({ revision: 2, data: { note: 'Saved' } });
+    const appDb = openExistingAppDb(f.store.getDataRoot()!, scope.workspaceId, scope.appId);
+    try {
+      const actionEvents = listSqliteAuditEvents(appDb.sqlite).filter(
+        (audit) => audit.action === 'kernel.records.update'
+      );
+      expect(actionEvents).toHaveLength(1);
+      expect(actionEvents[0]).toMatchObject({ threadId: null, turnId: null });
+      expect(actionEvents[0]!.itemId).toBe(
+        f.store.listAllItems().find((item) => item.type === 'generative-ui-reference')!.id
+      );
+    } finally {
+      appDb.sqlite.close();
+    }
+
     acceptingProductWork = false;
     const blocked = {
       ...action,
@@ -648,6 +664,34 @@ it('refuses read-only and revoked credentials before any newly migrated Kernel o
     ).toHaveLength(0);
     revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
     expect((await read()).status).toBe(401);
+  } finally {
+    f.coreDb.sqlite.close();
+  }
+});
+
+it('refuses caller-supplied executing lineage in the native public mutation input', async () => {
+  const f = fixture();
+  try {
+    const requestId = randomUUID();
+    const response = await f.app.request('/api/app/operations/kernel.apps.create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+      body: JSON.stringify({
+        ...schema,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        requestId,
+        threadId: publish.threadId,
+        turnId: publish.turnId,
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+    const listed = await f.app.request('/api/app/operations/kernel.apps.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
+    });
+    expect(await listed.json()).toMatchObject({ totalItems: 0 });
   } finally {
     f.coreDb.sqlite.close();
   }
