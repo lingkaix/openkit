@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -17,6 +16,7 @@ import {
   listWorkspaceUsageRecords,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,

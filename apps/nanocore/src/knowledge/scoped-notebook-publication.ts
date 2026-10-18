@@ -117,8 +117,8 @@ export async function publishScopedNotebook(
         : {}),
       revalidate: () => {
         // Current identity/credential admission precedes every retained read and the publisher's final CAS.
-        const current = pinScopedNotebook(context);
-        const currentFiles = current.read().files;
+        const pinnedNotebook = pinScopedNotebook(context);
+        const currentFiles = pinnedNotebook.read().files;
         const baseFiles = notebook.readRevision(request.baseRevision).files;
         const suppressions = userDb
           ? readMemorySuppressions(owner.notebookRoot, userDb.userId)
@@ -182,8 +182,8 @@ export async function publishScopedNotebook(
         return {
           pageScopeId:
             owner.ownerScope.kind === 'user'
-              ? `page/user/${owner.ownerScope.userId}/${current.knowledgeBaseId}`
-              : `page/server/${current.knowledgeBaseId}`,
+              ? `page/user/${owner.ownerScope.userId}/${pinnedNotebook.knowledgeBaseId}`
+              : `page/server/${pinnedNotebook.knowledgeBaseId}`,
           scopeSchemaText: scopeSchema(owner.notebookRoot),
           reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
           registeredSources,
