@@ -302,6 +302,22 @@ describe('jointly approved Goal-domain publication', () => {
     expect(() => f.activate()).toThrow(/different content|withdrawn/);
   });
 
+  it('rechecks the approving credential after configuration validation before publication', async () => {
+    const f = await fixture();
+    await f.approve();
+    await f.consume();
+    const before = readFileSync(f.path, 'utf8');
+    const validate = f.files.validate.bind(f.files);
+    vi.spyOn(f.files, 'validate').mockImplementationOnce((input) => {
+      const result = validate(input);
+      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
+      return result;
+    });
+    expect(() => f.activate()).toThrow(/credential.*no longer authorized/);
+    expect(readFileSync(f.path, 'utf8')).toBe(before);
+    expect(f.reload).not.toHaveBeenCalled();
+  });
+
   it('ends authority on Goal closure before the separate Policy withdrawal', async () => {
     const f = await fixture();
     await f.approve();

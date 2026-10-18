@@ -241,6 +241,10 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       mode: 'safe',
     });
     if (!validation.valid) throw new Error('Goal-domain Policy configuration validation failed.');
+    // Validation reads an overlay from disk; reread live approval and credentials
+    // before the final Kernel and Server file effect, rather than trusting its old snapshot.
+    if (context.actor) approved(context.key.workspaceId, context.requestId!);
+
     const kernel = context.actor
       ? isCurrentDeploymentAdministrator(deps.coreDb, context.actor)
         ? evaluateAdministratorWorkspaceAccess({
