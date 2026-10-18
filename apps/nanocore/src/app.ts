@@ -1699,6 +1699,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-capabilities/*', browserCors);
   registerWorkerMcpRoutes({
+    ...(automationStore ? { automationStore } : {}),
+    turnStartServices: {
+      ...setupProviderSupply,
+      coreDb: options.coreDb,
+      inflightCommands,
+      providerCredentialResolver,
+      runtimeConfig,
+      turnExecutor,
+      workerPlacement,
+    },
     knowledgeAgent,
     fileAdmission,
     ...(configuredWorkerRuntime?.captureArtifact

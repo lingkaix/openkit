@@ -681,3 +681,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
 - `docs/specs/20260713-work_resource_interaction_model.md`
+
+## External Trigger Admission Homing
+
+ExternalTriggerAdmission is part of the existing scheduler Core transactional exception. Core retains only scheduleId, eventKey, sourceTurnId and queueEntryId, with unique (scheduleId, eventKey), in the same transaction as ordinary queue acceptance. Canonical Turn files retain the work history. The join does not authorize file reconstruction, replacement admission or Worker replay. A missing or contradictory accepted Turn requires inspection; ordinary queue cancellation remains available. Workspace deletion captures the join in the existing recurring closure before purging it with its schedule. Portable history nests the join under the existing schedule record, remaps schedule and source Turn references, and preserves queueEntryId as inert provenance without installing execution authority.
