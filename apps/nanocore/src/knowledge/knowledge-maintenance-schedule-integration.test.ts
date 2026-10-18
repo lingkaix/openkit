@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
@@ -90,12 +91,15 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const directory = join(dataRoot, 'workspaces', workspace.id, 'config');
   mkdirSync(directory, { recursive: true });
-  const configure = (enabled: boolean) =>
+  const configure = (enabled: boolean) => {
+    const configPath = join(directory, 'workspace.jsonc');
+    const config = parseJsoncObject(readFileSync(configPath, 'utf8'));
     writeFileSync(
-      join(directory, 'workspace.jsonc'),
+      configPath,
       JSON.stringify({
-        schemaVersion: 1,
+        ...config,
         workspace: {
+          ...(config.workspace as Record<string, unknown>),
           name: workspace.name,
           internalRoles: [{ roleId: 'knowledge-manager', profileId: 'missing-knowledge-profile' }],
           knowledgeMaintenance: {
@@ -106,6 +110,7 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
         },
       })
     );
+  };
   let scan!: (instant: string) => void;
   const boot = () =>
     createApp({
