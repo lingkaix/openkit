@@ -26,6 +26,7 @@ import {
   importWorkspaceCapabilityUsageLedger,
   listWorkspaceCapabilityCalls,
 } from '../capability/usage-ledger.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   createWorkerContextPackageFiles,
@@ -93,6 +94,7 @@ const source = {
   goalId: 'goal_source',
   grantId: 'grant_00000000-0000-71be-bfe5-1605cc1e0b9b',
   itemId: 'it_00000000-0000-7cab-8553-ff29f1f63940',
+  knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000003',
   intentItemId: 'it_00000000-0000-7142-be4d-40072e2d9c43',
   planItemId: 'it_00000000-0000-71d5-ae7d-8065ab8c1eac',
   sessionId: 'as_00000000-0000-7d81-8a02-21a51fa74819',
@@ -337,7 +339,11 @@ function createLineageExportInput(
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
         schemaVersion: 1,
-        workspace: { name: 'Lineage workspace', defaultAgentId: null },
+        workspace: {
+          name: 'Lineage workspace',
+          defaultAgentId: null,
+          defaultKnowledgeBaseId: source.knowledgeBaseId,
+        },
       }),
       workspaceSchema: null,
     },
@@ -750,6 +756,8 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
  * @param followUp Optional exact Artifact Review follow-up fixture.
  * @param sourceSnapshotRoot Optional original snapshot fixture root.
  * @param retainRepresentation Whether the binary source retains a separate UTF-8 representation.
+ * @param knowledgeExcerpt Whether to retain an excerpt of the selected Knowledge page.
+ * @param includeKnowledgeOverview Whether to retain the Workspace-only index overview delivery.
  * @returns Complete export fixture covering the accepted work-resource lineage.
  * @throws Error when the structured worker request or package fixture cannot be built.
  */
@@ -760,7 +768,8 @@ function createWorkResourceLineageExportInput(
   },
   sourceSnapshotRoot?: string,
   retainRepresentation = false,
-  knowledgeExcerpt = false
+  knowledgeExcerpt = false,
+  includeKnowledgeOverview = false
 ): WriteWorkspaceExportTreeInput {
   const input = createLineageExportInput();
   const materialId = 'mat_00000000-0000-7807-b767-6378f3fcdcf3';
@@ -981,10 +990,29 @@ function createWorkResourceLineageExportInput(
   const packageFiles = createWorkerContextPackageFiles({
     contextBudgetTokens: 4_096,
     includedItemIds: [source.itemId],
+    ...(includeKnowledgeOverview
+      ? {
+          knowledgeOverview: `<knowledge_overviews>${JSON.stringify({
+            overviews: [
+              {
+                scope: `workspace:${source.workspaceId}`,
+                knowledgeBaseId: source.knowledgeBaseId,
+                path: 'index.md',
+                notebookRevision,
+                contentDigest: `sha256:${createHash('sha256').update(notebookFiles['index.md']!).digest('hex')}`,
+                deliveredDigest: `sha256:${createHash('sha256').update(notebookFiles['index.md']!).digest('hex')}`,
+                truncated: false,
+                content: notebookFiles['index.md'],
+              },
+            ],
+          })}</knowledge_overviews>`,
+        }
+      : {}),
     knowledgeSelections: [
       {
         content: knowledgeContent,
         contentDigest: knowledgeContentDigest,
+        knowledgeBaseId: source.knowledgeBaseId,
         knowledgePageId,
         notebookRevision,
         ...(knowledgeExcerpt
@@ -1321,14 +1349,14 @@ function createWorkResourceLineageExportInput(
             {
               contentDigest: knowledgeContentDigest,
               reference: {
-                scopeId: `page/workspace/${source.workspaceId}`,
+                scopeId: `page/workspace/${source.workspaceId}/${source.knowledgeBaseId}`,
                 objectId: knowledgePageId,
               },
               revision: notebookRevision,
               sourceReferences: knowledgeSourceRefs,
             },
           ],
-          sourceScope: `page/workspace/${source.workspaceId}`,
+          sourceScope: `page/workspace/${source.workspaceId}/${source.knowledgeBaseId}`,
           traceId: retrievalTraceId,
         },
       ],
@@ -1348,7 +1376,11 @@ function createWorkResourceLineageExportInput(
     ]),
     workspaceConfig: JSON.stringify({
       schemaVersion: 1,
-      workspace: { name: 'Lineage workspace', defaultAgentId: null },
+      workspace: {
+        name: 'Lineage workspace',
+        defaultAgentId: null,
+        defaultKnowledgeBaseId: source.knowledgeBaseId,
+      },
     }),
     workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   };
@@ -2509,8 +2541,8 @@ describe('workspace auxiliary lineage reminting', () => {
     }
   });
 
-  it('imports an S39 archive selection pinned to the actual current Notebook commit', () => {
-    const input = createWorkResourceLineageExportInput();
+  it('imports an S39 selection pinned to the current Notebook commit and remaps its Workspace overview', () => {
+    const input = createWorkResourceLineageExportInput(undefined, undefined, false, false, true);
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
     });
@@ -2519,15 +2551,43 @@ describe('workspace auxiliary lineage reminting', () => {
     const verified = writeWorkspaceExportTree(input);
     expect(notebook.publishedRevision()).toBe(sourceRevision);
     expect(verified.manifest.knowledgeNotebookRevision).toBe(sourceRevision);
+    expect(
+      parseJsoncObject(verified.fileContents.get('workspace-files/config/workspace.jsonc')!)
+    ).toMatchObject({ workspace: { defaultKnowledgeBaseId: source.knowledgeBaseId } });
     const sourceManifestPath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/package.json`;
     const sourceManifestText = verified.fileContents.get(sourceManifestPath)!;
+    const sourceOverviewPath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/knowledge-overview.md`;
+    const sourceOverviewText = verified.fileContents.get(sourceOverviewPath)!;
+    const sourceOverview = JSON.parse(
+      sourceOverviewText.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
+    );
+    expect(sourceOverview.overviews).toEqual([
+      expect.objectContaining({
+        scope: `workspace:${source.workspaceId}`,
+        knowledgeBaseId: source.knowledgeBaseId,
+        path: 'index.md',
+        notebookRevision: sourceRevision,
+      }),
+    ]);
+    expect(JSON.parse(sourceManifestText).fileInventory).toContainEqual({
+      path: 'knowledge-overview.md',
+      byteLength: Buffer.byteLength(sourceOverviewText),
+      contentDigest: `sha256:${createHash('sha256').update(sourceOverviewText).digest('hex')}`,
+    });
     expect(JSON.parse(sourceManifestText).knowledgeSelections).toEqual([
-      expect.objectContaining({ notebookRevision: sourceRevision }),
+      expect.objectContaining({
+        knowledgeBaseId: source.knowledgeBaseId,
+        notebookRevision: sourceRevision,
+      }),
     ]);
     const imported = readWorkspaceImportSnapshot({
       verified,
       targetWorkspaceId,
       targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
+    });
+    expect(imported.defaultKnowledgeBaseId).not.toBe(source.knowledgeBaseId);
+    expect(parseJsoncObject(imported.portableFileState.workspaceConfig!)).toMatchObject({
+      workspace: { defaultKnowledgeBaseId: imported.defaultKnowledgeBaseId },
     });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-current-notebook-s39-target-'));
     onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
@@ -2537,6 +2597,26 @@ describe('workspace auxiliary lineage reminting', () => {
       ([path]) => path.endsWith('/context-package.json')
     )![1];
     const trace = parseWorkerContextPackageTrace(JSON.parse(traceText));
+    const targetOverviewPath = `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge-overview.md`;
+    const targetOverviewText =
+      imported.portableFileState.workerContextPackageFiles.get(targetOverviewPath)!;
+    expect(targetOverviewText).toBeDefined();
+    const targetOverview = JSON.parse(
+      targetOverviewText.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
+    );
+    expect(targetOverview.overviews).toEqual([
+      expect.objectContaining({
+        scope: `workspace:${targetWorkspaceId}`,
+        knowledgeBaseId: imported.defaultKnowledgeBaseId,
+        path: 'index.md',
+      }),
+    ]);
+    expect(targetOverviewText).not.toContain(source.knowledgeBaseId);
+    expect(trace.fileInventory).toContainEqual({
+      path: 'knowledge-overview.md',
+      byteLength: Buffer.byteLength(targetOverviewText),
+      contentDigest: `sha256:${createHash('sha256').update(targetOverviewText).digest('hex')}`,
+    });
     const targetPage = imported.portableFileState.nativeKnowledgePages.get(
       'knowledge/pages/knowledge_portable_source.md'
     )!;
@@ -2544,11 +2624,13 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(trace.requestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
     expect(trace.knowledgeSelections).toEqual([
       expect.objectContaining({
+        knowledgeBaseId: imported.defaultKnowledgeBaseId,
         knowledgePageId: 'knowledge_portable_source',
         contentDigest: `sha256:${createHash('sha256').update(targetPage).digest('hex')}`,
       }),
     ]);
     expect(verified.fileContents.get(sourceManifestPath)).toBe(sourceManifestText);
+    expect(verified.fileContents.get(sourceOverviewPath)).toBe(sourceOverviewText);
     expect(JSON.parse(sourceManifestText).knowledgeSelections[0].notebookRevision).toBe(
       sourceRevision
     );
@@ -2708,11 +2790,11 @@ describe('workspace auxiliary lineage reminting', () => {
         threadId: imported.threads[0]?.id,
         turnId: imported.turns[0]?.id,
       },
-      sourceScope: `page/workspace/${targetWorkspaceId}`,
+      sourceScope: `page/workspace/${targetWorkspaceId}/${imported.defaultKnowledgeBaseId}`,
       selected: [
         expect.objectContaining({
           reference: {
-            scopeId: `page/workspace/${targetWorkspaceId}`,
+            scopeId: `page/workspace/${targetWorkspaceId}/${imported.defaultKnowledgeBaseId}`,
             objectId: 'knowledge_portable_source',
           },
         }),
@@ -2729,6 +2811,7 @@ describe('workspace auxiliary lineage reminting', () => {
       },
       knowledgeSelections: [
         {
+          knowledgeBaseId: imported.defaultKnowledgeBaseId,
           contentDigest: `sha256:${createHash('sha256')
             .update(targetKnowledgeContent)
             .digest('hex')}`,
@@ -2821,6 +2904,7 @@ describe('workspace auxiliary lineage reminting', () => {
       retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
         workspaceRoot: stagedRoot,
         workspaceId: targetWorkspaceId,
+        knowledgeBaseId: imported.defaultKnowledgeBaseId,
         traces: imported.portableFileState.retrievalTraceFiles,
       }),
     };
@@ -2857,6 +2941,11 @@ describe('workspace auxiliary lineage reminting', () => {
       verified: reExported,
       targetWorkspaceId: 'ws_00000000-0000-75c2-b6dd-fdd26f61df2a',
       targetServerId: 'server_reimport_target',
+    });
+    expect(reimported.defaultKnowledgeBaseId).not.toBe(imported.defaultKnowledgeBaseId);
+    expect(reimported.defaultKnowledgeBaseId).not.toBe(source.knowledgeBaseId);
+    expect(parseJsoncObject(reimported.portableFileState.workspaceConfig!)).toMatchObject({
+      workspace: { defaultKnowledgeBaseId: reimported.defaultKnowledgeBaseId },
     });
     const reimportedRoot = mkdtempSync(join(tmpdir(), 'openkit-reimported-history-package-'));
     const reimportedNotebook = new KnowledgeNotebook({

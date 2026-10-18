@@ -1,5 +1,6 @@
 import {
   ActorRefSchema,
+  ContentReferenceSchema,
   ItemIdSchema,
   KnowledgeClaimIdSchema,
   KnowledgeConflictIdSchema,
@@ -7,6 +8,7 @@ import {
   KnowledgeOwnerScopeSchema,
   KnowledgeSourceIdSchema,
   PageReferenceSchema,
+  parseReferenceUri,
   RequestIdSchema,
   RetrievalTraceIdSchema,
   RetrievalTraceReferenceSchema,
@@ -421,6 +423,8 @@ export const KnowledgeRetrievalCandidateSchema = z
     contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     score: z.number().finite().nonnegative(),
     sourceReferences: z.array(z.string().min(1)),
+    /** Captured original evidence; omitted when the hit names only Git page bytes. */
+    contentRef: ContentReferenceSchema.optional(),
   })
   .strict();
 
@@ -565,10 +569,12 @@ const knowledgeProposalSourceReferenceSchema = z.string().refine((reference) => 
   const entity = /^(turn|item):([^@\s]+)(?![\s\S])/.exec(reference);
   if (entity)
     return (entity[1] === 'turn' ? TurnIdSchema : ItemIdSchema).safeParse(entity[2]).success;
+  const page = parseReferenceUri(reference);
   return (
-    /^knowledge:(?!(?:.*\/)?(?:index|log)@)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*@sha256:[a-f0-9]{64}$/.test(
-      reference
-    ) || /^context-package:[^@\s]+@ctxpkg_sha256_[a-f0-9]{64}$/.test(reference)
+    (page !== null &&
+      page.contentDigest !== undefined &&
+      KnowledgePageReferenceSchema.safeParse(page.reference).success) ||
+    /^context-package:[^@\s]+@ctxpkg_sha256_[a-f0-9]{64}$/.test(reference)
   );
 }, 'Unsupported Knowledge Proposal source reference.');
 

@@ -14,13 +14,14 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseRecordEnvelope } from '@openkit/config-schema';
-import { KnowledgeSourceIdSchema } from '@openkit/protocol';
+import { KnowledgeBaseIdSchema, KnowledgeSourceIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -77,6 +78,15 @@ describe('explicit native User Source intake', () => {
     const f = fixture();
     const request = f.request();
     const source = await registerUserKnowledgeSource(f.alice, request);
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'user', userId: aliceId },
+    });
+    expect(KnowledgeBaseIdSchema.safeParse(knowledgeBaseId).success).toBe(true);
+    expect(await registerUserKnowledgeSource(f.alice, request)).toEqual(source);
+    expect(
+      readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: aliceId } })
+    ).toBe(knowledgeBaseId);
     expect(KnowledgeSourceIdSchema.safeParse(source.id).success).toBe(true);
     const digest = `sha256:${createHash('sha256').update(request.content).digest('hex')}`;
     expect(source).toMatchObject({

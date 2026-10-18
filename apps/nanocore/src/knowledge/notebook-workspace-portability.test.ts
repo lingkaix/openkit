@@ -3,8 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -102,6 +103,10 @@ describe('canonical Notebook Workspace portability', () => {
   it('remints exact dependent page pins after scope and captured Source identity change', () => {
     const sourceWorkspaceId = allocateEntityId('ws');
     const targetWorkspaceId = allocateEntityId('ws');
+    const sourceKnowledgeBaseId = allocateEntityId('kb');
+    const targetKnowledgeBaseId = allocateEntityId('kb');
+    const sourcePageScope = `page/workspace/${sourceWorkspaceId}/${sourceKnowledgeBaseId}`;
+    const targetPageScope = `page/workspace/${targetWorkspaceId}/${targetKnowledgeBaseId}`;
     const sourceId = allocateEntityId('ks');
     const targetSourceId = allocateEntityId('ks');
     const capturedDigest = `sha256:${createHash('sha256').update('Captured evidence.').digest('hex')}`;
@@ -125,8 +130,12 @@ describe('canonical Notebook Workspace portability', () => {
         updates: { custom: { retained: ['original', 'metadata'] } },
       });
     const evidence = page('evidence', [`source:${sourceId}@${capturedDigest}`]);
-    const dependent = page('dependent', [`knowledge:evidence@${hash(evidence)}`]);
-    const summary = page('summary', [`knowledge:dependent@${hash(dependent)}`]);
+    const dependent = page('dependent', [
+      formatReferenceUri({ scopeId: sourcePageScope, objectId: 'evidence' }, hash(evidence)),
+    ]);
+    const summary = page('summary', [
+      formatReferenceUri({ scopeId: sourcePageScope, objectId: 'dependent' }, hash(dependent)),
+    ]);
     const pages = new Map([
       ['knowledge/pages/summary.md', summary],
       ['knowledge/pages/dependent.md', dependent],
@@ -136,6 +145,8 @@ describe('canonical Notebook Workspace portability', () => {
       pages,
       sourceWorkspaceId,
       targetWorkspaceId,
+      sourceKnowledgeBaseId,
+      targetKnowledgeBaseId,
       rewriteReferences: (references) =>
         references.map((reference) => reference.replaceAll(sourceId, targetSourceId)),
     });
@@ -152,7 +163,12 @@ describe('canonical Notebook Workspace portability', () => {
       content: dependent,
       updates: {
         scope: { kind: 'workspace', workspaceId: targetWorkspaceId },
-        source_refs: [`knowledge:evidence@${hash(targetEvidence)}`],
+        source_refs: [
+          formatReferenceUri(
+            { scopeId: targetPageScope, objectId: 'evidence' },
+            hash(targetEvidence)
+          ),
+        ],
       },
     });
     expect(reminted.pages.get('knowledge/pages/evidence.md')).toBe(targetEvidence);
@@ -163,9 +179,21 @@ describe('canonical Notebook Workspace portability', () => {
         content: summary,
         updates: {
           scope: { kind: 'workspace', workspaceId: targetWorkspaceId },
-          source_refs: [`knowledge:dependent@${hash(targetDependent)}`],
+          source_refs: [
+            formatReferenceUri(
+              { scopeId: targetPageScope, objectId: 'dependent' },
+              hash(targetDependent)
+            ),
+          ],
         },
       })
+    );
+    expect(
+      reminted.referenceReplacements.get(
+        formatReferenceUri({ scopeId: sourcePageScope, objectId: 'evidence' }, hash(evidence))
+      )
+    ).toBe(
+      formatReferenceUri({ scopeId: targetPageScope, objectId: 'evidence' }, hash(targetEvidence))
     );
     expect(pages.get('knowledge/pages/evidence.md')).toBe(evidence);
   });
@@ -269,6 +297,10 @@ describe('canonical Notebook Workspace portability', () => {
         visibility: 'workspace',
       }
     );
+    const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'workspace', workspaceId: f.workspace.id },
+    });
     const selected = await retrieveWorkspaceKnowledge({
       dataRoot: f.dataRoot,
       workspaceId: f.workspace.id,
@@ -276,7 +308,10 @@ describe('canonical Notebook Workspace portability', () => {
       query: 'Exact portable note',
       limit: 1,
       pinnedReferences: [
-        { scopeId: `page/workspace/${f.workspace.id}`, objectId: 'notes/portable' },
+        {
+          scopeId: `page/workspace/${f.workspace.id}/${sourceKnowledgeBaseId}`,
+          objectId: 'notes/portable',
+        },
       ],
       access: {
         store: f.store,
@@ -323,6 +358,10 @@ describe('canonical Notebook Workspace portability', () => {
     });
     const revision = notebook.publishedRevision();
     const page = notebook.readRevision(revision).files['notes/portable.md']!;
+    const targetKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: target.dataRoot,
+      scope: { kind: 'workspace', workspaceId: imported.workspace.id },
+    });
     const trace = readRetrievalTrace(targetRoot, {
       scopeId: `retrieval-trace/thread/${imported.workspace.id}/${importedThread!.id}`,
       objectId: selected.retrievalTraceRef!.objectId,
@@ -332,7 +371,7 @@ describe('canonical Notebook Workspace portability', () => {
       selected: [
         {
           reference: {
-            scopeId: `page/workspace/${imported.workspace.id}`,
+            scopeId: `page/workspace/${imported.workspace.id}/${targetKnowledgeBaseId}`,
             objectId: 'notes/portable',
           },
           revision,
