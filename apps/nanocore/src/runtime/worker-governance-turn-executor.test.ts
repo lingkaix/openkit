@@ -599,7 +599,9 @@ async function createWorkerContextExecutorFixture(
       contextDigest: commandInputHash(workerRequest),
       contextRefs: [{ kind: 'item', id: contextItemId }],
       knowledgeSelectionInput:
-        options.workerRequest || options.skipInitialKnowledgeSelection ? null : { retrievalTraceRef },
+        options.workerRequest || options.skipInitialKnowledgeSelection
+          ? null
+          : { retrievalTraceRef },
       repositoryResourceId: 'repo_default',
     }),
   });
