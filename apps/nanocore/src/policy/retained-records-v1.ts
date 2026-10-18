@@ -5,6 +5,9 @@ import {
   CapabilityCallIdSchema,
   ItemIdSchema,
   PermissionDecisionIdSchema,
+  PolicyDecisionV1Schema,
+  PolicyInvocationV1Schema,
+  PolicyWriteOutcomeV1Schema,
   RequestIdSchema,
   readRetainedV1,
   ThreadIdSchema,
@@ -75,6 +78,8 @@ export const AuditEventRetainedV1Schema = z.object({
   resource: z.string().min(1).nullable(),
   resourceRevision: z.number().int().positive().nullable(),
   notebookAdmission: notebookAdmissionV1.optional(),
+  policyInvocation: PolicyInvocationV1Schema.optional(),
+  policyWriteOutcome: PolicyWriteOutcomeV1Schema.optional(),
   outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled', 'unknown']),
   severity: z.enum(['info', 'warning', 'error']),
   summary: z.string().min(1),
@@ -105,12 +110,55 @@ export const PermissionDecisionRetainedV1Schema = z
     ]),
     reasonCode: z.string().min(1),
     enforcementPoint: z.string().min(1),
+    mediation: PolicyDecisionV1Schema.optional(),
     requiredApprovalKind: z.string().min(1).nullable(),
     approvalId: z.string().min(1).nullable(),
     auditEventId: AuditEventIdSchema.nullable(),
     createdAt: TimestampSchema,
   })
   .superRefine((decision, context) => {
+    if (decision.mediation) {
+      const mediation = decision.mediation;
+      if (
+        decision.enforcementPoint !== mediation.point ||
+        decision.policySnapshotId !== mediation.policyRevision
+      )
+        context.addIssue({
+          code: 'custom',
+          message: 'PermissionDecision mediation identity is inconsistent.',
+        });
+      if (mediation.role === 'gate' && decision.approvalId)
+        context.addIssue({
+          code: 'custom',
+          message: 'Participant gate decisions cannot claim an Approval winner.',
+        });
+      if (mediation.role === 'final' && mediation.kernel === null && decision.result !== 'error')
+        context.addIssue({
+          code: 'custom',
+          message: 'An unavailable Kernel requires a final error result.',
+        });
+      if (
+        (mediation.role === 'final' &&
+          decision.result === 'allow' &&
+          mediation.kernel?.effect !== 'allow') ||
+        (mediation.consumedStatements.length > 0 &&
+          (mediation.role !== 'final' ||
+            decision.result !== 'allow' ||
+            mediation.kernel?.effect !== 'allow'))
+      )
+        context.addIssue({
+          code: 'custom',
+          message: 'Only final combined and Kernel allow consumes uses.',
+        });
+      const references = mediation.consumedStatements.map(({ id, digest }) =>
+        JSON.stringify([id, digest])
+      );
+      if (new Set(references).size !== references.length)
+        context.addIssue({
+          code: 'custom',
+          message: 'Consumed statement references must be unique.',
+        });
+    }
     if (decision.result === 'require_approval' && !decision.requiredApprovalKind) {
       context.addIssue({
         code: 'custom',
@@ -145,6 +193,12 @@ export function readAuditEventRowV1(input: unknown): z.infer<typeof AuditEventRe
       ...(row.notebook_admission_json
         ? { notebookAdmission: JSON.parse(String(row.notebook_admission_json)) }
         : {}),
+      ...(row.policy_invocation_json != null
+        ? { policyInvocation: JSON.parse(String(row.policy_invocation_json)) }
+        : {}),
+      ...(row.policy_write_outcome_json != null
+        ? { policyWriteOutcome: JSON.parse(String(row.policy_write_outcome_json)) }
+        : {}),
       outcome: row.outcome,
       severity: row.severity,
       summary: row.summary,
@@ -174,6 +228,7 @@ export function readPermissionDecisionRowV1(
       result: row.result,
       reasonCode: row.reason_code,
       enforcementPoint: row.enforcement_point,
+      ...(row.mediation_json != null ? { mediation: JSON.parse(String(row.mediation_json)) } : {}),
       requiredApprovalKind: row.required_approval_kind,
       approvalId: row.approval_id,
       auditEventId: row.audit_event_id,

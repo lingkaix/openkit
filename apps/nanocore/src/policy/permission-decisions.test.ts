@@ -5,22 +5,242 @@ import {
   ListServerPermissionDecisionsResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
 } from '@openkit/app-api-schemas';
-import { isEntityId } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  isEntityId,
+  type PolicyDecisionV1,
+  type PolicyInvocationV1,
+} from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from '../audit-events.js';
 
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
+  importWorkspacePermissionDecisions,
   listExportableWorkspacePermissionDecisions,
   listPolicyApprovalSourceDecisions,
   listServerPermissionDecisions,
+  readPolicyStatementUseCount,
   recordBootPolicySelfCheckDecisions,
   recordPermissionDecision,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
 
 describe('permission decision recorder', () => {
+  it('roundtrips mediation and atomically consumes only final Workspace allows', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-consumption-'));
+    const importedRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-import-'));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    const importedDb = openWorkspaceDb(importedRoot, workspaceId);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const statement = { id: 'once-review', digest };
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const turnId = 'tu_00000000-0000-7000-8000-000000000001';
+    const capabilityCallId = 'cap_00000000-0000-7000-8000-000000000001';
+    const mediation: PolicyDecisionV1 = {
+      operation: 'mcp.call-tool',
+      stage: 'decide',
+      point: 'mcp.call-tool@decide',
+      policyRevision: digest,
+      authorizationRevision: digest,
+      proposalDigest: digest,
+      role: 'final',
+      kernel: { effect: 'allow', reason: 'granted' },
+      subject: {
+        principal: { kind: 'human', id: userId },
+        onBehalfOf: null,
+        actor: { kind: 'agent', id: 'worker', responsibleUserId: userId },
+        process: { workspaceId, threadId, turnId },
+        credentialKind: 'worker-package',
+        responsibleHumanId: userId,
+      },
+      invocations: [],
+      consumedStatements: [],
+    };
+    const base = {
+      workspaceDb,
+      workspaceId,
+      ownerScope: 'workspace' as const,
+      policyEngineVersion: 'fixture:v1',
+      policySnapshotId: digest,
+      subjectSummary: {},
+      action: 'tool.use',
+      resourceSummary: {},
+      contextSummary: { threadId, turnId, capabilityCallId },
+      reasonCode: 'granted',
+      enforcementPoint: mediation.point,
+    };
+    const policyInvocation: PolicyInvocationV1 = {
+      binding: statement,
+      operation: mediation.operation,
+      stage: mediation.stage,
+      point: mediation.point,
+      mode: 'gate',
+      policyRevision: digest,
+      authorizationRevision: digest,
+      proposalDigest: digest,
+      subject: mediation.subject,
+      participant: { id: 'fixture', version: digest },
+      inputDigest: digest,
+      outputDigest: digest,
+      outcome: 'completed' as const,
+      startedAt: '2026-10-18T00:00:00Z',
+      completedAt: '2026-10-18T00:00:01Z',
+      capabilityCallId,
+    };
+    try {
+      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(importedDb);
+      const gateId = allocateEntityId('pd');
+      recordProductPermissionDecision({
+        ...base,
+        decisionId: gateId,
+        result: 'allow',
+        mediation: { ...mediation, role: 'gate', binding: statement, kernel: undefined },
+        policyInvocation,
+      });
+      expect(() =>
+        recordProductPermissionDecision({
+          ...base,
+          decisionId: allocateEntityId('pd'),
+          result: 'deny',
+          mediation: { ...mediation, kernel: null },
+        })
+      ).toThrow('An unavailable Kernel requires a final error result.');
+      recordProductPermissionDecision({
+        ...base,
+        decisionId: allocateEntityId('pd'),
+        result: 'error',
+        mediation: { ...mediation, kernel: null },
+      });
+      recordProductPermissionDecision({
+        ...base,
+        decisionId: allocateEntityId('pd'),
+        result: 'deny',
+        mediation: { ...mediation, kernel: { effect: 'deny', reason: 'prohibited' } },
+      });
+      expect(readPolicyStatementUseCount(workspaceDb, statement)).toBe(0);
+      const final = {
+        ...base,
+        decisionId: allocateEntityId('pd'),
+        result: 'allow' as const,
+        mediation: { ...mediation, consumedStatements: [statement] },
+        uses: [{ statement, limit: 1 }],
+      };
+      expect(() =>
+        recordProductPermissionDecision({ ...final, enforcementPoint: 'wrong@decide' })
+      ).toThrow();
+      expect(() =>
+        recordProductPermissionDecision({
+          ...final,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000002',
+        })
+      ).toThrow();
+      recordProductPermissionDecision(final);
+      expect(readPolicyStatementUseCount(workspaceDb, statement)).toBe(1);
+      const decisions = listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId);
+      const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
+      expect(decisions).toHaveLength(4);
+      expect(
+        decisions.find(({ decisionId }) => decisionId === final.decisionId)?.mediation
+      ).toEqual(final.mediation);
+      expect(audits).toHaveLength(4);
+      expect(audits.every((event) => event.capabilityCallId === capabilityCallId)).toBe(true);
+      expect(
+        audits.find((event) => event.permissionDecisionId === gateId)?.policyInvocation
+      ).toEqual(policyInvocation);
+      expect(
+        audits.find((event) => event.permissionDecisionId === final.decisionId)
+      ).not.toHaveProperty('policyInvocation');
+      expect(() => recordProductPermissionDecision({ ...final, policyInvocation })).toThrow(
+        'Gate Policy invocation must match'
+      );
+      expect(() =>
+        recordProductPermissionDecision({
+          ...base,
+          decisionId: allocateEntityId('pd'),
+          result: 'allow',
+          mediation: { ...mediation, role: 'gate', binding: statement, kernel: undefined },
+          policyInvocation: { ...policyInvocation, proposalDigest: `sha256:${'c'.repeat(64)}` },
+        })
+      ).toThrow('Gate Policy invocation must match');
+      const nextRevision = `sha256:${'b'.repeat(64)}`;
+      expect(() =>
+        recordProductPermissionDecision({
+          ...final,
+          decisionId: allocateEntityId('pd'),
+          policySnapshotId: nextRevision,
+          mediation: { ...final.mediation, policyRevision: nextRevision },
+        })
+      ).toThrow('Policy statement use limit is exhausted.');
+      expect(listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)).toEqual(
+        decisions
+      );
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual(audits);
+      importWorkspacePermissionDecisions(importedDb, decisions);
+      expect(listExportableWorkspacePermissionDecisions(importedDb, workspaceId)).toEqual(
+        decisions
+      );
+
+      const policyWriteOutcome = {
+        candidate: { artifactId: 'ar_00000000-0000-7000-8000-000000000001', version: 1, digest },
+        decider: { kind: 'human' as const, id: userId },
+        decidedAt: '2026-10-18T00:00:00Z',
+        approval: { proposalDigest: digest, policyRevision: digest, authorizationRevision: digest },
+        validation: 'valid' as const,
+        persistedRevision: digest,
+        activeRevision: null,
+        outcome: 'persisted' as const,
+      };
+      const event = recordWorkspaceAuditEvent({
+        workspaceDb,
+        workspaceId,
+        action: 'policy.fixture',
+        outcome: 'succeeded',
+        summary: 'Policy evidence.',
+        policyInvocation: { ...policyInvocation, mode: 'advise' },
+        policyWriteOutcome,
+      });
+      expect(
+        listWorkspaceAuditEvents(workspaceDb, workspaceId).find(({ id }) => id === event.id)
+      ).toMatchObject({
+        policyInvocation: { ...policyInvocation, mode: 'advise' },
+        policyWriteOutcome,
+      });
+      expect(() =>
+        recordWorkspaceAuditEvent({
+          workspaceDb,
+          workspaceId,
+          action: 'policy.fixture',
+          outcome: 'failed',
+          summary: 'Invalid evidence.',
+          policyInvocation: {
+            ...policyInvocation,
+            rawBody: 'unapproved body',
+          } as PolicyInvocationV1,
+        })
+      ).toThrow();
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceId)).toHaveLength(5);
+      workspaceDb.sqlite
+        .prepare(
+          "UPDATE permission_decisions SET schema_version = 2, mediation_json = 'not JSON' WHERE decision_id = ?"
+        )
+        .run(final.decisionId);
+      expect(() => readPolicyStatementUseCount(workspaceDb, statement)).toThrow(
+        'Unsupported retained record format.'
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      importedDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+      rmSync(importedRoot, { recursive: true, force: true });
+    }
+  });
+
   it('checks an approval source marker before decoding authority facts', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-record-version-'));
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
