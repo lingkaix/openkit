@@ -1,7 +1,7 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -10,10 +10,12 @@ import {
   acceptWorkspaceCapture,
   authorizeWorkspaceBaselineInitialization,
   linkWorkspaceSnapshotReview,
+  readWorkspaceBaselineIdentity,
   readWorkspaceCollection,
   readWorkspaceSnapshotCursor,
   requireWorkspaceBaselineInitialization,
   type WorkspaceCollectionIdentity,
+  workspaceSnapshotAcceptedCommitIsKnown,
   workspaceSnapshotReviewIsStale,
 } from './workspace-snapshot-chain.js';
 
@@ -464,5 +466,82 @@ describe('durable snapshot chain', () => {
     } finally {
       db.sqlite.close();
     }
+  });
+});
+
+/** Creates two actual native snapshot rows and removes their temporary database after each case. */
+function retainedSnapshotChainFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'retained-snapshot-chain-'));
+  const db = openWorkspaceDb(root, identity.workspaceId);
+  onTestFinished(() => {
+    db.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  applyScopedMigrations(db);
+  authorizeWorkspaceBaselineInitialization(db, identity);
+  acceptWorkspaceBaseline(db, identity, base, base.tree, base.tree);
+  const capture = { ...identity, collectionId: 'retained-collection' };
+  acceptWorkspaceCapture(db, capture, { outcome: 'no_new_head', unstable: false }, null);
+  return { db, capture };
+}
+
+describe('retained Workspace snapshot SQL formats', () => {
+  const families = ['workspace_snapshot_cursors', 'workspace_snapshot_collections'] as const;
+  it.each(families)('writes %s v1 and reads/replays without replacing retained bytes', (table) => {
+    const { db, capture } = retainedSnapshotChainFixture();
+    const before = db.sqlite.prepare(`SELECT * FROM ${table}`).get();
+    expect(before).toMatchObject({ schema_version: 1 });
+    expect(readWorkspaceSnapshotCursor(db, identity)?.acceptedBase).toEqual(base);
+    expect(readWorkspaceCollection(db, capture)?.result.outcome).toBe('no_new_head');
+    expect(
+      workspaceSnapshotAcceptedCommitIsKnown(
+        db,
+        identity.workspaceId,
+        identity.workSlot,
+        identity.threadId,
+        base.tree
+      )
+    ).toBe(true);
+    authorizeWorkspaceBaselineInitialization(db, identity);
+    acceptWorkspaceCapture(db, capture, { outcome: 'no_new_head', unstable: false }, null);
+    expect(db.sqlite.prepare(`SELECT * FROM ${table}`).get()).toEqual(before);
+  });
+
+  it.each(
+    families
+  )('refuses %s version 2 before JSON decode, authority lookup or replay', (table) => {
+    const { db, capture } = retainedSnapshotChainFixture();
+    const column =
+      table === 'workspace_snapshot_cursors' ? 'baseline_identity_json' : 'identity_json';
+    db.sqlite.prepare(`UPDATE ${table} SET schema_version=2, ${column}='{invalid'`).run();
+    const before = db.sqlite.prepare(`SELECT * FROM ${table}`).get();
+    if (table === 'workspace_snapshot_cursors') {
+      expect(() => readWorkspaceSnapshotCursor(db, identity)).toThrow(
+        'Unsupported retained record format'
+      );
+      expect(() => readWorkspaceBaselineIdentity(db, identity)).toThrow(
+        'Unsupported retained record format'
+      );
+      expect(() => authorizeWorkspaceBaselineInitialization(db, identity)).toThrow(
+        'Unsupported retained record format'
+      );
+    } else {
+      expect(() => readWorkspaceCollection(db, capture)).toThrow(
+        'Unsupported retained record format'
+      );
+      expect(() =>
+        acceptWorkspaceCapture(db, capture, { outcome: 'no_new_head', unstable: false }, null)
+      ).toThrow('Unsupported retained record format');
+    }
+    expect(() =>
+      workspaceSnapshotAcceptedCommitIsKnown(
+        db,
+        identity.workspaceId,
+        identity.workSlot,
+        identity.threadId,
+        base.tree
+      )
+    ).toThrow('Unsupported retained record format');
+    expect(db.sqlite.prepare(`SELECT * FROM ${table}`).get()).toEqual(before);
   });
 });
