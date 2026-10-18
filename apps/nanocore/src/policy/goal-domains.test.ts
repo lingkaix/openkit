@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -15,8 +16,12 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService, type GoalDomainStatement } from './goal-domains.js';
+import { evaluateGoalTaskAccess } from './goal-task-access.js';
+import { createGoalTaskPolicyService } from './goal-task-policy.js';
+import { PolicyInterception } from './interception.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
+import { evaluateWorkspaceMemberAccess } from './workspace-access.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -24,7 +29,7 @@ afterEach(() => {
 });
 
 /** Real capture and Goal/Pending commits exercise the service; full preview and product joins have separate Goal-owner regressions. */
-async function fixture() {
+async function fixture(uses?: number) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'goal-domain-policy-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -104,6 +109,7 @@ async function fixture() {
           ],
         },
         lifetime: {
+          ...(uses === undefined ? {} : { uses }),
           anchor: {
             owner: { kind: 'workspace', workspaceId: workspace.id },
             kind: 'goal',
@@ -187,6 +193,92 @@ async function fixture() {
 }
 
 describe('jointly approved Goal-domain publication', () => {
+  it('recognizes its own last-use allow while still rechecking current human authority', async () => {
+    const f = await fixture(1);
+    await f.approve();
+    await f.consume();
+    const { statement } = f.activate();
+    const resource = statement.scope.resources[0]!;
+    const prepared = createGoalTaskPolicyService({
+      coreDb: f.coreDb,
+      store: f.store,
+      domains: f.service(),
+    }).evaluateAdmission({
+      workspaceDb: f.db,
+      goalId: f.key.goalId,
+      planVersionId: f.plan.planVersionId,
+      agentId: 'design-worker',
+      responsibleHumanId: f.actor.userId,
+      resources: [resource],
+      humanKernel: evaluateWorkspaceMemberAccess({ operation: 'turn.run' }),
+    });
+    expect(prepared.kernel.effect).toBe('allow');
+    expect(prepared.kernel.trace.process).toBeUndefined();
+    const thread = f.store.createThread(f.key.workspaceId, 'Policy owner finite-use fixture');
+    const turn = f.store.createTurn(
+      f.key.workspaceId,
+      thread.id,
+      'Policy unit effect',
+      { kind: 'user', id: f.actor.userId },
+      null,
+      { executorKind: 'worker', agentId: 'design-worker' }
+    );
+    const subject = {
+      principal: { kind: 'agent' as const, id: 'design-worker' },
+      onBehalfOf: null,
+      actor: { kind: 'agent' as const, id: 'design-worker', responsibleUserId: f.actor.userId },
+      process: { workspaceId: f.key.workspaceId, threadId: thread.id, turnId: turn.id },
+      credentialKind: 'local' as const,
+      responsibleHumanId: f.actor.userId,
+    };
+    // This is a Policy-owner unit effect; Worker package/dispatch admission is tested by its runtime owner.
+    const decision = await new PolicyInterception().decide({
+      workspaceDb: f.db,
+      document: f.manager.current().openKitConfig.policy!.mediation!,
+      proposal: {
+        operation: 'mcp.call-tool',
+        workspaceId: f.key.workspaceId,
+        serverId: 'issues',
+        toolName: 'read',
+        argumentsDigest: policyDigest({}),
+        schemaDigest: null,
+        capabilityCallId: allocateEntityId('cap'),
+        packageDigest: 'policy-unit',
+        catalogRevision: 'policy-unit',
+        subject,
+      },
+      authorizationRevision: policyDigest('current-native-authority'),
+      authorizationUses: [
+        { statement: { id: statement.id, digest: policyDigest(statement) }, limit: 1 },
+      ],
+      authorCurrent: () => true,
+      anchorCurrent: () => true,
+      participantAuthorized: () => false,
+      stillCurrent: () => f.service().read(f.key) !== null,
+      finalKernel: () =>
+        evaluateGoalTaskAccess({
+          domain: f.service().read(f.key),
+          subject,
+          responsibleHumanId: f.actor.userId,
+          resources: [resource],
+          operation: 'tool.use',
+          resource,
+          humanKernel: evaluateWorkspaceMemberAccess({ operation: 'tool.use' }),
+        }).kernel,
+    });
+    expect(decision.result).toBe('allow');
+    expect(f.service().read(f.key)).toBeNull();
+    expect(f.service().readForDecision({ ...f.key, decision })).toEqual(statement);
+    expect(
+      f.service().readForDecision({
+        ...f.key,
+        decision: { ...decision, proposalDigest: policyDigest('different-effect') },
+      })
+    ).toBeNull();
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
+    expect(f.service().readForDecision({ ...f.key, decision })).toBeNull();
+  });
+
   it('publishes from one completed request without a separate Policy apply and survives reopen', async () => {
     const f = await fixture();
     await f.approve();

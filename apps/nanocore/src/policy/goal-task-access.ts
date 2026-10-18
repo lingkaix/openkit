@@ -67,7 +67,7 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
   const kernel = scopeKernel({
     operation: input.operation,
     user: `${subject.principal.kind}:${subject.principal.id}`,
-    process: subject.process?.turnId,
+    ...(subject.process ? { process: subject.process.turnId } : {}),
     inGoalEnvelope,
     selectedByTask,
     humanKernel: input.humanKernel,
