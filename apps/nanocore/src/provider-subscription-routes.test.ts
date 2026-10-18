@@ -774,14 +774,14 @@ describe('provider-subscription app API', () => {
       {
         code: 'invalid_request',
         status: 400,
-        path: '/api/app/operations/provider-subscription.account-login-start',
+        path: '/api/app/operations/provider-subscription.login-start',
         method: 'POST',
         body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
         code: 'invalid_request',
         status: 400,
-        path: '/api/app/operations/provider-subscription.account-login-start',
+        path: '/api/app/operations/provider-subscription.login-start',
         method: 'POST',
         body: {
           ...{ mode: 'browser' },
@@ -791,7 +791,7 @@ describe('provider-subscription app API', () => {
       {
         code: 'invalid_request',
         status: 400,
-        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        path: '/api/app/operations/provider-subscription.login-cancel',
         method: 'POST',
         body: {
           ...{ loginId: 'legacy-login-id' },
@@ -840,7 +840,7 @@ describe('provider-subscription app API', () => {
       const fixture = createFixture();
 
       try {
-        const startResponse = await fixture.app.request(...operationRequest('provider-subscription.account-login-start', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, jsonRequest('POST', { mode: 'device_code' }))
+        const startResponse = await fixture.app.request(...operationRequest('provider-subscription.login-start', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, jsonRequest('POST', { mode: 'device_code' }))
         );
         const pending = ProviderSubscriptionAccountSchema.parse(await startResponse.json());
 
@@ -862,7 +862,7 @@ describe('provider-subscription app API', () => {
 
         const interactionId =
           pending.status === 'pending' ? pending.interaction.interactionId : 'unreachable';
-        const cancelResponse = await fixture.app.request(...operationRequest('provider-subscription.account-login-cancel', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, jsonRequest('POST', { interactionId }))
+        const cancelResponse = await fixture.app.request(...operationRequest('provider-subscription.login-cancel', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, jsonRequest('POST', { interactionId }))
         );
         const cancelled = ProviderSubscriptionAccountSchema.parse(await cancelResponse.json());
         expect(cancelResponse.status).toBe(200);
@@ -957,7 +957,7 @@ describe('provider-subscription app API', () => {
         spy: 'startLogin',
         status: 409,
         message: 'A login interaction is already active for this account.',
-        path: '/api/app/operations/provider-subscription.account-login-start',
+        path: '/api/app/operations/provider-subscription.login-start',
         method: 'POST',
         body: {
           ...{ mode: 'device_code' },
@@ -973,7 +973,7 @@ describe('provider-subscription app API', () => {
         spy: 'cancelLogin',
         status: 409,
         message: 'No login interaction is active for this account.',
-        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        path: '/api/app/operations/provider-subscription.login-cancel',
         method: 'POST',
         body: {
           ...{ interactionId: 'missing-interaction' },
@@ -989,7 +989,7 @@ describe('provider-subscription app API', () => {
         spy: 'cancelLogin',
         status: 409,
         message: 'Login interaction does not match the active interaction.',
-        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        path: '/api/app/operations/provider-subscription.login-cancel',
         method: 'POST',
         body: {
           ...{ interactionId: 'different-interaction' },
@@ -1031,7 +1031,7 @@ describe('provider-subscription app API', () => {
         spy: 'startLogin',
         status: 503,
         message: 'Subscription provider is unavailable.',
-        path: '/api/app/operations/provider-subscription.account-login-start',
+        path: '/api/app/operations/provider-subscription.login-start',
         method: 'POST',
         body: {
           ...{ mode: 'device_code' },
@@ -1131,7 +1131,7 @@ describe('provider-subscription app API', () => {
         body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
-        path: '/api/app/operations/provider-subscription.account-login-start',
+        path: '/api/app/operations/provider-subscription.login-start',
         method: 'POST',
         body: {
           ...{ mode: 'device_code' },
@@ -1139,7 +1139,7 @@ describe('provider-subscription app API', () => {
         },
       },
       {
-        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        path: '/api/app/operations/provider-subscription.login-cancel',
         method: 'POST',
         body: {
           ...{ interactionId: 'missing-interaction' },

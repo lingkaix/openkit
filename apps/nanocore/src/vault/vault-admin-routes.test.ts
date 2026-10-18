@@ -131,7 +131,7 @@ describe('vault admin app API', () => {
       const exactTargets = {
         targetAgentId: randomUUID(),
         targetAgentSessionId: allocateEntityId('as'),
-        targetCapabilityId: 'mcp.list_tools',
+        targetCapabilityId: 'mcp.list-tools',
       };
       const constrained = await send('vault.grant-create', {
         workspaceId,
@@ -150,7 +150,7 @@ describe('vault admin app API', () => {
         constrainedGrant,
       ]);
       for (const invalid of [
-        { injectionPath: 'runtime-env', targetCapabilityId: 'mcp.call_tool' },
+        { injectionPath: 'runtime-env', targetCapabilityId: 'mcp.call-tool' },
         { targetCapabilityId: 'mcp' },
         { injectionPath: 'runtime-file' },
       ])

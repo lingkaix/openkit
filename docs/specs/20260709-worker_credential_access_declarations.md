@@ -344,7 +344,7 @@ The current implementation is partial.
 
 The manifest and resolver accept reusable `requirementId` declarations and compose them with per-Workspace `credentialBindings`. Required missing bindings fail setup, optional missing bindings are omitted, and the same manifest can resolve to different Workspace-scoped VaultGrants without exposing the choice to the worker.
 
-The shared launch-time declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material; it still rejects a non-null `targetCapabilityId` because that resolver is not a capability sink. The selected MCP Gateway owns its separate per-call current-authority check and accepts only `mcp`, `mcp.list_tools`, or `mcp.call_tool` targets matching the exact operation.
+The shared launch-time declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material; it still rejects a non-null `targetCapabilityId` because that resolver is not a capability sink. The selected MCP Gateway owns its separate per-call current-authority check and accepts only `mcp`, `mcp.list-tools`, or `mcp.call-tool` targets matching the exact operation.
 
 The shared worker resolver creates the plan, performs audited Vault resolution, completes the backend-private sink, and only then persists the receipt. Backend resolution failure or sink failure may leave redacted plan and `VaultUse` evidence but creates no receipt.
 

@@ -86,7 +86,7 @@ it.each([
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'call', arguments: { operation: 'workspace.update', input } },
+          params: { name: 'openkit_call', arguments: { operation: 'workspace.update', input } },
         }),
       });
       expect(owner).toHaveBeenCalledExactlyOnceWith('ws_00000000-0000-7000-8000-000000000001', {
