@@ -141,7 +141,7 @@ export function attributedNotebookPageBytes(
   path: string,
   content: string,
   ownerScope: KnowledgeOwnerScope,
-  reviewState: 'user-authored' | 'delegated'
+  reviewState: 'user-authored' | 'delegated' | 'accepted'
 ): string {
   const parsed = parseOkfDocument({ path, content });
   if (!parsed.ok) throw new NotebookError('invalid_request');

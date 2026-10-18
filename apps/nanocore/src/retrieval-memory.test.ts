@@ -14,7 +14,12 @@ import {
   checkMemoryForgetIntent,
   prepareMemoryForgetCommand,
 } from './knowledge/memory-forget.js';
-import { editMemoryPage, readMemoryPage, saveMemoryPage } from './knowledge/memory-lifecycle.js';
+import {
+  editMemoryPage,
+  readMemoryPage,
+  recordMemorySuppression,
+  saveMemoryPage,
+} from './knowledge/memory-lifecycle.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import {
   readUserKnowledgeSource,
@@ -23,6 +28,7 @@ import {
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
 import { FsStore } from './lib/store.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
+import { readAuthorizedUserMemoryPages } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
@@ -181,6 +187,30 @@ function fixture(imported = false) {
     workspaceRoot: join(dataRoot, 'workspaces', workspaceId),
   };
 }
+
+it('delivers only the pinned self Memory root and withholds it after suppression', async () => {
+  const f = fixture();
+  const target = { ...f.alice.query(), pageIds: ['index'] };
+  const overview = readAuthorizedUserMemoryPages(target);
+  expect(overview.notebookRevision).toBe(f.alice.baseRevision);
+  expect(overview.pages.map(({ id }) => id)).toEqual(['index']);
+  expect(readAuthorizedUserMemoryPages(f.alice.query()).pages).toEqual([]);
+  expect(() =>
+    readAuthorizedUserMemoryPages({
+      ...target,
+      access: { ...target.access, outputThreadId: f.bob.timeline.id },
+    })
+  ).toThrow();
+  const saved = await f.alice.save(f.alice.baseRevision, 'preference', 'Private preference');
+  const page = readMemoryPage(f.alice.writer, 'preference')!;
+  recordMemorySuppression(f.alice.writer, {
+    requestId: randomUUID(),
+    pageId: 'preference',
+    notebookRevision: saved.notebookRevision,
+    digest: page.digest,
+  });
+  expect(() => readAuthorizedUserMemoryPages(target)).toThrow('Memory page is unavailable.');
+});
 
 describe('governed current-self Memory search', () => {
   it('selects only self pages with exact User references and a private trace in an imported Workspace, independent of another User corpus', async () => {
