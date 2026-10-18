@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { allocateEntityId, deriveEntityId } from '../common/entity-id.js';
 import {
   InterceptionBindingSchema,
+  InterceptionInvocationReaderSchema,
   InterceptionInvocationSchema,
   InterceptionStatementSchema,
 } from './interception.js';
@@ -82,6 +83,26 @@ describe('interception retained formats', () => {
       finishedAt: '2026-10-18T00:00:00.100Z',
     };
     expect(InterceptionInvocationSchema.parse(invocation).outcome).toBe('unavailable');
+    const extended = {
+      ...invocation,
+      futureNote: 'retained',
+      actor: { ...user, futureNote: 'actor' },
+      binding: {
+        ...invocation.binding,
+        futureNote: 'binding',
+        owner: { ...owner, futureNote: 'owner' },
+        resource: { ...reference, futureNote: 'resource' },
+        participant: { ...statement.participant, futureNote: 'participant' },
+      },
+      input: { ...reference, futureNote: 'input' },
+    };
+    expect(InterceptionInvocationReaderSchema.parse(extended)).toEqual(invocation);
+    expect(
+      InterceptionInvocationReaderSchema.safeParse({
+        ...extended,
+        binding: { ...extended.binding, mode: 'unknown' },
+      }).success
+    ).toBe(false);
     expect(
       InterceptionInvocationSchema.safeParse({ ...invocation, outcome: 'advised' }).success
     ).toBe(false);

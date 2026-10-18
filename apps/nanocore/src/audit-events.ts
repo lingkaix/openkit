@@ -3,6 +3,7 @@ import {
   type AuditEvent,
   AuditEventSchema,
   allocateEntityId,
+  InterceptionInvocationReaderSchema,
   type KnowledgeOwnerScope,
   RequestIdSchema,
 } from '@openkit/protocol';
@@ -370,7 +371,9 @@ export function importWorkspaceAuditEvents(input: {
   for (const event of input.events) {
     insertAuditEvent(
       input.workspaceDb.sqlite,
-      AuditEventSchema.parse({
+      AuditEventSchema.safeExtend({
+        interception: InterceptionInvocationReaderSchema.optional(),
+      }).parse({
         ...event,
         workspaceId: input.targetWorkspaceId,
         resource:
@@ -527,7 +530,11 @@ function auditEventFromRow(row: unknown): AuditEvent {
     resource: event.resource,
     resourceRevision: event.resource_revision ?? null,
     ...(event.interception_json
-      ? { interception: JSON.parse(String(event.interception_json)) }
+      ? {
+          interception: InterceptionInvocationReaderSchema.parse(
+            JSON.parse(String(event.interception_json))
+          ),
+        }
       : {}),
     ...(event.notebook_admission_json
       ? { notebookAdmission: JSON.parse(String(event.notebook_admission_json)) }

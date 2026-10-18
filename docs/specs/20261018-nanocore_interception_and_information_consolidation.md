@@ -102,6 +102,8 @@ Needed before v0.1.0 so later bindings and row migrations keep one retained cont
 | Current release | The specialized owner supplies current admission, safe output resolution/validation, final Policy and synchronous release. No suspension separates final checks, required record and dispatch. Without this boundary, a late assessment could release a stale or unauthorized effect. |
 | Native contracts | Deterministic fixtures retain Gateway per-Agent/tool scope and reference Storage lease facts (issuer/subject/audience, KB, mount, prefix, mode and expiry) through their existing owner. Without these fixtures, the frozen format could omit inputs needed by its first consumers. |
 
+Retained invocation readers ignore unknown additive descriptive fields, including nested binding/reference metadata, without rewriting stored bytes; unknown core modes, points, required versions and authority values remain errors. Authored statements and active bindings keep exact admission.
+
 Invocation data is an additive optional field in the existing Audit family, with ordinary nullable-column migrations. It is historical evidence, never an active Policy statement. A portable historical observation does not grant or activate its source binding in the destination. No body, raw argument, secret, new transcript or history service is retained by this format.
 
 ## BASE Executor And Pilot

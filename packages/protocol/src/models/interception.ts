@@ -129,6 +129,44 @@ export const InterceptionInvocationSchema = z
       });
   });
 
+// Historical observations are descriptive. Normalize additions before the strict known-core validator.
+const ownerReader = z.union(KnowledgeOwnerScopeSchema.options.map((schema) => schema.strip()));
+const actorReader = z.union(ActorRefSchema.options.map((schema) => schema.strip()));
+const contractReader = InterceptionContractSchema.strip();
+const recordReader = InterceptionRecordReferenceSchema.safeExtend({ owner: ownerReader }).strip();
+const referenceReader = z.union([
+  recordReader,
+  z
+    .object({
+      kind: z.literal('content'),
+      reference: ScopeQualifiedReferenceSchema.strip(),
+      version: z.string().min(1),
+    })
+    .strip(),
+]);
+const bindingReader = InterceptionBindingSchema.safeExtend({
+  owner: ownerReader,
+  subject: actorReader,
+  author: actorReader,
+  resource: recordReader,
+  source: recordReader,
+  delegation: recordReader.nullable(),
+  participant: contractReader,
+  inputContract: contractReader,
+  outputContract: contractReader,
+  circuit: InterceptionBindingSchema.shape.circuit.strip(),
+}).strip();
+
+/** Reads non-authorizing retained history without rewriting its bytes or accepting unknown core values. */
+export const InterceptionInvocationReaderSchema = InterceptionInvocationSchema.safeExtend({
+  binding: bindingReader,
+  input: referenceReader,
+  output: referenceReader.nullable(),
+  actor: actorReader,
+})
+  .strip()
+  .pipe(InterceptionInvocationSchema);
+
 /** A configured statement has no independent storage or identity lifecycle. */
 export type InterceptionStatement = z.infer<typeof InterceptionStatementSchema>;
 /** A resolved Policy/config snapshot, never a grant inferred from provider output. */

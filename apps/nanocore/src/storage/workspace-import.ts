@@ -66,6 +66,7 @@ import {
   CapabilityCallSchema,
   deriveEntityId,
   type EntityKind,
+  InterceptionInvocationReaderSchema,
   ItemSchema,
   KnowledgeEntrySchema,
   MaterialIdSchema,
@@ -1940,7 +1941,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
   context.vaultGrantIds = vaultGrantIds;
   const auditEvents = readOptionalImportJsonl(context.files, 'records/audit-events.jsonl').map(
     (record) => {
-      const parsed = AuditEventSchema.parse(record);
+      const parsed = AuditEventSchema.safeExtend({
+        interception: InterceptionInvocationReaderSchema.optional(),
+      }).parse(record);
 
       return AuditEventSchema.parse({
         ...parsed,

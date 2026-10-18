@@ -84,6 +84,20 @@ describe('workspace audit events', () => {
         summary: 'Workspace inspected.',
         now: new Date('2026-10-16T00:00:02.000Z'),
       });
+      const retainedInvocation = JSON.stringify({
+        ...interception,
+        futureNote: 'retained observation',
+        binding: { ...interception.binding, futureNote: 'binding metadata' },
+      });
+      workspaceDb.sqlite
+        .prepare('UPDATE audit_events SET interception_json = ? WHERE audit_event_id = ?')
+        .run(retainedInvocation, local.id);
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual([local]);
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT interception_json FROM audit_events WHERE audit_event_id = ?')
+          .get(local.id)
+      ).toEqual({ interception_json: retainedInvocation });
       const recurring = recordServerAuditEvent({
         coreDb,
         workspaceId,
