@@ -110,6 +110,8 @@ Promotion and rollback are compare-and-set moves to an existing verified digest,
 
 Workspace default/pin/activation decisions require `workspace.configure`; Server defaults require deployment-admin authority. Existing audit records retain actor, request, entry, prior/next digest, and candidate/evidence references. Submission is not promotion authority. Any automation requires explicit delegation and current policy rather than a special self-improvement exemption.
 
+New native Workspace pin publications retain `pinAuditRef`, the identifier of the existing command admission Audit event that precedes that catalog publication. A new command that pins the same digest replaces this attribution; receipt replay preserves the winning publication. Pins without retained attribution remain unknown, and clearing a pin removes its live reference without deleting Audit history. The catalog read projection exposes this reference. When a Workspace pin wins Worker selection, the retained AEP Skill lineage carries its reference so a later pin change cannot change historical attribution. Run or composed exact selection and current-default selection do not claim pin attribution. These references supply evidence, never authority, and portable source pins remain historical rather than target selection.
+
 ### Evaluation and session lineage
 
 Resolved selection records scoped entry id, exact digest and format, selection source, and source plugin membership where applicable. AEP and accepted materialization evidence retain exact inputs; a model naming a Skill is not delivery proof.
