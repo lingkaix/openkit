@@ -523,6 +523,7 @@ describe('Assistant conversation context portability', () => {
     expect(provider).toHaveBeenCalledTimes(2);
   });
 
+  // This fixture creates three real deployments and imports durable history twice.
   it('rejects a corrupt original predecessor before publication when tied source order changes on import', async () => {
     const source = await seedTiedOrderSummaryChain();
     const control = deployment();
@@ -634,8 +635,9 @@ describe('Assistant conversation context portability', () => {
         target.coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
       )
       .toEqual(registry);
-  });
+  }, 60_000);
 
+  // Real archive export, import and restart retain all canonical writes in this fixture budget.
   it('exports and imports real archive bytes, remints source evidence, and reuses the summary chain after target restart', async () => {
     const source = await seed();
     const target = deployment();
@@ -818,7 +820,7 @@ describe('Assistant conversation context portability', () => {
         .listThreadItems(source.workspace.id, source.thread.id)
         .filter((item) => item.type !== 'context-summary')
     ).toEqual(source.originals);
-  });
+  }, 60_000);
 
   it('rejects contradictory selected bytes, exact ranges and summary proof at the verified-byte import seam before publication', async () => {
     const source = await seed();

@@ -51,7 +51,11 @@ function setup() {
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const mounted = render(
     <QueryClientProvider client={cache}>
-      <CoreClientProvider client={{ operations } as unknown as CoreClient}>
+      <CoreClientProvider
+        client={
+          { core: { meta: vi.fn().mockResolvedValue({}) }, operations } as unknown as CoreClient
+        }
+      >
         <ServerVaultSecretsPanel />
       </CoreClientProvider>
     </QueryClientProvider>
@@ -61,6 +65,7 @@ function setup() {
 
 it('creates Server material only through transient input and excludes it from caches and rendering', async () => {
   const { operations, cache } = setup();
+  await waitFor(() => expect(cache.getQueryState(['core', 'meta'])?.status).toBe('success'));
   const material = await screen.findByLabelText('Shared MCP secret value');
   await waitFor(() => expect(material).toBeEnabled());
   await userEvent.type(material, CANARY);

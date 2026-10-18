@@ -227,11 +227,11 @@ describe('Server MCP administration owner and recovery', () => {
     });
     const narrowed = await f.call('vault.server-mcp-grant-narrow', {
       grantId: grant.grantId,
-      constraints: { targetCapabilityId: 'mcp.call_tool' },
+      constraints: { targetCapabilityId: 'mcp.call-tool' },
     });
     expect(narrowed.revokedGrant.status).toBe('revoked');
     expect(narrowed.grant).toMatchObject({
-      targetCapabilityId: 'mcp.call_tool',
+      targetCapabilityId: 'mcp.call-tool',
       ownerScope: 'server',
       lifetime: 'server',
     });
@@ -351,7 +351,7 @@ describe('Server MCP administration owner and recovery', () => {
     await expect(
       f.call('vault.server-mcp-grant-narrow', {
         grantId: grant.grantId,
-        constraints: { targetCapabilityId: 'mcp.call_tool' },
+        constraints: { targetCapabilityId: 'mcp.call-tool' },
       })
     ).rejects.toMatchObject({ status: 409, code: 'recovery_required' });
     const inventory = await f.call('vault.server-mcp-grant-list');

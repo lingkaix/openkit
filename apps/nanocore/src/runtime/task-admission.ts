@@ -68,7 +68,7 @@ export function createCoordinatorTaskTool(options: {
     unknown
   >;
   return {
-    name: 'task_start',
+    name: 'goal.task.dispatch',
     description:
       'Admit an ordinary bounded Task on current intent and the active Plan. Supply your explicit permitted-adjustment judgment and the exact intent/card revisions read. Return after ordinary Task Turn admission; do not wait for completion. A retained Plan/card citation alone is an unadmitted reservation with null admittedAt. On recovery_required inspect the existing Thread, checkpoint and scheduler owners; never automatically retry uncertain work.',
     inputSchema,

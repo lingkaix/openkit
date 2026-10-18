@@ -622,7 +622,7 @@ function AccountControls({
   const login = useMutation({
     onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
-      client.operations['provider-subscription.account-login-start']({
+      client.operations['provider-subscription.login-start']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
         mode: 'device_code',
@@ -641,7 +641,7 @@ function AccountControls({
   const cancel = useMutation({
     onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
-      client.operations['provider-subscription.account-login-cancel']({
+      client.operations['provider-subscription.login-cancel']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
         interactionId: live.interactionId as string,

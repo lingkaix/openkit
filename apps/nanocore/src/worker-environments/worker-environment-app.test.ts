@@ -693,7 +693,7 @@ describe('Worker environment App composition', () => {
             jsonrpc: '2.0',
             id: 1,
             method: 'tools/call',
-            params: { name: 'call', arguments: { operation, input } },
+            params: { name: 'openkit_call', arguments: { operation, input } },
           }),
         });
         expect(remote.status).toBe(200);
@@ -734,7 +734,7 @@ describe('Worker environment App composition', () => {
             jsonrpc: '2.0',
             id: 2,
             method: 'tools/call',
-            params: { name: 'call', arguments: { operation, input } },
+            params: { name: 'openkit_call', arguments: { operation, input } },
           }),
         });
         const remoteBody = await remoteConflict.json();
@@ -807,7 +807,7 @@ describe('Worker environment App composition', () => {
               jsonrpc: '2.0',
               id: 3,
               method: 'tools/call',
-              params: { name: 'call', arguments: { operation, input: refusedInput } },
+              params: { name: 'openkit_call', arguments: { operation, input: refusedInput } },
             }),
           });
           const remoteBody = await remote.json();

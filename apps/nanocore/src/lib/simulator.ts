@@ -1536,7 +1536,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           store,
           workspaceDb,
         },
-        'work_request_input',
+        'work_input_request',
         { requestId: state.userInputRequestId, prompt, questions }
       );
       state.userInputRequestId = result.structuredContent!.requestId as string;

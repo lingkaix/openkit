@@ -262,7 +262,7 @@ function assertReceiptActor(
   if (
     input.auditEventId &&
     plan.packageSnapshotId === null &&
-    plan.capabilityId === 'mcp.list_tools' &&
+    plan.capabilityId === 'mcp.list-tools' &&
     plan.injectionVisibility === 'gateway-only' &&
     ['mcp-gateway:http', 'mcp-gateway:stdio'].includes(plan.backendCapabilityRequirement)
   ) {
