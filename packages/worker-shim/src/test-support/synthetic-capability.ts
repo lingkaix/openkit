@@ -19,7 +19,7 @@ export interface SyntheticCapability {
 }
 
 /**
- * Starts a loopback Streamable HTTP MCP server. Each server id exposes one `echo-<id>` tool.
+ * Starts a loopback Streamable HTTP MCP server. By default, each server exposes one `echo-<id>` tool.
  *
  * @param tools Optional descriptors in place of the default parameterless echo tool.
  * @returns The server, its origin, and every captured call.
@@ -40,7 +40,10 @@ export async function startSyntheticCapability(
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
-      const serverId = req.url?.split('/').filter(Boolean).at(-1) ?? '';
+      // Native CodeMode appends a query; production routing identifies servers by pathname.
+      const serverId =
+        new URL(req.url ?? '/', 'http://127.0.0.1').pathname.split('/').filter(Boolean).at(-1) ??
+        '';
       let message: { id?: unknown; method?: string; params?: unknown } = {};
       try {
         message = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as typeof message;

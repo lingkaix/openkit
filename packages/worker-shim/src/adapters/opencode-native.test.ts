@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -196,7 +197,7 @@ it.each([
   if (managed) expect(text).not.toContain('stale-native-description');
   const tools = JSON.stringify(request.body.tools);
   expect(tools + text).toContain('echo-local');
-  expect(tools.includes('echo-selected')).toBe(managed);
+  expect((tools + text).includes('echo-selected')).toBe(managed);
   expect(existsSync(marker)).toBe(true);
   expect(local.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
   expect(local.hits.every((hit) => hit.authorization === null)).toBe(true);
@@ -345,7 +346,7 @@ it.each([
   expect(request.body.model).toBe('native-model');
   expect(request.headers.authorization).toBe('Bearer synthetic-inference-credential');
   if (kind !== 'provider') {
-    expect(JSON.stringify(request.body.tools)).toContain('echo-selected');
+    expect(requestTexts(request).join(' ')).toContain('echo-selected');
     expect(f.capability.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
     expect(
       f.capability.hits.every(
@@ -557,6 +558,45 @@ it('refuses a regular-file image source root before spawn without publishing a h
   expect(readdirSync(control)).toEqual([]);
 });
 
+it('loads a selected native Skill and hashes its supporting file outside the Workspace', async () => {
+  const selected = skill(join(root, 'selected'), 'p20-probe-skill');
+  const supporting = join(selected, 'references', 'getting-started.en.md');
+  const content = 'selected-supporting-file-content\n';
+  mkdirSync(join(selected, 'references'));
+  writeFileSync(supporting, content);
+  const digest = createHash('sha256').update(content).digest('hex');
+  let stage = 0;
+  const f = await fixture(opencodeAdapter, null, (request) => {
+    if (!request.body.tools?.some((tool) => tool.function?.name === 'skill')) {
+      return { text: 'auxiliary' };
+    }
+    if (stage === 0) {
+      stage = 1;
+      return { toolCall: { name: 'skill', arguments: { id: 'p20-probe-skill' } } };
+    }
+    if (stage === 1 && requestTexts(request).join(' ').includes('p20-probe-skill-content')) {
+      stage = 2;
+      return { toolCall: { name: 'shell', arguments: { command: `sha256sum '${supporting}'` } } };
+    }
+    return { text: 'skill-verified' };
+  });
+  const result = await (await f.session.startTurn(f.turn([selected]))).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(stage).toBe(2);
+  expect(existsSync(join(work, 'SKILL.md'))).toBe(false);
+  expect(existsSync(join(work, 'references'))).toBe(false);
+  expect(
+    f.inference.requests.some((request) =>
+      request.body.messages.some(
+        (message) =>
+          message.role === 'tool' &&
+          typeof message.content === 'string' &&
+          message.content.includes(`${digest}  ${supporting}`)
+      )
+    )
+  ).toBe(true);
+}, 60000);
+
 it('exposes a selected parameterless MCP tool in the native CodeMode catalog and invokes it', async () => {
   let called = false;
   const serverId = 'p22-probe-5bd14416';
@@ -566,7 +606,7 @@ it('exposes a selected parameterless MCP tool in the native CodeMode catalog and
     (request) => {
       const path = requestTexts(request)
         .join(' ')
-        .match(/\b(tools\.[A-Za-z_]\w*\.sis_schema)\(\)/)?.[1];
+        .match(/\b(tools(?:\.[A-Za-z_]\w*|\["[^"]+"\])\.sis_schema)\(\)/)?.[1];
       if (
         !called &&
         path &&
