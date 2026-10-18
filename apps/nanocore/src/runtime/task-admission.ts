@@ -72,7 +72,7 @@ export function createCoordinatorTaskTool(options: {
   return {
     name: 'goal.task.dispatch',
     description:
-      'Admit an ordinary bounded Task on current intent and the active Plan. Supply your explicit permitted-adjustment judgment and the exact intent/card revisions read. Return after ordinary Task Turn admission; do not wait for completion. A retained Plan/card citation alone is an unadmitted reservation with null admittedAt. On recovery_required inspect the existing Thread, checkpoint and scheduler owners; never automatically retry uncertain work.',
+      'Admit an ordinary bounded Task on current intent and the active Plan. Supply your explicit permitted-adjustment judgment and the exact intent/card revisions read. For governed resources, use kind: policy selections in request.resources with exact native selectors. Descriptive references supply context and grant no effect authority; an empty typed selection grants nothing. Return after ordinary Task Turn admission; do not wait for completion. A retained Plan/card citation alone is an unadmitted reservation with null admittedAt. On recovery_required inspect the existing Thread, checkpoint and scheduler owners; never automatically retry uncertain work.',
     inputSchema,
     execute: async (value) => {
       const input = CoordinatorTaskInputSchema.parse(value);
