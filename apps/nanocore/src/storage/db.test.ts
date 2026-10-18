@@ -535,11 +535,13 @@ describe('scoped storage databases', () => {
         'goal_id',
         'thread_id',
         'payload_json',
+        'schema_version',
       ]);
       expect(tableColumns(workspaceDb.sqlite, 'goal_cards')).toEqual([
         'card_id',
         'goal_id',
         'payload_json',
+        'schema_version',
       ]);
     } finally {
       workspaceDb.sqlite.close();

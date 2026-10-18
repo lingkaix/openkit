@@ -1146,12 +1146,18 @@ describe('native Drizzle migrate', () => {
         'harness_instance_records',
         'agent_session_runtime_bindings',
       ];
-      const before = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
+      const before = names.map(
+        (name) => sqlite.prepare(`SELECT * FROM ${name}`).all() as Record<string, unknown>[]
+      );
       const indices = names.map((name) => sqlite.pragma(`index_list(${name})`));
-      const binding = readNanoHostThreadAgentSessionBinding(coreDb, {
-        workspaceId: testEntityId('ws', 'retained-workspace'),
-        threadId: testEntityId('th', 'retained-thread'),
-      });
+      // The predecessor has no retained header; observe its scalar binding before current decoding applies.
+      const binding = sqlite
+        .prepare(
+          `SELECT agent_session_id AS agentSessionId
+           FROM agent_session_runtime_bindings
+           WHERE workspace_id = ? AND thread_id = ?`
+        )
+        .get(testEntityId('ws', 'retained-workspace'), testEntityId('th', 'retained-thread'));
       expect(binding).toEqual({ agentSessionId: testEntityId('as', 'retained-session') });
       expect(() =>
         sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
@@ -1163,7 +1169,11 @@ describe('native Drizzle migrate', () => {
         });
       applyNativeScopeMigrations(sqlite, 'core', folder);
       const after = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
-      expect(after).toEqual(before);
+      expect(after).toEqual([
+        before[0],
+        before[1]!.map((row) => ({ ...row, schema_version: 1 })),
+        before[2]!.map((row) => ({ ...row, schema_version: 1 })),
+      ]);
       expect(sqlite.pragma('foreign_key_check')).toEqual([]);
       expect(sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(names.map((name) => sqlite.pragma(`index_list(${name})`))).toEqual(indices);
@@ -1513,7 +1523,7 @@ describe('Assistant handoff descriptor migration', () => {
       >;
       applyNativeScopeMigrations(db, 'workspace');
       const current = db.prepare('SELECT * FROM pending_requests').get() as Record<string, unknown>;
-      expect(current).toEqual({ ...retained, assistant_handoff_json: null });
+      expect(current).toEqual({ ...retained, assistant_handoff_json: null, schema_version: 1 });
       expect(readPendingRequest(db, 'retained-question')).toMatchObject({
         requestId: 'retained-question',
         state: 'pending',
