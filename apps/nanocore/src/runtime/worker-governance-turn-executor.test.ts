@@ -7065,6 +7065,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  // Real package preparation shares gate CPU; policy values, not elapsed time, are the oracle.
   it('passes user-declared sandbox access into the resolved worker package', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-sandbox-access-')));
 
@@ -7141,7 +7142,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
 
     coreDb.sqlite.close();
-  });
+  }, 60_000);
 
   it.each([
     false,

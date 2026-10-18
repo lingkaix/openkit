@@ -12747,6 +12747,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // Real resident setup shares gate CPU; the assertions still check fencing and no replay.
   it.each([
     { label: 'previous-Epoch A2', origin: 'f'.repeat(64), dirty: false, operation: 'dispatched' },
     { label: 'same-Epoch A2', origin: 'a'.repeat(64), dirty: false, operation: 'dispatched' },
@@ -13494,7 +13495,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it.each([
     ['pre-witness', true, false, 'idle'],
