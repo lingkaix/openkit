@@ -33,13 +33,23 @@ describe('capability usage ledger', () => {
         requestId: '00000000-0000-4000-8000-000000000001',
       };
       const call = startCapabilityCall(input);
-      workspaceDb.sqlite.prepare(
-        "UPDATE capability_calls SET schema_version = 2, extensions_json = 'invalid-json' WHERE call_id = ?"
-      ).run(call.id);
+      workspaceDb.sqlite
+        .prepare(
+          "UPDATE capability_calls SET schema_version = 2, extensions_json = 'invalid-json' WHERE call_id = ?"
+        )
+        .run(call.id);
       expect(() => startCapabilityCall(input)).toThrow('Unsupported retained record format.');
-      expect(() => listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toThrow('Unsupported retained record format.');
-      expect(() => finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' })).toThrow('Unsupported retained record format.');
-      expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({ schema_version: 2, status: 'running', extensions_json: 'invalid-json' });
+      expect(() => listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' })
+      ).toThrow('Unsupported retained record format.');
+      expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+        schema_version: 2,
+        status: 'running',
+        extensions_json: 'invalid-json',
+      });
     } finally {
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -59,12 +69,22 @@ describe('capability usage ledger', () => {
         operation: 'responses.create',
         redactionClass: 'metadata-only',
       });
-      const input = { workspaceDb, call, records: [{ category: 'llm', unit: 'tokens', quantity: 1 }] };
+      const input = {
+        workspaceDb,
+        call,
+        records: [{ category: 'llm', unit: 'tokens', quantity: 1 }],
+      };
       const [usageId] = recordUsage(input);
-      workspaceDb.sqlite.prepare('UPDATE usage_records SET schema_version = 2 WHERE usage_id = ?').run(usageId);
+      workspaceDb.sqlite
+        .prepare('UPDATE usage_records SET schema_version = 2 WHERE usage_id = ?')
+        .run(usageId);
       expect(() => recordUsage(input)).toThrow('Unsupported retained record format.');
-      workspaceDb.sqlite.prepare("UPDATE usage_records SET source_ids_json = 'invalid-json' WHERE usage_id = ?").run(usageId);
-      expect(() => listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toThrow('Unsupported retained record format.');
+      workspaceDb.sqlite
+        .prepare("UPDATE usage_records SET source_ids_json = 'invalid-json' WHERE usage_id = ?")
+        .run(usageId);
+      expect(() => listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
       expect(usageRows(workspaceDb, call.id)).toHaveLength(1);
     } finally {
       workspaceDb.sqlite.close();
@@ -156,6 +176,7 @@ describe('capability usage ledger', () => {
         runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
         runtimeOriginRef: `rto_${'a'.repeat(24)}`,
       });
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toHaveLength(1);
       expect(usageRows(workspaceDb, call.id)[0]).not.toHaveProperty('package_snapshot_id');
       expect(auditRows(workspaceDb, call.id)).toEqual([
         expect.objectContaining({
@@ -177,6 +198,7 @@ describe('capability usage ledger', () => {
       expect(auditRows(workspaceDb, call.id)[0]).not.toHaveProperty('runtime_origin_ref');
     } finally {
       workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 

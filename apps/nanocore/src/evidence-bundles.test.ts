@@ -42,7 +42,11 @@ describe('evidence bundles', () => {
       applyScopedMigrations(workspaceDb);
 
       const first = recordWorkspaceEvidenceBundle(workspaceDb, record);
-      expect(workspaceDb.sqlite.prepare('SELECT schema_version FROM evidence_bundles WHERE evidence_bundle_id = ?').get(record.id)).toEqual({ schema_version: 1 });
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT schema_version FROM evidence_bundles WHERE evidence_bundle_id = ?')
+          .get(record.id)
+      ).toEqual({ schema_version: 1 });
       const replay = recordWorkspaceEvidenceBundle(workspaceDb, record);
 
       expect(replay).toEqual(first);
@@ -88,7 +92,7 @@ describe('evidence bundles', () => {
         { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
       ],
       contentDigests: ['sha256:index'],
-      retentionClass: 'turn-evidence' as const,
+      retentionClass: 'ephemeral-diagnostic' as const,
       sensitivityClass: 'product-safe' as const,
       importStatus: 'promoted' as const,
       requiredFeatures: ['worker.runtime-provenance.v1'],
@@ -99,10 +103,31 @@ describe('evidence bundles', () => {
       applyScopedMigrations(workspaceDb);
 
       recordWorkspaceEvidenceBundle(workspaceDb, record);
-      workspaceDb.sqlite.prepare("UPDATE evidence_bundles SET schema_version = 2, raw_evidence_refs_json = 'invalid-json' WHERE evidence_bundle_id = ?").run(record.id);
-      expect(() => recordWorkspaceEvidenceBundle(workspaceDb, record)).toThrow('Unsupported retained record format.');
-      expect(() => listWorkspaceEvidenceBundles(workspaceDb, record.workspaceId)).toThrow('Unsupported retained record format.');
-      expect(workspaceDb.sqlite.prepare('SELECT schema_version, raw_evidence_refs_json FROM evidence_bundles WHERE evidence_bundle_id = ?').get(record.id)).toEqual({ schema_version: 2, raw_evidence_refs_json: 'invalid-json' });
+      workspaceDb.sqlite
+        .prepare(
+          "UPDATE evidence_bundles SET schema_version = 2, raw_evidence_refs_json = 'invalid-json' WHERE evidence_bundle_id = ?"
+        )
+        .run(record.id);
+      expect(() => recordWorkspaceEvidenceBundle(workspaceDb, record)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => listWorkspaceEvidenceBundles(workspaceDb, record.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        compactWorkspaceEvidenceBundles({
+          workspaceDb,
+          workspaceId: record.workspaceId,
+          olderThan: '2026-07-14T00:00:00.000Z',
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            'SELECT schema_version, raw_evidence_refs_json FROM evidence_bundles WHERE evidence_bundle_id = ?'
+          )
+          .get(record.id)
+      ).toEqual({ schema_version: 2, raw_evidence_refs_json: 'invalid-json' });
     } finally {
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });

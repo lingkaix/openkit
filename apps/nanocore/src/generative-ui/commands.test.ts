@@ -829,7 +829,11 @@ describe('Generative UI commands', () => {
         actions: [],
       };
       const first = await publishGenerativePresentation(context, input);
-      expect(context.workspaceDb.sqlite.prepare('SELECT schema_version FROM generative_presentations WHERE presentation_id = ?').get(first.id)).toEqual({ schema_version: 1 });
+      expect(
+        context.workspaceDb.sqlite
+          .prepare('SELECT schema_version FROM generative_presentations WHERE presentation_id = ?')
+          .get(first.id)
+      ).toEqual({ schema_version: 1 });
       const second = await publishGenerativePresentation(context, input);
       expect(second.id).toBe(first.id);
       await expect(
@@ -877,10 +881,24 @@ describe('Generative UI commands', () => {
         actions: [],
       };
       const first = await publishGenerativePresentation(context, input);
-      context.workspaceDb.sqlite.prepare("UPDATE generative_presentations SET schema_version = 2, source_json = 'invalid-json' WHERE presentation_id = ?").run(first.id);
-      expect(() => getGenerativePresentation(context, first.id)).toThrow('Unsupported retained record format.');
-      await expect(publishGenerativePresentation(context, input)).rejects.toThrow('Unsupported retained record format.');
-      expect(context.workspaceDb.sqlite.prepare('SELECT schema_version, source_json FROM generative_presentations WHERE presentation_id = ?').get(first.id)).toEqual({ schema_version: 2, source_json: 'invalid-json' });
+      context.workspaceDb.sqlite
+        .prepare(
+          "UPDATE generative_presentations SET schema_version = 2, source_json = 'invalid-json' WHERE presentation_id = ?"
+        )
+        .run(first.id);
+      expect(() => getGenerativePresentation(context, first.id)).toThrow(
+        'Unsupported retained record format.'
+      );
+      await expect(publishGenerativePresentation(context, input)).rejects.toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(
+        context.workspaceDb.sqlite
+          .prepare(
+            'SELECT schema_version, source_json FROM generative_presentations WHERE presentation_id = ?'
+          )
+          .get(first.id)
+      ).toEqual({ schema_version: 2, source_json: 'invalid-json' });
     } finally {
       context.close();
     }
