@@ -8695,6 +8695,54 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it('refuses a superseded Material selection before acceptance', async () => {
+    const fixture = await createWorkerContextExecutorFixture('material-selection-superseded');
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    try {
+      const prepared = await prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(
+          workspaceDb,
+          fixture.turn.workspaceId,
+          fixture.turn.threadId,
+          fixture.turn.id
+        )!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: fixture.workerRequest,
+          workspaceId: fixture.turn.workspaceId,
+        },
+        new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
+      );
+      const original = prepared.packageFiles.sourceFileInputs?.find(
+        (entry) => entry.source.kind === 'material'
+      );
+      expect(original).toBeDefined();
+      if (!original) throw new Error('The prepared Material supplier is missing.');
+      const content = 'A later queued revision.';
+      saveWorkspaceMaterialRevision(workspaceDb, {
+        acceptedAt: '2026-07-18T01:00:03.000Z',
+        actor: { kind: 'user', id: LOCAL_USER_ID },
+        content,
+        contentDigest: turnRuntimeSha256(Buffer.from(content, 'utf8')),
+        expectedRevisionId: fixture.revision.revisionId,
+        materialId: fixture.material.materialId,
+        requestId: 'request_supersede_prepared_material',
+      });
+      await expect(original.open(new AbortController().signal).next()).rejects.toThrow(
+        'Current Material source is unavailable.'
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  }, 60_000);
+
   // The runner includes durable Material admission and publication before exact-byte checks.
   it('delivers a bounded Material excerpt and the exact admitted original without bytes-per-token guessing', async () => {
     const fixture = await createWorkerContextExecutorFixture('binding-budget', {
