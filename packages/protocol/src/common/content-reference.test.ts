@@ -60,6 +60,12 @@ describe('shared content references', () => {
       ContentReferenceSchema.safeParse({ ...contentRef, contentDigest: 'git-object-id' }).success
     ).toBe(false);
     expect(
+      ContentReferenceSchema.safeParse({
+        ...contentRef,
+        contentDigest: `${contentRef.contentDigest}\n`,
+      }).success
+    ).toBe(false);
+    expect(
       ContentReferenceSchema.safeParse({ ...contentRef, availability: 'assumed' }).success
     ).toBe(false);
   });
