@@ -980,7 +980,10 @@ async function sourceToolFixture(
     knowledgeSelections: notebookRevision
       ? [
           {
-            knowledgeBaseId: readDefaultKnowledgeBaseId({ dataRoot: fixture.dataRoot, scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId } }),
+            knowledgeBaseId: readDefaultKnowledgeBaseId({
+              dataRoot: fixture.dataRoot,
+              scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId },
+            }),
             knowledgePageId: 'selected',
             notebookRevision,
             content: knowledgeContent,
