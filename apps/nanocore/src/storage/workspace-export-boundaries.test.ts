@@ -743,6 +743,13 @@ describe('workspace import route handles', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const input = minimalExportInput(join(dataRoot, 'verified-export'));
+      input.portableFileState = {
+        ...input.portableFileState!,
+        workspaceConfig: readFileSync(
+          join(dataRoot, 'workspaces', sourceWorkspaceId, 'config', 'workspace.jsonc'),
+          'utf8'
+        ),
+      };
       input.permissionDecisions = [
         {
           action: 'runtime.launch',
@@ -823,6 +830,10 @@ describe('workspace import route handles', () => {
       sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       portableFileState: {
         ...input.portableFileState!,
+        workspaceConfig: readFileSync(
+          join(dataRoot, 'workspaces', input.workspace.id, 'config', 'workspace.jsonc'),
+          'utf8'
+        ),
         nativeKnowledgePages: new Map([
           ['knowledge/pages/topic/index.md', nestedIndex],
           ['knowledge/pages/topic/log.md', nestedLog],
