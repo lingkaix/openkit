@@ -1327,6 +1327,7 @@ describe('agent environment package resolver', () => {
       }),
       expect.objectContaining({
         allowedTools: [
+          'automation_event-admit',
           'knowledge_ask',
           'knowledge_tell',
           'work_input_request',

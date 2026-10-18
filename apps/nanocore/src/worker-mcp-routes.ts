@@ -141,6 +141,8 @@ interface WorkerMcpToolCallInput {
 
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
+  readonly automationStore?: OperationInvocationDependencies['automationStore'];
+  readonly turnStartServices?: OperationInvocationDependencies['turnStartServices'];
   readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
   /** Existing configured-runtime capture; no secondary backend or registry. */
   readonly captureArtifact?: WorkerArtifactCapture;
@@ -454,6 +456,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       store: input.store,
                       workspaceDb: activeWorkspaceDb,
                       knowledgeAgent: input.knowledgeAgent,
+                      automationStore: input.automationStore,
+                      turnStartServices: input.turnStartServices,
                       knowledgeCallId: call.id,
                       knowledgePublicationAdmission: (publication) =>
                         readWorkspaceNotebookAdmission({

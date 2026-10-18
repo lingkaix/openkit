@@ -39,6 +39,7 @@ import { readWorkerRawOutput } from './worker-raw-output.js';
 
 it('advertises the canonical Knowledge and Work Tool projections in their fixed order', () => {
   expect(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
+    'automation.event-admit',
     'knowledge.ask',
     'knowledge.tell',
     'work.input.request',
@@ -50,6 +51,7 @@ it('advertises the canonical Knowledge and Work Tool projections in their fixed 
     'work.artifact.submit',
   ]);
   expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toEqual([
+    'automation_event-admit',
     'knowledge_ask',
     'knowledge_tell',
     'work_input_request',
@@ -60,6 +62,12 @@ it('advertises the canonical Knowledge and Work Tool projections in their fixed 
     'work_source_view',
     'work_artifact_submit',
   ]);
+  const event = OPENKIT_WORK_TOOLS.find((tool) => tool.name === 'automation_event-admit');
+  expect(event?.inputSchema.properties).toEqual({
+    eventKey: expect.any(Object),
+    input: expect.any(Object),
+  });
+  expect(event?.inputSchema.additionalProperties).toBe(false);
 });
 
 /** Creates real canonical owners; the capture double stands outside the Core publication seam. */
