@@ -66,7 +66,7 @@ and are not listed here.
 - `docs/specs/20260616-agent_environment_package.md` — Accepted, Partial — This specification owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's resolved worker-execution authority an…
 - `docs/specs/20260628-nanocore_config_identity_contract.md` — Accepted, Partial — The current NanoCore local-mode and server-mode identity contract.
 - `docs/specs/20260628-web_product_surface_projection.md` — Accepted, Partial — The Web UI posture as a product surface over NanoCore and App API contracts.
-- `docs/specs/20260629-openkit_policy_model.md` — Accepted, Implemented — The `@openkit/policy-kernel` package concept and scope.
+- `docs/specs/20260629-openkit_policy_model.md` — Accepted, Partial — The `@openkit/policy-kernel` package concept and scope.
 - `docs/specs/20260629-worker_runtime_communication_model.md` — Accepted, Partial — The high-level worker runtime communication model for governed container workers.
 - `docs/specs/20260702-knowledge_store_governance_rules.md` — Accepted, Partial — OKF-compatible Markdown as the portable knowledge envelope.
 - `docs/specs/20260703-agent_manifest_aep_resolution.md` — Accepted, Partial — The concrete `AgentManifest` schema and validation for authored manifest inputs.
@@ -152,6 +152,8 @@ and are not listed here.
 - `docs/specs/20261014-retrieval_kernel.md` — Accepted, Partial — The Document, derived Markdown sidecar, source key, scope, chunk, provenance, index generation, query, and result contracts.
 - `docs/specs/20261017-evaluation_foundation.md` — Accepted, In Progress — This specification owns the judgement record and the candidate set with its attributable selection.
 - `docs/specs/20261017-retained_format_register.md` — Accepted, Implemented — The register owns the family inventory, authority classification, current marker evidence, reader boundary, fixture pointers and identified gaps.
+- `docs/specs/20261018-file_storage_and_knowledge_packages.md` — Accepted, Not Started — Ablation: shared file contracts must not create competing product authorities.
+- `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` — Accepted, Not Started — Needed for the approved unified mediation and information-consolidation decisions.
 
 ## Terminal Specifications
 

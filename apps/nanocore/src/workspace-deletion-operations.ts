@@ -474,6 +474,10 @@ async function advanceWorkspaceDeletion(input: {
       });
       // The verified closure and recovery export now retain this exact Core-homed graph.
       // Remove children first; a failure rolls back the terminal registry transition too.
+      input.coreDb.sqlite
+        .prepare(`DELETE FROM external_trigger_admissions
+        WHERE schedule_id IN (SELECT id FROM recurring_schedules WHERE workspace_id = ?)`)
+        .run(input.workspaceId);
       for (const table of [
         'recurring_occurrences',
         'recurring_expired_ranges',

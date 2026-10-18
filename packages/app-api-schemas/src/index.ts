@@ -27,6 +27,8 @@ export * from './evaluation-judgement-operations.js';
 export * from './evaluation-operations.js';
 export * from './evaluation-readers.js';
 export * from './evidence-bundles.js';
+export * from './external-trigger.js';
+export { EXTERNAL_TRIGGER_OPERATION_DEFINITIONS } from './external-trigger-operations.js';
 export * from './feedback.js';
 export * from './generative-operations.js';
 export * from './generative-ui.js';

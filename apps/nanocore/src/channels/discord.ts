@@ -363,9 +363,9 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
         const requestId = RequestIdSchema.parse(options.newRequestId());
         sqlite
           .prepare(
-            "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at) VALUES(?,?,?,'dispatching',?)"
+            "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at,discord_user_id) VALUES(?,?,?,'dispatching',?,?)"
           )
-          .run(envelope.id, input.payloadDigest, requestId, now());
+          .run(envelope.id, input.payloadDigest, requestId, now(), command.user.id);
         return { requestId };
       })
       .immediate();
@@ -487,12 +487,31 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
                   decision: 'denied',
                   requestId: receipt.requestId,
                 });
+          const operationId = subcommand.name === 'answer' ? 'question.answer' : 'approval.respond';
+          // The receipt owns the admitted responder and source, even if native acceptance stays unknown.
+          // Commit these facts before dispatch; later bindings must never relabel this event.
+          const origin = sqlite
+            .prepare(`UPDATE discord_inbound_receipts SET core_user_id = ?,binding_revision = ?,operation_id = ?,workspace_id = ?,thread_id = ?,pending_request_id = ?,turn_id = ?
+            WHERE event_id = ? AND request_id = ? AND state = 'dispatching' AND operation_id IS NULL`)
+            .run(
+              actor.userId,
+              row.revision,
+              operationId,
+              view.workspaceId,
+              view.threadId,
+              view.pendingRequestId,
+              view.turnId,
+              envelope.id,
+              receipt.requestId
+            );
+          if (origin.changes !== 1)
+            throw new OperationError(
+              'channel_origin_unavailable',
+              'The required channel response origin could not be retained.',
+              503
+            );
           submitted = true;
-          await options.invoke(
-            subcommand.name === 'answer' ? 'question.answer' : 'approval.respond',
-            input,
-            actor
-          );
+          await options.invoke(operationId, input, actor);
           text =
             'OpenKit accepted the response. Inspect the request in OpenKit for its current decision and execution outcome.';
         } else {

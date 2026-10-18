@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
@@ -323,6 +324,12 @@ describe('checkpoint-owned never-submitted failed start', () => {
             .join(',')})`
         )
         .run(...Object.values(row));
+      expect((f.pkg.snapshot.extensions.openkit as { turnInput: string }).turnInput).toBe(
+        workerInputWithKnowledgeOverview(
+          f.store.getTurnById(f.turnId).items.find((item) => item.type === 'user-message')!.text,
+          f.attempt.agentSessionId!
+        )
+      );
       const core = f.coreDb.sqlite.serialize();
       await expect(f.classify()).resolves.toBe('complete');
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');

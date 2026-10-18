@@ -576,7 +576,8 @@ describe('Discord to native Pending Request seam', () => {
     const disclosure = await f.disclose();
     const event = f.envelope('deny', { ...f.target, disclosure });
     const signed = f.signed(event);
-    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_channel_receipt BEFORE UPDATE ON discord_inbound_receipts
+    // Keep the origin prerequisite writable; fail only the receipt publication after native dispatch.
+    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_channel_receipt BEFORE UPDATE OF state ON discord_inbound_receipts
       WHEN OLD.event_id = '${event.id}' BEGIN SELECT RAISE(ABORT, 'simulated receipt publication failure'); END`);
     await expect(f.services.discord!.handleSignedInteraction(signed)).rejects.toThrow(
       'simulated receipt publication failure'

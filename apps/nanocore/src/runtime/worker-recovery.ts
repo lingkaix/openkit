@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { AgentSessionSchema, deriveEntityId, type StopReason } from '@openkit/protocol';
+import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
@@ -285,7 +286,11 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     !isDeepStrictEqual(initiatingItem, originalInput) ||
     !isDeepStrictEqual(initiatingItem.actor, turn.triggerActor) ||
     initiatingItem.text !== admission.turnInput ||
-    (pkg.extensions.openkit as { turnInput?: unknown }).turnInput !== admission.turnInput ||
+    // The optional navigation projection is fixed; arbitrary additions still invalidate lineage.
+    ![
+      admission.turnInput,
+      workerInputWithKnowledgeOverview(admission.turnInput, session.id),
+    ].includes((pkg.extensions.openkit as { turnInput?: unknown }).turnInput as string) ||
     !checkpoint.contextDigest ||
     commandInputHash(
       StructuredWorkerDelegationRequestSchema.parse(JSON.parse(admission.turnInput))

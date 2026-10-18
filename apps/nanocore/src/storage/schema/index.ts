@@ -16,6 +16,7 @@ export type {
   EvidenceBundleSensitivityClass,
 } from './evidence-bundles.js';
 export { evidenceBundles } from './evidence-bundles.js';
+export { externalTriggerAdmissions } from './external-trigger-admissions.js';
 export { generativePresentations } from './generative-presentations.js';
 export * from './goals.js';
 export type { McpToolSchemaSnapshotSource } from './mcp-tool-schema-snapshots.js';

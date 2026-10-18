@@ -31,6 +31,7 @@ import type { Actor } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
   findWorkspaceConfig,
+  type RuntimeConfigManager,
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
@@ -2377,6 +2378,7 @@ export function createConversationService({
   repositoryWorkspaceDb,
   resolveGatewayProvider,
   runtimeConfig,
+  runtimeConfigManager,
   startModeWorkerTurn,
   workerCoordinatorCandidates,
   goalServices,
@@ -2395,8 +2397,11 @@ export function createConversationService({
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
+  readonly runtimeConfigManager: RuntimeConfigManager;
   readonly startModeWorkerTurn: (input: {
     readonly triggerActor: ActorRef;
+    /** Known native Task admission cause, separate from actor identity. */
+    readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
     readonly requestActor?: Actor;
     readonly store: FsStore;
     readonly workspaceId: string;
@@ -3352,6 +3357,7 @@ export function createConversationService({
                   chatInput.workerStorageChoice
                 );
                 const turn = await startModeWorkerTurn({
+                  triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                   ...fileOptions,
                   triggerActor,
                   requestActor: actor,
@@ -3648,6 +3654,7 @@ export function createConversationService({
                 repositoryWorkspaceDb,
                 workspaceMutationAdmission,
                 knowledgeAgent,
+                runtimeConfigManager,
                 ...(goalServices ? { goalServices: goalServices() } : {}),
               })(id, value, {
                 kind: 'public',
@@ -3689,6 +3696,7 @@ export function createConversationService({
               ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
               promptCacheScope: { sessionId, workspaceId },
             },
+            profileId: selection.profile?.id ?? null,
             limits: selection.profile?.limits ?? {
               maxModelTurns: 16,
               maxToolCalls: 48,
@@ -4266,6 +4274,7 @@ export function createConversationService({
                 startWorker: async ({ turnId: reservedTurnId, prepared, onAdmitted }) => {
                   assertCurrentHandoffSource();
                   const worker = await startModeWorkerTurn({
+                    triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                     store,
                     triggerActor: turn.triggerActor,
                     requestActor: selectedActor!,
@@ -4454,6 +4463,7 @@ export function createConversationService({
               repositoryWorkspaceDb,
               workspaceMutationAdmission,
               knowledgeAgent,
+              runtimeConfigManager,
               ...(goalServices ? { goalServices: goalServices() } : {}),
             })(id, value, {
               kind: 'public',
@@ -4468,6 +4478,15 @@ export function createConversationService({
           (capture) =>
             runAssistantModel({
               systemPrompt,
+              knowledge: {
+                store,
+                coreDb,
+                workspaceId: turn.workspaceId,
+                threadId: turn.threadId,
+                turnId: turn.id,
+                actor: turn.triggerActor,
+                requestActor: outcomeActor,
+              },
               messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
               context: {
                 store,
@@ -4483,6 +4502,7 @@ export function createConversationService({
                   }),
               },
               tools: fixedTools.tools,
+              profileId: selection.profile?.id ?? null,
               limits: selection.profile?.limits ?? {
                 maxModelTurns: 16,
                 maxToolCalls: 48,
@@ -4634,6 +4654,8 @@ export function createTaskStartOperation({
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly startModeWorkerTurn: (input: {
     readonly triggerActor: ActorRef;
+    /** Known native Task admission cause, separate from actor identity. */
+    readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
     readonly requestActor?: Actor;
     readonly store: FsStore;
     readonly workspaceId: string;
@@ -4891,6 +4913,7 @@ export function createTaskStartOperation({
             reserveTurn: () => ({ turnId: reservedTurnId }),
             startWorker: async ({ turnId, prepared, onAdmitted }) => {
               const turn = await startModeWorkerTurn({
+                triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                 triggerActor,
                 requestActor: actor,
                 store,

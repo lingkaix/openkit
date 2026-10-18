@@ -27,6 +27,7 @@ import { createTaskConversationOperationImplementations } from './conversation-o
 import { createDiagnosticsOperationImplementations } from './diagnostics/diagnostics-operations.js';
 import { createEvaluationJudgementOperationImplementations } from './evaluation-judgement-operations.js';
 import { createEvaluationOperationImplementations } from './evaluation-operations.js';
+import { createExternalTriggerOperationImplementations } from './external-trigger-operations.js';
 import {
   createGenerativeUiOperationImplementations,
   createRemainingKernelOperationImplementations,
@@ -86,6 +87,11 @@ export interface OperationInvocationDependencies {
         readonly ask: (
           input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        /** Same bounded role, with the current User database and private Memory owner. */
+        readonly maintainMemory?: (
+          input: import('./knowledge/user-memory-agent-maintenance.js').UserMemoryMaintenanceInput,
+          userDb: import('./storage/db.js').UserDb
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'memory.maintain'>>;
         readonly maintain: (
           input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
@@ -222,6 +228,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       observation: dependencies,
     }),
     createAutomationOperationImplementations(dependencies),
+    createExternalTriggerOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),
     createWorkspaceSyncOperationImplementations({

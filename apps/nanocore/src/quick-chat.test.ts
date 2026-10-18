@@ -52,11 +52,8 @@ const EXPECTED_ASSISTANT_TOOL_NAMES = [
   'goal.card.create',
   'goal.card.edit',
   'goal.card.cancel',
-  'memory.page.read',
-  'memory.page.create',
-  'memory.page.update',
-  'memory.page.delete',
-  'memory.page.propose',
+  'memory.ask',
+  'memory.tell',
   'skill.read',
   'kernel.apps.list',
   'kernel.apps.create',
@@ -70,6 +67,16 @@ const EXPECTED_ASSISTANT_TOOL_NAMES = [
   'kernel.records.batch',
   'generative-ui.publish',
 ] as const;
+
+const KNOWLEDGE_OVERVIEW_MESSAGE = {
+  role: 'user',
+  content: [
+    {
+      type: 'input_text',
+      text: expect.stringMatching(/^<knowledge_overviews>.*<\/knowledge_overviews>$/s),
+    },
+  ],
+};
 
 const EMPTY_SKILL_INDEX_MESSAGE = {
   role: 'user',
@@ -1133,6 +1140,7 @@ describe('quick chat app API', () => {
         instructions: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT,
         input: [
           EMPTY_SKILL_INDEX_MESSAGE,
+          KNOWLEDGE_OVERVIEW_MESSAGE,
           { role: 'user', content: [{ type: 'input_text', text: 'What is OpenKit?' }] },
         ],
       },
@@ -1354,6 +1362,7 @@ describe('quick chat app API', () => {
           { type: message.role === 'user' ? 'input_text' : 'output_text', text: message.content },
         ],
       })),
+      KNOWLEDGE_OVERVIEW_MESSAGE,
       { role: 'user', content: [{ type: 'input_text', text: currentInput }] },
     ]);
   });
@@ -1440,6 +1449,7 @@ describe('quick chat app API', () => {
         instructions: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT,
         input: [
           EMPTY_SKILL_INDEX_MESSAGE,
+          KNOWLEDGE_OVERVIEW_MESSAGE,
           { role: 'user', content: [{ type: 'input_text', text: input }] },
         ],
       });
