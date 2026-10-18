@@ -1,4 +1,5 @@
 import {
+  KnowledgeContentDigestSchema,
   KnowledgeMaintenanceOutcomeSchema,
   KnowledgeSourceIdSchema,
   PageReferenceSchema,
@@ -28,7 +29,7 @@ export const KnowledgeAgentCitationSchema = z
       'Knowledge Agent citations require a canonical page URI.'
     ),
     revision: z.string().min(1),
-    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    contentDigest: KnowledgeContentDigestSchema,
     sourceReferences: z.array(z.string().min(1)),
   })
   .strict()
