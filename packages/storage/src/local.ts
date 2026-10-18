@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, opendir, rm } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
-import { ContentReferenceSchema, KnowledgeBaseIdSchema } from '@openkit/protocol';
+import { type FileHandle, lstat, mkdir, mkdtemp, open, opendir, rm, stat } from 'node:fs/promises';
+import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import {
+  ContentReferenceSchema,
+  KnowledgeBaseIdSchema,
+  KnowledgeOwnerScopeSchema,
+} from '@openkit/protocol';
 import {
   type LocalStorageMount,
   STORAGE_LIMITS,
@@ -48,7 +52,11 @@ export class LocalStorage implements StorageService {
 
   constructor(options: { mounts: LocalStorageMount[]; stagingRoot: string }) {
     this.mounts = structuredClone(options.mounts).map((mount) => {
-      if (!KnowledgeBaseIdSchema.safeParse(mount.knowledgeBaseId).success || !mount.name) {
+      if (
+        !KnowledgeBaseIdSchema.safeParse(mount.knowledgeBaseId).success ||
+        !KnowledgeOwnerScopeSchema.safeParse(mount.ownerScope).success ||
+        !mount.name
+      ) {
         throw new Error('Invalid local Storage mount.');
       }
       return { ...mount, root: resolve(mount.root) };
@@ -66,6 +74,7 @@ export class LocalStorage implements StorageService {
     this.run(async () => {
       const mount = this.authorize(request.access, request.locator, 'read-only');
       const observed = await inspect(await confined(mount.root, request.locator.path));
+      await verifyBinding(mount.root, request.locator.path, observed.fileIdentity);
       this.authorize(request.access, request.locator, 'read-only');
       return contentFor(request.access.knowledgeBaseId, request.locator, observed);
     });
@@ -78,80 +87,91 @@ export class LocalStorage implements StorageService {
       if (request.nameIncludes !== undefined && request.nameIncludes.length > 255) {
         refuse({ status: 'invalid-request' });
       }
-      const path = await confined(mount.root, request.directory.path, true);
-      const before = await lstat(path, { bigint: true });
-      if (!before.isDirectory()) refuse({ status: 'unavailable', reason: 'unsupported' });
-      const version = `${before.dev}:${before.ino}:${before.mtimeNs}:${before.ctimeNs}`;
-      const key = JSON.stringify([
-        mountKey(mount),
-        request.directory.path,
-        request.access.pathPrefix,
-        request.nameIncludes ?? null,
-      ]);
-      let offset = 0;
-      if (request.cursor !== undefined) {
-        try {
-          if (request.cursor.length > 16_384) throw new Error('Invalid cursor.');
-          const cursor = JSON.parse(Buffer.from(request.cursor, 'base64url').toString('utf8'));
-          if (
-            cursor.key !== key ||
-            cursor.version !== version ||
-            !Number.isSafeInteger(cursor.offset) ||
-            cursor.offset < 0 ||
-            cursor.offset > 65_536
-          ) {
-            throw new Error('Stale cursor.');
+      const pinned = await confined(mount.root, request.directory.path, true);
+      try {
+        const path = await descriptorPath(pinned);
+        const before = await pinned.stat({ bigint: true });
+        if (!before.isDirectory()) refuse({ status: 'unavailable', reason: 'unsupported' });
+        const version = `${before.dev}:${before.ino}:${before.mtimeNs}:${before.ctimeNs}`;
+        const key = JSON.stringify([
+          mountKey(mount),
+          request.directory.path,
+          request.access.pathPrefix,
+          request.nameIncludes ?? null,
+        ]);
+        let offset = 0;
+        if (request.cursor !== undefined) {
+          try {
+            if (request.cursor.length > 16_384) throw new Error('Invalid cursor.');
+            const cursor = JSON.parse(Buffer.from(request.cursor, 'base64url').toString('utf8'));
+            if (
+              cursor.key !== key ||
+              cursor.version !== version ||
+              !Number.isSafeInteger(cursor.offset) ||
+              cursor.offset < 0 ||
+              cursor.offset > 65_536
+            ) {
+              throw new Error('Stale cursor.');
+            }
+            offset = cursor.offset;
+          } catch {
+            refuse({ status: 'rescan-required' });
           }
-          offset = cursor.offset;
-        } catch {
+        }
+        const directory = await opendir(path);
+        const entries: StorageScan['entries'] = [];
+        let visited = 0;
+        let finished = false;
+        try {
+          // Stateless seeking is bounded separately; it does not retain a directory handle.
+          for (let skipped = 0; skipped < offset; skipped++) {
+            if (!(await directory.read())) refuse({ status: 'rescan-required' });
+          }
+          while (visited < request.limit) {
+            const entry = await directory.read();
+            if (!entry) {
+              finished = true;
+              break;
+            }
+            visited++;
+            if (
+              (!entry.isFile() && !entry.isDirectory()) ||
+              (request.nameIncludes !== undefined && !entry.name.includes(request.nameIncludes))
+            )
+              continue;
+            const metadata = await lstat(join(path, entry.name));
+            if (!metadata.isFile() && !metadata.isDirectory()) continue;
+            entries.push({
+              path: [request.directory.path, entry.name].filter(Boolean).join('/'),
+              kind: metadata.isDirectory() ? 'directory' : 'file',
+              byteLength: metadata.isFile() ? metadata.size : 0,
+            });
+          }
+        } finally {
+          await directory.close();
+        }
+        const after = await pinned.stat({ bigint: true });
+        if (`${after.dev}:${after.ino}:${after.mtimeNs}:${after.ctimeNs}` !== version) {
           refuse({ status: 'rescan-required' });
         }
-      }
-      const directory = await opendir(path);
-      const entries: StorageScan['entries'] = [];
-      let visited = 0;
-      let finished = false;
-      try {
-        // Stateless seeking is bounded separately; it does not retain a directory handle.
-        for (let skipped = 0; skipped < offset; skipped++) {
-          if (!(await directory.read())) refuse({ status: 'rescan-required' });
-        }
-        while (visited < request.limit) {
-          const entry = await directory.read();
-          if (!entry) {
-            finished = true;
-            break;
-          }
-          visited++;
-          if (
-            (!entry.isFile() && !entry.isDirectory()) ||
-            (request.nameIncludes !== undefined && !entry.name.includes(request.nameIncludes))
-          )
-            continue;
-          const metadata = await lstat(join(path, entry.name));
-          if (!metadata.isFile() && !metadata.isDirectory()) continue;
-          entries.push({
-            path: [request.directory.path, entry.name].filter(Boolean).join('/'),
-            kind: metadata.isDirectory() ? 'directory' : 'file',
-            byteLength: metadata.isFile() ? metadata.size : 0,
-          });
-        }
+        await verifyBinding(
+          mount.root,
+          request.directory.path,
+          `${before.dev}:${before.ino}`,
+          true
+        );
+        this.authorize(request.access, request.directory, 'read-only', true);
+        return {
+          entries,
+          cursor: finished
+            ? null
+            : Buffer.from(JSON.stringify({ key, version, offset: offset + visited })).toString(
+                'base64url'
+              ),
+        };
       } finally {
-        await directory.close();
+        await pinned.close();
       }
-      const after = await lstat(path, { bigint: true });
-      if (`${after.dev}:${after.ino}:${after.mtimeNs}:${after.ctimeNs}` !== version) {
-        refuse({ status: 'rescan-required' });
-      }
-      this.authorize(request.access, request.directory, 'read-only', true);
-      return {
-        entries,
-        cursor: finished
-          ? null
-          : Buffer.from(JSON.stringify({ key, version, offset: offset + visited })).toString(
-              'base64url'
-            ),
-      };
     });
 
   /** Verify whole captured identity before disclosing a bounded raw-byte range. */
@@ -177,6 +197,7 @@ export class LocalStorage implements StorageService {
       ) {
         refuse({ status: 'unavailable', reason: 'changed' });
       }
+      await verifyBinding(mount.root, reference.locator.path, observed.fileIdentity);
       this.authorize(request.access, reference.locator, 'read-only');
       return chunk(observed.data, bounds.start, bounds.end, end);
     });
@@ -269,7 +290,9 @@ export class LocalStorage implements StorageService {
       if (!stage.content) {
         stage.busy = true;
         try {
-          const observed = await inspect(stage.file);
+          const observed = await inspect(
+            await open(stage.file, constants.O_RDONLY | constants.O_NOFOLLOW)
+          );
           if (observed.byteLength !== stage.byteLength)
             refuse({ status: 'unavailable', reason: 'changed' });
           stage.content = contentFor(stage.knowledgeBaseId, stage.locator, observed);
@@ -431,18 +454,58 @@ function inside(root: string, path: string): boolean {
   return suffix === '' || (!isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith('../'));
 }
 
-/** Reject links at each source component; byte operations never intentionally follow links. */
-async function confined(root: string, path: string, directory = false): Promise<string> {
+/** Pin each parent before opening its child; a concurrent rename cannot redirect traversal. */
+async function confined(root: string, path: string, directory = false): Promise<FileHandle> {
   if (!safePath(path, directory)) refuse({ status: 'invalid-request' });
   const target = resolve(root, path);
   if (!inside(root, target)) refuse({ status: 'invalid-request' });
-  let current = root;
-  for (const component of ['', ...path.split('/').filter(Boolean)]) {
-    if (component) current = join(current, component);
-    if ((await lstat(current)).isSymbolicLink())
-      refuse({ status: 'unavailable', reason: 'unsupported' });
+  const volume = parse(root).root;
+  const parts = [
+    ...root.slice(volume.length).split(sep).filter(Boolean),
+    ...path.split('/').filter(Boolean),
+  ];
+  let current = await open(
+    volume,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+  );
+  try {
+    for (let index = 0; index < parts.length; index++) {
+      const parent = await descriptorPath(current);
+      const flags =
+        constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK |
+        (index < parts.length - 1 || directory ? constants.O_DIRECTORY : 0);
+      const next = await open(join(parent, parts[index]!), flags);
+      try {
+        await current.close();
+      } catch (error) {
+        await next.close();
+        throw error;
+      }
+      current = next;
+    }
+    return current;
+  } catch (error) {
+    await current.close();
+    throw error;
   }
-  return target;
+}
+
+/** Use only a kernel path that resolves to the opened directory, never the mutable source name. */
+async function descriptorPath(handle: FileHandle): Promise<string> {
+  const expected = await handle.stat({ bigint: true });
+  for (const root of ['/proc/self/fd', '/dev/fd']) {
+    const path = join(root, String(handle.fd));
+    try {
+      const actual = await stat(path, { bigint: true });
+      if (actual.isDirectory() && actual.dev === expected.dev && actual.ino === expected.ino)
+        return path;
+    } catch {
+      /* Another supported descriptor namespace can still provide the primitive. */
+    }
+  }
+  refuse({ status: 'unavailable', reason: 'unsupported' });
 }
 
 /** Refuse unsafe integers before allocation or byte access. */
@@ -475,8 +538,7 @@ function decodeChunk(value: string): Buffer {
 }
 
 /** Hash an original with bounded memory, retaining only a requested bounded chunk. */
-async function inspect(file: string, range?: { start: number; end: number }) {
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+async function inspect(handle: FileHandle, range?: { start: number; end: number }) {
   try {
     const before = await handle.stat({ bigint: true });
     if (!before.isFile()) refuse({ status: 'unavailable', reason: 'unsupported' });
@@ -511,6 +573,7 @@ async function inspect(file: string, range?: { start: number; end: number }) {
       refuse({ status: 'unavailable', reason: 'changed' });
     }
     return {
+      fileIdentity: `${before.dev}:${before.ino}`,
       contentDigest: `sha256:${hash.digest('hex')}`,
       byteLength: position,
       mediaType: sniff(header),
@@ -569,5 +632,17 @@ async function readSealed(file: string, range: { start: number; end: number }, b
     return data;
   } finally {
     await handle.close();
+  }
+}
+
+/** Refuse a changed logical binding before disclosure; byte reads already use pinned handles. */
+async function verifyBinding(root: string, path: string, expected: string, directory = false) {
+  const current = await confined(root, path, directory);
+  try {
+    const actual = await current.stat({ bigint: true });
+    if (`${actual.dev}:${actual.ino}` !== expected)
+      refuse({ status: 'unavailable', reason: 'changed' });
+  } finally {
+    await current.close();
   }
 }

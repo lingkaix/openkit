@@ -1,6 +1,15 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
@@ -13,6 +22,31 @@ import {
   type StorageResult,
 } from './contract.js';
 import { LocalStorage } from './local.js';
+
+const mutation = vi.hoisted(() => ({
+  afterPath: undefined as undefined | ((path: string) => Promise<void>),
+}));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    lstat: async (...args: unknown[]) => {
+      const result = await Reflect.apply(actual.lstat, actual, args);
+      await mutation.afterPath?.(String(args[0]));
+      return result;
+    },
+    open: async (...args: unknown[]) => {
+      const result = await Reflect.apply(actual.open, actual, args);
+      try {
+        await mutation.afterPath?.(String(args[0]));
+        return result;
+      } catch (error) {
+        await result.close();
+        throw error;
+      }
+    },
+  };
+});
 
 const fixtures: { directory: string; storage: LocalStorage }[] = [];
 
@@ -75,6 +109,7 @@ async function capture(f: Awaited<ReturnType<typeof fixture>>): Promise<StorageC
 }
 
 afterEach(async () => {
+  mutation.afterPath = undefined;
   vi.useRealTimers();
   for (const f of fixtures.splice(0)) {
     try {
@@ -352,6 +387,24 @@ describe('LocalStorage current access and confinement', () => {
       expect(result.status).not.toBe('ok');
       expect(JSON.stringify(result)).not.toContain(f.root);
     }
+  });
+
+  it('refuses a parent changed to a symlink during traversal', async () => {
+    const f = await fixture();
+    const other = join(f.directory, 'other');
+    await mkdir(other);
+    await writeFile(join(other, 'original.bin'), 'unadmitted fixture bytes');
+    let replaced = false;
+    mutation.afterPath = async (path) => {
+      if (replaced || !path.endsWith('/docs')) return;
+      replaced = true;
+      await rename(join(f.root, 'docs'), join(f.root, 'parked-docs'));
+      await symlink(other, join(f.root, 'docs'));
+    };
+    const result = await invoke(f.storage.stat, { access: f.access, locator: f.locator });
+    expect(replaced).toBe(true);
+    expect(result.status).toBe('unavailable');
+    expect(result).not.toHaveProperty('value');
   });
 
   it('refuses final and parent symlinks even when they point within the mount', async () => {
