@@ -2,11 +2,13 @@
 
 import importlib.util
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -34,6 +36,8 @@ class StandIn(DRIVER.Boundary):
         self.reader = None
         self.live_app_reads = 0
         self.change_live_app = False
+        self.key_mount = None
+        self.import_sources = []
         self.carrier = {"Id": "carrier", "State": {"Running": True, "Pid": 123}}
 
     def namespace(self, pid):
@@ -94,7 +98,7 @@ class StandIn(DRIVER.Boundary):
                     "Config": {"Env": ["PRIVATE=never-print", "BAKED=" + self.current]},
                     "HostConfig": {"NetworkMode": "container:lrt-p14-network"},
                     "Mounts": [{"Destination": "/data/openkit", "Source": self.input["dataRoot"],
-                                "Type": "bind", "RW": True}]}
+                                "Type": "bind", "RW": True}] + ([self.key_mount] if self.key_mount else [])}
         if "/stop?" in path:
             self.events.append("app-stop")
             self.running = False
@@ -142,6 +146,7 @@ class StandIn(DRIVER.Boundary):
             return "active" if self.host_active else "inactive"
         if args[0] == "systemd-run":
             if "import" in args:
+                self.import_sources.append(args[-1])
                 return self.input[self.current]["workerPlatformImage"]
             if args[-2:] == ["image", "list"]:
                 self.events.append(self.current + "-previous-image-read")
@@ -251,9 +256,19 @@ class LifecycleTests(unittest.TestCase):
                                              "candidateSha256": sha(candidate)}]},
         }
         for name in ("previous", "candidate"):
-            self.input[name]["workerPlatformImage"] = self.input[name]["workerImage"]
             self.input[name + "WorkerArchive"] = "/opt/" + name + "-worker.tar"
-            (guest / "opt" / (name + "-worker.tar")).write_bytes(b"prepared-archive")
+            blob = json.dumps({"schemaVersion": 2, "fixture": name}).encode()
+            source_digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+            self.input[name]["workerPlatformImage"] = source_digest
+            index = json.dumps({"schemaVersion": 2, "manifests": [{
+                "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": source_digest, "size": len(blob),
+            }]}).encode()
+            with tarfile.open(guest / "opt" / (name + "-worker.tar"), "w") as archive:
+                for path, value in (("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'),
+                                    ("index.json", index), ("blobs/sha256/" + source_digest[7:], blob)):
+                    member = tarfile.TarInfo(path)
+                    member.size = len(value)
+                    archive.addfile(member, io.BytesIO(value))
         self.boundary = StandIn(self.input)
         self.addCleanup(patch.stopall)
         patch.object(DRIVER, "PRIVATE_BASE", base).start()
@@ -333,6 +348,29 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             DRIVER.run_upgrade(self.input, self.boundary)
         self.assertEqual(self.boundary.events, [])
+
+    def test_unretained_readonly_fixture_key_blocks_before_stop(self):
+        """A private read-only Vault key still requires complete retained custody."""
+        key = Path(self.input["preparedLayout"]["privateRoot"]) / "fixture-vault-key"
+        key.write_bytes(b"synthetic-fixture-key")
+        self.boundary.key_mount = {"Destination": "/p14-key", "Source": str(key), "Type": "bind", "RW": False}
+        result = DRIVER.run_upgrade(self.input, self.boundary)
+        self.assertFalse(result["passed"])
+        self.assertNotIn("host-stop", self.boundary.events)
+        self.assertNotIn("candidate-mutation", self.boundary.events)
+
+    def test_worker_import_uses_actual_archive_descriptor_not_published_index(self):
+        """A platform-specific archive source is independent of its published multiarch index."""
+        result = DRIVER.run_upgrade(self.input, self.boundary)
+        self.assertTrue(result["passed"])
+        expected = [self.input[name]["workerPlatformImage"] for name in ("previous", "candidate")]
+        self.assertEqual(self.boundary.import_sources, expected)
+        for name in ("previous", "candidate"):
+            self.assertNotEqual(self.input[name]["workerImage"], self.input[name]["workerPlatformImage"])
+            path = Path(self.input["preparedLayout"]["guestRoot"]) / self.input[name + "WorkerArchive"].lstrip("/")
+            self.assertEqual(result[name + "WorkerArchive"], {
+                "sha256": DRIVER.digest(path), "sourceDescriptor": self.input[name]["workerPlatformImage"],
+            })
 
 
 if __name__ == "__main__":
