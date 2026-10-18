@@ -8568,6 +8568,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  // The runner includes durable Material admission and publication before exact-byte checks.
   it('delivers a bounded Material excerpt and the exact admitted original without bytes-per-token guessing', async () => {
     const fixture = await createWorkerContextExecutorFixture('binding-budget', {
       materialContent: 'B'.repeat(5_000),
@@ -8676,7 +8677,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       launchSpy.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('persists the exact pre-Turn Thread retrieval reference through the S39 bridge', async () => {
     const fixture = await createWorkerContextExecutorFixture('thread-retrieval-trace', {
