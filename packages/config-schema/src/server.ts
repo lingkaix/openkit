@@ -1,6 +1,11 @@
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
-import { DeploymentIdSchema, PolicyDocumentV1Schema, UserIdSchema } from '@openkit/protocol';
+import {
+  DeploymentIdSchema,
+  KnowledgeBaseIdSchema,
+  PolicyDocumentV1Schema,
+  UserIdSchema,
+} from '@openkit/protocol';
 
 import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -331,6 +336,8 @@ export type WorkerGitReadMaintenanceAssignment = z.infer<
 /** File-backed NanoCore configuration schema. */
 export const OpenKitConfigSchema = z
   .object({
+    /** Fixed scope binding after Knowledge Base creation; parsing never allocates an ID. */
+    defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     appUpdate: OpenKitAppUpdateConfigSchema.optional(),
     channels: OpenKitChannelsConfigSchema.optional(),

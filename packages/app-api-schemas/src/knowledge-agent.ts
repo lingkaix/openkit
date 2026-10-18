@@ -1,6 +1,10 @@
 import {
+  KnowledgeContentDigestSchema,
   KnowledgeMaintenanceOutcomeSchema,
   KnowledgeSourceIdSchema,
+  PageReferenceSchema,
+  parseReferenceUri,
+  ReferenceUriSchema,
   RequestIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -17,15 +21,27 @@ export const KnowledgeAskRequestSchema = z
   })
   .strict();
 
-/** Exact read evidence; page revisions and captured Source digests remain distinct identities. */
+/** Canonical page URI and exact observed bytes; Notebook revision remains separate evidence. */
 export const KnowledgeAgentCitationSchema = z
   .object({
-    reference: z.string().min(1),
+    reference: ReferenceUriSchema.refine(
+      (value) => PageReferenceSchema.safeParse(parseReferenceUri(value)?.reference).success,
+      'Knowledge Agent citations require a canonical page URI.'
+    ),
     revision: z.string().min(1),
-    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    contentDigest: KnowledgeContentDigestSchema,
     sourceReferences: z.array(z.string().min(1)),
   })
-  .strict();
+  .strict()
+  .superRefine(({ reference, contentDigest }, context) => {
+    const pin = parseReferenceUri(reference)?.contentDigest;
+    if (pin !== undefined && pin !== contentDigest)
+      context.addIssue({
+        code: 'custom',
+        path: ['reference'],
+        message: 'Knowledge Agent citation pin must match its observed content digest.',
+      });
+  });
 
 /** Delivered model answer and its separate Knowledge Manager work lineage. */
 export const KnowledgeAskResponseSchema = z
