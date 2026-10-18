@@ -537,7 +537,7 @@ describe('Assistant conversation context portability', () => {
         const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
         bytes.fill(0);
         ordinal += 1;
-        const turn = ordinal - 1; // One imported Thread precedes the twelve Turn allocations.
+        const turn = ordinal - 2; // The imported Knowledge Base and Thread precede the twelve Turns.
         bytes[15] = turn === 10 ? 2 : turn >= 2 && turn <= 9 ? turn + 1 : turn > 0 ? turn : ordinal;
         return array;
       });
