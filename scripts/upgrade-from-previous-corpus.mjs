@@ -82,7 +82,6 @@ async function owners(appRoot) {
     portableCatalog: 'catalog/catalog-portability.js',
     fileAdmission: 'storage/artifacts/file-admission.js',
     filePayload: 'storage/artifacts/file-payload.js',
-    fileRecords: 'storage/artifacts/file-records.js',
     vault: 'vault/vault-encrypted-file-store.js',
     transfer: 'storage/workspace-transfer-routes.js',
     exports: 'storage/workspace-export.js',
@@ -731,15 +730,17 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
     record(
       'Immutable Artifact versions',
       versions,
-      versions.map(({ artifact }) =>
-        `${workspacePath}/artifacts/${artifact.id}/versions/${artifact.version}/version-record.json`
+      versions.map(
+        ({ artifact }) =>
+          `${workspacePath}/artifacts/${artifact.id}/versions/${artifact.version}/version-record.json`
       )
     );
     record(
       'Artifact original payload',
       versions.map(({ artifact }) => artifact),
-      versions.map(({ artifact }) =>
-        `${workspacePath}/artifacts/${artifact.id}/versions/${artifact.version}/payload`
+      versions.map(
+        ({ artifact }) =>
+          `${workspacePath}/artifacts/${artifact.id}/versions/${artifact.version}/payload`
       )
     );
     const notebookValues = [],
