@@ -66405,10 +66405,6 @@
                                   "kind": {
                                     "type": "string",
                                     "const": "material-range"
-                                  },
-                                  "offsetUnit": {
-                                    "type": "string",
-                                    "const": "utf-16"
                                   }
                                 },
                                 "required": [
@@ -66418,8 +66414,7 @@
                                   "start",
                                   "end",
                                   "originalText",
-                                  "kind",
-                                  "offsetUnit"
+                                  "kind"
                                 ],
                                 "additionalProperties": false
                               },
@@ -66585,10 +66580,6 @@
                                   "kind": {
                                     "type": "string",
                                     "const": "material-range"
-                                  },
-                                  "offsetUnit": {
-                                    "type": "string",
-                                    "const": "utf-16"
                                   }
                                 },
                                 "required": [
@@ -66598,8 +66589,7 @@
                                   "start",
                                   "end",
                                   "originalText",
-                                  "kind",
-                                  "offsetUnit"
+                                  "kind"
                                 ],
                                 "additionalProperties": false
                               },
@@ -66734,10 +66724,6 @@
                               "kind": {
                                 "type": "string",
                                 "const": "material-range"
-                              },
-                              "offsetUnit": {
-                                "type": "string",
-                                "const": "utf-16"
                               }
                             },
                             "required": [
@@ -66747,8 +66733,7 @@
                               "start",
                               "end",
                               "originalText",
-                              "kind",
-                              "offsetUnit"
+                              "kind"
                             ],
                             "additionalProperties": false
                           },
@@ -67075,10 +67060,6 @@
                                   "kind": {
                                     "type": "string",
                                     "const": "material-range"
-                                  },
-                                  "offsetUnit": {
-                                    "type": "string",
-                                    "const": "utf-16"
                                   }
                                 },
                                 "required": [
@@ -67088,8 +67069,7 @@
                                   "start",
                                   "end",
                                   "originalText",
-                                  "kind",
-                                  "offsetUnit"
+                                  "kind"
                                 ],
                                 "additionalProperties": false
                               },
@@ -67630,10 +67610,6 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "material-range"
-                                },
-                                "offsetUnit": {
-                                  "type": "string",
-                                  "const": "utf-16"
                                 }
                               },
                               "required": [
@@ -67643,8 +67619,7 @@
                                 "start",
                                 "end",
                                 "originalText",
-                                "kind",
-                                "offsetUnit"
+                                "kind"
                               ],
                               "additionalProperties": false
                             },
@@ -67810,10 +67785,6 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "material-range"
-                                },
-                                "offsetUnit": {
-                                  "type": "string",
-                                  "const": "utf-16"
                                 }
                               },
                               "required": [
@@ -67823,8 +67794,7 @@
                                 "start",
                                 "end",
                                 "originalText",
-                                "kind",
-                                "offsetUnit"
+                                "kind"
                               ],
                               "additionalProperties": false
                             },
@@ -67959,10 +67929,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -67972,8 +67938,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -68300,10 +68265,6 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "material-range"
-                                },
-                                "offsetUnit": {
-                                  "type": "string",
-                                  "const": "utf-16"
                                 }
                               },
                               "required": [
@@ -68313,8 +68274,7 @@
                                 "start",
                                 "end",
                                 "originalText",
-                                "kind",
-                                "offsetUnit"
+                                "kind"
                               ],
                               "additionalProperties": false
                             },
@@ -106570,10 +106530,6 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "material-range"
-                                },
-                                "offsetUnit": {
-                                  "type": "string",
-                                  "const": "utf-16"
                                 }
                               },
                               "required": [
@@ -106583,8 +106539,7 @@
                                 "start",
                                 "end",
                                 "originalText",
-                                "kind",
-                                "offsetUnit"
+                                "kind"
                               ],
                               "additionalProperties": false
                             },
@@ -106750,10 +106705,6 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "material-range"
-                                },
-                                "offsetUnit": {
-                                  "type": "string",
-                                  "const": "utf-16"
                                 }
                               },
                               "required": [
@@ -106763,8 +106714,7 @@
                                 "start",
                                 "end",
                                 "originalText",
-                                "kind",
-                                "offsetUnit"
+                                "kind"
                               ],
                               "additionalProperties": false
                             },
@@ -106899,10 +106849,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -106912,8 +106858,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -107240,10 +107185,6 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "material-range"
-                                },
-                                "offsetUnit": {
-                                  "type": "string",
-                                  "const": "utf-16"
                                 }
                               },
                               "required": [
@@ -107253,8 +107194,7 @@
                                 "start",
                                 "end",
                                 "originalText",
-                                "kind",
-                                "offsetUnit"
+                                "kind"
                               ],
                               "additionalProperties": false
                             },
@@ -108127,10 +108067,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -108140,8 +108076,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -108307,10 +108242,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -108320,8 +108251,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -108456,10 +108386,6 @@
                         "kind": {
                           "type": "string",
                           "const": "material-range"
-                        },
-                        "offsetUnit": {
-                          "type": "string",
-                          "const": "utf-16"
                         }
                       },
                       "required": [
@@ -108469,8 +108395,7 @@
                         "start",
                         "end",
                         "originalText",
-                        "kind",
-                        "offsetUnit"
+                        "kind"
                       ],
                       "additionalProperties": false
                     },
@@ -108797,10 +108722,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -108810,8 +108731,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -109141,10 +109061,6 @@
                                   "kind": {
                                     "type": "string",
                                     "const": "material-range"
-                                  },
-                                  "offsetUnit": {
-                                    "type": "string",
-                                    "const": "utf-16"
                                   }
                                 },
                                 "required": [
@@ -109154,8 +109070,7 @@
                                   "start",
                                   "end",
                                   "originalText",
-                                  "kind",
-                                  "offsetUnit"
+                                  "kind"
                                 ],
                                 "additionalProperties": false
                               },
@@ -109321,10 +109236,6 @@
                                   "kind": {
                                     "type": "string",
                                     "const": "material-range"
-                                  },
-                                  "offsetUnit": {
-                                    "type": "string",
-                                    "const": "utf-16"
                                   }
                                 },
                                 "required": [
@@ -109334,8 +109245,7 @@
                                   "start",
                                   "end",
                                   "originalText",
-                                  "kind",
-                                  "offsetUnit"
+                                  "kind"
                                 ],
                                 "additionalProperties": false
                               },
@@ -109470,10 +109380,6 @@
                               "kind": {
                                 "type": "string",
                                 "const": "material-range"
-                              },
-                              "offsetUnit": {
-                                "type": "string",
-                                "const": "utf-16"
                               }
                             },
                             "required": [
@@ -109483,8 +109389,7 @@
                               "start",
                               "end",
                               "originalText",
-                              "kind",
-                              "offsetUnit"
+                              "kind"
                             ],
                             "additionalProperties": false
                           },
@@ -109811,10 +109716,6 @@
                                   "kind": {
                                     "type": "string",
                                     "const": "material-range"
-                                  },
-                                  "offsetUnit": {
-                                    "type": "string",
-                                    "const": "utf-16"
                                   }
                                 },
                                 "required": [
@@ -109824,8 +109725,7 @@
                                   "start",
                                   "end",
                                   "originalText",
-                                  "kind",
-                                  "offsetUnit"
+                                  "kind"
                                 ],
                                 "additionalProperties": false
                               },
@@ -110162,10 +110062,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -110175,8 +110071,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -110342,10 +110237,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -110355,8 +110246,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -110491,10 +110381,6 @@
                         "kind": {
                           "type": "string",
                           "const": "material-range"
-                        },
-                        "offsetUnit": {
-                          "type": "string",
-                          "const": "utf-16"
                         }
                       },
                       "required": [
@@ -110504,8 +110390,7 @@
                         "start",
                         "end",
                         "originalText",
-                        "kind",
-                        "offsetUnit"
+                        "kind"
                       ],
                       "additionalProperties": false
                     },
@@ -110832,10 +110717,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -110845,8 +110726,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -111205,10 +111085,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -111218,8 +111094,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -111385,10 +111260,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -111398,8 +111269,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -111534,10 +111404,6 @@
                         "kind": {
                           "type": "string",
                           "const": "material-range"
-                        },
-                        "offsetUnit": {
-                          "type": "string",
-                          "const": "utf-16"
                         }
                       },
                       "required": [
@@ -111547,8 +111413,7 @@
                         "start",
                         "end",
                         "originalText",
-                        "kind",
-                        "offsetUnit"
+                        "kind"
                       ],
                       "additionalProperties": false
                     },
@@ -111875,10 +111740,6 @@
                             "kind": {
                               "type": "string",
                               "const": "material-range"
-                            },
-                            "offsetUnit": {
-                              "type": "string",
-                              "const": "utf-16"
                             }
                           },
                           "required": [
@@ -111888,8 +111749,7 @@
                             "start",
                             "end",
                             "originalText",
-                            "kind",
-                            "offsetUnit"
+                            "kind"
                           ],
                           "additionalProperties": false
                         },
@@ -112108,10 +111968,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -112121,8 +111977,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -112251,10 +112106,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -112264,8 +112115,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -112394,10 +112244,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -112407,8 +112253,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -112634,10 +112479,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -112647,8 +112488,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -112814,10 +112654,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -112827,8 +112663,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -112963,10 +112798,6 @@
                       "kind": {
                         "type": "string",
                         "const": "material-range"
-                      },
-                      "offsetUnit": {
-                        "type": "string",
-                        "const": "utf-16"
                       }
                     },
                     "required": [
@@ -112976,8 +112807,7 @@
                       "start",
                       "end",
                       "originalText",
-                      "kind",
-                      "offsetUnit"
+                      "kind"
                     ],
                     "additionalProperties": false
                   },
@@ -113304,10 +113134,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -113317,8 +113143,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -113458,10 +113283,6 @@
               "kind": {
                 "type": "string",
                 "const": "material-range"
-              },
-              "offsetUnit": {
-                "type": "string",
-                "const": "utf-16"
               }
             },
             "required": [
@@ -113471,8 +113292,7 @@
               "start",
               "end",
               "originalText",
-              "kind",
-              "offsetUnit"
+              "kind"
             ],
             "additionalProperties": false
           },
@@ -113682,10 +113502,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -113695,8 +113511,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -113862,10 +113677,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -113875,8 +113686,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -114011,10 +113821,6 @@
                       "kind": {
                         "type": "string",
                         "const": "material-range"
-                      },
-                      "offsetUnit": {
-                        "type": "string",
-                        "const": "utf-16"
                       }
                     },
                     "required": [
@@ -114024,8 +113830,7 @@
                       "start",
                       "end",
                       "originalText",
-                      "kind",
-                      "offsetUnit"
+                      "kind"
                     ],
                     "additionalProperties": false
                   },
@@ -114352,10 +114157,6 @@
                           "kind": {
                             "type": "string",
                             "const": "material-range"
-                          },
-                          "offsetUnit": {
-                            "type": "string",
-                            "const": "utf-16"
                           }
                         },
                         "required": [
@@ -114365,8 +114166,7 @@
                           "start",
                           "end",
                           "originalText",
-                          "kind",
-                          "offsetUnit"
+                          "kind"
                         ],
                         "additionalProperties": false
                       },
@@ -134365,5 +134165,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:10df6c5f439e9aa67d18dbf937d8d19ba556730f2bd9cd7d148f03de6927d76c"
+  "x-openkit-source-digest": "sha256:8e7ccd452bfdec39f521a1d9afcc5328f234501c5f68484aea9ac7c504135d03"
 }
