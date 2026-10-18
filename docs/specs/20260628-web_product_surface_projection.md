@@ -83,7 +83,7 @@ Thread lists, search, notification and Artifact/widget access obey `20260909-thr
 
 ## Decision
 
-Web is the product projection for every currently supported canonical-user or Workspace-authorized NanoCore operation. Page names and mockups are not the inventory authority. The included universe is the 242 `PUBLIC_OPERATION_ACCESS` entries whose scope is `user` or `workspace`, excluding the two Gateway-actor compatibility operations. That 242 equals the 320 catalog entries minus 76 server-scoped deployment-admin or bootstrap operations minus those two Gateway-actor operations.
+Web is the product projection for every currently supported canonical-user or Workspace-authorized NanoCore operation. Page names and mockups are not the inventory authority. The included universe is the 242 `PUBLIC_OPERATION_ACCESS` entries whose scope is `user` or `workspace`, excluding the two Gateway-actor compatibility operations and the one Worker-only operation. That 242 equals the 321 catalog entries minus 76 server-scoped deployment-admin or bootstrap operations minus those two Gateway-actor operations minus the one Worker-only operation.
 
 Workspace Knowledge Manager answers show the returned citation titles and excerpts. A citation links to current full content only when its qualified owner and page identity match an available current page; a missing or foreign reference never aliases a local page. The link labels current content because it may differ from the cited answer. The direct Add knowledge form offers explicit registered-Source selection and submits that exact Source identity and captured digest as a page source reference. Equal content alone creates no relationship, and switching Workspaces never carries a selected Source into another Workspace's command.
 
@@ -97,13 +97,13 @@ The five `automation.list`, `automation.create`, `automation.update`, `automatio
 
 ### Inclusion and exclusions
 
-An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`. The count of that set is 242. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
+An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`, and whose operation definition does not admit only `worker-package` credentials. The count of that set is 242. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
 
 The following are excluded from ordinary-user Web and MUST NOT appear on a published ordinary-user route:
 
 - Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 76 keys. Roadmap R048 owns their future separate admin surface.
 - Gateway-actor operations `POST /v1/chat/completions` and `POST /v1/responses`.
-- Worker-private routes that are not public catalog operations, including `/api/worker-control/*`.
+- Worker-only catalog operations whose definitions admit only `worker-package` credentials, currently `automation.event-admit`, and Worker-private routes outside the public catalog, including `/api/worker-control/*`.
 
 Better Auth sign-in, sign-up, and sign-out plus `GET /api/meta` are already-live admission and connection plumbing. They remain acceptance prerequisites and MAY be called from ordinary Web, but they are not catalog operations and do not receive `live` / `workflow` / `roadmap` dispositions.
 
@@ -368,7 +368,7 @@ The coverage check, not this document's prose, is the per-operation inventory an
 
 ## Testing Strategy / Acceptance Criteria
 
-- The committed disposition guard MUST enumerate the included 242-operation set from `PUBLIC_OPERATION_ACCESS` after excluding server scope and Gateway-actor keys, and MUST fail on a missing disposition, a duplicate disposition, a disposition outside the closed `live` / `workflow` / `roadmap` shape, or a `live` or `workflow` disposition whose named surface is not currently Tier A.
+- The committed disposition guard MUST enumerate the included 242-operation set from `PUBLIC_OPERATION_ACCESS` after excluding server scope, Gateway-actor keys, and Worker-only operation definitions, and MUST fail on a missing disposition, a duplicate disposition, a disposition outside the closed `live` / `workflow` / `roadmap` shape, or a `live` or `workflow` disposition whose named surface is not currently Tier A.
 - Adding a new in-scope catalog operation without a Web disposition MUST fail that guard before the corresponding UI slice is accepted.
 - Focused Web tests plus independent review of the actual diff MUST decide whether each `live` or `workflow` claim is reachable and truthful, including loading, empty, denied, failure, stale, success, and retry states that the workflow can actually produce, using Core Client calls rather than invented oracles. The guard MUST NOT be treated as that behavior verdict.
 - Package checks MUST show that no published Workspace route calls a server-scoped API or requires deployment-admin authority, and focused Configuration checks MUST prove its Token-input-free denied state, session-client read, file-tree projection, validation, revision-protected save, and explicit safe reload.
