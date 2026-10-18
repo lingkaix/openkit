@@ -2,9 +2,6 @@
 ALTER TABLE `artifact_reviews` ADD `schema_version` integer DEFAULT 1 NOT NULL;
 --> statement-breakpoint
 
-ALTER TABLE `audit_events` ADD `schema_version` integer DEFAULT 1 NOT NULL;
---> statement-breakpoint
-
 ALTER TABLE `backend_workspace_handles` ADD `schema_version` integer DEFAULT 1 NOT NULL;
 --> statement-breakpoint
 
@@ -36,9 +33,6 @@ ALTER TABLE `mcp_tool_schema_snapshots` ADD `schema_version` integer DEFAULT 1 N
 --> statement-breakpoint
 
 ALTER TABLE `pending_requests` ADD `schema_version` integer DEFAULT 1 NOT NULL;
---> statement-breakpoint
-
-ALTER TABLE `permission_decisions` ADD `schema_version` integer DEFAULT 1 NOT NULL;
 --> statement-breakpoint
 
 ALTER TABLE `resolved_agent_setups` ADD `schema_version` integer DEFAULT 1 NOT NULL;

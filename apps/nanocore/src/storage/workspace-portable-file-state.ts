@@ -16,14 +16,19 @@ import {
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
   type ProductRetrievalTrace,
-  ProductRetrievalTraceReaderSchema,
 } from '@openkit/app-api-schemas';
-import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
+import {
+  type RetrievalTraceReference,
+  RetrievalTraceReferenceSchema,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import { assertPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { validateRecurringPortableHistory } from './recurring-portable-history.js';
+import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
   appendCanonicalTextFile,
@@ -39,7 +44,7 @@ const ConflictRowSchema = KnowledgeConflictSchema.strict();
 const ObservationReaderSchema = ObservationRowSchema.strip();
 const ClaimReaderSchema = ClaimRowSchema.strip();
 const ConflictReaderSchema = ConflictRowSchema.strip();
-const RetrievalTraceReaderSchema = ProductRetrievalTraceReaderSchema;
+const RetrievalTraceReaderSchema = StoredProductRetrievalTraceV1Schema;
 const retainedLedgerRow = Symbol('retainedKnowledgeLedgerRow');
 
 /** Keeps owned source annotations separate from the normalized Knowledge read model. */
@@ -535,14 +540,16 @@ export function parseWorkspaceRetrievalTraceFile(
       : `retrieval-trace/thread/${expectedWorkspaceId}/${threadMatch![1]}`,
     objectId: turnMatch ? turnMatch[3] : threadMatch![2],
   });
-  const trace = RetrievalTraceReaderSchema.parse(JSON.parse(text));
+  const trace = readRetainedV1(JSON.parse(text), (value) =>
+    RetrievalTraceReaderSchema.parse(value)
+  );
   assertRetrievalTraceIdentity(reference, trace);
   return { reference, trace };
 }
 
 /** Serializes only normalized trace evidence; ignored additions cannot enter export or import. */
 export function serializeWorkspaceRetrievalTrace(trace: ProductRetrievalTrace): string {
-  return `${JSON.stringify(RetrievalTraceReaderSchema.parse(trace))}\n`;
+  return `${JSON.stringify(writeRetainedV1(RetrievalTraceReaderSchema.parse(trace)))}\n`;
 }
 
 /** Reads every trace file whose path has one canonical Thread or Turn owner. */

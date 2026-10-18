@@ -2,9 +2,6 @@
 ALTER TABLE `agent_session_runtime_bindings` ADD `schema_version` integer DEFAULT 1 NOT NULL;
 --> statement-breakpoint
 
-ALTER TABLE `audit_events` ADD `schema_version` integer DEFAULT 1 NOT NULL;
---> statement-breakpoint
-
 ALTER TABLE `boot_audit_events` ADD `schema_version` integer DEFAULT 1 NOT NULL;
 --> statement-breakpoint
 
@@ -21,9 +18,6 @@ ALTER TABLE `idempotency_requests` ADD `schema_version` integer DEFAULT 1 NOT NU
 --> statement-breakpoint
 
 ALTER TABLE `openkit_access_tokens` ADD `schema_version` integer DEFAULT 1 NOT NULL;
---> statement-breakpoint
-
-ALTER TABLE `permission_decisions` ADD `schema_version` integer DEFAULT 1 NOT NULL;
 --> statement-breakpoint
 
 ALTER TABLE `recurring_expired_ranges` ADD `schema_version` integer DEFAULT 1 NOT NULL;

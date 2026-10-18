@@ -42,6 +42,11 @@ import {
   retrievalTraceRelativePath,
 } from './retrieval-traces.js';
 
+import {
+  parseWorkspaceRetrievalTraceFile,
+  serializeWorkspaceRetrievalTrace,
+} from './workspace-portable-file-state.js';
+
 describe('retrieval trace publication', () => {
   it('refuses missing or unknown trace versions before decoding the source family', () => {
     const workspaceId = testEntityId('ws', 'trace-version');
@@ -64,6 +69,13 @@ describe('retrieval trace publication', () => {
         expect(() => readTurnRetrievalTraces(workspaceRoot, workspaceId, threadId, turnId)).toThrow(
           'Unsupported retained record format.'
         );
+        expect(() =>
+          parseWorkspaceRetrievalTraceFile(
+            retrievalTraceRelativePath(reference),
+            invalid,
+            workspaceId
+          )
+        ).toThrow('Unsupported retained record format.');
         expect(readFileSync(path, 'utf8')).toBe(invalid);
       }
     } finally {
@@ -121,6 +133,22 @@ describe('retrieval trace publication', () => {
       expect(readTurnRetrievalTraces(workspaceRoot, workspaceId, threadId, turnId)).toEqual([
         { reference, trace },
       ]);
+      expect(
+        parseWorkspaceRetrievalTraceFile(
+          retrievalTraceRelativePath(reference),
+          annotated,
+          workspaceId
+        )
+      ).toEqual({ reference, trace });
+      const portable = serializeWorkspaceRetrievalTrace(trace);
+      expect(JSON.parse(portable)).toEqual({ ...trace, schemaVersion: 1 });
+      expect(
+        parseWorkspaceRetrievalTraceFile(
+          retrievalTraceRelativePath(reference),
+          portable,
+          workspaceId
+        )
+      ).toEqual({ reference, trace });
       expect(readFileSync(path, 'utf8')).toBe(annotated);
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true });
