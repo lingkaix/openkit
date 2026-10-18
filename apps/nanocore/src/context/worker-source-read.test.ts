@@ -218,6 +218,7 @@ it('continues exact selected Notebook bytes and withholds all output after canon
     assertCurrent: () => {},
     readKnowledge,
     knowledge: {
+      knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
       knowledgePageId: 'pinned',
       notebookRevision: 'selected-notebook-commit',
       contentDigest: digest(bytes),
@@ -249,6 +250,14 @@ it('continues exact selected Notebook bytes and withholds all output after canon
   if (continued.status !== 'ready') throw new Error('Expected continuation.');
   expect(continued.identity.revision).toBe('selected-notebook-commit');
   expect(continued.text).not.toContain('\ufffd');
+  expect(
+    await readWorkerSourceSnapshot({
+      ...input,
+      mode: 'read',
+      cursor: preview.cursor,
+      knowledge: { ...input.knowledge, knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000002' },
+    })
+  ).toEqual({ status: 'unavailable', reason: 'stale' });
   admitted = false;
   expect(
     await readWorkerSourceSnapshot({ ...input, mode: 'read', cursor: preview.cursor })

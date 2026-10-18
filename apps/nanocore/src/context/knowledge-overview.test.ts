@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import { FsStore } from '../lib/store.js';
@@ -78,6 +79,10 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
   const overview = payload.overviews[0];
   expect(overview).toMatchObject({
     scope: `workspace:${f.workspaceId}`,
+    knowledgeBaseId: readDefaultKnowledgeBaseId({
+      dataRoot: f.coreDb.dataRoot,
+      scope: { kind: 'workspace', workspaceId: f.workspaceId },
+    }),
     path: 'index.md',
     notebookRevision: revision,
     contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
@@ -130,6 +135,7 @@ it('admits only known portable overview scopes and value-free Server-unavailable
     `<knowledge_overviews>${JSON.stringify({ overviews })}</knowledge_overviews>`;
   const workspace = {
     scope: 'workspace:ws_00000000-0000-7000-8000-000000000001',
+    knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
     content: 'Literal "scope":"server" is ordinary Workspace text.',
   };
   expect(() => assertPortableKnowledgeOverview(envelope([workspace]))).not.toThrow();

@@ -4,9 +4,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ApiErrorSchema, deriveEntityId } from '@openkit/protocol';
+import { ApiErrorSchema, deriveEntityId, formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { KnowledgePageValidationError, parseOkfDocument } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
@@ -162,7 +163,10 @@ async function createFixture(label = 'proposal-authority-draft', includeStatus =
     content: 'A human Review is the only activation authority.',
     sourceReferences: [],
   });
-  const sourceReference = `knowledge:${source.id}@${digest(currentPage(f, source.id)!)}`;
+  const sourceReference = formatReferenceUri(
+    { scopeId: workspacePageScope(f), objectId: source.id },
+    digest(currentPage(f, source.id)!)
+  );
   const knowledgePageId = 'review/review-authority-lesson';
   const proposal = draft(f, sourceReference, label, knowledgePageId, includeStatus);
   return {
@@ -423,7 +427,11 @@ describe('knowledge proposal authority', () => {
     });
     expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
     const reversed = await reverse(f, first.review.reviewId);
-    conflict(f, `knowledge:${f.knowledgePageId}`, 'post-completion-conflict');
+    conflict(
+      f,
+      formatReferenceUri({ scopeId: workspacePageScope(f), objectId: f.knowledgePageId }),
+      'post-completion-conflict'
+    );
     f.store = new FsStore({ dataRoot: f.dataRoot });
     f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
     expect(await decide(f, 'accepted', 'review-accepted-page')).toEqual(first);
@@ -450,7 +458,7 @@ describe('knowledge proposal authority', () => {
       caller: 'app-api',
       dataRoot: f.dataRoot,
       limit: 1,
-      pinnedReferences: [{ scopeId: `page/workspace/${f.workspaceId}`, objectId: copiedPageId }],
+      pinnedReferences: [{ scopeId: workspacePageScope(f), objectId: copiedPageId }],
       query: 'Review authority lesson',
       access: access(f),
       workspaceId: f.workspaceId,
@@ -459,14 +467,14 @@ describe('knowledge proposal authority', () => {
     expect(retrieval.selected).toEqual([
       expect.objectContaining({
         contentDigest: f.contentDigest,
-        reference: { scopeId: `page/workspace/${f.workspaceId}`, objectId: f.knowledgePageId },
+        reference: { scopeId: workspacePageScope(f), objectId: f.knowledgePageId },
         revision: f.proposal.candidateRevision,
         sourceReferences: [f.sourceReference],
       }),
     ]);
     expect(retrieval.selected.map((item) => item.reference.objectId)).not.toContain(copiedPageId);
     expect(retrieval.excluded).toContainEqual({
-      reference: { scopeId: `page/workspace/${f.workspaceId}`, objectId: copiedPageId },
+      reference: { scopeId: workspacePageScope(f), objectId: copiedPageId },
       revision: f.proposal.candidateRevision,
       contentDigest: null,
       sourceReferences: [],
@@ -507,9 +515,7 @@ describe('knowledge proposal authority', () => {
       access: caller,
       caller: 'task-mode',
       dataRoot: f.dataRoot,
-      pinnedReferences: [
-        { scopeId: `page/workspace/${f.workspaceId}`, objectId: f.knowledgePageId },
-      ],
+      pinnedReferences: [{ scopeId: workspacePageScope(f), objectId: f.knowledgePageId }],
       query: 'Review authority lesson',
       traceId,
       workspaceId: f.workspaceId,
@@ -654,7 +660,11 @@ describe('knowledge proposal authority', () => {
 
   it('does not block publication for an unrelated unresolved conflict', async () => {
     const f = await createFixture('proposal-unrelated-conflict');
-    conflict(f, 'knowledge:unrelated-page', 'unrelated-conflict');
+    conflict(
+      f,
+      formatReferenceUri({ scopeId: workspacePageScope(f), objectId: 'unrelated-page' }),
+      'unrelated-conflict'
+    );
     expect((await decide(f, 'accepted', 'review-unrelated-conflict')).application?.present).toBe(
       true
     );
@@ -668,7 +678,9 @@ describe('knowledge proposal authority', () => {
     const f = await createFixture(`proposal-unresolved-${subject}`);
     const id = conflict(
       f,
-      subject === 'target' ? `knowledge:${f.knowledgePageId}` : f.sourceReference,
+      subject === 'target'
+        ? formatReferenceUri({ scopeId: workspacePageScope(f), objectId: f.knowledgePageId })
+        : f.sourceReference,
       `conflict-${subject}`
     );
     const before = f.notebook.publishedRevision();
@@ -793,7 +805,10 @@ describe('knowledge proposal authority', () => {
   it('rejects a generated proposal that cites another accepted generated page', async () => {
     const f = await createFixture('proposal-generated-source');
     await decide(f, 'accepted', 'review-generated-source');
-    const reference = `knowledge:${f.knowledgePageId}@${f.contentDigest}`;
+    const reference = formatReferenceUri(
+      { scopeId: workspacePageScope(f), objectId: f.knowledgePageId },
+      f.contentDigest
+    );
     expect(() =>
       draft(f, reference, 'dependent-generated-proposal', 'review/dependent-generated-page')
     ).toThrow(KnowledgePageValidationError);
@@ -813,7 +828,10 @@ describe('knowledge proposal authority', () => {
     expect(
       draft(
         f,
-        `knowledge:${f.knowledgePageId}@${digest(bytes)}`,
+        formatReferenceUri(
+          { scopeId: workspacePageScope(f), objectId: f.knowledgePageId },
+          digest(bytes)
+        ),
         'dependent-user-authored-proposal',
         'review/dependent-user-authored-page'
       )
@@ -864,3 +882,8 @@ describe('knowledge proposal authority', () => {
     expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
   });
 });
+
+/** Reads the actual Workspace binding without allocating fixture authority. */
+function workspacePageScope(f: Owners): string {
+  return `page/workspace/${f.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspaceId } })}`;
+}

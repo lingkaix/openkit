@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isEntityId, type KnowledgeOwnerScope } from '@openkit/protocol';
@@ -107,6 +115,32 @@ describe('retained default Knowledge Base identity', () => {
     expect(service.updateFile({ id, kind, content: retained, expectedRevision }).file.exists).toBe(
       true
     );
+  });
+
+  it('retains the reminted import binding through unpublished staging and publication', () => {
+    const dataRoot = temporaryDataRoot();
+    const workspaceRoot = join(dataRoot, 'workspaces', '.staging', 'candidate');
+    mkdirSync(join(workspaceRoot, 'config'), { recursive: true });
+    writeFileSync(
+      join(workspaceRoot, 'config', 'workspace.jsonc'),
+      '{"workspace":{"name":"Imported"}}'
+    );
+    const knowledgeBaseId = 'kb_0190f4c8-0000-7000-8000-0000000000ff';
+    expect(
+      initializeDefaultKnowledgeBaseId({
+        dataRoot,
+        scope: { kind: 'workspace', workspaceId },
+        workspaceRoot,
+        knowledgeBaseId,
+      })
+    ).toBe(knowledgeBaseId);
+    expect(() =>
+      readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } })
+    ).toThrow('recovery required');
+    renameSync(workspaceRoot, join(dataRoot, 'workspaces', workspaceId));
+    expect(
+      readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } })
+    ).toBe(knowledgeBaseId);
   });
 
   it('does not create configuration or allocate on lookup', () => {
