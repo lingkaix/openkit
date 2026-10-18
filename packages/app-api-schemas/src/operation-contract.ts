@@ -70,7 +70,13 @@ export type OperationTarget =
         | 'deployment'
         | 'configured-runtime-target';
     }
-  | { readonly kind: 'server' | 'user'; readonly field?: string }
+  | {
+      readonly kind: 'server';
+      readonly field?: string;
+      /** Primary Server Policy family; omission selects ordinary administration. */
+      readonly family?: 'administration' | 'mcp' | 'knowledge';
+    }
+  | { readonly kind: 'user'; readonly field?: string }
   | {
       readonly kind:
         | 'workspace-light-app'
