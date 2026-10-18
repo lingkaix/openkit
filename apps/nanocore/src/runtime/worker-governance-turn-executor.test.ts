@@ -59,6 +59,7 @@ import {
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -11369,6 +11370,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
+    readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
     env: {},
     workerControlGateway: new WorkerControlGateway(),
     nanoHostSessionDispatch: {
