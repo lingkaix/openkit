@@ -2000,7 +2000,8 @@ describe('terminal failed-start product recovery', () => {
       starts.mockRestore();
       f.coreDb.sqlite.close();
     }
-  });
+    // Allow database/App setup in addition to the two bounded scheduler observations.
+  }, 60_000);
 
   it.each([
     true,

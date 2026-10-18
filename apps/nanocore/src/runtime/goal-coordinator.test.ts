@@ -187,26 +187,37 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
     workspaceId: workspace.id,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
+  const profileId = 'goal-coordinator-selected';
+  const limits = { maxModelTurns: 7, maxToolCalls: 9, deadlineMs: 150_000 };
+  const retainedAtDispatch: unknown[] = [];
   const dispatch = vi
     .fn()
-    .mockResolvedValueOnce({
-      id: 'goal-call',
-      object: 'response',
-      status: 'completed',
-      output: [
-        {
-          type: 'function_call',
-          call_id: 'discover-workers',
-          name: 'agent_list',
-          arguments: '{}',
-        },
-        {
-          type: 'function_call',
-          call_id: 'card-create',
-          name: 'goal_card_create',
-          arguments: JSON.stringify({ description: 'Review the release', priority: 1 }),
-        },
-      ],
+    .mockImplementationOnce(async () => {
+      retainedAtDispatch.push(
+        store
+          .listThreads(workspace.id)
+          .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id))
+          .find((turn) => turn.status === 'running')?.internalExecution
+      );
+      return {
+        id: 'goal-call',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'discover-workers',
+            name: 'agent_list',
+            arguments: '{}',
+          },
+          {
+            type: 'function_call',
+            call_id: 'card-create',
+            name: 'goal_card_create',
+            arguments: JSON.stringify({ description: 'Review the release', priority: 1 }),
+          },
+        ],
+      };
     })
     .mockResolvedValue({
       id: 'goal-idle',
@@ -234,6 +245,19 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
       },
     ],
     gatewayConfig,
+    internalRoleProfiles: {
+      schemaVersion: 1,
+      profiles: [
+        {
+          id: profileId,
+          roleId: 'goal-orchestrator',
+          preferredLogicalModelId: gatewayConfig.logicalModels[0]!.id,
+          compatibleLogicalModelIds: [],
+          requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
+          limits,
+        },
+      ],
+    },
     providerRegistry: new ProviderRegistry([
       {
         id: 'agent-openrouter',
@@ -276,6 +300,7 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
       { timeout: 10000 }
     );
     expect(dispatch.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(retainedAtDispatch).toEqual([expect.objectContaining({ profileId, limits })]);
     expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).toContain('discoverable-worker');
     expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).toContain('codex');
     expect(JSON.stringify(dispatch.mock.calls[1]?.[1].input)).toContain('blocked-worker');

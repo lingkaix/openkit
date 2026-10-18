@@ -587,6 +587,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             requiredMessages: [
               { role: 'user', content: [{ type: 'text', text: JSON.stringify(view) }] },
             ],
+            profileId: selection.profile?.id ?? null,
             limits: selection.profile?.limits ?? {
               maxModelTurns: 8,
               maxToolCalls: 24,

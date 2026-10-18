@@ -22,6 +22,17 @@ import { KnowledgeOwnerScopeSchema } from './knowledge-notebook.js';
 const InternalAgentExecutionSchema = z.object({
   roleId: z.string().min(1),
   logicalModelId: z.string().min(1),
+  /** Selected authored role profile, or null when caller defaults supplied the limits. */
+  profileId: z.string().min(1).nullable().optional(),
+  /** Effective admission limits before context summaries consume the run budget. */
+  limits: z
+    .object({
+      maxModelTurns: z.number().int().positive(),
+      maxToolCalls: z.number().int().positive(),
+      deadlineMs: z.number().int().positive(),
+    })
+    .strip()
+    .optional(),
   contextStrategy: z.enum(['rolling', 'compaction']),
   threshold: z.number().int().positive(),
   knowledge: z

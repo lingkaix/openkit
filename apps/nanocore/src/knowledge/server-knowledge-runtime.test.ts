@@ -174,6 +174,8 @@ it('executes a Server request on the configured role model with its own captured
     status: 'completed',
     internalExecution: {
       logicalModelId: 'server-maintenance',
+      profileId: 'server-km-profile',
+      limits: { maxModelTurns: 8, maxToolCalls: 24, deadlineMs: 120_000 },
       contextStrategy: 'compaction',
       threshold: 32_000,
       knowledge: { ownerScope: { kind: 'server' }, trigger: 'request', sourceRange: [] },

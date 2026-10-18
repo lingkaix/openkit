@@ -28,6 +28,8 @@ export interface InternalAgentContextInput {
   readonly environmentFacts?: unknown;
   readonly tools: readonly AgentTool[];
   readonly model: InternalAgentLogicalModel;
+  /** Selected role profile; omission retains that no profile was selected. */
+  readonly profileId?: string | null;
   readonly bounds: {
     readonly context: number | null | undefined;
     readonly output: number | null | undefined;
@@ -219,7 +221,7 @@ export async function prepareInternalAgentContext(
   const startedAt = Date.now();
   const deadline = AbortSignal.timeout(input.limits.deadlineMs);
   const signal = AbortSignal.any([input.signal, deadline]);
-  // Pin the actual rolling admission bound in the existing execution record before inference.
+  // Pin the rolling admission and initial run metadata before summary or answer inference.
   assertInternalAgentContextFits(
     { systemPrompt: input.systemPrompt, messages: [], tools: input.tools },
     input.bounds.context ?? undefined,
@@ -233,6 +235,11 @@ export async function prepareInternalAgentContext(
   const currentTurn = input.store.getTurnById(input.turn.id);
   const execution = {
     ...currentTurn.internalExecution,
+    profileId:
+      currentTurn.internalExecution?.profileId !== undefined
+        ? currentTurn.internalExecution.profileId
+        : (input.profileId ?? null),
+    limits: currentTurn.internalExecution?.limits ?? input.limits,
     roleId: currentTurn.agentId!,
     logicalModelId: input.model.logicalModelId,
     contextStrategy: 'rolling' as const,
@@ -246,7 +253,11 @@ export async function prepareInternalAgentContext(
       currentTurn.internalExecution.threshold !== execution.threshold)
   )
     throw capacity();
-  if (!currentTurn.internalExecution)
+  if (
+    !currentTurn.internalExecution ||
+    currentTurn.internalExecution.profileId === undefined ||
+    currentTurn.internalExecution.limits === undefined
+  )
     input.store.updateTurn(input.turn.id, { internalExecution: execution });
   const environmentDigest = internalContextDigest({
     version: 1,
