@@ -1,3 +1,4 @@
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -411,16 +412,15 @@ function readRecoveryToken(coreDb: CoreDb, tokenId: string): RecoveryTokenRow | 
 
 /** Reads every AuditEvent that claims one recovery request identity. */
 function readRecoveryAudits(coreDb: CoreDb, requestId: string): RecoveryAuditRow[] {
-  return coreDb.sqlite
+  const rows = coreDb.sqlite
     .prepare(
-      `SELECT audit_event_id, workspace_id, protocol_version, thread_id, turn_id, item_id,
-              capability_call_id, permission_decision_id, vault_grant_id, request_id,
-              actor_json, subject_json, agent_id, agent_session_id, category, action,
-              resource, resource_revision, outcome, severity, summary, error_code
+      `SELECT *
        FROM audit_events
        WHERE request_id = ?`
     )
     .all(requestId) as RecoveryAuditRow[];
+  for (const row of rows) readAuditEventRowV1(row);
+  return rows;
 }
 
 /** Opens an existing non-link recovery file or reports an absent path. */

@@ -1,3 +1,4 @@
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
@@ -192,7 +193,7 @@ function readNotebookAdmissions(
         : dependencies.owner.coreDb;
   const rows = db.sqlite
     .prepare(
-      'SELECT notebook_admission_json AS admission FROM audit_events WHERE workspace_id IS ? AND request_id = ? AND action = ? AND outcome = ?'
+      'SELECT * FROM audit_events WHERE workspace_id IS ? AND request_id = ? AND action = ? AND outcome = ?'
     )
     .all(
       ownerScope.kind === 'workspace' ? ownerScope.workspaceId : null,
@@ -203,9 +204,9 @@ function readNotebookAdmissions(
     admission: string | null;
   }[];
   return rows
-    .map(({ admission }) => {
+    .map((row) => {
       try {
-        const parsed = KnowledgeNotebookAdmissionSchema.parse(JSON.parse(admission ?? 'null'));
+        const parsed = KnowledgeNotebookAdmissionSchema.parse(readAuditEventRowV1(row).notebookAdmission);
         if (
           !isDeepStrictEqual(parsed.ownerScope, ownerScope) ||
           parsed.requestId !== request.requestId
