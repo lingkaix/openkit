@@ -27,7 +27,7 @@ A subject records its principal kind and identity, actual process and optional o
 
 The engineer confirmed the accountability chain at 10:52Z. Creating an agent principal or granting it a domain is an administration operation recording creator and responsible human. An agent creator passes the human at its own chain's end unless a human explicitly assigns one. The chain must be finite and acyclic. At evaluation the Kernel checks that it still ends at a current human authorized over that domain. A broken chain suspends the agent's grants until a human reassigns responsibility; it never supplies inherited human rights. Decisions retain the agent and the human resolved at decision time.
 
-The rc.11 retained-format work includes these shared formats, policy.write review and the I16 pilot. Other row routing, impact simulation, cached/adaptive review and external participant adapters follow later. React, which changes Policy after successful access under the defining authority, remains deferred in [issue #375](https://github.com/lingkaix/openkit/issues/375). This documentation does not implement or activate any of those mechanisms.
+The reset RC freezes these shared formats with their writers, validators and the I16 pilot. Policy review and other behavior that writes no new shape may follow additively before v0.1.0. Other row routing, impact simulation, cached/adaptive review and external participant adapters follow later. React, which changes Policy after successful access under the defining authority, remains deferred in [issue #375](https://github.com/lingkaix/openkit/issues/375). This documentation does not implement or activate any of those mechanisms.
 
 ## Reason
 
