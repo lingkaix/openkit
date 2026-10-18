@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RESOURCE_POLICY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import {
+  KERNEL_REMAINING_OPERATION_DEFINITIONS,
+  RESOURCE_POLICY_OPERATION_DEFINITIONS,
+} from '@openkit/app-api-schemas';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import * as policyKernel from '@openkit/policy-kernel';
 import { allocateEntityId } from '@openkit/protocol';
@@ -225,6 +228,62 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', () =>
     expect(kernel).toHaveBeenCalledTimes(1);
     expect(kernel.mock.calls[0]![1].target).toContain(thread.id);
     expect(kernel.mock.calls[0]![1].process).toBe(agentSessionId);
+    const lightAppInput = {
+      workspaceId: workspace.id,
+      appId: randomUUID(),
+      collection: 'notes',
+      recordId: randomUUID(),
+      schemaRevision: 1,
+    };
+    const worker = {
+      kind: 'worker' as const,
+      actor,
+      lineage: {
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        agentSessionId,
+        packageSnapshotId,
+      },
+      requestId,
+      bindings: { workspaceId: workspace.id },
+    };
+    store.setWorkspaceResourcePolicyProjection(() => [
+      {
+        resource: { family: 'thread', id: thread.id },
+        grants: [
+          {
+            subject: { kind: 'agent', userId: actor.id, agentId: 'researcher' },
+            operations: ['workspace.read'],
+          },
+        ],
+        prohibitions: [],
+      },
+    ]);
+    kernel.mockClear();
+    const lightApp = admitOperation(
+      KERNEL_REMAINING_OPERATION_DEFINITIONS['kernel.records.get'],
+      lightAppInput,
+      worker,
+      { coreDb: db, store, workspaceMutationAdmission: new WorkspaceMutationAdmission() }
+    );
+    lightApp.release?.();
+    expect(kernel).toHaveBeenCalledTimes(1);
+    expect(kernel.mock.calls[0]![1]).toMatchObject({
+      process: agentSessionId,
+      operation: 'workspace.read',
+    });
+    store.setWorkspaceResourcePolicyProjection(() => [
+      { resource: { family: 'thread', id: thread.id }, grants: [], prohibitions: [] },
+    ]);
+    expect(() =>
+      admitOperation(
+        KERNEL_REMAINING_OPERATION_DEFINITIONS['kernel.records.get'],
+        lightAppInput,
+        worker,
+        { coreDb: db, store, workspaceMutationAdmission: new WorkspaceMutationAdmission() }
+      )
+    ).toThrow('Thread not found.');
   } finally {
     kernel.mockRestore();
     db.sqlite.close();

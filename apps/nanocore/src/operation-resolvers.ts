@@ -417,7 +417,16 @@ export function admitOperation(
         !authorizeWorkspace(coreDb, entry.actor, workspaceId, definition)
       )
         throw denied();
-      if (entry.kind === 'worker' && definition.target.kind === 'workspace')
+      if (
+        entry.kind === 'worker' &&
+        definition.target.kind !== 'addressed-thread' &&
+        definition.target.kind !== 'addressed-turn' &&
+        !(
+          definition.target.kind === 'optional-addressed-thread' &&
+          input[definition.target.threadField] !== undefined
+        ) &&
+        !resolvedLineage?.threadId
+      )
         requireThreadAudience(
           store,
           coreDb,
