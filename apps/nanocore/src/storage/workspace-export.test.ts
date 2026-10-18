@@ -1484,6 +1484,7 @@ describe('workspace export verifier', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     } as const;
+    const serverPageScope = `page/server/${allocateEntityId('kb')}`;
     const traceId = 'krt_00000000-0000-77c6-84f7-ac86ac6632b2';
     const requestDigest = `sha256:${'8'.repeat(64)}`;
     const sourcePortableRoot = mkdtempSync(
@@ -1504,7 +1505,7 @@ describe('workspace export verifier', () => {
         },
         threadId: thread.id,
       },
-      sourceScope: 'page/server',
+      sourceScope: serverPageScope,
       notebookRevision: null,
       caller: 'app-api',
       requestDigest,
@@ -1517,7 +1518,7 @@ describe('workspace export verifier', () => {
       },
       selected: [
         {
-          reference: { scopeId: 'page/server', objectId: 'same-path' },
+          reference: { scopeId: serverPageScope, objectId: 'same-path' },
           revision: `sha256:${'9'.repeat(64)}`,
           contentDigest: `sha256:${'9'.repeat(64)}`,
           sourceReferences: [],
@@ -1624,10 +1625,10 @@ describe('workspace export verifier', () => {
         workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636',
         threadId: imported.threads[0]?.id,
       },
-      sourceScope: 'page/server',
+      sourceScope: serverPageScope,
       selected: [
         expect.objectContaining({
-          reference: { scopeId: 'page/server', objectId: 'same-path' },
+          reference: { scopeId: serverPageScope, objectId: 'same-path' },
         }),
       ],
     });
