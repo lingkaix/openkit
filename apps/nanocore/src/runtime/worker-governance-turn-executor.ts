@@ -89,6 +89,7 @@ import {
 } from '../workspace-materials.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
+  AgentEnvironmentSnapshotReadError,
   findNamedAgentEnvironmentPackageSnapshot,
   recordAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
@@ -1653,6 +1654,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                 attachmentPhysicalEpoch: cause.diagnostic.attachmentPhysicalEpoch,
               }
             : {}),
+          // The nominal ledger message is fixed; its private decoder cause remains excluded.
+          ...(cause instanceof AgentEnvironmentSnapshotReadError
+            ? { causeMessage: cause.message }
+            : {}),
           errorClass:
             cause instanceof WorkerNativeProofValidationError
               ? 'WorkerNativeProofValidationError'
@@ -1662,9 +1667,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                   ? 'TypeError'
                   : cause instanceof SyntaxError
                     ? 'SyntaxError'
-                    : cause instanceof Error
-                      ? 'Error'
-                      : 'UnknownError',
+                    : cause instanceof AgentEnvironmentSnapshotReadError
+                      ? 'AgentEnvironmentSnapshotReadError'
+                      : cause instanceof Error
+                        ? 'Error'
+                        : 'UnknownError',
           message:
             cause instanceof WorkerNativeProofValidationError
               ? 'Retained native-session proof disagrees with its original binding and package provenance.'
