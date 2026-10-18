@@ -230,15 +230,18 @@ export function createKnowledgePackageManifest(
 
 /** Sorts JSON object keys without rewriting any included authored content bytes. */
 export function serializeKnowledgePackageManifest(manifest: KnowledgePackageManifest): string {
-  const ordered = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(ordered);
-    if (value !== null && typeof value === 'object')
-      return Object.fromEntries(
-        Object.entries(value)
-          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-          .map(([key, entry]) => [key, ordered(entry)])
-      );
-    return value;
+  const keys = new Set<string>();
+  const collect = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) collect(entry);
+    } else if (value !== null && typeof value === 'object') {
+      for (const [key, entry] of Object.entries(value)) {
+        keys.add(key);
+        collect(entry);
+      }
+    }
   };
-  return `${JSON.stringify(ordered(manifest), null, 2)}\n`;
+  collect(manifest);
+  // A PropertyList preserves string order even for integer-like recipe parameter keys.
+  return `${JSON.stringify(manifest, [...keys].sort(), 2)}\n`;
 }
