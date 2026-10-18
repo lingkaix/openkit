@@ -66,7 +66,7 @@ describe('Light App meaning references', () => {
     formatReferenceUri(page),
     formatReferenceUri({ scopeId: `raw/server/${knowledgeBaseId}`, objectId: 'source evidence' }),
     formatReferenceUri(
-      { scopeId: `artifact/workspace/${workspaceId}`, objectId: allocateEntityId('art') },
+      { scopeId: `artifact/workspace/${workspaceId}`, objectId: allocateEntityId('ar') },
       digest
     ),
   ])('refuses malformed, unpinned or non-meaning targets: %s', (reference) => {
