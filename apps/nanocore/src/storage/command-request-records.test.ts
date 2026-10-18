@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EntityKind } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { CommandRequestResponse, CommandRequestResponseKind } from '../lib/store.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -261,5 +261,53 @@ describe('kind-named command response pointers', () => {
   ] as const)('preserves the excluded opaque %s owner pointer', (kind) => {
     const response = { kind, id: 'owner:opaque-key' };
     expect(normalizeCommandRequestResponse('task.start', response)).toEqual(response);
+  });
+});
+
+/** Uses the native scoped journal and receipt publisher without a second content owner. */
+function retainedReceiptFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-format-'));
+  const workspaceId = testEntityId('ws', 'receipt-format');
+  const db = openWorkspaceDb(dataRoot, workspaceId);
+  onTestFinished(() => {
+    db.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  applyScopedMigrations(db);
+  const record = {
+    key: 'receipt-format',
+    command: 'task.start' as const,
+    requestId: 'receipt-format',
+    scope: { workspaceId },
+    inputHash: 'owned-input',
+    response: { kind: 'turn' as const, id: testEntityId('tu', 'receipt-format') },
+    createdAt: '2026-10-06T00:00:00.000Z',
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  };
+  recordCommandRequestRecordInDb(db, record);
+  return { db, record };
+}
+
+describe('retained SQL receipt format', () => {
+  it('writes v1 and reads the owned receipt without a repair write', () => {
+    const { db, record } = retainedReceiptFixture();
+    expect(db.sqlite.prepare('SELECT schema_version FROM idempotency_requests').get()).toEqual({
+      schema_version: 1,
+    });
+    const before = db.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+    expect(getCommandRequestRecordFromDb(db, record.key, record.createdAt)).toEqual(record);
+    expect(db.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(before);
+  });
+
+  it('refuses an unknown row version before JSON decoding without repairing the receipt', () => {
+    const { db, record } = retainedReceiptFixture();
+    db.sqlite
+      .prepare('UPDATE idempotency_requests SET schema_version = 2, scope_json = ?')
+      .run('{invalid');
+    const before = db.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+    expect(() => getCommandRequestRecordFromDb(db, record.key, record.createdAt)).toThrow(
+      'Unsupported retained record format.'
+    );
+    expect(db.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(before);
   });
 });

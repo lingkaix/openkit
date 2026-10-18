@@ -67,6 +67,79 @@ describe('User-owned Thread read receipts', () => {
     }
   });
 
+  it('writes v1 membership and reads it without changing the User database', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-read-v1-'));
+    const userDb = openUserDb(dataRoot, userId);
+    try {
+      applyScopedMigrations(userDb);
+      expect(
+        advanceThreadReadReceipt(userDb, workspaceId, threadId, [
+          laterItemId,
+          earlierItemId,
+          laterItemId,
+        ])
+      ).toEqual([earlierItemId, laterItemId]);
+      expect(
+        userDb.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion, item_ids_json FROM thread_read_receipts'
+          )
+          .get()
+      ).toEqual({
+        schemaVersion: 1,
+        item_ids_json: JSON.stringify([earlierItemId, laterItemId]),
+      });
+      const changes = userDb.sqlite.prepare('SELECT total_changes() AS count').get();
+
+      expect(readThreadReadReceipt(userDb, workspaceId, threadId)).toEqual([
+        earlierItemId,
+        laterItemId,
+      ]);
+      expect(userDb.sqlite.prepare('SELECT total_changes() AS count').get()).toEqual(changes);
+    } finally {
+      userDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unknown version before decoding malformed membership without repair', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-read-version-'));
+    const userDb = openUserDb(dataRoot, userId);
+    try {
+      applyScopedMigrations(userDb);
+      advanceThreadReadReceipt(userDb, workspaceId, threadId, [earlierItemId]);
+      expect(readThreadReadReceipt(userDb, workspaceId, threadId)).toEqual([earlierItemId]);
+      userDb.sqlite
+        .prepare('UPDATE thread_read_receipts SET schema_version = 2, item_ids_json = ?')
+        .run('{');
+
+      let failure: unknown;
+      try {
+        readThreadReadReceipt(userDb, workspaceId, threadId);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({
+        message: 'Thread read receipt storage content is invalid.',
+        cause: { name: 'TypeError', message: 'Unsupported retained record format.' },
+      });
+      expect(() => advanceThreadReadReceipt(userDb, workspaceId, threadId, [laterItemId])).toThrow(
+        'Thread read receipt storage content is invalid'
+      );
+      expect(
+        userDb.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion, item_ids_json FROM thread_read_receipts'
+          )
+          .get()
+      ).toEqual({ schemaVersion: 2, item_ids_json: '{' });
+    } finally {
+      userDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('refuses invalid required content without repairing or replacing it', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-read-invalid-'));
     const userDb = openUserDb(dataRoot, userId);
