@@ -49,6 +49,7 @@ describe('storage layout report', () => {
         'core_0004_equal_workspace_members',
 
         'core_0005_channel_notifications',
+        'core_0006_external_trigger_admissions',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

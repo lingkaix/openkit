@@ -131,7 +131,7 @@ Direct `task.start` accepts optional exact `agentId`. The selector narrows exist
 
 `workspace-archive-history.ts` validates pre-retirement Git push and repository metadata only for archive verification. It defines no public operations, live resource, or execution authority.
 
-`automation-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare nine browser-safe operations and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
+`automation-operations.ts`, `external-trigger-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare eleven browser-safe operation definitions and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
 
 `src/workspace-transfer.ts` defines `workspace.export`, `workspace.import-dry-run`, and `workspace.import`, reusing complete storage response and import request schemas. `operation-definitions.ts` composes the family statically; model schema views retain the existing handle refinements.
 
@@ -216,3 +216,5 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 `light-apps.ts` exposes the actual kernel format, admitted definition digest, and nullable explicit catalog source separately. It also declares snapshot inventory and exact-revision rollback payloads. Snapshots identify consistent recovery copies with original format, definition and app/schema revisions, time, cause and content digest. Restoring an older kernel format produces an unavailable app until explicit format upgrade; the response keeps the actual restored marker and revision instead of inferring current compatibility.
 
 `memory.ask` and `memory.tell` project bounded User Knowledge Manager query and maintenance. Their strict schemas accept no User selector. `memory.maintain`, `memory.proposal.read` and `memory.proposal.decide` reuse the fixed-base notebook and human Review contracts. NanoCore binds the actual private Timeline, rejects shared delivery, and keeps required human Review unavailable to model callers.
+
+`external-trigger.ts` and `external-trigger-operations.ts` declare the scheduled poll event admission input and its ordinary Worker references. The operation accepts only Worker-package credentials. Native invocation binds source scope; model arguments cannot select another schedule or target Thread. `external-trigger.test.ts` checks that boundary without adding event execution states.

@@ -45,6 +45,8 @@ The gateway is the target implementation projection for agent capabilities that 
 
 The gateway owns routing, transformer pipeline selection, credential injection contract, gateway audit metadata, usage metering, rate-limit hooks, budget checks, and upstream error normalization for gateway-mediated calls.
 
+Gateway interception MUST use the common NanoCore mediation contract: providers may observe, advise, gate or transform, with Policy authority required for gate/transform and a final current Policy check before effects. Safe input/output version references and durable invocation evidence reuse existing owners; no provider gains credentials or runtime authority from installation. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this Not Started unification, including unavailable timeout/circuit outcomes rather than fabricated permission decisions.
+
 ## Capability Call
 
 `CapabilityCall` is a conceptual record for one call through an agent capability route or gateway projection.
