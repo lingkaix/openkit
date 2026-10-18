@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { KnowledgeBaseIdSchema, VaultGrantIdSchema } from '@openkit/protocol';
+import {
+  KnowledgeBaseIdSchema,
+  RETAINED_FORMAT_VERSION,
+  VaultGrantIdSchema,
+} from '@openkit/protocol';
 
 import { z } from 'zod';
 import {
@@ -146,7 +150,7 @@ export const WorkspaceConfigWorkspaceSchema = z
  */
 export const WorkspaceConfigSchema = z
   .object({
-    schemaVersion: z.literal(1).optional(),
+    schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     workspace: WorkspaceConfigWorkspaceSchema,
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
