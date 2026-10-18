@@ -26,7 +26,6 @@ export function sameJudgementTarget(
     case 'material-range':
       return (
         right.kind === left.kind &&
-        left.offsetUnit === right.offsetUnit &&
         left.materialId === right.materialId &&
         left.revisionId === right.revisionId &&
         left.contentDigest === right.contentDigest &&

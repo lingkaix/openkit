@@ -64,7 +64,6 @@ test('applies an exact Material range and retains the original judgement after r
       materialId,
       revisionId,
       contentDigest,
-      offsetUnit: 'utf-16',
       start: 1,
       end: 3,
       originalText: '😀',

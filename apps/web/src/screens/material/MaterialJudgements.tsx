@@ -67,9 +67,7 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
   const locked =
     assessment.isPending || assessment.isError || correction.isPending || correction.isError;
   const disabled = props.disabled || props.unavailable || locked;
-  const target = range
-    ? { ...range, kind: 'material-range' as const, offsetUnit: 'utf-16' as const }
-    : null;
+  const target = range ? { ...range, kind: 'material-range' as const } : null;
   const revision = props.revision;
   const items = revision.judgements.filter(
     (entry) =>

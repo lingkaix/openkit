@@ -82,7 +82,6 @@ it('applies one exact original UTF-16 range and displays the server resulting re
     requestId: expect.any(String),
     target: {
       kind: 'material-range',
-      offsetUnit: 'utf-16',
       materialId: 'material-a',
       revisionId: 'revision-1',
       contentDigest: digest,
@@ -135,7 +134,6 @@ it('annotates the selected exact range without requesting a correction', async (
     kind: 'reject',
     target: {
       kind: 'material-range',
-      offsetUnit: 'utf-16',
       materialId: 'material-a',
       revisionId: 'revision-1',
       contentDigest: digest,
