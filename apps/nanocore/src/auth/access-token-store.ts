@@ -1,4 +1,5 @@
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import { z } from 'zod';
 import type { CoreDb } from '../storage/db.js';
 import {
   createOpenKitAccessTokenSecret,
@@ -14,6 +15,9 @@ import { isCanonicalUserActive } from './user-lifecycle.js';
 
 /** Stable server_settings key prefix for one user's default server-admin token id. */
 const DEFAULT_SERVER_ADMIN_TOKEN_SETTING_KEY_PREFIX = 'auth.default_server_admin_token.';
+
+/** Fixed v1 default-pointer payload; unusable or malformed supported payloads retain null fallback. */
+const DefaultServerAdminTokenV1Schema = z.object({ tokenId: z.string().min(1) }).strip();
 
 /** Input for creating one durable OpenKit access-token record. */
 export interface CreateOpenKitAccessTokenRecordInput {
@@ -93,6 +97,7 @@ export interface OpenKitAccessTokenRecord {
 export type VerifiedOpenKitAccessTokenRecord = OpenKitAccessTokenRecord;
 
 interface OpenKitAccessTokenRow {
+  schemaVersion: unknown;
   token_id: string;
   token_hash: string;
   owner_user_id: string;
@@ -132,18 +137,20 @@ export function createOpenKitAccessTokenRecord(
         token_hash,
         owner_user_id,
         scope,
+        schema_version,
         workspace_ids_json,
         status,
         issued_at,
         expires_at,
         predecessor_token_id
-      ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
     )
     .run(
       tokenId,
       hashOpenKitAccessTokenSecret(secret),
       input.ownerUserId,
       binding.scope,
+      writeRetainedV1({}).schemaVersion,
       JSON.stringify(binding.workspaceIds),
       now,
       input.expiresAt,
@@ -165,6 +172,7 @@ export function createOpenKitAccessTokenRecord(
  * @param secret Presented bearer token secret.
  * @param options Optional verification clock and redacted source summary.
  * @returns Verified non-secret token identity or null.
+ * @throws When a retained token format or its workspace-binding JSON is invalid.
  */
 export function verifyOpenKitAccessTokenRecord(
   coreDb: CoreDb,
@@ -177,40 +185,44 @@ export function verifyOpenKitAccessTokenRecord(
 
   const expectedHash = hashOpenKitAccessTokenSecret(secret);
   const row = coreDb.sqlite
-    .prepare('SELECT * FROM openkit_access_tokens WHERE token_hash = ?')
+    .prepare(
+      'SELECT schema_version AS schemaVersion, * FROM openkit_access_tokens WHERE token_hash = ?'
+    )
     .get(expectedHash) as OpenKitAccessTokenRow | undefined;
 
   if (!row || !verifyOpenKitAccessTokenSecret(secret, row.token_hash)) {
     return null;
   }
 
-  if (!isCanonicalUserActive(coreDb, row.owner_user_id)) {
-    return null;
-  }
+  return readRetainedV1(row, () => {
+    if (!isCanonicalUserActive(coreDb, row.owner_user_id)) {
+      return null;
+    }
 
-  const usability = evaluateOpenKitAccessTokenUsability(
-    {
-      expiresAt: row.expires_at,
-      rotatedGraceExpiresAt: row.rotated_grace_expires_at,
-      status: row.status,
-    },
-    options.now
-  );
+    const usability = evaluateOpenKitAccessTokenUsability(
+      {
+        expiresAt: row.expires_at,
+        rotatedGraceExpiresAt: row.rotated_grace_expires_at,
+        status: row.status,
+      },
+      options.now
+    );
 
-  if (!usability.usable) {
-    return null;
-  }
+    if (!usability.usable) {
+      return null;
+    }
 
-  const lastUsedAt = (options.now ?? new Date()).toISOString();
-  coreDb.sqlite
-    .prepare(
-      `UPDATE openkit_access_tokens
+    const lastUsedAt = (options.now ?? new Date()).toISOString();
+    coreDb.sqlite
+      .prepare(
+        `UPDATE openkit_access_tokens
        SET last_used_at = ?, last_used_channel = ?, last_used_source = ?
        WHERE token_id = ?`
-    )
-    .run(lastUsedAt, options.channel ?? null, options.source ?? null, row.token_id);
+      )
+      .run(lastUsedAt, options.channel ?? null, options.source ?? null, row.token_id);
 
-  return getOpenKitAccessTokenRecord(coreDb, row.token_id);
+    return getOpenKitAccessTokenRecord(coreDb, row.token_id);
+  });
 }
 
 /**
@@ -221,7 +233,9 @@ export function verifyOpenKitAccessTokenRecord(
  */
 export function listOpenKitAccessTokenRecords(coreDb: CoreDb): OpenKitAccessTokenRecord[] {
   const rows = coreDb.sqlite
-    .prepare('SELECT * FROM openkit_access_tokens ORDER BY issued_at DESC, token_id DESC')
+    .prepare(
+      'SELECT schema_version AS schemaVersion, * FROM openkit_access_tokens ORDER BY issued_at DESC, token_id DESC'
+    )
     .all() as OpenKitAccessTokenRow[];
 
   return rows.map(readOpenKitAccessTokenRecord);
@@ -234,21 +248,29 @@ export function listOpenKitAccessTokenRecords(coreDb: CoreDb): OpenKitAccessToke
  * @param tokenId Durable token id.
  * @param now Current time.
  * @returns Revoked redacted token record, or null when missing.
+ * @throws When a retained token format or its workspace-binding JSON is invalid.
  */
 export function revokeOpenKitAccessTokenRecord(
   coreDb: CoreDb,
   tokenId: string,
   now = new Date()
 ): OpenKitAccessTokenRecord | null {
-  coreDb.sqlite
-    .prepare(
-      `UPDATE openkit_access_tokens
+  const row = coreDb.sqlite
+    .prepare('SELECT schema_version AS schemaVersion FROM openkit_access_tokens WHERE token_id = ?')
+    .get(tokenId);
+  if (!row) return null;
+
+  return readRetainedV1(row, () => {
+    coreDb.sqlite
+      .prepare(
+        `UPDATE openkit_access_tokens
        SET status = 'revoked', revoked_at = ?
        WHERE token_id = ? AND status != 'revoked'`
-    )
-    .run(now.toISOString(), tokenId);
+      )
+      .run(now.toISOString(), tokenId);
 
-  return getOpenKitAccessTokenRecord(coreDb, tokenId);
+    return getOpenKitAccessTokenRecord(coreDb, tokenId);
+  });
 }
 
 /**
@@ -324,7 +346,9 @@ function getOpenKitAccessTokenRecord(
   tokenId: string
 ): OpenKitAccessTokenRecord | null {
   const row = coreDb.sqlite
-    .prepare('SELECT * FROM openkit_access_tokens WHERE token_id = ?')
+    .prepare(
+      'SELECT schema_version AS schemaVersion, * FROM openkit_access_tokens WHERE token_id = ?'
+    )
     .get(tokenId) as OpenKitAccessTokenRow | undefined;
 
   return row ? readOpenKitAccessTokenRecord(row) : null;
@@ -380,6 +404,7 @@ export function resolveSessionDeploymentAdminTokenId(
  * @param tokenId Candidate default token id.
  * @param now Current time.
  * @returns True when the default was stored.
+ * @throws When a retained token or existing default setting has an unsupported format.
  */
 export function setDefaultServerAdminTokenId(
   coreDb: CoreDb,
@@ -397,16 +422,19 @@ export function setDefaultServerAdminTokenId(
     return false;
   }
 
+  // An explicit selection cannot overwrite an unsupported retained setting format.
+  readDefaultServerAdminTokenId(coreDb, ownerUserId);
   coreDb.sqlite
     .prepare(
-      `INSERT INTO server_settings (key, value, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      `INSERT INTO server_settings (key, value, updated_at, schema_version)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, schema_version = excluded.schema_version`
     )
     .run(
       defaultServerAdminTokenSettingKey(ownerUserId),
       JSON.stringify({ tokenId }),
-      now.toISOString()
+      now.toISOString(),
+      writeRetainedV1({}).schemaVersion
     );
   return true;
 }
@@ -461,7 +489,7 @@ function listOwnedServerAdminTokenRecords(
 ): OpenKitAccessTokenRecord[] {
   const rows = coreDb.sqlite
     .prepare(
-      `SELECT * FROM openkit_access_tokens
+      `SELECT schema_version AS schemaVersion, * FROM openkit_access_tokens
        WHERE owner_user_id = ? AND scope = 'server-admin'
        ORDER BY issued_at DESC, token_id DESC`
     )
@@ -476,21 +504,26 @@ function listOwnedServerAdminTokenRecords(
  * @param coreDb Open Core database handles.
  * @param ownerUserId Canonical user id.
  * @returns Stored token id, or null when missing or malformed.
+ * @throws When the retained setting has an unsupported format.
  */
 function readDefaultServerAdminTokenId(coreDb: CoreDb, ownerUserId: string): string | null {
   const row = coreDb.sqlite
-    .prepare('SELECT value FROM server_settings WHERE key = ?')
-    .get(defaultServerAdminTokenSettingKey(ownerUserId)) as { value: string } | undefined;
+    .prepare('SELECT schema_version AS schemaVersion, value FROM server_settings WHERE key = ?')
+    .get(defaultServerAdminTokenSettingKey(ownerUserId)) as
+    | { schemaVersion: unknown; value: string }
+    | undefined;
   if (!row) {
     return null;
   }
 
-  try {
-    const parsed = JSON.parse(row.value) as { tokenId?: unknown };
-    return typeof parsed.tokenId === 'string' && parsed.tokenId.length > 0 ? parsed.tokenId : null;
-  } catch {
-    return null;
-  }
+  return readRetainedV1(row, () => {
+    try {
+      const parsed = DefaultServerAdminTokenV1Schema.safeParse(JSON.parse(row.value));
+      return parsed.success ? parsed.data.tokenId : null;
+    } catch {
+      return null;
+    }
+  });
 }
 
 /**
@@ -500,7 +533,7 @@ function readDefaultServerAdminTokenId(coreDb: CoreDb, ownerUserId: string): str
  * @returns Redacted token record.
  */
 function readOpenKitAccessTokenRecord(row: OpenKitAccessTokenRow): OpenKitAccessTokenRecord {
-  return {
+  return readRetainedV1(row, () => ({
     expiresAt: row.expires_at,
     issuedAt: row.issued_at,
     lastUsedAt: row.last_used_at,
@@ -513,17 +546,17 @@ function readOpenKitAccessTokenRecord(row: OpenKitAccessTokenRow): OpenKitAccess
     scope: row.scope,
     status: row.status,
     tokenId: row.token_id,
-    workspaceIds: parseWorkspaceIds(row.workspace_ids_json),
-  };
+    workspaceIds: parseWorkspaceIdsV1(row.workspace_ids_json),
+  }));
 }
 
 /**
- * Parses workspace id bindings from one token row.
+ * Parses frozen v1 workspace bindings: retain string entries in order, or no entries for a non-array.
  *
  * @param value Stored JSON value.
  * @returns Workspace id list.
  */
-function parseWorkspaceIds(value: string): string[] {
+function parseWorkspaceIdsV1(value: string): string[] {
   const parsed = JSON.parse(value) as unknown;
   return Array.isArray(parsed)
     ? parsed.filter((item): item is string => typeof item === 'string')
