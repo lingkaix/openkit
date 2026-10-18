@@ -470,7 +470,7 @@ describe('explicit administrator MCP discovery preview', () => {
     const grant = await f.call('vault.server-mcp-grant-create', {
       requestId: randomUUID(),
       referenceId: reference.referenceId,
-      targetCapabilityId: 'mcp.list_tools',
+      targetCapabilityId: 'mcp.list-tools',
     });
     const workspaceDir = join(f.dataRoot, 'workspaces');
     const before = existsSync(workspaceDir) ? readdirSync(workspaceDir) : [];
@@ -549,7 +549,7 @@ describe('explicit administrator MCP discovery preview', () => {
     const grant = await f.call('vault.server-mcp-grant-create', {
       requestId: randomUUID(),
       referenceId: reference.referenceId,
-      targetCapabilityId: 'mcp.list_tools',
+      targetCapabilityId: 'mcp.list-tools',
     });
     let failure: unknown;
     try {

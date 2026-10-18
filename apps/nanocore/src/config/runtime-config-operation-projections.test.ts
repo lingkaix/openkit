@@ -206,8 +206,8 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
     'provider-subscription.account-create': { subscriptionProviderId: 'xai', accountSlotId: 'new' },
     'provider-subscription.account-update': { ...pair, displayName: 'Changed' },
     'provider-subscription.account-delete': pair,
-    'provider-subscription.account-login-start': { ...pair, mode: 'device_code' },
-    'provider-subscription.account-login-cancel': { ...pair, interactionId: 'pending' },
+    'provider-subscription.login-start': { ...pair, mode: 'device_code' },
+    'provider-subscription.login-cancel': { ...pair, interactionId: 'pending' },
     'provider-subscription.account-logout': pair,
   };
   expect(Object.keys(cases).sort()).toEqual(
@@ -239,7 +239,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'call', arguments: { operation: id, input } },
+          params: { name: 'openkit_call', arguments: { operation: id, input } },
         }),
       });
       expect(mcp.status, id).toBe(200);
@@ -292,7 +292,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'call', arguments: { operation: id, input } },
+          params: { name: 'openkit_call', arguments: { operation: id, input } },
         }),
       });
       expect(mcp.status).toBe(200);
@@ -335,7 +335,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
         id: 1,
         method: 'tools/call',
         params: {
-          name: 'call',
+          name: 'openkit_call',
           arguments: { operation: 'provider-subscription.account-delete', input: pair },
         },
       }),

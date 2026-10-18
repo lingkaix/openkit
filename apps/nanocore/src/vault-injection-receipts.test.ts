@@ -113,7 +113,7 @@ describe('injection receipts', () => {
       createVaultInjectionPlan(coreDb, {
         planId: 'preview_plan',
         grantId: testEntityId('grant', 'preview-grant'),
-        capabilityId: 'mcp.list_tools',
+        capabilityId: 'mcp.list-tools',
         injectionVisibility: 'gateway-only',
         expirationBehavior: 'grant-lifetime',
         revocationBehavior: 'close-temporary-gateway-session',

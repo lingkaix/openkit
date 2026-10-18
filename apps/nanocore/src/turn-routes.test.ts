@@ -1483,7 +1483,7 @@ describe('Core Turn durable admission response', () => {
               id: 1,
               method: 'tools/call',
               params: {
-                name: 'call',
+                name: 'openkit_call',
                 arguments: { operation: 'turn.start', input: { ...input, input: text } },
               },
             }),

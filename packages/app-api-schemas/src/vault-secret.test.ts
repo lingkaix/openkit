@@ -33,9 +33,9 @@ describe('workspace Vault secret input', () => {
       vault.CreateWorkspaceVaultGrantRequestSchema.parse({
         referenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
         targetAgentId: 'agent-selected',
-        targetCapabilityId: 'mcp.call_tool',
+        targetCapabilityId: 'mcp.call-tool',
       })
-    ).toMatchObject({ targetAgentId: 'agent-selected', targetCapabilityId: 'mcp.call_tool' });
+    ).toMatchObject({ targetAgentId: 'agent-selected', targetCapabilityId: 'mcp.call-tool' });
     for (const constraints of [
       { targetCapabilityId: 'mcp' },
       { targetAgentId: null },
