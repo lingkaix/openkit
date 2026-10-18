@@ -55,7 +55,8 @@ export interface ServerNotebookProposalContext {
   readonly actor: Actor;
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly revalidate: () => NotebookPublicationAdmission;
+  /** Native callers supply exact retained candidate or preview-side bytes for current disclosure checks. */
+  readonly revalidate: (files?: Readonly<Record<string, string>>) => NotebookPublicationAdmission;
 }
 /** Same Proposal identity and retained Markdown format, now at its actual Server owner. */
 function proposalPath(coreDb: CoreDb, id: string): string {
@@ -101,7 +102,7 @@ export function createServerNotebookProposal(
     ownerScope: { kind: 'server' },
     base,
     candidate: { files },
-    ...context.revalidate(),
+    ...context.revalidate(files),
   });
   if (report.errors.length) throw new NotebookError('invalid_request');
   const id = knowledgeAuthorityId('kp_', { ownerScope: 'server', requestId: edit.requestId });
@@ -193,11 +194,13 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
     )
   )
     throw new NotebookError('recovery_required');
+  // Preview discloses both sides; each needs its own exact current Source closure.
+  context.revalidate(base.files);
   const validation = validateNotebookCandidate({
     ownerScope: { kind: 'server' },
     base,
     candidate: { files: candidate.files },
-    ...context.revalidate(),
+    ...context.revalidate(candidate.files),
   });
   if (validation.errors.length) throw new NotebookError('recovery_required');
   return {
@@ -337,7 +340,9 @@ export async function decideServerNotebookProposal(
       ),
       revalidate: () => {
         requireCurrentDeploymentAdmin(context.coreDb, context.actor);
-        return context.revalidate();
+        return context.revalidate(
+          notebook(context.coreDb).readRevision(proposal.candidateRevision).files
+        );
       },
     },
     {

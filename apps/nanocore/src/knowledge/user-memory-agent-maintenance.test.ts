@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
+import { formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
@@ -28,8 +29,9 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { attributedNotebookPageBytes } from './notebook-publication.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
-import { resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
+import { pinScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import {
   prepareUserMemoryMaintenance,
   readUserMemoryNotebookAdmission,
@@ -237,6 +239,134 @@ function useFakeProvider(f: ReturnType<typeof fixture>) {
 }
 
 describe('User-private bounded Memory maintenance', () => {
+  it.each([
+    'unpinned',
+    'pinned',
+    'candidate-pinned',
+    'foreign-scope',
+    'wrong-pin',
+    'missing-target',
+    'suppressed-target',
+  ] as const)('admits only exact unsuppressed User page citations through maintenance publication: %s', async (kind) => {
+    const f = fixture();
+    const first = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
+    expect(first.outcome).toBe('published');
+    const target = f.notebook().readRevision(first.notebookRevision).files['labels.md']!;
+    const context = { ...f.dependencies, actor: f.input.requestActor };
+    const pin = pinScopedNotebook({ ...context, target: { kind: 'user' } });
+    const authoredTarget = attributedNotebookPageBytes(
+      'labels.md',
+      target.replace('I prefer green labels.', 'I prefer updated green labels.'),
+      { kind: 'user', userId },
+      'user-authored'
+    );
+    const selectedTarget =
+      kind === 'candidate-pinned'
+        ? attributedNotebookPageBytes(
+            'labels.md',
+            authoredTarget,
+            { kind: 'user', userId },
+            'delegated'
+          )
+        : target;
+    const reference = formatReferenceUri(
+      {
+        scopeId:
+          kind === 'foreign-scope'
+            ? `page/server/${pin.knowledgeBaseId}`
+            : `page/user/${userId}/${pin.knowledgeBaseId}`,
+        objectId: kind === 'missing-target' ? 'missing' : 'labels',
+      },
+      kind === 'pinned' || kind === 'candidate-pinned'
+        ? `sha256:${createHash('sha256').update(selectedTarget).digest('hex')}`
+        : kind === 'wrong-pin'
+          ? `sha256:${'0'.repeat(64)}`
+          : undefined
+    );
+    if (kind === 'suppressed-target') {
+      const owner = resolveScopedNotebookOwner({ ...context, target: { kind: 'user' } });
+      appendMemorySuppression(owner.notebookRoot, {
+        userId,
+        requestId: randomUUID(),
+        pageId: 'labels',
+        lastRevision: first.notebookRevision,
+        digest: `sha256:${createHash('sha256').update(target).digest('hex')}`,
+        actorId: userId,
+        sourceFingerprints: [],
+      });
+    }
+    const citing = serializeUserAuthoredKnowledgePage(
+      {
+        id: 'citing',
+        kind: 'preference',
+        title: 'Citing',
+        content: 'Compare saved labels.',
+        sourceReferences: [reference],
+        createdAt: '2026-10-18T00:00:00Z',
+        updatedAt: '2026-10-18T00:00:00Z',
+      },
+      { kind: 'user', userId }
+    );
+    f.run.mockImplementationOnce(async (run) => {
+      const script = `${kind === 'candidate-pinned' ? `cat > labels.md <<'TARGET'\n${authoredTarget}TARGET\n` : ''}cat > citing.md <<'PAGE'\n${citing}\nPAGE`;
+      for (const [name, args] of [
+        ['knowledge.notebook-workspace.update', { script }],
+        ['knowledge.notebook.update', { summary: 'Compare admitted User page bytes.' }],
+      ] as const) {
+        await run.tools
+          .find((tool) => tool.name === name)!
+          .execute(args, {
+            callId: randomUUID(),
+            toolOccurrence: 1,
+            signal: run.signal,
+          });
+      }
+      f.store.updateTurn(run.turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      return { turnId: run.turn.id, text: '{"summary":"Finished."}' };
+    });
+    const result = await runUserMemoryMaintenanceCommand(f.dependencies, {
+      ...f.input,
+      requestId: randomUUID(),
+      tellContent: undefined,
+    });
+    const allowed = kind === 'unpinned' || kind === 'pinned' || kind === 'candidate-pinned';
+    expect(result.outcome).toBe(allowed ? 'published' : 'failed');
+    if (allowed) {
+      const files = f.notebook().readRevision(result.notebookRevision).files;
+      expect(files['citing.md']).toContain(reference);
+      expect(files['labels.md']).toBe(selectedTarget);
+      const admission = readUserMemoryNotebookAdmission(context, files);
+      expect(admission.pageScopeId).toBe(`page/user/${userId}/${pin.knowledgeBaseId}`);
+      expect(admission.resolvedReferences.get('citing')?.has(reference)).toBe(true);
+      f.run.mockImplementationOnce(async (run) => {
+        await run.tools
+          .find((tool) => tool.name === 'knowledge.notebook.update')!
+          .execute(
+            { summary: 'Inspect the selected citing page without edits.' },
+            { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
+          );
+        f.store.updateTurn(run.turn.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
+        return { turnId: run.turn.id, text: '{"summary":"Finished."}' };
+      });
+      const inspected = await runUserMemoryMaintenanceCommand(f.dependencies, {
+        ...f.input,
+        requestId: randomUUID(),
+        tellContent: undefined,
+        pageIds: ['citing'],
+      });
+      expect(inspected.outcome).toBe('no-change');
+      expect(f.run).toHaveBeenCalledTimes(3);
+    } else {
+      expect(f.notebook().publishedRevision()).toBe(first.notebookRevision);
+    }
+  });
+
   it('publishes an Agent candidate with explicit Source provenance and replays without another model run', async () => {
     const f = fixture();
     const provider = useFakeProvider(f);
