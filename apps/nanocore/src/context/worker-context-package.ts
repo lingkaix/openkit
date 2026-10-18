@@ -947,7 +947,11 @@ export async function writeWorkerContextPackageFiles(
     // First admission verifies current original and representation identities without retaining extra copies.
     // Exact replay verifies only the accepted delivered files and never repairs history from current sources.
     for (const source of packageFiles.sourceFileInputs ?? []) {
-      if (source.projection.pdfTextLayer && !source.openRepresentation)
+      if (
+        source.projection.kind !== 'descriptor' &&
+        source.projection.representationId !== 'original-utf8' &&
+        !source.openRepresentation
+      )
         throw new Error('Worker Context Package representation supplier is unavailable.');
       await verifySourceStream(
         source,

@@ -27,7 +27,7 @@ type Turn = z.infer<typeof TurnSchema>;
 const CHUNK_BYTES = 65_536;
 const TEXT_MEDIA = new Set(['text/plain', 'text/markdown', 'application/json']);
 
-/** Prepares only the originals already admitted by this receiving Turn. The snapshot writer must verify every complete original before publication. The current authority callback must recheck the Turn inventory, source audience and destination admission; it is never serialized or used as a durable access grant. Original names are display data and never path components. */
+/** Prepares only the originals already admitted by this receiving Turn. The package writer must verify each complete original before first acceptance without retaining an extra copy. The current authority callback must recheck the Turn inventory, source audience and destination admission; it is never serialized or used as a durable access grant. Original names are display data and never path components. */
 export async function prepareTurnFileSourceInputs(input: {
   readonly workspaceRoot: string;
   readonly turn: Turn;
@@ -169,7 +169,7 @@ export async function prepareTurnFileSourceInputs(input: {
           }
           assertCurrent();
           if (!unchanged(first.identity, await handle.stat({ bigint: true })))
-            throw new Error('Turn original input changed during copying.');
+            throw new Error('Turn original input changed during verification.');
         } finally {
           await handle.close();
         }
@@ -206,7 +206,7 @@ async function acquire(
   }
 }
 
-/** Pins the descriptor identity and every modification marker across projection and copying. */
+/** Pins the descriptor identity and every modification marker across projection and verification. */
 function unchanged(left: BigIntStats, right: BigIntStats): boolean {
   return (
     right.isFile() &&

@@ -29,7 +29,7 @@ type Artifact = z.infer<typeof ArtifactSchema>;
 const CHUNK_BYTES = 65_536;
 const TEXT_MEDIA = new Set(['text/plain', 'text/markdown', 'application/json']);
 
-/** Prepares explicitly selected exact Artifact versions under current source and destination authority. This adapter retains no access grant or open descriptor. The existing S39 writer proves every complete original before publication; a bounded text descriptor does not prove body absence. */
+/** Prepares explicitly selected exact Artifact versions under current source and destination authority. This adapter retains no access grant or open descriptor. The existing S39 writer verifies every complete original before first acceptance without retaining an extra copy; a bounded text descriptor does not prove body absence. */
 export async function prepareArtifactSourceInputs(input: {
   readonly workspaceRoot: string;
   readonly artifacts: readonly Artifact[];

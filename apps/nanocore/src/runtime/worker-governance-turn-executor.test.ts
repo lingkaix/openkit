@@ -8661,8 +8661,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         projection: { kind: 'excerpt', byteLength: 2_048, truncated: true },
       });
       expect(
-        readFileSync(join(fixture.packageRoot, sources![0]!.originalSnapshotPath), 'utf8')
-      ).toBe(original);
+        prepared.packageFiles.fileInventory.some((file) => file.path.startsWith('originals/'))
+      ).toBe(false);
       expect(readFileSync(join(fixture.packageRoot, sources![0]!.packagePath), 'utf8')).toBe(
         original.slice(0, 2_048)
       );

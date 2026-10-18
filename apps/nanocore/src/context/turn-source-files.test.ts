@@ -84,7 +84,7 @@ it('keeps exact original identity and emits only the bounded UTF-8 preview', asy
     truncated: true,
     availability: 'incomplete',
   });
-  expect(source!.originalSnapshotPath).toBe('originals/turn-inputs/0/payload');
+  expect(source).not.toHaveProperty('originalSnapshotPath');
   expect(source!.packagePath).toBe('sources/turn-inputs/0.txt');
   const hash = createHash('sha256');
   let count = 0;
