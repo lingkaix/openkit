@@ -111,11 +111,12 @@ export function createUserMemoryProposal(
       content:
         content === null || base.files[path] === content
           ? content
-          : attributedNotebookPageBytes(
+          : // Freeze final reviewed bytes; this candidate stays unpublished until human acceptance.
+            attributedNotebookPageBytes(
               path,
               content,
               { kind: 'user', userId: context.userDb.userId },
-              'delegated'
+              'accepted'
             ),
     }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));

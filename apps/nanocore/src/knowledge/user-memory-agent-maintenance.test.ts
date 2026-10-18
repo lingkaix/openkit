@@ -9,6 +9,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   type RuntimeConfigManager,
 } from '../config/runtime-config.js';
+import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import {
   type KnowledgeManagerAgentRun,
   pinKnowledgeManagerExecution,
@@ -16,8 +17,13 @@ import {
 } from '../internal-agents/knowledge-manager-agent.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  resolveWorkspaceKnowledgeRetrievalPages,
+  retrieveUserMemory,
+} from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { appendMemorySuppression } from './memory-maintenance.js';
@@ -297,6 +303,40 @@ describe('User-private bounded Memory maintenance', () => {
     );
     expect(await decideUserMemoryProposal(context, decision)).toEqual(accepted);
     expect(f.run).toHaveBeenCalledTimes(1);
+    const published = f.notebook().readRevision(accepted.notebookRevision!);
+    const work = f.store.getTurnById(result.turnId);
+    const timeline = openAssistantTimeline(f.store, work.workspaceId, userId, 'Private Assistant');
+    const access = {
+      coreDb: f.coreDb,
+      userDb: f.userDb,
+      store: f.store,
+      requestActor: f.input.requestActor,
+      actor: { kind: 'user' as const, id: userId },
+      outputThreadId: timeline.id,
+    };
+    try {
+      const selection = await retrieveUserMemory({
+        dataRoot: f.coreDb.dataRoot,
+        workspaceId: work.workspaceId,
+        access,
+        caller: 'app-api',
+        query: 'green labels',
+      });
+      expect(selection.selected.map(({ reference }) => reference.objectId)).toContain('labels');
+      expect(
+        resolveWorkspaceKnowledgeRetrievalPages({
+          dataRoot: f.coreDb.dataRoot,
+          workspaceId: work.workspaceId,
+          access,
+          caller: 'app-api',
+          selection,
+        })?.find(({ knowledgePageId }) => knowledgePageId === 'labels')?.content
+      ).toBe(published.files['labels.md']);
+      expect(published.files['labels.md']).toBe(preview.after);
+      expect(published.files['labels.md']).toMatch(/review_state: ["']?accepted/);
+    } finally {
+      await closeRetrievalServices();
+    }
   });
 
   it('withholds suppressed pages and Source versions from later model/editor inputs', async () => {
