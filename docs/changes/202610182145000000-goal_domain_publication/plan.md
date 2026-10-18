@@ -1,3 +1,7 @@
+---
+type: change-plan
+status: in-progress
+---
 # Joint Goal-Domain Policy Publication
 
 ## Intent
@@ -12,4 +16,4 @@ The coordinator authorized the additive active-publication seam after the reset 
 
 The branch normal-merges the simplified reset base and restores only the Goal delegation family. The native factory rereads committed approval, exact Plan and full current deciding credentials. It publishes through the existing configuration writer and verifies reload. Current reads supply no authority after closure, stale Plan or lost human authority. Closure records the current inactive statement rather than a separate revocation ledger. Eight real-owner regression fixtures cover publication and failure paths; the capture seed is explicitly not proof of L-GO's producer or preview.
 
-Build and first service qualification are queued. Complete affected-module checks, generated contracts and independent review remain. No API handoff, product acceptance, landing or deployment is claimed. Integrate L-GO's actual capture/preview/Task joins before landing this new family. Agent declarations, leases and unrelated Policy behavior remain outside this increment.
+Native/dependency and Core Client builds and all eight service cases passed. Complete Protocol 434, configuration-schema 360, Native Policy/configuration 353 and generated CLI 100 cases passed. Source and generated contracts are independently approved; the bounded source integration handoff is with L-GO. Full App API and Core Client suites retain three and one old Knowledge-reference fixture failures respectively. The source branch also has an old importer scope comparison and a Core documentation-link integration finding. No failure is waived, and no whole-gate, product acceptance, landing or deployment is claimed. Integrate the actual identifier consumers and L-GO capture/preview/Task joins before landing this new family. Agent declarations, leases and unrelated Policy behavior remain outside this increment.
