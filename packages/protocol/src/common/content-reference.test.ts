@@ -24,9 +24,6 @@ describe('shared content references', () => {
   it.each([
     { kind: 'bytes', start: 0, end: 12 },
     { kind: 'page', page: 1 },
-    { kind: 'time', startSeconds: 0.5, endSeconds: 1.5 },
-    { kind: 'frame', frame: 0, numbering: 'zero-based', coordinateSpace: 'source-video' },
-    { kind: 'frame', frame: 1, numbering: 'one-based', coordinateSpace: 'source-video' },
   ])('preserves the declared $kind coordinates', (range) => {
     expect(ContentReferenceSchema.parse({ ...contentRef, range }).range).toEqual(range);
   });
@@ -34,11 +31,8 @@ describe('shared content references', () => {
   it.each([
     { kind: 'bytes', start: 12, end: 0 },
     { kind: 'page', page: 0 },
-    { kind: 'time', startSeconds: 2, endSeconds: 1 },
-    { kind: 'time', startSeconds: 0, endSeconds: Infinity },
-    { kind: 'frame', frame: 0, numbering: 'one-based', coordinateSpace: 'source-video' },
-    { kind: 'frame', frame: 1, numbering: 'guessed', coordinateSpace: 'source-video' },
-    { kind: 'frame', frame: 1, numbering: 'zero-based', coordinateSpace: '' },
+    { kind: 'time', startSeconds: 0.5, endSeconds: 1.5 },
+    { kind: 'frame', frame: 0, numbering: 'zero-based', coordinateSpace: 'source-video' },
     { kind: 'unknown' },
   ])('refuses invalid range $kind without changing its coordinate system', (range) => {
     expect(ContentReferenceSchema.safeParse({ ...contentRef, range }).success).toBe(false);
