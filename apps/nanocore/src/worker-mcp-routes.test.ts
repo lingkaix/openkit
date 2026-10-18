@@ -1549,10 +1549,6 @@ describe('worker MCP routes', () => {
         workspaceRoots: [],
         workspaceMcpServerCatalog: catalog,
       });
-      store.updateTurn(turn.id, {
-        agentId: pkg.agent.agentId,
-        agentSessionId: pkg.scope.agentSessionId,
-      });
       recordMcpWorkerLineage(coreDb, pkg);
       return pkg;
     };
