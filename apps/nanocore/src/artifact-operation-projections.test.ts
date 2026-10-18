@@ -585,11 +585,16 @@ describe('Artifact definition projections', () => {
       }).secret;
       async function compare(id: string, input: Record<string, unknown>) {
         let expected: unknown;
-        for (const project of Object.values(await projections(f, token, id))) {
-          const result = await project(id, {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            ...input,
-          });
+        for (const [projection, project] of Object.entries(await projections(f, token, id))) {
+          let result: unknown;
+          try {
+            result = await project(id, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              ...input,
+            });
+          } catch (error) {
+            throw new Error(`${authority}: ${projection}: ${id}`, { cause: error });
+          }
           if (expected === undefined) expected = result;
           expect(result, id).toEqual(expected);
         }
