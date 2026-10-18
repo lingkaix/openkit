@@ -52,3 +52,15 @@ Four Skill files and the existing top-level guide are authored; no Skill-interna
 Local evidence must cover Skill metadata, self-contained reference links, declared operation identities and existing complete operations Skill interface/redaction/archive suites, plus the lane local gate. No production module changed. The dev probe separately proves actual grounded KM work, retained outputs, human decisions, native Skill consumption, approved fake effect, audit joins and next-case comparison. Gateway lacks a dedicated proposal/review operation. No aggregate Skill comparison operation is present, but ordinary exact-version Turns and artifact.review.select on existing output Reviews provide the bounded human comparison/choice path. No aggregate mechanism is required or added. The KM fix and live journey are outstanding dependencies/proof, not successful results.
 
 Complexity: six authored/updated files, no owning document changed, no registry or closed set added. Existing work, Skill, Kernel, Knowledge and approval owners are consumed without changing their contracts.
+
+## Intent Revision 3 — BWM Support Text
+
+After R093 landed, the coordinator assigned the engineer-approved 2026-10-18 03:58Z text change. A domain Skill, Gateway rules and typed OKF Knowledge remain the required proposals. A Light App proposal is optional and limited to glue instance data that no external system owns. Cross-system links retain their match basis as ordinary fields; cross-system work progress may also be local. Concept, role and relationship definitions belong to Knowledge Entity/Topic pages or the domain Skill. General knowledge receives no business model. Knowledge output uses existing base types plus proposed Scope Schema domain types for human review; Rule pages declare applies_to. Safety-critical execution rules belong in the pinned domain Skill. This text consumes the existing Kernel, Knowledge and Skill owners; it adds no product code or mechanism.
+
+## Support Text Ablation
+
+- SKILL.md, intake.md, proposals.md and the top-level guide replace the mandatory Light App with conditional glue data, because the source systems already own the business records.
+- The Knowledge proposal changes from untyped prose to typed OKF pages and human-reviewed Scope Schema proposals, because rules need a tool/step lookup target and effects need their basis and last check.
+- Domain Skill guidance includes safety-critical execution rules in the pinned bytes, because a case must receive these rules without relying on a successful Knowledge retrieval.
+
+The existing Goal Plan, separate human decisions, exact catalog versions, captured effect approval and candidate-to-v2 selection loop keep their owners. improvement.md is unchanged. The external B01 probe follows the conditional schema output; live KM and workflow evidence remain separate from this text landing.

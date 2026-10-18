@@ -1,6 +1,6 @@
 ---
 name: bwm-meta
-description: "Turn an organisation's business materials into four human-reviewable proposals inside an OpenKit Goal: a domain Skill, a Light App definition, Gateway tool rules, and a Knowledge model. Use for intake compilation or a correction to an existing domain Skill, with governed adoption and exact-version comparison."
+description: "Compile business materials inside an approved OpenKit Goal into a domain Skill, Gateway tool rules and typed Knowledge proposals, with an optional Light App for glue data. Use for intake compilation or a correction to an existing domain Skill, with governed adoption and exact-version comparison."
 ---
 
 # Business Work Model Meta-Skill
@@ -9,7 +9,7 @@ Help a human turn their organisation's work into reviewable instructions, tracke
 
 ## Establish the work
 
-Confirm the current Workspace, Goal, responsible human, requested outcome, supplied sources and effect limits. Read the Goal's current Plan. Work only on the ordinary Task admitted after exact Plan approval; ask the responsible human when the approved work does not cover the request. A finished Task or four prepared proposals do not complete the Goal; its responsible person does that.
+Confirm the current Workspace, Goal, responsible human, requested outcome, supplied sources and effect limits. Read the Goal's current Plan. Work only on the ordinary Task admitted after exact Plan approval; ask the responsible human when the approved work does not cover the request. A finished Task or prepared proposals do not complete the Goal; its responsible person does that.
 
 Use only capabilities already supplied to this Worker. Discover and describe public operations before preparing their requests; use the Tool names actually supplied by discovery rather than deriving an alias. If an operation is unavailable to the Worker, return the proposal and exact retained evidence to the authorized coordinator or human. Do not acquire management credentials or add a tool path.
 
@@ -19,14 +19,14 @@ Read [intake](references/intake.md) when collecting documents, interviews, schem
 
 Use `knowledge.ask` for existing Workspace Knowledge and `knowledge.tell` to give the Knowledge Manager supplied information and source references. Preserve returned citations, uncertainty and work references. Do not read or edit raw notebooks. A missing, failed or ungrounded answer is an unmet dependency, not evidence that the answer is known.
 
-## Prepare four proposals
+## Prepare the proposals
 
-Read [proposals](references/proposals.md) for the existing formats and operation boundaries. Produce all four outputs from the same source set. Label each as a proposal and identify unresolved human questions; do not silently apply it.
+Read [proposals](references/proposals.md) for the existing formats and operation boundaries. Prepare the domain Skill, Gateway rules and Knowledge model from the same source set. Add a Light App proposal only when needed for glue instance data that no external system owns. Label each as a proposal and identify unresolved human questions; do not silently apply it.
 
-1. A complete candidate domain Skill tree: procedures, decision rules, required evidence, unacceptable mistakes and failure handling, with references to their sources.
-2. A declarative Light App schema: collections, fields and relationships for the state this work tracks, with an explicit boundary to authoritative external systems.
+1. A complete candidate domain Skill tree: procedures, decision rules, required evidence, unacceptable mistakes and failure handling, with source references. Include the safety-critical rules needed during execution in the Skill that the human will pin.
+2. An optional declarative Light App schema for cross-system identity links and work progress. Record each link's match basis as ordinary fields. Put concept, role and relationship definitions in Knowledge Entity/Topic pages or the domain Skill; do not model general knowledge.
 3. A Gateway tool-rules proposal: exact existing server/tool identities, allowed, approval-required and denied actions, with reasons and unresolved choices.
-4. A Knowledge model document: definitions, policies, factual sources, conflicts and unknowns for the Knowledge Manager to integrate under review.
+4. A typed OpenKit Knowledge Format (OKF) page proposal with factual sources, conflicts and unknowns for Knowledge Manager review. Use existing base types and propose needed Scope Schema domain types, such as Rule, Effect and Objective, for human approval. Rule pages declare applies_to for the relevant tool or step.
 
 Retain the actual bytes through existing Task outputs or Artifacts, with their returned identities. An unavailable retention or application capability is a gap to report; do not replace it with a model-reported digest or a private host file.
 
@@ -48,4 +48,4 @@ Read [improvement](references/improvement.md) only when a human supplies a corre
 
 ## Return a truthful handoff
 
-Report the four retained proposals and source references, unresolved questions, human decisions, selected digests, actual work/effect evidence and remaining gaps. Separate prepared, submitted, adopted, applied and observed outcomes. Stop only the affected action when a capability or decision is missing, and continue other authorized work. Never mark the Goal complete for its responsible person.
+Report the required retained proposals, the optional Light App proposal or its omission reason, source references, unresolved questions, human decisions, selected digests, actual work/effect evidence and remaining gaps. Separate prepared, submitted, adopted, applied and observed outcomes. Stop only the affected action when a capability or decision is missing, and continue other authorized work. Never mark the Goal complete for its responsible person.
