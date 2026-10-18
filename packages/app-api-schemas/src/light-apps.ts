@@ -2,6 +2,9 @@ import {
   ActorRefSchema,
   CollectionIdSchema,
   FieldIdSchema,
+  parseReferenceScope,
+  parseReferenceUri,
+  ReferenceUriSchema,
   RequestIdSchema,
   TimestampSchema,
 } from '@openkit/protocol';
@@ -191,6 +194,17 @@ export const LightAppCollectionInputSchema = z
     }
   });
 
+/** Exact pinned Knowledge or Skill target; validation preserves text and grants no access. */
+const meaningReferenceSchema = ReferenceUriSchema.refine(
+  (uri) => {
+    const parsed = parseReferenceUri(uri);
+    if (!parsed?.contentDigest) return false;
+    const family = parseReferenceScope(parsed.reference.scopeId)?.family;
+    return family === 'page' || family === 'raw' || family === 'skill';
+  },
+  { message: 'Light App references require exact pinned Knowledge or Skill targets.' }
+);
+
 /** File-authored Light App schema proposal. */
 export const LightAppSchemaInputSchema = z
   .object({
@@ -198,6 +212,8 @@ export const LightAppSchemaInputSchema = z
     schemaVersion: z.literal(1),
     title: z.string().min(1),
     purpose: z.string(),
+    /** Exact reusable meaning targets; omission is normalized only by definition admission. */
+    references: z.array(meaningReferenceSchema).optional(),
     collections: z.array(LightAppCollectionInputSchema).min(1).max(16),
   })
   .strict()
@@ -264,6 +280,8 @@ export const LightAppAdmittedSchemaSchema = z
     schemaRevision: z.number().int().positive(),
     title: z.string().min(1),
     purpose: z.string(),
+    /** Explicit exact reusable meaning targets retained in the immutable definition. */
+    references: z.array(meaningReferenceSchema),
     collections: z.array(LightAppAdmittedCollectionSchema).min(1).max(16),
   })
   .strict();
