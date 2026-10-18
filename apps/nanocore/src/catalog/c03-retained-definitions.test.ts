@@ -47,4 +47,9 @@ it('refuses retained catalog definition bytes with an omitted meaning-reference 
     definitionJson,
   });
   expect(() => validateLightAppDefinitionCatalog(catalog)).toThrow(CatalogIntegrityError);
+  const finalJson = stableJson({ ...definition, references: [] });
+  catalog.lightApps.versions[0]!.definitionJson = finalJson;
+  catalog.lightApps.versions[0]!.digest =
+    `sha256:${createHash('sha256').update(finalJson).digest('hex')}`;
+  expect(() => validateLightAppDefinitionCatalog(catalog)).not.toThrow();
 });
