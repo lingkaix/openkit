@@ -26,7 +26,7 @@ export const KnowledgeMaintenanceOutcomeSchema = z
   .strict();
 
 /** Exact SHA-256 content identity, distinct from an opaque Git notebook revision. */
-export const KnowledgeContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}(?![\s\S])/);
+export const KnowledgeContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 /** Historical direct instruction or exact required-review candidate; neither is a reusable permission. */
 export const KnowledgeNotebookAuthoritySchema = z.union([
