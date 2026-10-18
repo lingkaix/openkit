@@ -285,7 +285,11 @@ describe('Knowledge package v1 format', () => {
         original.contentDigest
       ),
       sourceLocator: { kind: 'bytes' as const, start: 0, end: 12 },
-      recipe: { id: 'fixture-text', version: '1', parameters: { preserveWhitespace: true } },
+      recipe: {
+        id: 'fixture-text',
+        version: '1',
+        parameters: { preserveWhitespace: true, '2': 'two', '10': { '2': 'nested-two', '10': 'nested-ten' } },
+      },
       provider: null,
       model: null,
       embeddingSpace: null,
@@ -314,6 +318,14 @@ describe('Knowledge package v1 format', () => {
       metadata: { ...input.metadata, representations: [included] },
       files: [...input.files, { ...output, path: included.path }],
     });
+    expect(await readFile(join(input.directory, 'manifest.json'), 'utf8')).toContain(`        "parameters": {
+          "10": {
+            "10": "nested-ten",
+            "2": "nested-two"
+          },
+          "2": "two",
+          "preserveWhitespace": true
+        }`);
     const verified = await verifyKnowledgePackageFormat({ directory: input.directory, limits });
     expect(verified.representations).toEqual([included]);
     for (const changed of [
