@@ -51,7 +51,6 @@ const OPENKIT_BASE_TYPES = new Set([
   'Topic',
   'Observation',
   'Claim',
-  'Procedure',
   'Decision',
   'Lesson',
   'Proposal',
@@ -416,6 +415,14 @@ export function parseScopeKnowledgeSchema(content: string): ParseScopeKnowledgeS
     allowedFreshness: readStringList(fields, 'allowed_freshness', errors),
   };
 
+  if (schema.allowedTypes.includes('Procedure')) {
+    errors.push({
+      code: 'scope_schema.procedure_owned_by_skill',
+      field: 'allowed_types',
+      message: 'Reusable procedures belong in Skills; ScopeSchema cannot admit Procedure pages.',
+    });
+  }
+
   for (const [field, values] of [
     ['allowed_types', schema.allowedTypes],
     ['allowed_statuses', schema.allowedStatuses],
@@ -472,6 +479,15 @@ export function validateScopeKnowledgeSchema(
   }
 
   const errors: KnowledgeValidationError[] = [];
+
+  if (document.frontmatter.type === 'Procedure') {
+    errors.push({
+      code: 'scope_schema.procedure_owned_by_skill',
+      field: 'type',
+      message:
+        'Reusable procedures belong in Skills; retain only descriptive context and Skill references in Knowledge.',
+    });
+  }
 
   expectAllowedValue(
     document,

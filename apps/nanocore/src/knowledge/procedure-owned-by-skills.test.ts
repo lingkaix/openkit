@@ -137,7 +137,9 @@ describe('Skills own reusable procedures', () => {
     const parsed = parseOkfDocument({ path, content: edited });
     expect(parsed.ok).toBe(true);
     expect(parsed.document?.frontmatter).toMatchObject({ extension, source_refs: [skill] });
-    expect(parsed.document?.body).toBe('Descriptive context and a reference to the selected Skill.\n');
+    expect(parsed.document?.body).toBe(
+      'Descriptive context and a reference to the selected Skill.\n'
+    );
     const result = validate(edited);
     expect(result.page).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
     expect(result.publication).toMatchObject({ errors: [], sourceReferences: [skill] });
