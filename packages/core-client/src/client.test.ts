@@ -2924,7 +2924,8 @@ describe('createCoreClient', () => {
   it('routes NanoCore App API calls through app-owned schemas', async () => {
     const retrievalRequestDigest = `sha256:${'b'.repeat(64)}`;
     const retrievedPageDigest = `sha256:${'c'.repeat(64)}`;
-    const knowledgePageScopeId = 'page/workspace/ws_00000000-0000-7000-8000-000000000001';
+    const knowledgePageScopeId =
+      'page/workspace/ws_00000000-0000-7000-8000-000000000001/kb_00000000-0000-7000-8000-000000000001';
     const knowledgeQueryContext = {
       serverId: 'dep_00000000-0000-7f8a-b255-5b390b0a86da',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
