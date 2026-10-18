@@ -166,6 +166,15 @@ const StoredInternalExecutionV1Schema = z
   .object({
     roleId: z.string().min(1),
     logicalModelId: z.string().min(1),
+    profileId: z.string().min(1).nullable().optional(),
+    limits: z
+      .object({
+        maxModelTurns: z.number().int().positive(),
+        maxToolCalls: z.number().int().positive(),
+        deadlineMs: z.number().int().positive(),
+      })
+      .strip()
+      .optional(),
     contextStrategy: z.enum(['rolling', 'compaction']),
     threshold: z.number().int().positive(),
     knowledge: z

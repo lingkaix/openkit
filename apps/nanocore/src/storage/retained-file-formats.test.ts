@@ -16,7 +16,17 @@ function createRetainedFixture() {
   const workspace = store.createWorkspace('Retained formats');
   const thread = store.createThread(workspace.id, 'Retained formats');
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
-  const turn = store.createTurn(workspace.id, thread.id, 'Retained request', actor);
+  const internalExecution = {
+    roleId: 'assistant',
+    logicalModelId: 'Smart',
+    profileId: 'assistant',
+    limits: { maxModelTurns: 12, maxToolCalls: 24, deadlineMs: 60_000 },
+    contextStrategy: 'rolling' as const,
+    threshold: 16_000,
+  };
+  const turn = store.createTurn(workspace.id, thread.id, 'Retained request', actor, null, {
+    internalExecution,
+  });
   const now = workspace.createdAt;
   store.createItem({
     id: 'it_00000000-0000-7107-a6b6-12de9088d8ca',
@@ -87,7 +97,7 @@ function createRetainedFixture() {
     dataRoot,
     expected: {
       workspace: { id: workspace.id, name: 'Retained formats' },
-      turns: [{ id: turn.id, items: [{ text: 'Retained request' }] }],
+      turns: [{ id: turn.id, internalExecution, items: [{ text: 'Retained request' }] }],
       itemRevisions: [{ text: 'Retained request' }],
       artifacts: [{ id: artifactId, content: { format: 'text', body } }],
       agentSessions: [{ id: sessionId, agentId: 'agent_retained_formats' }],
