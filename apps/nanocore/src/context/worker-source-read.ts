@@ -14,6 +14,7 @@ import {
   isThreadIdVisible,
   isThreadVisible,
 } from '../auth/thread-visibility.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { FsStore } from '../lib/store.js';
 import { readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
@@ -175,6 +176,11 @@ export function resolveCurrentWorkerSource(
     const admission = admit();
     if (
       !knowledge?.notebookRevision ||
+      knowledge.knowledgeBaseId !==
+        readDefaultKnowledgeBaseId({
+          dataRoot: input.workspaceDb.dataRoot,
+          scope: { kind: 'workspace', workspaceId: scope.workspaceId },
+        }) ||
       !knowledge.projection ||
       knowledge.projection.sourceRevision !== knowledge.notebookRevision ||
       knowledge.projection.representationId !== 'original-utf8'
@@ -477,7 +483,7 @@ async function readKnowledgeSelection(
   const view = await openBoundedSourceView(
     {
       identity: {
-        sourceKey: `page/workspace/${input.workspaceId}/${selected.knowledgePageId}`,
+        sourceKey: `page/workspace/${input.workspaceId}/${selected.knowledgeBaseId}/${selected.knowledgePageId}`,
         revision: selected.notebookRevision,
         originalDigest: digest,
         representationId: 'original-utf8',

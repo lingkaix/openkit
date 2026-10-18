@@ -29,6 +29,7 @@ import {
   AgentSessionIdSchema,
   ArtifactReferenceSchema,
   ItemIdSchema,
+  KnowledgeBaseIdSchema,
   MaterialIdSchema,
   MaterialReferenceSchema,
   MaterialRevisionIdSchema,
@@ -199,6 +200,7 @@ const KnowledgeSelectionInputSchema = z.object({
   retrievalTraceRef: RetainedRetrievalTraceReferenceSchema,
 });
 const KnowledgeSelectionSchema = z.object({
+  knowledgeBaseId: KnowledgeBaseIdSchema,
   notebookRevision: IdSchema.optional(),
   projection: WorkerContextPackageProjectionSchema.optional(),
   contentDigest: Sha256Schema,
@@ -207,6 +209,7 @@ const KnowledgeSelectionSchema = z.object({
   sourceRefs: z.array(IdSchema),
 });
 const KnowledgeExclusionSchema = z.object({
+  knowledgeBaseId: KnowledgeBaseIdSchema,
   contentDigest: Sha256Schema,
   knowledgePageId: IdSchema,
   reason: z.literal('budget_exceeded'),
@@ -331,6 +334,8 @@ export interface WorkerContextPackageKnowledgeSelectionInput {
   readonly deliveredContent?: string;
   /** Required when deliveredContent differs from the original. */
   readonly projection?: WorkerContextPackageProjection | undefined;
+  /** Exact supplying default Knowledge Base; a page path alone is not an identity. */
+  readonly knowledgeBaseId: string;
   /** Workspace Knowledge page identity. */
   readonly knowledgePageId: string;
   /** Digest of the exact canonical UTF-8 page bytes. */
@@ -347,6 +352,8 @@ export interface WorkerContextPackageKnowledgeSelection {
   readonly notebookRevision?: string | undefined;
   /** Exact bounded delivery proof; absent only for retained whole-body selections. */
   readonly projection?: WorkerContextPackageProjection | undefined;
+  /** Exact supplying default Knowledge Base; a page path alone is not an identity. */
+  readonly knowledgeBaseId: string;
   /** Workspace Knowledge page identity. */
   readonly knowledgePageId: string;
   /** Digest of the exact original canonical page bytes. */
@@ -365,6 +372,8 @@ export interface WorkerContextPackageKnowledgeSelectionReference {
 
 /** S61-selected Knowledge page omitted only by the later package budget. */
 export interface WorkerContextPackageKnowledgeExclusion {
+  /** Exact supplying default Knowledge Base; a page path alone is not an identity. */
+  readonly knowledgeBaseId: string;
   /** Workspace Knowledge page identity. */
   readonly knowledgePageId: string;
   /** Digest selected by the governed retrieval row. */
@@ -709,10 +718,7 @@ export function createWorkerContextPackageFiles(
   assertUnique(input.includedItemIds, 'included Item');
 
   const knowledgeInputs = [...(input.knowledgeSelections ?? [])].sort(compareKnowledgeIdentity);
-  assertUnique(
-    knowledgeInputs.map((selection) => selection.knowledgePageId),
-    'Knowledge selection'
-  );
+  assertUnique(knowledgeInputs.map(knowledgeIdentity), 'Knowledge selection');
   const knowledgeSelections: WorkerContextPackageKnowledgeSelection[] = [];
   const materialInputs = [...input.materialSelections].sort(compareMaterialIdentity);
   assertUnique(
@@ -730,6 +736,7 @@ export function createWorkerContextPackageFiles(
     });
   }
   for (const selection of knowledgeInputs) {
+    KnowledgeBaseIdSchema.parse(selection.knowledgeBaseId);
     assertKnowledgePageId(selection.knowledgePageId, 'Knowledge page id');
     const sourceRefs = [...new Set(selection.sourceRefs)].sort(compareBytewise);
     if (sourceRefs.some((sourceRef) => sourceRef.length === 0)) {
@@ -745,6 +752,7 @@ export function createWorkerContextPackageFiles(
     const packagePath = `knowledge/pages/${selection.knowledgePageId}.md`;
     ordinaryFiles.push({ path: packagePath, bytes });
     knowledgeSelections.push({
+      knowledgeBaseId: selection.knowledgeBaseId,
       contentDigest: selection.contentDigest,
       knowledgePageId: selection.knowledgePageId,
       ...(selection.notebookRevision ? { notebookRevision: selection.notebookRevision } : {}),
@@ -2014,19 +2022,13 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
 
   assertStrictlySorted(trace.knowledgeSelections, compareKnowledgeIdentity, 'Knowledge selections');
   assertStrictlySorted(trace.knowledgeExclusions, compareKnowledgeIdentity, 'Knowledge exclusions');
-  assertUnique(
-    trace.knowledgeSelections.map((entry) => entry.knowledgePageId),
-    'Knowledge selection'
-  );
-  assertUnique(
-    trace.knowledgeExclusions.map((entry) => entry.knowledgePageId),
-    'Knowledge exclusion'
-  );
-  const selectedKnowledgePageIds = new Set(
-    trace.knowledgeSelections.map((entry) => entry.knowledgePageId)
-  );
+  assertUnique(trace.knowledgeSelections.map(knowledgeIdentity), 'Knowledge selection');
+  assertUnique(trace.knowledgeExclusions.map(knowledgeIdentity), 'Knowledge exclusion');
+  const selectedKnowledgePageIds = new Set(trace.knowledgeSelections.map(knowledgeIdentity));
   if (
-    trace.knowledgeExclusions.some((entry) => selectedKnowledgePageIds.has(entry.knowledgePageId))
+    trace.knowledgeExclusions.some((entry) =>
+      selectedKnowledgePageIds.has(knowledgeIdentity(entry))
+    )
   ) {
     throw new Error('Worker Context Package Knowledge selections overlap exclusions.');
   }
@@ -2528,12 +2530,29 @@ function inventoryEntry(file: WorkerContextPackageFile): WorkerContextPackageFil
   };
 }
 
-/** Orders Knowledge tuples by their stable page identity and content digest. */
+/** Keys a page within its retained base without depending on its delivered default path. */
+function knowledgeIdentity(entry: {
+  readonly knowledgeBaseId: string;
+  readonly knowledgePageId: string;
+}): string {
+  return `${entry.knowledgeBaseId}\0${entry.knowledgePageId}`;
+}
+
+/** Orders Knowledge tuples by base, page identity and content digest. */
 function compareKnowledgeIdentity(
-  left: { readonly knowledgePageId: string; readonly contentDigest: string },
-  right: { readonly knowledgePageId: string; readonly contentDigest: string }
+  left: {
+    readonly knowledgeBaseId: string;
+    readonly knowledgePageId: string;
+    readonly contentDigest: string;
+  },
+  right: {
+    readonly knowledgeBaseId: string;
+    readonly knowledgePageId: string;
+    readonly contentDigest: string;
+  }
 ): number {
   return (
+    compareBytewise(left.knowledgeBaseId, right.knowledgeBaseId) ||
     compareBytewise(left.knowledgePageId, right.knowledgePageId) ||
     compareBytewise(left.contentDigest, right.contentDigest)
   );
