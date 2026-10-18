@@ -43,7 +43,16 @@ it('admits Server history only with current Server authority and never through a
     workspaceIds: [workspace.id],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const app = createApp({ mode: 'server', coreDb, dataRoot, store });
+  const app = createApp({
+    mode: 'server',
+    coreDb,
+    dataRoot,
+    store,
+    auth: {
+      api: { getSession: async () => ({ user: { id: userId } }) },
+      handler: async () => new Response(),
+    },
+  });
   const read = (secret: string, body: Record<string, unknown> = { threadId: thread.id }) =>
     app.request(
       ...operationRequest(
@@ -72,6 +81,9 @@ it('admits Server history only with current Server authority and never through a
   expect(await invoke('thread.server.read', { threadId: thread.id }, session)).toMatchObject({
     thread: { id: thread.id, owner: { kind: 'server' } },
   });
+  const browserRead = () =>
+    app.request(...operationRequest('thread.server.read', { threadId: thread.id }));
+  expect((await browserRead()).status).toBe(200);
   const deniedTell = await app.request(
     ...operationRequest(
       'knowledge.server.tell',
@@ -95,6 +107,7 @@ it('admits Server history only with current Server authority and never through a
   revokeOpenKitAccessTokenRecord(coreDb, admin.tokenId);
   await expect(
     invoke('thread.server.read', { threadId: thread.id }, session)
-  ).rejects.toMatchObject({ code: 'deployment_admin_required' });
+  ).rejects.toMatchObject({ code: 'deployment_admin_required', status: 403 });
+  expect((await browserRead()).status).toBe(403);
   expect((await read(admin.secret)).status).toBe(401);
 });

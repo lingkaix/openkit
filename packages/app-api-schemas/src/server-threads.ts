@@ -80,7 +80,7 @@ export const DecideServerKnowledgeProposalResponseSchema = z
   .strict();
 
 /** Only current Server administration credentials can enter these native operations. */
-const credentials = ['local-user', 'deployment-administrator'] as const;
+const credentials = ['local-user', 'user-session', 'deployment-administrator'] as const;
 const scope = { kind: 'server' } as const;
 const target = { kind: 'server' } as const;
 const common = {
