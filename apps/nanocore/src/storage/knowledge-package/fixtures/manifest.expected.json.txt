@@ -1,0 +1,38 @@
+{
+  "contentInventory": [
+    {
+      "byteLength": 94,
+      "contentDigest": "sha256:7fbd71a5e3b9c86cd7d0daadea94b0cb5ae693bffa0a6b40d17f2aa2e4c18ea5",
+      "path": "pages/guide.md"
+    },
+    {
+      "byteLength": 12,
+      "contentDigest": "sha256:e1c81354ea969c8dcac9b69e1e8e9e78f8fa9e23f9fde3b088d041fc44c20a87",
+      "path": "raw/original.bin"
+    },
+    {
+      "byteLength": 61,
+      "contentDigest": "sha256:572da4a03874b79dd0e8446cf5527b953087af371b919f0e1bcfd30eed226562",
+      "path": "schema/scope-schema.yaml"
+    }
+  ],
+  "format": "openkit.knowledge-package",
+  "formatVersion": 1,
+  "knowledgeBaseId": "@KNOWLEDGE_BASE_ID@",
+  "mounts": [
+    {
+      "backend": "local",
+      "default": true,
+      "knowledgeBaseId": "@KNOWLEDGE_BASE_ID@",
+      "name": "local",
+      "root": "raw/"
+    }
+  ],
+  "notebookRevision": "0123456789abcdef0123456789abcdef01234567",
+  "ownerScope": {
+    "kind": "server"
+  },
+  "representations": [],
+  "requiredFeatures": [],
+  "schemaVersion": 1
+}
