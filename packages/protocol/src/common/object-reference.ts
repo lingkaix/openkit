@@ -191,6 +191,8 @@ export function formatReferenceUri(
   contentDigest?: string
 ): string {
   const parsed = ScopeQualifiedReferenceSchema.parse(reference);
+  if (parseReferenceScope(parsed.scopeId)?.family === 'retrieval-trace')
+    RetrievalTraceReferenceSchema.parse(parsed);
   if (!isSafeObjectPath(parsed.objectId)) throw new TypeError('Invalid reference object path.');
   if (
     contentDigest !== undefined &&
