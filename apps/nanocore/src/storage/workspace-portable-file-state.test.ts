@@ -47,7 +47,10 @@ import {
   serializeUserAuthoredKnowledgePage,
 } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
-import { readWorkspacePortableFileState } from './workspace-portable-file-state.js';
+import {
+  readWorkspacePortableFileState,
+  writeWorkspacePortableFileState,
+} from './workspace-portable-file-state.js';
 
 /**
  * Reads one optional JSONL fixture so a single red test can report every missing file family.
@@ -136,6 +139,54 @@ function publishFixturePages(
 }
 
 describe('workspace portable file state', () => {
+  it('completes staged configuration only for the initialized Knowledge Base binding', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-import-staged-config-'));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    const knowledgeBaseId = testEntityId('kb', 'portable-config-target');
+    const configPath = join(root, 'config', 'workspace.jsonc');
+    mkdirSync(join(root, 'config'));
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Staging', defaultKnowledgeBaseId: knowledgeBaseId },
+      })
+    );
+    const importedConfig = `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        workspace: {
+          name: 'Imported workspace',
+          defaultKnowledgeBaseId: knowledgeBaseId,
+          defaultAgentId: null,
+        },
+      },
+      null,
+      2
+    )}\n`;
+    const state = {
+      observations: new Map(),
+      claims: new Map(),
+      conflicts: new Map(),
+      retrievalTraceFiles: new Map(),
+      workspaceConfig: importedConfig,
+      workspaceSchema: null,
+      nativeKnowledgePages: new Map(),
+      workerContextPackageFiles: new Map(),
+    };
+    writeWorkspacePortableFileState(root, state);
+    expect(readFileSync(configPath, 'utf8')).toBe(importedConfig);
+
+    const otherBinding = importedConfig.replace(
+      knowledgeBaseId,
+      testEntityId('kb', 'portable-config-other-target')
+    );
+    expect(() =>
+      writeWorkspacePortableFileState(root, { ...state, workspaceConfig: otherBinding })
+    ).toThrow('Portable configuration contradicts the initialized Knowledge Base binding.');
+    expect(readFileSync(configPath, 'utf8')).toBe(importedConfig);
+  });
+
   it('rejects a publisher-temp-shaped directory in a retrieval trace directory', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-entry-'));
     try {
@@ -463,13 +514,11 @@ describe('workspace portable file state', () => {
     expect(verified.fileContents.get('workspace-files/config/workspace.jsonc')).toBe(
       workspaceConfig
     );
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified,
-        targetWorkspaceId: new FsStore().createWorkspace('Import validation').id,
-        targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
-      })
-    ).not.toThrow();
+    readWorkspaceImportSnapshot({
+      verified,
+      targetWorkspaceId: new FsStore().createWorkspace('Import validation').id,
+      targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
+    });
     for (const [name, alter] of [
       ['missing', (files: Map<string, string>) => files.delete(acceptedExportPath)],
       [

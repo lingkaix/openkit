@@ -3,7 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
-import { deriveEntityId, isEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import {
+  deriveEntityId,
+  isEntityId,
+  KnowledgeBaseIdSchema,
+  PROTOCOL_VERSION,
+} from '@openkit/protocol';
+import { applyEdits, modify } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { parseJsoncObject } from '../config/jsonc.js';
@@ -111,6 +118,46 @@ function readImportSnapshot(exportRoot: string, targetWorkspaceId: string) {
     targetWorkspaceId,
     targetServerId: 'server_test_target',
   });
+}
+
+/** Compares independent import candidates while preserving their one deliberately fresh base identity. */
+function expectRepeatedImportSnapshot(
+  exportRoot: string,
+  targetWorkspaceId: string,
+  imported: ReturnType<typeof readImportSnapshot>,
+  sourceConfig: Buffer
+): void {
+  const sourceConfigPath = join(exportRoot, 'workspace-files', 'config', 'workspace.jsonc');
+  const repeated = readImportSnapshot(exportRoot, targetWorkspaceId);
+  expect(KnowledgeBaseIdSchema.safeParse(imported.defaultKnowledgeBaseId).success).toBe(true);
+  expect(KnowledgeBaseIdSchema.safeParse(repeated.defaultKnowledgeBaseId).success).toBe(true);
+  expect(repeated.defaultKnowledgeBaseId).not.toBe(imported.defaultKnowledgeBaseId);
+  const importedConfig = imported.portableFileState.workspaceConfig!;
+  const repeatedConfig = repeated.portableFileState.workspaceConfig!;
+  expect(
+    WorkspaceConfigSchema.parse(parseJsoncObject(importedConfig)).workspace.defaultKnowledgeBaseId
+  ).toBe(imported.defaultKnowledgeBaseId);
+  expect(
+    WorkspaceConfigSchema.parse(parseJsoncObject(repeatedConfig)).workspace.defaultKnowledgeBaseId
+  ).toBe(repeated.defaultKnowledgeBaseId);
+  // Only the request-local reminted base and its exact config member differ; all other bytes stay exact.
+  expect({
+    ...repeated,
+    defaultKnowledgeBaseId: imported.defaultKnowledgeBaseId,
+    portableFileState: {
+      ...repeated.portableFileState,
+      workspaceConfig: applyEdits(
+        repeatedConfig,
+        modify(
+          repeatedConfig,
+          ['workspace', 'defaultKnowledgeBaseId'],
+          imported.defaultKnowledgeBaseId,
+          {}
+        )
+      ),
+    },
+  }).toEqual({ ...imported, finalizeNotebookKnowledge: expect.any(Function) });
+  expect(readFileSync(sourceConfigPath)).toEqual(sourceConfig);
 }
 
 /**
@@ -1996,13 +2043,15 @@ describe('workspace export verifier', () => {
       ],
     });
 
+    const sourceConfig = readFileSync(join(root, 'workspace-files', 'config', 'workspace.jsonc'));
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    // Each read creates a request-local completion closure; all retained data stays identical.
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
-      ...imported,
-      finalizeNotebookKnowledge: expect.any(Function),
-    });
+    expectRepeatedImportSnapshot(
+      root,
+      'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+      imported,
+      sourceConfig
+    );
   });
 
   it('normalizes unknown usage ledger fields while reading workspace imports', () => {
@@ -2079,13 +2128,15 @@ describe('workspace export verifier', () => {
       ],
     });
 
+    const sourceConfig = readFileSync(join(root, 'workspace-files', 'config', 'workspace.jsonc'));
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    // Each read creates a request-local completion closure; all retained data stays identical.
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
-      ...imported,
-      finalizeNotebookKnowledge: expect.any(Function),
-    });
+    expectRepeatedImportSnapshot(
+      root,
+      'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+      imported,
+      sourceConfig
+    );
   });
 
   it('preserves ordinary archived Git push fixture text through verified bytes and retained reads', () => {
@@ -2137,6 +2188,7 @@ describe('workspace export verifier', () => {
       ],
     });
 
+    const sourceConfig = readFileSync(join(root, 'workspace-files', 'config', 'workspace.jsonc'));
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     const bytes = readFileSync(join(root, 'records/git-push-records.jsonl'));
     const digest = createHash('sha256').update(bytes).digest('hex');
@@ -2154,11 +2206,12 @@ describe('workspace export verifier', () => {
         .digest('hex')
     ).toBe(digest);
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    // Each read creates a request-local completion closure; all retained data stays identical.
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
-      ...imported,
-      finalizeNotebookKnowledge: expect.any(Function),
-    });
+    expectRepeatedImportSnapshot(
+      root,
+      'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+      imported,
+      sourceConfig
+    );
   });
 
   it('rewrites workspace quarantine records while reading workspace imports', () => {

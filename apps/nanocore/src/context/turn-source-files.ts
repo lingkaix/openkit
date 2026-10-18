@@ -27,10 +27,12 @@ type Turn = z.infer<typeof TurnSchema>;
 const CHUNK_BYTES = 65_536;
 const TEXT_MEDIA = new Set(['text/plain', 'text/markdown', 'application/json']);
 
-/** Prepares only the originals already admitted by this receiving Turn. The snapshot writer must verify every complete original before publication. The current authority callback must recheck the Turn inventory, source audience and destination admission; it is never serialized or used as a durable access grant. Original names are display data and never path components. */
+/** Prepares only the originals already admitted by this receiving Turn. The package writer must verify each complete original before first acceptance without retaining an extra copy. The current authority callback must recheck the Turn inventory, source audience and destination admission; it is never serialized or used as a durable access grant. Original names are display data and never path components. */
 export async function prepareTurnFileSourceInputs(input: {
   readonly workspaceRoot: string;
   readonly turn: Turn;
+  /** Current retrieval can select one exact ordinal without acquiring unrelated inputs. */
+  readonly onlyOrdinal?: number;
   readonly assertCurrent: () => void;
   readonly signal?: AbortSignal;
 }): Promise<WorkerContextPackageSourceFileInput[]> {
@@ -39,15 +41,22 @@ export async function prepareTurnFileSourceInputs(input: {
   const workspaceRoot = input.workspaceRoot;
   const { workspaceId, threadId, id: turnId } = input.turn;
   const originals = (input.turn.fileInputs ?? []).map((original) => Object.freeze({ ...original }));
+  if (
+    input.onlyOrdinal !== undefined &&
+    (!Number.isSafeInteger(input.onlyOrdinal) ||
+      input.onlyOrdinal < 0 ||
+      input.onlyOrdinal >= originals.length)
+  )
+    throw new Error('Selected Turn input ordinal is unavailable.');
   const result: WorkerContextPackageSourceFileInput[] = [];
   for (const [ordinal, original] of originals.entries()) {
+    if (input.onlyOrdinal !== undefined && ordinal !== input.onlyOrdinal) continue;
     signal.throwIfAborted();
     assertCurrent();
     const reference = TurnInputReferenceSchema.parse({
       scopeId: `input/turn/${workspaceId}/${threadId}/${turnId}`,
       objectId: String(ordinal),
     });
-    const originalSnapshotPath = `originals/turn-inputs/${ordinal}/payload`;
     const packagePath = `sources/turn-inputs/${ordinal}.txt`;
     const path = turnFilePayloadPath(workspaceRoot, threadId, turnId, ordinal);
     const first = await acquire(path, original.sizeBytes, assertCurrent, signal);
@@ -101,7 +110,6 @@ export async function prepareTurnFileSourceInputs(input: {
           byteLength: delivered.byteLength,
           truncated: page.truncated,
           availability: page.truncated ? 'incomplete' : 'available',
-          originalSnapshotPath,
         };
       } else {
         if (!['unsupported', 'invalid_utf8', 'resource_limited'].includes(page.reason))
@@ -128,7 +136,6 @@ export async function prepareTurnFileSourceInputs(input: {
           byteLength: delivered.byteLength,
           truncated: true,
           availability: 'unavailable',
-          originalSnapshotPath,
         };
       }
       assertCurrent();
@@ -150,7 +157,7 @@ export async function prepareTurnFileSourceInputs(input: {
       originalDigest: original.contentDigest,
       byteLength: original.sizeBytes,
       mediaType: original.mediaType,
-      originalSnapshotPath,
+
       packagePath,
       projection,
       deliveredBytes: delivered,
@@ -172,7 +179,7 @@ export async function prepareTurnFileSourceInputs(input: {
           }
           assertCurrent();
           if (!unchanged(first.identity, await handle.stat({ bigint: true })))
-            throw new Error('Turn original input changed during copying.');
+            throw new Error('Turn original input changed during verification.');
         } finally {
           await handle.close();
         }
@@ -209,7 +216,7 @@ async function acquire(
   }
 }
 
-/** Pins the descriptor identity and every modification marker across projection and copying. */
+/** Pins the descriptor identity and every modification marker across projection and verification. */
 function unchanged(left: BigIntStats, right: BigIntStats): boolean {
   return (
     right.isFile() &&

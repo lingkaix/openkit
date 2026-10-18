@@ -1,6 +1,4 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
   ArchivedGitPushRecordSchema,
@@ -105,7 +103,6 @@ import {
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { remintPortableKnowledgeOverview } from '../context/knowledge-overview.js';
-import { PDF_TEXT_LAYER_LIMITS } from '../context/pdf-text-layer.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   canonicalJson,
@@ -162,7 +159,6 @@ import {
   KnowledgeSourceRecordSchema,
   knowledgeEntriesEqual,
   listUnresolvedUserInputRequestItemIds,
-  measureCanonicalFile,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
   WorkspaceSystemRecordSchema,
@@ -2821,61 +2817,19 @@ function readWorkResourceImportState(
     });
     const sourceFiles = (sourceTrace.sourceFiles ?? []).map(
       (entry): WorkerContextPackageSourceFileInput => {
-        const sourcePath = requiredMapValue(
-          context.payloadFiles,
-          `${sourcePackageRoot}/${entry.originalSnapshotPath}`,
-          'Context Package original'
-        );
-        // Complete extracted text has its own small processor bound; originals stay path-backed.
-        const representationPath = entry.projection.representationSnapshotPath;
-        const representation = representationPath
-          ? requiredExportFile(context.files, `${sourcePackageRoot}/${representationPath}`)
-          : undefined;
-        if (
-          representation !== undefined &&
-          (Buffer.byteLength(representation) > PDF_TEXT_LAYER_LIMITS.maxOutputBytes ||
-            Buffer.byteLength(representation) !== entry.projection.representationByteLength ||
-            `sha256:${createHash('sha256').update(representation).digest('hex')}` !==
-              entry.projection.representationDigest)
-        )
-          throw new Error('Context Package representation integrity is inconsistent.');
         return {
           ...entry,
           deliveredBytes: Buffer.from(
             requiredExportFile(context.files, `${sourcePackageRoot}/${entry.packagePath}`),
             'utf8'
           ),
-          ...(representation !== undefined
-            ? {
-                openRepresentation: async function* (signal: AbortSignal) {
-                  const bytes = Buffer.from(representation);
-                  for (let offset = 0; offset < bytes.byteLength; offset += 65_536) {
-                    signal.throwIfAborted();
-                    yield bytes.subarray(offset, offset + 65_536);
-                  }
-                },
-              }
-            : {}),
-          open: async function* (signal) {
-            signal.throwIfAborted();
-            const handle = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
-            try {
-              yield* handle.createReadStream({
-                highWaterMark: 65_536,
-                autoClose: false,
-                signal,
-              });
-            } finally {
-              await handle.close();
-            }
+          // Portable history carries delivered bytes and references, not a source-retention promise.
+          // A current admission must acquire its own canonical source supplier.
+          open: () => {
+            throw new Error('Imported source content is unavailable.');
           },
           assertUnchanged: () => {
-            const proof = measureCanonicalFile(sourcePath);
-            if (
-              proof.byteLength !== entry.byteLength ||
-              proof.contentDigest !== entry.originalDigest
-            )
-              throw new Error('Context Package original integrity is inconsistent.');
+            throw new Error('Imported source content is unavailable.');
           },
         };
       }
@@ -2970,13 +2924,6 @@ function readWorkResourceImportState(
         throw new Error(`Worker Context Package source bytes are contradictory: ${file.path}`);
       }
     }
-    for (const entry of sourceFiles) {
-      sourcePackagePaths.add(`${sourcePackageRoot}/${entry.originalSnapshotPath}`);
-      if (entry.projection.representationSnapshotPath)
-        sourcePackagePaths.add(
-          `${sourcePackageRoot}/${entry.projection.representationSnapshotPath}`
-        );
-    }
     const unexpectedSourceFile = [...context.files.keys(), ...context.payloadFiles.keys()].find(
       (path) => path.startsWith(`${sourcePackageRoot}/`) && !sourcePackagePaths.has(path)
     );
@@ -3002,24 +2949,6 @@ function readWorkResourceImportState(
     }
     const targetSourceFiles = sourceFiles.map((entry) => remintContextSourceFile(entry, context));
     const targetRoot = `threads/${targetThreadId}/turns/${targetTurnId}`;
-    for (const [index, entry] of targetSourceFiles.entries()) {
-      artifactPayloadFiles.set(
-        `${targetRoot}/context-package/${entry.originalSnapshotPath}`,
-        requiredMapValue(
-          context.payloadFiles,
-          `${sourcePackageRoot}/${sourceFiles[index]!.originalSnapshotPath}`,
-          'Context Package original'
-        )
-      );
-      if (entry.projection.representationSnapshotPath)
-        workerContextPackageFiles.set(
-          `${targetRoot}/context-package/${entry.projection.representationSnapshotPath}`,
-          requiredExportFile(
-            context.files,
-            `${sourcePackageRoot}/${sourceFiles[index]!.projection.representationSnapshotPath!}`
-          )
-        );
-    }
     tracesBySourceTurn.set(sourceTurnId, sourceTrace);
     const finalizeTargetPackage = (binding?: {
       notebookRevision: string;
@@ -3114,21 +3043,6 @@ function readWorkResourceImportState(
                       selection.materialId,
                       selection.revisionId
                     ),
-                    ...(selection.projection.originalSnapshotPath
-                      ? {
-                          originalSnapshotPath: remintContextSourcePath(
-                            selection.projection.originalSnapshotPath,
-                            selection.materialId,
-                            requiredMapValue(context.materialIds, selection.materialId, 'Material'),
-                            selection.revisionId,
-                            requiredMaterialRevisionId(
-                              context,
-                              selection.materialId,
-                              selection.revisionId
-                            )
-                          ),
-                        }
-                      : {}),
                   },
                 }
               : {}),
@@ -3569,13 +3483,6 @@ function remintContextSourceFile(
       },
     };
   }
-  const originalSnapshotPath = remintContextSourcePath(
-    entry.originalSnapshotPath,
-    sourceId,
-    targetId,
-    oldRevision,
-    newRevision
-  );
   let deliveredBytes = entry.deliveredBytes;
   // The current Turn producer includes a qualified reference in its unavailable descriptor.
   if (
@@ -3600,7 +3507,6 @@ function remintContextSourceFile(
     ...entry,
     source: targetSource,
     deliveredBytes,
-    originalSnapshotPath,
     packagePath: remintContextSourcePath(
       entry.packagePath,
       sourceId,
@@ -3611,20 +3517,8 @@ function remintContextSourceFile(
     projection: {
       ...entry.projection,
       ...(newRevision ? { sourceRevision: newRevision } : {}),
-      ...(entry.projection.representationSnapshotPath
-        ? {
-            representationSnapshotPath: remintContextSourcePath(
-              entry.projection.representationSnapshotPath,
-              sourceId,
-              targetId,
-              oldRevision,
-              newRevision
-            ),
-          }
-        : {}),
       deliveredDigest: `sha256:${createHash('sha256').update(deliveredBytes).digest('hex')}`,
       byteLength: deliveredBytes.byteLength,
-      originalSnapshotPath,
     },
   };
 }
