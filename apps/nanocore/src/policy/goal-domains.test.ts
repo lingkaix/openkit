@@ -302,6 +302,33 @@ describe('jointly approved Goal-domain publication', () => {
     expect(() => f.activate()).toThrow(/different content|withdrawn/);
   });
 
+  it('ends authority on Goal closure before the separate Policy withdrawal', async () => {
+    const f = await fixture();
+    await f.approve();
+    await f.consume();
+    f.activate();
+    const scope = { ...f.key, threadId: f.request.threadId };
+    const view = await executeGoalOperation('goal.read', scope, { actor: f.actor }, f.store, f.db, {
+      coreDb: f.coreDb,
+    });
+    await executeGoalOperation(
+      'goal.cancel',
+      {
+        ...scope,
+        requestId: randomUUID(),
+        expectedRevision: view.goal!.changeRevision,
+        reason: 'Stop this Goal',
+      },
+      { actor: f.actor },
+      f.store,
+      f.db,
+      { coreDb: f.coreDb }
+    );
+    expect(f.service().read(f.key)).toBeNull();
+    expect(f.service().close(f.key).changed).toBe(true);
+    expect(() => f.activate()).toThrow(/obsolete or closed/);
+  });
+
   it('retains truthful saved versus loaded outcomes when reload fails', async () => {
     const f = await fixture();
     await f.approve();
