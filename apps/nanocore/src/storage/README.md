@@ -51,6 +51,7 @@ Timeline coverage remains partial when a collection gap follows observed runtime
 
 - Writers store DATA_ROOT-relative path references. User and authored content may mention an absolute data root; layout verification does not scan text for that substring.
 - Replace JSON records through a same-directory temporary file and rename.
+- The stopped-process Workspace layout move validates an existing current `config/workspace.jsonc` and preserves its exact bytes, including the established Knowledge Base binding. Invalid current configuration refuses the move; only an absent configuration uses the existing predecessor metadata split. Migration never allocates a replacement base.
 - `writeFileAtomic` synchronizes replacement bytes and any caller-selected mode before rename, then synchronizes the parent directory. Callers retain their existing default modes. Vault keeps its separate no-follow writer and redacted errors with the same commit order.
 - Existing Thread records skip file publication only when their complete projected canonical bytes match the current file. Changed bytes retain the durable writer; canonical validation, annotations and directory synchronization still run, including retries after a failed rename acknowledgement.
 - Directory preparation commits each parent entry before creating a child. Retries synchronize existing components left visible by failed creation. Vault initialization also completes the store-directory commit after authenticating a visible header.
