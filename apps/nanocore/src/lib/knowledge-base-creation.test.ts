@@ -39,17 +39,27 @@ it('retains the trusted reminted import base before Notebook publication', () =>
   store.importWorkspaceSnapshot({
     workspace: { ...source, id: workspaceId, name: 'Imported' },
     defaultKnowledgeBaseId: knowledgeBaseId,
-    threads: [], turns: [], knowledge: [], itemRevisions: [], artifacts: [], agentSessions: [], turnEvents: [],
+    threads: [],
+    turns: [],
+    knowledge: [],
+    itemRevisions: [],
+    artifacts: [],
+    agentSessions: [],
+    turnEvents: [],
     initialNotebookFiles: {},
     notebookInitialization: {
       requestId: randomUUID(),
-      producer: {kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001'},
+      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       instructionReference: 'test:workspace-base-import',
     },
     stageWorkspace: ({ workspaceRoot }) => {
-      stagedBase = JSON.parse(readFileSync(join(workspaceRoot, 'config', 'workspace.jsonc'), 'utf8')).workspace.defaultKnowledgeBaseId;
+      stagedBase = JSON.parse(
+        readFileSync(join(workspaceRoot, 'config', 'workspace.jsonc'), 'utf8')
+      ).workspace.defaultKnowledgeBaseId;
     },
   });
   expect(stagedBase).toBe(knowledgeBaseId);
-  expect(readDefaultKnowledgeBaseId({dataRoot, scope: {kind: 'workspace', workspaceId}})).toBe(knowledgeBaseId);
+  expect(readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } })).toBe(
+    knowledgeBaseId
+  );
 });
