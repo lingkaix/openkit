@@ -170,6 +170,7 @@ import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
 import { exportRecurringPortableHistory } from './recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
+import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import {
   artifactReviews,
   threadMaterialBindings,
@@ -995,7 +996,7 @@ export function importVerifiedWorkspace({
       // The canonical Store writer runs after this stage and preserves the admitted private fields.
       writeFileAtomic(
         join(root, 'turn.json'),
-        `${JSON.stringify({ ...turn, items: [], requiredFeatures: ['openkit.work-observations.v1'], captureCoverage: snapshot.turnCaptureCoverage.get(turnId) }, null, 2)}\n`
+        `${JSON.stringify(writeRetainedV1({ ...turn, items: [], requiredFeatures: ['openkit.work-observations.v1'], captureCoverage: snapshot.turnCaptureCoverage.get(turnId) }), null, 2)}\n`
       );
       writeFileAtomic(join(root, 'observations.jsonl'), text);
     }
@@ -1240,7 +1241,10 @@ export function createVerifiedWorkspaceExport({
   const turnObservations = new Map<string, string>();
   for (const turn of turns) {
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
-    const rawTurn = JSON.parse(readCanonicalTextFile(join(root, 'turn.json')));
+    const rawTurn = readRetainedV1(
+      JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
+      StoredTurnV1Schema.parse
+    );
     const declared =
       Array.isArray(rawTurn.requiredFeatures) &&
       rawTurn.requiredFeatures.includes('openkit.work-observations.v1');

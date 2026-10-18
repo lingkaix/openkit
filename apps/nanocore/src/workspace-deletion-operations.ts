@@ -784,8 +784,9 @@ function requireTerminalWorkspaceStorage(
 
 function requireWorkspaceRootIdentity(root: string, workspaceId: string): void {
   assertCanonicalDirectory(root);
-  const record = WorkspaceSystemRecordSchema.parse(
-    JSON.parse(readCanonicalTextFile(join(root, 'workspace-record.json')))
+  const record = readRetainedV1(
+    JSON.parse(readCanonicalTextFile(join(root, 'workspace-record.json'))),
+    WorkspaceSystemRecordSchema.parse
   );
   if (record.id !== workspaceId) {
     throw recoveryRequired();
