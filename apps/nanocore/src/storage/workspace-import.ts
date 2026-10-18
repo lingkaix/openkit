@@ -8,10 +8,6 @@ import {
   BackendWorkspaceHandleReaderSchema,
   BackendWorkspaceHandleSchema,
   EvidenceBundleRecordSchema,
-  GoalCardSchema,
-  GoalPlanVersionSchema,
-  GoalRecordSchema,
-  GoalTaskLinkSchema,
   InjectionVisibilitySchema,
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
@@ -129,8 +125,14 @@ import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-work
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
+import {
+  StoredGoalCardTaskV1Schema,
+  StoredGoalCardV1Schema,
+  StoredGoalPlanVersionV1Schema,
+  StoredGoalV1Schema,
+  StoredTaskTerminalFactV1Schema,
+} from '../runtime/goal-retained-v1.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
-import { TaskTerminalFactSchema } from '../runtime/task-terminal-fact.js';
 import {
   createWorkerRuntimeProvenanceBundleId,
   remintWorkerRuntimeProvenanceIndex,
@@ -5628,11 +5630,11 @@ function readWorkerRuntimeControlState(context: ImportRemintContext) {
 function readCurrentGoalImportState(context: ImportRemintContext) {
   const text = context.files.get('records/goal-state.json');
   const shape = z.object({
-    goals: z.array(GoalRecordSchema),
-    cards: z.array(GoalCardSchema),
-    versions: z.array(GoalPlanVersionSchema),
-    tasks: z.array(GoalTaskLinkSchema),
-    terminalFacts: z.array(TaskTerminalFactSchema),
+    goals: z.array(StoredGoalV1Schema),
+    cards: z.array(StoredGoalCardV1Schema),
+    versions: z.array(StoredGoalPlanVersionV1Schema),
+    tasks: z.array(StoredGoalCardTaskV1Schema),
+    terminalFacts: z.array(StoredTaskTerminalFactV1Schema),
   });
   const source = shape.parse(
     text ? JSON.parse(text) : { goals: [], cards: [], versions: [], tasks: [], terminalFacts: [] }
