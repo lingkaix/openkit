@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, relative } from 'node:path';
@@ -14,7 +14,7 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'Core permission decisions',
   'Core Audit, boot Audit and Vault Audit',
   'Core Vault metadata, grants, injection and use',
-  'Scheduler queue, attempts and recurring history',
+  'Scheduler queue, attempts, recurring history and external event joins',
   'Runtime targets and binding/control graph',
   'Core command receipts',
   'User command and Thread read receipts',
@@ -39,6 +39,8 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'Context Package files',
   'Work observation log',
   'Runtime provenance and admitted raw streams',
+  'Notification attention and delivery attempts',
+  'Discord bindings, pairing, disclosures and inbound receipts',
 ]);
 
 /** Loads product code only from the explicit previous or candidate package root. */
@@ -86,6 +88,9 @@ async function owners(appRoot) {
     snapshots,
     ui,
     usage,
+    externalEvents,
+    attention,
+    discord,
   ] = await Promise.all(
     [
       'storage/db',
@@ -127,6 +132,9 @@ async function owners(appRoot) {
       'generative-kernel/snapshots',
       'generative-ui/commands',
       'capability/usage-ledger',
+      'storage/external-trigger-admissions',
+      'notifications/attention',
+      'channels/discord',
     ].map(load)
   );
   return {
@@ -169,6 +177,9 @@ async function owners(appRoot) {
     snapshots,
     ui,
     usage,
+    externalEvents,
+    attention,
+    discord,
     load,
     loadPackage,
   };
@@ -418,19 +429,41 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
         usedAt: NOW,
       });
     }
-    sql.queueEntryId = 'upgrade-corpus-queue';
-    const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
-      backendId: 'nanohost',
-      queueEntryId: sql.queueEntryId,
-      requestId: 'upgrade-corpus-worker',
+    const automation = new o.recurring.AutomationStore(
+      core,
+      new o.admission.WorkspaceMutationAdmission(),
+      () => NOW
+    );
+    sql.automationId = automation.createAutomation(userId, {
       workspaceId,
       threadId,
-      turnId,
-      turnInput: 'Synthetic retained admission.',
-      requestedAgentId: 'agent_codex_host',
-      triggerActor: actor,
-      now: () => NOW,
-    });
+      name: 'Synthetic continuity',
+      prompt: 'Keep this schedule paused.',
+      intervalSeconds: 60,
+    }).id;
+    sql.queueEntryId = 'upgrade-corpus-queue';
+    sql.externalEventKey = 'synthetic-source:event-1';
+    const entry = core.sqlite.transaction(() => {
+      const admitted = o.scheduler.createSchedulerAdmissionEntry(core, {
+        backendId: 'nanohost',
+        queueEntryId: sql.queueEntryId,
+        requestId: 'upgrade-corpus-worker',
+        workspaceId,
+        threadId,
+        turnId,
+        turnInput: 'Synthetic retained admission.',
+        requestedAgentId: 'agent_codex_host',
+        triggerActor: actor,
+        now: () => NOW,
+      });
+      o.externalEvents.insertExternalTriggerAdmission(core, {
+        scheduleId: sql.automationId,
+        eventKey: sql.externalEventKey,
+        sourceTurnId: turnId,
+        queueEntryId: admitted.queueEntryId,
+      });
+      return admitted;
+    })();
     sql.attemptId = id('attempt', 'attempt');
     o.attempts.createSchedulerExecutionAttempt(core, {
       entry,
@@ -452,18 +485,6 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       sessionCompatibilityKey: 'upgrade-corpus',
       now: () => NOW,
     });
-    const automation = new o.recurring.AutomationStore(
-      core,
-      new o.admission.WorkspaceMutationAdmission(),
-      () => NOW
-    );
-    sql.automationId = automation.createAutomation(userId, {
-      workspaceId,
-      threadId,
-      name: 'Synthetic continuity',
-      prompt: 'Keep this schedule paused.',
-      intervalSeconds: 60,
-    }).id;
     const targetIds = core.sqlite.prepare('SELECT target_id FROM nanohost_runtime_targets').all();
     if (targetIds.length > 1) throw new Error('NanoHost requires one configured RuntimeTarget.');
     sql.runtimeTargetId = targetIds[0]?.target_id ?? 'upgrade-corpus-target';
@@ -781,6 +802,122 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
   }
 }
 
+/** Seeds deployment-local channel history through native owners, using only in-memory synthetic signing material. */
+async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threadId, turnId }) {
+  const keys = generateKeyPairSync('ed25519');
+  const publicKey = keys.publicKey
+    .export({ type: 'spki', format: 'der' })
+    .subarray(-32)
+    .toString('hex');
+  const actor = { kind: 'session', userId: sql.userId };
+  const applicationId = '123456789012345678';
+  const discordUserId = '223456789012345678';
+  const channel = o.discord.createDiscordChannel({
+    sqlite: core.sqlite,
+    applicationId,
+    publicKey,
+    appBaseUrl: 'https://upgrade-fixture.example.invalid',
+    newRequestId: randomUUID,
+    now: () => Date.parse(NOW),
+    resolveActor: (userId) => (userId === sql.userId ? actor : null),
+    requestLink: () => null,
+    inspectPending: (query) => {
+      const record = o.pending.readPendingRequest(workspace.sqlite, query.pendingRequestId);
+      if (
+        !record ||
+        record.state !== 'pending' ||
+        record.responsibleUserId !== query.actor.userId ||
+        record.workspaceId !== query.workspaceId ||
+        record.threadId !== query.threadId
+      )
+        return { status: 'unavailable', code: 'request_unavailable' };
+      return {
+        status: 'available',
+        kind: 'approval',
+        workspaceId,
+        threadId,
+        pendingRequestId: record.requestId,
+        turnId,
+        content: o.pending.canonicalJsonText(record.governedIntent),
+        responseAllowed: true,
+      };
+    },
+    invoke: async () => {
+      throw new Error('The corpus must never dispatch a Core response.');
+    },
+  });
+  const send = (eventId, name, values) => {
+    const body = Buffer.from(
+      JSON.stringify({
+        id: eventId,
+        application_id: applicationId,
+        type: 2,
+        version: 1,
+        context: 1,
+        channel: { id: '323456789012345678', type: 1 },
+        user: { id: discordUserId },
+        data: {
+          name: 'openkit',
+          type: 1,
+          options: [
+            {
+              name,
+              type: 1,
+              options: Object.entries(values).map(([name, value]) => ({ name, value, type: 3 })),
+            },
+          ],
+        },
+      })
+    );
+    const timestamp = String(Date.parse(NOW) / 1000);
+    return channel.handleSignedInteraction({
+      body,
+      timestamp,
+      signature: sign(
+        null,
+        Buffer.concat([Buffer.from(timestamp), body]),
+        keys.privateKey
+      ).toString('hex'),
+    });
+  };
+  const challenge = channel.beginPairing(actor);
+  sql.discordChallengeDigest = digest(challenge.challenge);
+  sql.discordPairEventId = '100000000000000001';
+  const paired = await send(sql.discordPairEventId, 'pair', { challenge: challenge.challenge });
+  if (paired.type !== 4 || !paired.data.content.includes('Discord account paired.'))
+    throw new Error('Discord corpus pairing was not admitted.');
+  sql.discordInspectEventId = '100000000000000002';
+  const inspected = await send(sql.discordInspectEventId, 'inspect', {
+    workspace: workspaceId,
+    thread: threadId,
+    request: sql.pendingRequestId,
+  });
+  const token =
+    inspected.type === 4 && inspected.data.content.match(/Disclosure: ([A-Za-z0-9_-]+)/)?.[1];
+  if (!token) throw new Error('Discord corpus disclosure was not admitted.');
+  sql.discordDisclosureDigest = digest(token);
+  const notifications = new o.attention.AttentionNotifications(core.sqlite, { now: () => NOW });
+  const delivery = notifications.enqueue({
+    source: { workspaceId, threadId, kind: 'approval-request', requestId: sql.pendingRequestId },
+    recipientUserId: sql.userId,
+  });
+  sql.attentionId = delivery.id;
+  await notifications.deliver(
+    {
+      deliveryId: delivery.id,
+      recipientUserId: sql.userId,
+      channel: 'discord',
+      expectedAttemptId: null,
+    },
+    {
+      isEligible: (current) =>
+        current.recipientUserId === sql.userId && channel.binding(actor)?.userId === sql.userId,
+      // This synthetic transport refuses before contact; it has no network implementation.
+      transport: async () => ({ status: 'failed-no-send' }),
+    }
+  );
+}
+
 /** Seeds correlated AEP, Context Package, and original evidence through their product owners. */
 async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) {
   const [
@@ -914,6 +1051,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     createdAt: turn.startedAt,
     completedAt: turn.startedAt,
   });
+  await seedChannelEvidence(o, core, workspace, sql, { workspaceId, threadId, turnId: turn.id });
   const presentation = await o.ui.publishGenerativePresentation(
     {
       store,
@@ -1538,6 +1676,11 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
         throw new Error('Native migration journals: selected retained entry is missing.');
       }
     }
+    // These private channel rows have no exported record reader. Select only the native owner's known columns.
+    const discordReceipt =
+      core.sqlite.prepare(`SELECT event_id,payload_digest,request_id,state,created_at,
+      discord_user_id,core_user_id,binding_revision,operation_id,workspace_id,thread_id,pending_request_id,turn_id
+      FROM discord_inbound_receipts WHERE event_id = ?`);
     return {
       [SQL_CORPUS_FAMILIES[0]]: one(SQL_CORPUS_FAMILIES[0], [
         token,
@@ -1580,6 +1723,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
           core,
           new o.admission.WorkspaceMutationAdmission()
         ).getAutomation(sql.automationId),
+        o.externalEvents.findExternalTriggerAdmission(core, sql.automationId, sql.externalEventKey),
       ]),
       [SQL_CORPUS_FAMILIES[6]]: one(SQL_CORPUS_FAMILIES[6], [
         retainedRuntimeTarget(o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId)),
@@ -1760,6 +1904,22 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
         ],
         [...linked.rawBytes, linked.indexBytes]
       ),
+      [SQL_CORPUS_FAMILIES[30]]: one(SQL_CORPUS_FAMILIES[30], [
+        new o.attention.AttentionNotifications(core.sqlite).get(sql.attentionId),
+      ]),
+      [SQL_CORPUS_FAMILIES[31]]: one(SQL_CORPUS_FAMILIES[31], [
+        o.discord.readDiscordAccountBinding(core.sqlite, sql.userId),
+        core.sqlite
+          .prepare(`SELECT digest,user_id,expires_at,consumed_at
+          FROM discord_pairing_challenges WHERE digest = ?`)
+          .get(sql.discordChallengeDigest),
+        core.sqlite
+          .prepare(`SELECT token_digest,discord_user_id,binding_revision,workspace_id,thread_id,
+          pending_request_id,kind,content_digest,expires_at FROM discord_disclosures WHERE token_digest = ?`)
+          .get(sql.discordDisclosureDigest),
+        discordReceipt.get(sql.discordPairEventId),
+        discordReceipt.get(sql.discordInspectEventId),
+      ]),
     };
   } finally {
     app?.sqlite.close();
