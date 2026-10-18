@@ -11,6 +11,7 @@ import {
   appendWorkspaceTurnEvent,
   loadWorkspaceFileRecords,
   serializeKnowledgeProposalRecord,
+  serializeUserAuthoredKnowledgePage,
   writeWorkspaceFileRecords,
 } from './workspace-file-records.js';
 
@@ -44,9 +45,43 @@ describe('descriptive canonical history extensions', () => {
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(root, 'knowledge', 'notebook.git'),
     });
-    const baseRevision = notebook.publishedRevision();
-    const proposalId = `kp_${'a'.repeat(64)}`;
     const producer = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+    const sourceBytes = serializeUserAuthoredKnowledgePage(
+      {
+        id: 'source',
+        kind: 'project-context',
+        title: 'Retained evidence',
+        content: 'Published source bytes for the retained Proposal.',
+        sourceReferences: [],
+        createdAt: workspace.createdAt,
+        updatedAt: workspace.updatedAt,
+      },
+      { kind: 'workspace', workspaceId: workspace.id }
+    );
+    const initialRevision = notebook.publishedRevision();
+    const baseRevision = notebook.prepare({
+      baseRevision: initialRevision,
+      changes: { 'source.md': sourceBytes },
+      metadata: {
+        summary: 'Publish retained source fixture',
+        changeRequest: {
+          requestId: 'annotation-source',
+          inputDigest: `sha256:${createHash('sha256').update(sourceBytes).digest('hex')}`,
+        },
+        producer,
+        authority: { kind: 'direct', instructionReference: 'test:retained-source' },
+        sourceReferences: [],
+      },
+    });
+    notebook.publish({ baseRevision: initialRevision, candidateRevision: baseRevision });
+    const sourceReference = formatReferenceUri(
+      {
+        scopeId: `page/workspace/${workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId: workspace.id } })}`,
+        objectId: 'source',
+      },
+      `sha256:${createHash('sha256').update(sourceBytes).digest('hex')}`
+    );
+    const proposalId = `kp_${'a'.repeat(64)}`;
     const candidateRevision = notebook.prepare({
       baseRevision,
       changes: { 'candidate.md': body },

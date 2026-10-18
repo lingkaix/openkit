@@ -21,6 +21,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
+import { parseJsoncObject } from '../config/jsonc.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import {
   assertBackupMatchesPredecessor,
@@ -456,13 +457,17 @@ function migrateStagedWorkspaceMetadata(workspaceRoot: string, workspaceId: stri
       ? ((defaults as Record<string, unknown>).defaultAgentId ?? null)
       : null;
   const record = WorkspaceSystemRecordSchema.parse(systemFields);
-  const config = WorkspaceConfigSchema.parse({
-    schemaVersion: 1,
-    workspace: { name, defaultAgentId },
-  });
+  const configPath = join(workspaceRoot, 'config', 'workspace.jsonc');
+  const hasCurrentConfig = existsSync(configPath);
+  // Current configuration already owns editable values and its fixed base; validate without rewriting it.
+  const config = WorkspaceConfigSchema.parse(
+    hasCurrentConfig
+      ? parseJsoncObject(readFileSync(configPath, 'utf8'))
+      : { schemaVersion: 1, workspace: { name, defaultAgentId } }
+  );
 
   writeJsonAtomically(join(workspaceRoot, 'workspace-record.json'), record);
-  writeJsonAtomically(join(workspaceRoot, 'config', 'workspace.jsonc'), config);
+  if (!hasCurrentConfig) writeJsonAtomically(configPath, config);
   rmSync(predecessorPath);
 }
 

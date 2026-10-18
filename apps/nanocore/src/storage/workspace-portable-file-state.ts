@@ -17,6 +17,7 @@ import {
   KnowledgeObservationSchema,
   type ProductRetrievalTrace,
 } from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
@@ -24,6 +25,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { assertPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
@@ -293,7 +295,20 @@ export function writeWorkspacePortableFileState(
     (row) => row.resolvedAt ?? row.createdAt
   );
   if (state.workspaceConfig !== null) {
-    writeText(root, 'config/workspace.jsonc', state.workspaceConfig, false);
+    const initializedConfig = readOptionalText(root, 'config/workspace.jsonc');
+    if (initializedConfig !== null) {
+      // Native Notebook initialization fixes the target base before portable config is staged.
+      const initialized = WorkspaceConfigSchema.parse(parseJsoncObject(initializedConfig));
+      const imported = WorkspaceConfigSchema.parse(parseJsoncObject(state.workspaceConfig));
+      if (
+        !initialized.workspace.defaultKnowledgeBaseId ||
+        initialized.workspace.defaultKnowledgeBaseId !== imported.workspace.defaultKnowledgeBaseId
+      )
+        throw new Error(
+          'Portable configuration contradicts the initialized Knowledge Base binding.'
+        );
+    }
+    writeText(root, 'config/workspace.jsonc', state.workspaceConfig, initializedConfig !== null);
   }
   if (state.workspaceSchema !== null) {
     writeText(root, 'knowledge/schema/scope-schema.yaml', state.workspaceSchema, true);
@@ -751,7 +766,7 @@ function readWorkerContextPackageFiles(
         throw new Error(`Portable worker Context Package tree is incomplete: ${turnPath}.`);
       }
       files.set(tracePath, readCanonicalTextFile(join(turnDirectory, 'context-package.json')));
-      for (const entry of readTextTree(root, packagePath, true, `${packagePath}/originals/`)) {
+      for (const entry of readTextTree(root, packagePath, true)) {
         files.set(...entry);
       }
     }
@@ -798,8 +813,7 @@ function assertWorkerContextPackageFiles(files: ReadonlyMap<string, string>): vo
 function readTextTree(
   root: string,
   relativeDirectory: string,
-  recursive: boolean,
-  originalPrefix?: string
+  recursive: boolean
 ): ReadonlyMap<string, string> {
   const directory = workspaceDirectory(root, relativeDirectory, false);
   const files = new Map<string, string>();
@@ -820,9 +834,7 @@ function readTextTree(
         assertCanonicalDirectory(path);
         visit(path, relativePath);
       } else if (entry.isFile()) {
-        // Original snapshots are copied and verified as binary files by the export owner.
-        if (!originalPrefix || !relativePath.startsWith(originalPrefix))
-          files.set(relativePath, readCanonicalTextFile(path));
+        files.set(relativePath, readCanonicalTextFile(path));
       } else {
         throw new Error(`Portable workspace tree contains an invalid entry: ${path}.`);
       }

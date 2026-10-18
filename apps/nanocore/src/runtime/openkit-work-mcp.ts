@@ -614,7 +614,7 @@ export async function dispatchOpenkitWorkTool(
   return pendingToolResult('pending-input', raised.requestId);
 }
 
-/** Searches only an accepted retained PDF representation under current source authority. */
+/** Searches an exact current PDF representation under the accepted reference and current source authority. */
 async function searchSource(
   input: Parameters<typeof dispatchOpenkitWorkTool>[0],
   args: Record<string, unknown>
@@ -625,12 +625,13 @@ async function searchSource(
       code: 'mcp-call-failed',
     });
   try {
-    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    const selected = await resolveCurrentWorkerSource(input, parsed.data.path);
     if (!selected.source) throw new Error('Selected PDF is unavailable.');
     const projection = await searchPdfSourceSnapshot({
       ...selected,
       source: selected.source,
       dataRoot: input.workspaceDb.dataRoot,
+      admission: input.fileAdmission,
       query: { mode: parsed.data.mode, query: parsed.data.query, limit: parsed.data.limit },
       ...(input.signal ? { signal: input.signal } : {}),
     });
@@ -669,7 +670,7 @@ async function viewSource(
   try {
     if (!input.fileAdmission)
       return sourceToolResult({ status: 'unavailable', reason: 'unavailable' });
-    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    const selected = await resolveCurrentWorkerSource(input, parsed.data.path);
     if (!selected.source) return sourceToolResult({ status: 'unavailable', reason: 'unsupported' });
     const view = await viewWorkerSourceSnapshot({
       ...selected,
@@ -708,7 +709,7 @@ async function viewSource(
   }
 }
 
-/** Reads one accepted source snapshot through existing current Worker and source authority. */
+/** Reads one accepted source reference through existing current Worker and canonical source authority. */
 async function readSource(
   input: Parameters<typeof dispatchOpenkitWorkTool>[0],
   args: Record<string, unknown>
@@ -720,7 +721,7 @@ async function readSource(
     });
   let projection: WorkerSourceReadResult;
   try {
-    const selected = resolveCurrentWorkerSource(input, parsed.data.path);
+    const selected = await resolveCurrentWorkerSource(input, parsed.data.path);
     projection = await readWorkerSourceSnapshot({
       ...selected,
       mode: parsed.data.mode,

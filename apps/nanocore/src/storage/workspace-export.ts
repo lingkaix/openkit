@@ -25,7 +25,6 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
@@ -526,28 +525,6 @@ export function writeWorkspaceExportTree(
       history.turnEvents.flatMap(([, events]) => events.map((event) => writeRetainedV1(event)))
     );
     writeWorkspacePortableExportState(input.exportRoot, portableFileState);
-    for (const [path, text] of portableFileState?.workerContextPackageFiles ?? []) {
-      if (!path.endsWith('/context-package/package.json')) continue;
-      const manifest = WorkerContextPackageManifestSchema.parse(JSON.parse(text));
-      const packageRoot = path.slice(0, -'/package.json'.length);
-      for (const original of manifest.sourceFiles ?? []) {
-        if (!input.sourceWorkspaceRoot)
-          throw new Error('Context Package original source is unavailable.');
-        const relativePath = `${packageRoot}/${original.originalSnapshotPath}`;
-        assertWorkspaceArchiveFilePath(relativePath);
-        const sourcePath = join(input.sourceWorkspaceRoot, relativePath);
-        const measured = measureCanonicalFile(sourcePath);
-        if (
-          measured.byteLength !== original.byteLength ||
-          measured.contentDigest !== original.originalDigest
-        )
-          throw new Error('Context Package original source integrity is inconsistent.');
-        const target = join(input.exportRoot, 'workspace-files', relativePath);
-        mkdirSync(dirname(target), { recursive: true });
-        copyPortableOriginal(sourcePath, target, original.byteLength);
-      }
-    }
-
     for (const artifact of history.artifacts) {
       const artifactRoot = join(input.exportRoot, 'artifacts', artifact.id);
       if (artifact.content.format === 'file') {
