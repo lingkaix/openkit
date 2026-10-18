@@ -2578,7 +2578,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
   ).map((record) => {
     const parsed = ExportedWorkspaceApplyResultSchema.parse(record);
 
-    return ExportedStoredWorkspaceApplyResultV1Schema.parse({
+    return ExportedWorkspaceApplyResultSchema.parse({
       ...parsed,
       workspaceId: context.targetWorkspaceId,
     });
