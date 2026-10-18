@@ -6,6 +6,13 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  compareFamilies,
+  EXTERNAL_FAMILIES,
+  retainedFamilies,
+  summarizeFamilies,
+} from '../scripts/upgrade-from-previous.mjs';
+import { FILE_CORPUS_FAMILIES } from '../scripts/upgrade-from-previous-corpus.mjs';
+import {
   readSqlCorpus,
   SQL_CORPUS_FAMILIES,
   seedSqlCorpus,
@@ -111,6 +118,27 @@ async function fixture(t, existingRuntimeTarget = false) {
   return { ...input, selectors: { ...input.selectors, ...additional }, load };
 }
 
+test('covers every current registered SQLite authority family', () => {
+  const register = readFileSync(
+    join(repositoryRoot, 'docs/specs/20261017-retained_format_register.md'),
+    'utf8'
+  );
+  const sqlSection = register
+    .split('### SQLite Authority Families')[1]
+    .split('### Rebuildable And Disposable Boundary')[0];
+  const families = [...sqlSection.matchAll(/^\| ([^|]+) \|/gm)]
+    .map((match) => match[1].trim())
+    .filter((family) => family !== 'Family' && !family.startsWith('---'));
+  assert.ok(families.length > 0);
+  for (const family of families) {
+    assert.ok(SQL_CORPUS_FAMILIES.includes(family), `${family} has native corpus coverage`);
+  }
+  assert.deepEqual(
+    [...FILE_CORPUS_FAMILIES, ...SQL_CORPUS_FAMILIES, ...EXTERNAL_FAMILIES].sort(),
+    retainedFamilies(register).sort()
+  );
+});
+
 test('reopens every SQL family and its linked file owners with exact readback', async (t) => {
   const input = await fixture(t, true);
   const original = await readSqlCorpus(input);
@@ -166,13 +194,37 @@ test('reopens every SQL family and its linked file owners with exact readback', 
     'closed-out'
   );
   assert.equal(
-    original['Scheduler queue, attempts and recurring history'].values[1].phase,
+    original['Scheduler queue, attempts, recurring history and external event joins'].values[1]
+      .phase,
     'closed'
   );
   assert.equal(
-    original['Scheduler queue, attempts and recurring history'].values[2].status,
+    original['Scheduler queue, attempts, recurring history and external event joins'].values[2]
+      .status,
     'paused'
   );
+  assert.deepEqual(
+    original['Scheduler queue, attempts, recurring history and external event joins'].values[3],
+    {
+      scheduleId: input.selectors.sql.automationId,
+      eventKey: input.selectors.sql.externalEventKey,
+      sourceTurnId: input.selectors.turnId,
+      queueEntryId: input.selectors.sql.queueEntryId,
+    }
+  );
+  const attention = original['Notification attention and delivery attempts'].values[0];
+  assert.equal(attention.status, 'failed-no-send');
+  assert.equal(attention.attempt.failureCode, 'transport-refused');
+  assert.equal(attention.recipientUserId, input.userId);
+  const [binding, challenge, disclosure, pairReceipt, inspectReceipt] =
+    original['Discord bindings, pairing, disclosures and inbound receipts'].values;
+  assert.equal(binding.userId, input.userId);
+  assert.equal(challenge.user_id, input.userId);
+  assert.ok(challenge.consumed_at !== null);
+  assert.equal(disclosure.binding_revision, binding.revision);
+  assert.equal(disclosure.pending_request_id, input.selectors.sql.pendingRequestId);
+  assert.equal(pairReceipt.state, 'settled');
+  assert.equal(inspectReceipt.state, 'settled');
   assert.equal(
     original['Material content, revisions and Thread bindings'].values[1].content,
     'Synthetic upgrade continuity material.\n'
@@ -213,4 +265,44 @@ test('verifies original recovery, Context Package and raw provenance bytes', asy
   const rawPath = join(input.dataRoot, input.selectors.sql.provenancePaths[0]);
   writeFileSync(rawPath, `${readFileSync(rawPath, 'utf8')} `);
   await assert.rejects(readSqlCorpus(input), /Runtime provenance original digest/i);
+});
+
+for (const [family, table, column, selector] of [
+  ['external event joins', 'external_trigger_admissions', 'queue_entry_id', 'queueEntryId'],
+  ['attention', 'notification_attention', 'id', 'attentionId'],
+  ['delivery attempt', 'notification_delivery_attempts', 'attention_id', 'attentionId'],
+  ['Discord binding', 'discord_account_bindings', 'user_id', 'userId'],
+  ['Discord pairing', 'discord_pairing_challenges', 'digest', 'discordChallengeDigest'],
+  ['Discord disclosure', 'discord_disclosures', 'token_digest', 'discordDisclosureDigest'],
+  ['Discord receipt', 'discord_inbound_receipts', 'event_id', 'discordInspectEventId'],
+]) {
+  test(`refuses missing selected ${family} records`, async (t) => {
+    const input = await fixture(t);
+    const { openCoreDb } = await input.load('storage/db');
+    const db = openCoreDb(input.dataRoot);
+    try {
+      db.sqlite
+        .prepare(`DELETE FROM ${table} WHERE ${column} = ?`)
+        .run(input.selectors.sql[selector]);
+    } finally {
+      db.sqlite.close();
+    }
+    await assert.rejects(readSqlCorpus(input), /missing|attention_recovery_required/i);
+  });
+}
+
+test('detects changes in selected Discord disclosure values', async (t) => {
+  const input = await fixture(t);
+  const baseline = summarizeFamilies(await readSqlCorpus(input), SQL_CORPUS_FAMILIES);
+  const { openCoreDb } = await input.load('storage/db');
+  const db = openCoreDb(input.dataRoot);
+  try {
+    db.sqlite
+      .prepare('UPDATE discord_disclosures SET content_digest = ? WHERE token_digest = ?')
+      .run('f'.repeat(64), input.selectors.sql.discordDisclosureDigest);
+  } finally {
+    db.sqlite.close();
+  }
+  const changed = await readSqlCorpus(input);
+  assert.throws(() => compareFamilies(baseline, changed, SQL_CORPUS_FAMILIES), /readback changed/);
 });
