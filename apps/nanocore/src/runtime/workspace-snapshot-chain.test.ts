@@ -511,6 +511,10 @@ describe('retained Workspace snapshot SQL formats', () => {
     families
   )('refuses %s version 2 before JSON decode, authority lookup or replay', (table) => {
     const { db, capture } = retainedSnapshotChainFixture();
+    if (table === 'workspace_snapshot_collections') {
+      // The older collection is the only proof for this commit after the accepted cursor advances.
+      db.sqlite.prepare('UPDATE workspace_snapshot_cursors SET accepted_commit=?').run(next.tree);
+    }
     const column =
       table === 'workspace_snapshot_cursors' ? 'baseline_identity_json' : 'identity_json';
     db.sqlite.prepare(`UPDATE ${table} SET schema_version=2, ${column}='{invalid'`).run();
