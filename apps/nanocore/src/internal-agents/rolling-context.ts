@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Item } from '@openkit/protocol';
+import type { Item, ServerItem } from '@openkit/protocol';
 import { deriveEntityId } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { PiAiFailure } from '../llm/pi-ai-failure.js';
@@ -17,6 +17,7 @@ import { redactInternalAgentText } from './redaction.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 type Summary = Extract<Item, { type: 'context-summary' }>;
+type ServerSummary = Extract<ServerItem, { type: 'context-summary' }>;
 
 /** Inputs of the shared assembler; the existing role owns admission, source authority and Provider dispatch. */
 export interface InternalAgentContextInput {
@@ -27,6 +28,8 @@ export interface InternalAgentContextInput {
   readonly environmentFacts?: unknown;
   readonly tools: readonly AgentTool[];
   readonly model: InternalAgentLogicalModel;
+  /** Selected role profile; omission retains that no profile was selected. */
+  readonly profileId?: string | null;
   readonly bounds: {
     readonly context: number | null | undefined;
     readonly output: number | null | undefined;
@@ -135,7 +138,7 @@ export function internalContextRange(
 /** Binds canonical source Items; only cross-run rolling history also binds terminal Turn outcomes. */
 export function internalContextSourceDigest(
   store: Pick<FsStore, 'getTurnById'>,
-  items: readonly Item[],
+  items: readonly (Item | ServerItem)[],
   strategy: Summary['strategy'] = 'rolling'
 ): string {
   if (strategy === 'compaction') return internalContextDigest({ version: 1, sources: items });
@@ -149,14 +152,14 @@ export function internalContextSourceDigest(
 }
 
 /** Exact visible body whose digest binds history search and range-read evidence. */
-export function internalContextHistoryBody(item: Item): string {
+export function internalContextHistoryBody(item: Item | ServerItem): string {
   return item.type === 'user-message' || item.type === 'assistant-message'
     ? item.text
     : redactInternalAgentText(JSON.stringify(item));
 }
 
 /** Projects accepted history as inert observations; Tool records never execute or acquire instruction authority. */
-export function internalContextMessage(item: Item): AgentMessage {
+export function internalContextMessage(item: Item | ServerItem): AgentMessage {
   const text =
     item.type === 'user-message' || item.type === 'assistant-message'
       ? redactInternalAgentText(item.text)
@@ -218,7 +221,7 @@ export async function prepareInternalAgentContext(
   const startedAt = Date.now();
   const deadline = AbortSignal.timeout(input.limits.deadlineMs);
   const signal = AbortSignal.any([input.signal, deadline]);
-  // Pin the actual rolling admission bound in the existing execution record before inference.
+  // Pin the rolling admission and initial run metadata before summary or answer inference.
   assertInternalAgentContextFits(
     { systemPrompt: input.systemPrompt, messages: [], tools: input.tools },
     input.bounds.context ?? undefined,
@@ -232,6 +235,11 @@ export async function prepareInternalAgentContext(
   const currentTurn = input.store.getTurnById(input.turn.id);
   const execution = {
     ...currentTurn.internalExecution,
+    profileId:
+      currentTurn.internalExecution?.profileId !== undefined
+        ? currentTurn.internalExecution.profileId
+        : (input.profileId ?? null),
+    limits: currentTurn.internalExecution?.limits ?? input.limits,
     roleId: currentTurn.agentId!,
     logicalModelId: input.model.logicalModelId,
     contextStrategy: 'rolling' as const,
@@ -245,7 +253,11 @@ export async function prepareInternalAgentContext(
       currentTurn.internalExecution.threshold !== execution.threshold)
   )
     throw capacity();
-  if (!currentTurn.internalExecution)
+  if (
+    !currentTurn.internalExecution ||
+    currentTurn.internalExecution.profileId === undefined ||
+    currentTurn.internalExecution.limits === undefined
+  )
     input.store.updateTurn(input.turn.id, { internalExecution: execution });
   const environmentDigest = internalContextDigest({
     version: 1,
@@ -509,7 +521,7 @@ export async function prepareInternalAgentContext(
 }
 
 /** Range annotation remains model-visible untrusted context and gives exact history retrieval endpoints. */
-export function internalContextSummaryMessage(summary: Summary): AgentMessage {
+export function internalContextSummaryMessage(summary: Summary | ServerSummary): AgentMessage {
   return {
     role: 'assistant',
     truncated: false,
@@ -518,7 +530,7 @@ export function internalContextSummaryMessage(summary: Summary): AgentMessage {
         type: 'text',
         text: `<context_summary>${JSON.stringify({
           summaryItemId: summary.id,
-          workspaceId: summary.workspaceId,
+          ...('owner' in summary ? { owner: summary.owner } : { workspaceId: summary.workspaceId }),
           threadId: summary.threadId,
           strategy: summary.strategy,
           logicalModelId: summary.logicalModelId,

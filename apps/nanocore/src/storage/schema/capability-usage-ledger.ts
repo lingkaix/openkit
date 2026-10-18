@@ -29,8 +29,8 @@ export const capabilityCalls = sqliteTable(
   {
     /** Stable capability call id. */
     callId: text('call_id').primaryKey().notNull(),
-    /** Workspace that owns the call. */
-    workspaceId: text('workspace_id').notNull(),
+    /** Workspace owner, or null for a Server-owned row in Core. */
+    workspaceId: text('workspace_id'),
     /** Thread lineage when available. */
     threadId: text('thread_id'),
     /** Turn lineage when available. */
@@ -100,8 +100,8 @@ export const usageRecords = sqliteTable(
   {
     /** Stable usage record id. */
     usageId: text('usage_id').primaryKey().notNull(),
-    /** Workspace that owns the usage. */
-    workspaceId: text('workspace_id').notNull(),
+    /** Workspace owner, or null for a Server-owned row in Core. */
+    workspaceId: text('workspace_id'),
     /** Thread lineage when available. */
     threadId: text('thread_id'),
     /** Turn lineage when available. */

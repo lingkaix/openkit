@@ -15,13 +15,24 @@ import { TimestampSchema } from '../common/timestamps.js';
 import { GitFailureExplanationSchema } from '../errors/failure-explanation.js';
 import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
 import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from './artifact.js';
-import { ItemSchema } from './item.js';
+import { ItemSchema, ServerItemSchema } from './item.js';
 import { KnowledgeOwnerScopeSchema } from './knowledge-notebook.js';
 
 /** Pinned choices and admitted inputs of an existing internal-role Turn, never an execution store. */
 const InternalAgentExecutionSchema = z.object({
   roleId: z.string().min(1),
   logicalModelId: z.string().min(1),
+  /** Selected authored role profile, or null when caller defaults supplied the limits. */
+  profileId: z.string().min(1).nullable().optional(),
+  /** Effective admission limits before context summaries consume the run budget. */
+  limits: z
+    .object({
+      maxModelTurns: z.number().int().positive(),
+      maxToolCalls: z.number().int().positive(),
+      deadlineMs: z.number().int().positive(),
+    })
+    .strip()
+    .optional(),
   contextStrategy: z.enum(['rolling', 'compaction']),
   threshold: z.number().int().positive(),
   knowledge: z
@@ -191,7 +202,9 @@ export const TurnRecordSchema = TurnBaseSchema.extend({
  * @param context Zod refinement context.
  */
 function refineTurnItemRelationships(
-  turn: z.infer<typeof TurnRecordSchema>,
+  turn: Pick<z.infer<typeof TurnRecordSchema>, 'triggerActor'> & {
+    items: readonly (z.infer<typeof ItemSchema> | z.infer<typeof ServerItemSchema>)[];
+  },
   context: z.RefinementCtx
 ): void {
   const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
@@ -225,3 +238,15 @@ export const ProductTurnSchema = TurnRecordSchema.omit({ agentSessionId: true })
 
 /** Ordinary product-surface Turn without AgentSession identity. */
 export type ProductTurn = z.infer<typeof ProductTurnSchema>;
+
+/** Server Turns inherit immutable Server ownership and reuse the ordinary Turn lifecycle. */
+export const ServerTurnSchema = TurnRecordSchema.omit({ workspaceId: true, items: true })
+  .extend({
+    owner: z.object({ kind: z.literal('server') }),
+    workspaceId: z.never().optional(),
+    items: z.array(ServerItemSchema),
+  })
+  .superRefine(refineTurnItemRelationships);
+
+/** Canonical attributable round of Server work. */
+export type ServerTurn = z.infer<typeof ServerTurnSchema>;

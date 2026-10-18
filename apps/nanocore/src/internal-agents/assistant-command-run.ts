@@ -66,6 +66,7 @@ export interface AssistantCommandRunInput {
     InternalAgentGatewayProviderOptions,
     'capture' | 'callContext' | 'auditLineage' | 'onDispatch' | 'usageEndpoint'
   >;
+  readonly profileId: string | null;
   readonly limits: InternalAgentLoopInput['limits'];
   readonly signal: AbortSignal;
   readonly readContextEvidence?: InternalAgentContextInput['readEvidence'];
@@ -189,6 +190,7 @@ export async function runAssistantCommand(
           requestActor: actor,
         },
         tools: assembly.tools,
+        profileId: input.profileId,
         limits: input.limits,
         signal: input.signal,
         assertCurrent,
@@ -240,6 +242,7 @@ export async function runAssistantModel(input: {
   readonly systemPrompt: string;
   readonly messages: readonly AgentMessage[];
   readonly tools: readonly AgentTool[];
+  readonly profileId: string | null;
   readonly limits: InternalAgentLoopInput['limits'];
   readonly signal: AbortSignal;
   readonly assertCurrent: () => void;
@@ -293,6 +296,7 @@ export async function runAssistantModel(input: {
         modelFamilyId: model.modelFamilyId,
       },
       bounds: { context: model.contract?.context, output: model.contract?.output },
+      profileId: input.profileId,
       limits: input.limits,
       signal: input.signal,
       assertCurrent,

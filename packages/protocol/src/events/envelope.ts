@@ -12,10 +12,11 @@ import { TimestampSchema } from '../common/timestamps.js';
 import { AgentSessionSchema } from '../models/agent.js';
 import { ApprovalRequestSchema } from '../models/approval.js';
 import { ArtifactSchema } from '../models/artifact.js';
-import { ItemSchema, ItemTypeSchema } from '../models/item.js';
-import { ThreadSchema } from '../models/thread.js';
+import { ItemSchema, ItemTypeSchema, ServerItemSchema } from '../models/item.js';
+import { ServerThreadSchema, ThreadSchema } from '../models/thread.js';
 import {
   ProductTurnSchema,
+  ServerTurnSchema,
   StopReasonSchema,
   TurnSchema,
   TurnStatusSchema,
@@ -610,3 +611,31 @@ export const ProductSseEventEnvelopeSchema = ForwardCompatibleSseEventEnvelopeSc
     .refine((event) => event !== 'agent.session.updated', 'AgentSession events are internal.'),
   data: ProductForwardCompatibleServerEventSchema,
 });
+
+/** Existing transcript event families available to work with a Server-owned narrative. */
+export const ServerTurnEventSchema = z.discriminatedUnion('type', [
+  ThreadCreatedEventSchema.extend({ thread: ServerThreadSchema }),
+  ThreadUpdatedEventSchema.extend({ thread: ServerThreadSchema }),
+  TurnStartedEventSchema,
+  TurnUpdatedEventSchema.extend({ turn: ServerTurnSchema }),
+  ItemCreatedEventSchema.extend({ item: ServerItemSchema }),
+  ItemDeltaEventSchema,
+  ItemCompletedEventSchema.extend({ item: ServerItemSchema }),
+  TurnCompletedEventSchema.extend({ turn: ServerTurnSchema }),
+  ErrorEventSchema,
+]);
+
+/** Server-owned transcript envelope; Workspace envelopes keep their current required placement. */
+export const ServerTurnEventEnvelopeSchema = SseEventEnvelopeSchema.omit({
+  workspaceId: true,
+  data: true,
+}).extend({
+  owner: z.object({ kind: z.literal('server') }),
+  workspaceId: z.never().optional(),
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  data: ServerTurnEventSchema,
+});
+
+/** Retained Server transcript envelope. */
+export type ServerTurnEventEnvelope = z.infer<typeof ServerTurnEventEnvelopeSchema>;

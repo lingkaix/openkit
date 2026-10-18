@@ -14,7 +14,7 @@ Naming boundary: the product agent that pursues one Goal is the Coordinator, and
 ## Principles
 
 - Each concept has one canonical owner. Other documents may project it but must not redefine it.
-- The stable work backbone is `Workspace -> Thread -> Turn -> Item[]`.
+- The default work backbone is `Workspace -> Thread -> Turn -> Item[]`.
 - Workspace scope is the default boundary for work. Any global, server, user, built-in, or shared scope must be declared by its owning aspect.
 - Product, protocol, storage, runtime, and adapter projections must preserve the root model without creating parallel authority.
 
@@ -72,11 +72,13 @@ The operation attached to each field follows its natural owner: a scalar prefere
 
 ### Thread
 
-`Thread` is one durable narrative for related work inside exactly one workspace.
+`Thread` is one durable narrative for related work with exactly one immutable owner: a Workspace or the CoreServer. Workspace ownership remains the default. The general Server owner kind is `server`; it is not specific to an internal role. A Server-owned Thread has no Workspace anchor. Its Turns and Items inherit the Server owner.
 
 A conversational Thread is addressed to exactly one conversational counterpart. In Chat Mode that counterpart is the Core Assistant. Its private Timeline and later Workspace-shared conversations retain distinct audiences ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)). A worker-execution Thread has no conversational counterpart: it is classified by its execution purpose and remains reachable through lineage and reference Items rather than being presented as an addressed conversation.
 
 A Thread has a durable visibility classification independent of its Workspace placement; Permissions resolves the actual audience from current identity and membership. Personal conversation is private to its initiating user by default; Task and Goal work is Workspace-shared. Permissions owns source and recipient eligibility, including private conversation inside a shared Workspace. Sharing publishes explicitly selected material through that owner and never implicitly changes prior history or grants execution authority.
+
+Server-owned Threads are visible only under current Server administration authority. Workspace membership grants no access to them. A reference between owners supplies lineage, not authority or an implicit copy of history.
 
 A Thread groups sequential Turns, Items, Artifacts, Approvals, and Agent activity over time. It may involve different Agents and historical AgentSessions across those sequential Turns, but it has at most one current AgentSession and one Turn in flight. Parallel work uses parallel Threads rather than parallel Turns in one Thread ([decision](../decisions/20260924-one_active_turn_per_thread_reason.md)).
 
@@ -84,7 +86,7 @@ A Thread carries `threadSource` and optional `parentThreadId`. `threadSource` id
 
 A handoff always creates a new Thread in the Workspace that will own the receiving execution. The originating Thread retains an append-only handoff Item referencing the new Thread; it does not change addressee or move history, and neither Thread spans two Workspaces. Review, redo, refinement, retry, and recovery remain in the existing Thread only while its Workspace and addressee remain unchanged; otherwise they create a new linked Thread.
 
-Thread creation fixes its Workspace, addressee or execution classification, and lineage before its first Turn is admitted. Later updates append ordered history. Archive prevents new Turns under its owning contract without rewriting existing history. Restart reconstructs the Thread from Core-owned records, never from an AgentSession or runtime-private conversation. Conflicting, stale, replayed, or mis-scoped mutations MUST be rejected before they append history or start a Turn.
+Thread creation fixes its owner, addressee or execution classification, and lineage before its first Turn is admitted. Later updates append ordered history. Archive prevents new Turns under its owning contract without rewriting existing history. Restart reconstructs the Thread from Core-owned records, never from an AgentSession or runtime-private conversation. Conflicting, stale, replayed, or mis-scoped mutations MUST be rejected before they append history or start a Turn.
 
 Thread is not a runtime session, workflow engine, scheduling implementation, or container for concurrent writers. Runtime and workflow owners decide how sequential work inside a Thread is admitted and coordinated.
 
@@ -179,7 +181,7 @@ An external, provider-native, or adapter-native runtime identifier must not beco
 - A Thread MUST have at most one current AgentSession; historical predecessors MUST remain terminal and non-reusable.
 - A conversational Thread MUST have exactly one addressee for its whole life, while a worker-execution Thread MUST remain classified rather than represented as an addressed conversation.
 - A handoff MUST preserve its originating history and create a referenced Thread in the Workspace that owns the receiving execution.
-- Thread classification, lineage, archive, retry, and recovery MUST NOT move history across Workspaces or infer continuity from runtime-private state.
+- Thread classification, lineage, archive, retry, and recovery MUST NOT move history between owners or infer continuity from runtime-private state.
 - Item identity and lineage MUST remain immutable, and materialized records MUST NOT create a competing communication log.
 - Artifact and approval projections MUST remain traceable to item-backed history.
 - Approval MUST NOT absorb ordinary questions or user choices.

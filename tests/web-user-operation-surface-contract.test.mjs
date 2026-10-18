@@ -9,8 +9,8 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 321;
-const EXPECTED_SERVER_SIZE = 76;
+const EXPECTED_CATALOG_SIZE = 328;
+const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 242;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
