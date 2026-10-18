@@ -215,6 +215,7 @@ const request = {
 };
 
 describe('synthetic Skill Artifact/catalog component', () => {
+  // Main takes 29.4 s alone (version stack: 28.1 s); allow headroom for sequential Turns under load.
   it('runs the synthetic native Task, Artifact, human promotion and later pinned-use loop', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-candidate-native-'));
     cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
@@ -405,7 +406,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
       id: LOCAL_USER_ID,
     });
     expect(catalog.skills.pins[0]?.digest).toBe(submitted.candidate.candidateDigest);
-  }, 30_000);
+  }, 60_000);
 
   it('admits only the test fixture without activation and keeps the retired author package absent', () => {
     expect(
