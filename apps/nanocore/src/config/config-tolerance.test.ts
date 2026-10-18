@@ -463,6 +463,7 @@ const descriptiveFixtures = {
   provider: {
     file: 'providers/future.provider.jsonc',
     value: {
+      schemaVersion: 1,
       id: 'future',
       displayName: 'Future',
       kind: 'custom',
