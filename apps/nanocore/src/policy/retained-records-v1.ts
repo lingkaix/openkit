@@ -278,7 +278,7 @@ export function projectPermissionDecision(input: unknown): unknown {
   if (!input || typeof input !== 'object') return input;
   const record = input as Record<string, unknown>;
   if (!record.mediation) return record;
-  const mediation = PolicyDecisionV1Schema.parse(record.mediation);
+  const mediation = historicalDecision.parse(record.mediation);
   return {
     ...record,
     mediation,

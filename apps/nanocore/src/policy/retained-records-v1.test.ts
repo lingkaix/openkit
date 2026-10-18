@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { readAuditEventRowV1, readPermissionDecisionRowV1 } from './retained-records-v1.js';
+import {
+  projectPermissionDecision,
+  readAuditEventRowV1,
+  readPermissionDecisionRowV1,
+} from './retained-records-v1.js';
 
 const decisionRow = {
   schema_version: 1,
@@ -101,6 +105,27 @@ describe('independent version-one Policy and Audit decoders', () => {
     expect(read(invocation)?.subject).not.toHaveProperty('note');
     expect(() => read({ ...invocation, mode: 'unknown' })).toThrow();
     expect(() => read({ ...invocation, outcome: 'unknown' })).toThrow();
+    const mediation = {
+      operation: invocation.operation,
+      stage: invocation.stage,
+      proposalDigest: digest,
+      authorizationRevision: digest,
+      subject: invocation.subject,
+      role: 'final',
+      kernel: { effect: 'allow', reason: 'granted' },
+      invocations: [],
+      consumedStatements: [],
+      note: 'annotation',
+    };
+    const portable = projectPermissionDecision({ mediation }) as {
+      mediation: unknown;
+      enforcementPoint: string;
+    };
+    expect(portable.mediation).not.toHaveProperty('note');
+    expect(portable.enforcementPoint).toBe('mcp.call-tool@decide');
+    expect(() =>
+      projectPermissionDecision({ mediation: { ...mediation, stage: 'unknown' } })
+    ).toThrow();
   });
 
   it('refuses missing and unknown markers before decoding either family JSON', () => {
