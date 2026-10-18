@@ -261,6 +261,10 @@ describe('bounded scheduled poll event admission', () => {
         sourceTurnId: f.source.turnId,
         duplicate: false,
       });
+      expect(f.store.getTurnById(first.turnId).triggerSource).toEqual({
+        kind: 'automation',
+        summary: 'Scheduled event admission.',
+      });
       expect(second.threadId).not.toBe(first.threadId);
       expect(replay).toEqual({ ...first, duplicate: true });
       await expect(

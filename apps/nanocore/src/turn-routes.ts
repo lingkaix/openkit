@@ -172,6 +172,7 @@ export async function startTurn(
             snapshot: runtimeConfig(),
             store,
             triggerActor: { kind: 'user', id: actor.userId },
+            triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
             turnExecutor,
             workerPlacement,
             ...(coreDb ? { coreDb } : {}),

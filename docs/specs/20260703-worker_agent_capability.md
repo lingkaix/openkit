@@ -381,6 +381,12 @@ The worker receives an actionable error without raw upstream secrets or backend 
 - Implement the baseline rate-limit and budget model with stable denied or error records.
 - Decide whether a generic `POST /calls` endpoint is worth adding after family-specific routes stabilize.
 
+## Worker Turn Trigger Source
+
+A native Worker admission retains its known cause in the existing Protocol Turn trigger source. Direct Worker input uses user-input, a mode-selected Task handoff uses handoff, and recurring or scheduled-event admission uses automation. These values describe the entry mechanism, not the acting identity. Actor attribution, authorization, scheduler identity and event lineage retain their existing owners.
+
+Only native admission context supplies this metadata. A model or public input cannot select it. Reusing a canonical Turn preserves its recorded trigger source, including absence; replay and restart do not infer or rewrite missing history. This adds no record, source value, execution state, repair or recovery lifecycle.
+
 ## Testing Strategy
 
 - Catalog resolution tests for worker AEP snapshots.
