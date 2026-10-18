@@ -1,6 +1,5 @@
 import {
   AutomationIdSchema,
-  ReasoningEffortSchema,
   RecurringExpiredRangeIdSchema,
   RecurringOccurrenceIdSchema,
   ThreadIdSchema,
@@ -64,7 +63,7 @@ export const StoredRecurringAdmissionPayloadV1Schema = z.object({
   modelId: z.string().min(1),
   workspaceCwd: z.string().min(1).nullable(),
   workspaceRoots: z.array(StoredRecurringWorkspaceRootV1Schema),
-  reasoningEffort: ReasoningEffortSchema.optional(),
+  reasoningEffort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
   requiredFeatures: z.array(z.never()).optional(),
 });
 /** Closed trigger outcome codes; summaries never contain dependency exception text. */
