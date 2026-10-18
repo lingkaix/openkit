@@ -5,6 +5,7 @@ import {
   AuditEventIdSchema,
   AutomationIdSchema,
   CapabilityCallIdSchema,
+  KnowledgeBaseIdSchema,
   PermissionDecisionIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -189,7 +190,7 @@ export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('storage-lease'),
-      knowledgeBaseId: z.string().min(1),
+      knowledgeBaseId: KnowledgeBaseIdSchema,
       mount: z.string().min(1),
       /** Empty selects the mount root; other values are normalized relative prefixes. */
       pathPrefix: z
