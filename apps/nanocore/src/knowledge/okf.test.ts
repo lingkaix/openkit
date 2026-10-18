@@ -1,4 +1,4 @@
-import { allocateEntityId, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -337,6 +337,47 @@ describe('registered Knowledge Source identity', () => {
 });
 
 describe('knowledgeReferenceErrors', () => {
+  const pageScopeId = `page/workspace/${workspace.workspaceId}/${allocateEntityId('kb')}`;
+  const objectId = 'group/日本語 % note';
+  const local = formatReferenceUri({ scopeId: pageScopeId, objectId });
+  const pin = `sha256:${'1'.repeat(64)}`;
+
+  function errors(reference: string, verified = false, scopeId: string | undefined = pageScopeId) {
+    const parsed = parseOkfDocument({
+      path: 'a.md',
+      content: `---\ntype: KnowledgePage\nsource_refs: ${JSON.stringify([reference])}\n---\nBody`,
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('Invalid reference fixture.');
+    return knowledgeReferenceErrors(
+      parsed.document, new Map(), new Set([objectId]),
+      new Set(verified ? [reference] : []), scopeId
+    );
+  }
+
+  it('resolves canonical nested page identities only in the admitted owner and base', () => {
+    expect(errors(local)).toEqual([]);
+    for (const scopeId of [
+      `page/workspace/${allocateEntityId('ws')}/${pageScopeId.split('/').at(-1)}`,
+      `page/workspace/${workspace.workspaceId}/${allocateEntityId('kb')}`,
+      pageScopeId.replace('page/', 'raw/'),
+    ]) {
+      expect(errors(formatReferenceUri({ scopeId, objectId }), true)).toContainEqual(
+        expect.objectContaining({ code: 'reference.unresolved_knowledge' })
+      );
+    }
+    expect(errors(local, true, '')).not.toEqual([]);
+  });
+
+  it('requires exact page pin proof and rejects legacy or malformed page strings', () => {
+    const pinned = formatReferenceUri({ scopeId: pageScopeId, objectId }, pin);
+    expect(errors(pinned)).not.toEqual([]);
+    expect(errors(pinned, true)).toEqual([]);
+    for (const reference of [`knowledge:${objectId}`, `${local}@sha256:bad`]) {
+      expect(errors(reference, true)).not.toEqual([]);
+    }
+  });
+
   it('checks registered-source pins against the registry even when a closed proof is supplied', () => {
     const reference = `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'0'.repeat(64)}`;
     const parsed = parseOkfDocument({
