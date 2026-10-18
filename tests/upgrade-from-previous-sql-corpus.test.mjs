@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -317,19 +318,44 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   const targets = await input.load('runtime/nanohost-runtime-target');
   const bindings = await input.load('runtime/worker-storage-bindings');
   const aep = await input.load('runtime/aep-snapshot-ledger');
+  const { workerTurnCapturePaths } = await import(
+    pathToFileURL(createRequire(join(appRoot, 'package.json')).resolve('@openkit/worker-protocol'))
+      .href
+  );
   const sql = input.selectors.sql;
   const core = openCoreDb(input.dataRoot);
   t.after(() => core.sqlite.close());
   const target = targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
   const store = new FsStore({ dataRoot: input.dataRoot });
   const predecessor = store.getAgentSession(sql.contextAgentSessionId);
+  const actor = { kind: 'user', id: input.userId };
+  const turnInput = 'Synthetic idle native corpus.';
+  const turn = store.createTurn(predecessor.workspaceId, predecessor.threadId, turnInput, actor);
+  const requestItemId = 'it_00000000-0000-7000-8000-000000000902';
+  store.createItem({
+    id: requestItemId,
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    type: 'user-message',
+    text: turnInput,
+    actor,
+    status: 'completed',
+    createdAt: turn.startedAt,
+    completedAt: turn.startedAt,
+  });
   const session = store.createAgentSession({
-    ...predecessor,
     id: 'as_00000000-0000-7000-8000-000000000902',
-    status: 'idle',
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    agentId: predecessor.agentId,
+    status: 'busy',
+    message: null,
+    createdAt: turn.startedAt,
+    updatedAt: turn.startedAt,
     environmentPackageSnapshotId: 'aepsnap_idle-native-corpus',
   });
-  store.updateTurn(sql.contextTurnId, { agentSessionId: session.id });
+  store.updateTurn(turn.id, { agentSessionId: session.id });
   const snapshotDb = openWorkspaceDb(input.dataRoot, session.workspaceId);
   try {
     const original = aep.requireAgentEnvironmentPackageSnapshot(
@@ -337,11 +363,38 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
       session.workspaceId,
       sql.aepSnapshotId
     );
+    const capturePaths = workerTurnCapturePaths(
+      turn.threadId,
+      original.snapshot.control.adapter.targetRuntime,
+      turn.id
+    );
     aep.recordAgentEnvironmentPackageSnapshot(snapshotDb, {
       environmentPackage: {
         ...original.snapshot,
         snapshotId: session.environmentPackageSnapshotId,
-        scope: { ...original.snapshot.scope, agentSessionId: session.id },
+        createdAt: turn.startedAt,
+        scope: {
+          ...original.snapshot.scope,
+          agentSessionId: session.id,
+          turnId: turn.id,
+          itemId: requestItemId,
+          requestId: 'upgrade-corpus-idle-native',
+        },
+        control: {
+          ...original.snapshot.control,
+          transcript: {
+            ...original.snapshot.control.transcript,
+            root: capturePaths.root,
+            eventsPath: capturePaths.eventsPath,
+            itemsPath: capturePaths.itemsPath,
+            runtimeProvenance: {
+              ...original.snapshot.control.transcript.runtimeProvenance,
+              nativeOriginIndexPath: capturePaths.nativeOriginIndexPath,
+              rawStreamsRoot: capturePaths.rawStreamsRoot,
+              streamManifestPath: capturePaths.streamManifestPath,
+            },
+          },
+        },
       },
       createdAt: session.createdAt,
     });
@@ -385,6 +438,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     retainedStorage: { storageRef: storage.storageRef, workSlotRef: attached.currentWorkSlotRef },
   });
   harness.createNanoHostHarnessRuntime(core, {
+    maxActiveTurns: 1,
     adapterId: 'codex',
     adapterVersion: '0.153.4',
     harnessBindingRef: 'idle-corpus-harness-binding',
@@ -430,13 +484,23 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
       operationId: command.operationId,
       sequence: command.sequence,
       disposition: 'succeeded',
-      body: { state: 'open', nativeHandleState: 'ready', nativeHandleDigest: 'd'.repeat(64) },
+      body: {
+        state: 'open',
+        maxActiveTurns: 1,
+        nativeHandleState: 'ready',
+        nativeHandleDigest: 'd'.repeat(64),
+      },
     },
+  });
+  store.updateTurn(turn.id, {
+    status: 'completed',
+    completedAt: turn.startedAt,
+    durationMs: 0,
   });
   const previous = await captureIdleNativeBinding(input, {
     workspaceId: session.workspaceId,
     threadId: session.threadId,
-    turnId: sql.contextTurnId,
+    turnId: turn.id,
   });
   // Only this synthetic oracle substitutes exact pre-naming bytes. Real upgrade runs use the old writer.
   const snapshotPath = join(input.dataRoot, previous.aepBytes.path);
