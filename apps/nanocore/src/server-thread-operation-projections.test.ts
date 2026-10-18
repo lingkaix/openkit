@@ -6,14 +6,17 @@ import { expect, it, onTestFinished } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
+  setDefaultServerAdminTokenId,
 } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
+import { createOperationInvocation } from './operation-composition.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 it('admits Server history only with current Server authority and never through a Workspace selector', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'server-thread-api-'));
@@ -59,6 +62,16 @@ it('admits Server history only with current Server authority and never through a
   expect(denied.status).toBe(403);
   expect(JSON.stringify(await denied.json())).not.toContain('Private Server maintenance');
   expect(store.listThreads(workspace.id)).toEqual([]);
+  expect(setDefaultServerAdminTokenId(coreDb, userId, admin.tokenId)).toBe(true);
+  const invoke = createOperationInvocation({
+    coreDb,
+    store,
+    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+  });
+  const session = { kind: 'public' as const, actor: { kind: 'session' as const, userId } };
+  expect(await invoke('thread.server.read', { threadId: thread.id }, session)).toMatchObject({
+    thread: { id: thread.id, owner: { kind: 'server' } },
+  });
   const deniedTell = await app.request(
     ...operationRequest(
       'knowledge.server.tell',
@@ -80,5 +93,8 @@ it('admits Server history only with current Server authority and never through a
     (await read(admin.secret, { threadId: thread.id, workspaceId: workspace.id })).status
   ).toBe(400);
   revokeOpenKitAccessTokenRecord(coreDb, admin.tokenId);
+  await expect(
+    invoke('thread.server.read', { threadId: thread.id }, session)
+  ).rejects.toMatchObject({ code: 'deployment_admin_required' });
   expect((await read(admin.secret)).status).toBe(401);
 });
