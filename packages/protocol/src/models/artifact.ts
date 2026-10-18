@@ -129,7 +129,7 @@ export const ArtifactSchema = z
     }
   });
 
-/** Immutable version identity and producing lineage, separate from the Artifact's original origin. */
+/** Public version summary derived from its exact Artifact snapshot and producing facts. */
 export const ArtifactVersionSchema = z
   .object({
     artifactId: ArtifactIdSchema,
@@ -167,17 +167,24 @@ export const ArtifactVersionSchema = z
     }
   });
 
-/** One exact retained Artifact state and the immutable metadata that identifies its commit. */
+/** Actual parent and producing facts retained beside the exact Artifact snapshot. */
+export const ArtifactVersionCommitSchema = z.object({
+  parentVersion: z.number().int().positive().nullable(),
+  actor: ActorRefSchema,
+  threadId: ThreadIdSchema.nullable(),
+  turnId: TurnIdSchema.nullable(),
+  requestId: z.string().min(1),
+  recordedAt: TimestampSchema,
+});
+
+/** One exact retained Artifact snapshot with its actual linear parent and producing facts. */
 export const ArtifactVersionRecordSchema = z
-  .object({ artifact: ArtifactSchema, version: ArtifactVersionSchema })
+  .object({ artifact: ArtifactSchema, version: ArtifactVersionCommitSchema })
   .superRefine(({ artifact, version }, context) => {
     if (
-      artifact.id !== version.artifactId ||
-      artifact.workspaceId !== version.workspaceId ||
-      artifact.version !== version.artifactVersion ||
-      artifact.contentDigest !== version.contentDigest ||
-      artifact.title !== version.title ||
-      artifact.summary !== version.summary ||
+      version.parentVersion !== (artifact.version === 1 ? null : artifact.version - 1) ||
+      (version.threadId === null) !== (version.turnId === null) ||
+      (artifact.version > 1 && version.turnId === null) ||
       artifact.lastMutationRequestId !== version.requestId ||
       artifact.updatedAt !== version.recordedAt ||
       (artifact.version === 1 &&
@@ -194,7 +201,7 @@ export const ArtifactVersionRecordSchema = z
       context.addIssue({
         code: 'custom',
         path: ['version'],
-        message: 'Artifact version metadata must match its exact retained Artifact state.',
+        message: 'Artifact version producing facts must match its exact retained Artifact state.',
       });
     }
   });

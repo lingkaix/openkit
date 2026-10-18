@@ -13,6 +13,7 @@ import type {
   KnowledgeProposalApplication,
   KnowledgeProposalReview,
   MaterializedWorkspaceRoot,
+  ReadArtifactVersionResponse,
   SubmitKnowledgeProposalDecisionRequest,
   SubmitKnowledgeProposalDecisionResponse,
 } from '@openkit/app-api-schemas';
@@ -166,6 +167,20 @@ import {
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
 type WorkspaceResources = Omit<ProtocolWorkspaceResources, 'agents'> & { agents: RuntimeAgent[] };
+
+/** Derives public metadata from the single retained snapshot and its producing facts. */
+function projectArtifactVersion(record: ArtifactVersionRecord): ArtifactVersion {
+  const { artifact, version } = record;
+  return {
+    artifactId: artifact.id,
+    workspaceId: artifact.workspaceId,
+    artifactVersion: artifact.version,
+    title: artifact.title,
+    summary: artifact.summary,
+    contentDigest: artifact.contentDigest,
+    ...version,
+  };
+}
 
 /** Staged workspace root made available before an imported workspace is published. */
 export interface ImportWorkspaceStage {
@@ -1559,10 +1574,10 @@ export class FsStore {
                 item.threadId === lineage.threadId &&
                 item.turnId === lineage.turnId &&
                 item.artifactId === artifact.id &&
-                item.artifactVersion === lineage.artifactVersion &&
+                item.artifactVersion === record.artifact.version &&
                 item.lastMutationRequestId === lineage.requestId &&
-                item.title === lineage.title &&
-                item.summary === lineage.summary
+                item.title === record.artifact.title &&
+                item.summary === record.artifact.summary
             )
           )
             throw new Error('The retained Artifact version lacks its exact producing Item.');
@@ -4078,13 +4093,7 @@ export class FsStore {
     const versionRecord = ArtifactVersionRecordSchema.parse({
       artifact,
       version: {
-        artifactId: artifact.id,
-        workspaceId: artifact.workspaceId,
-        artifactVersion: 1,
         parentVersion: null,
-        title: artifact.title,
-        summary: artifact.summary,
-        contentDigest: artifact.contentDigest,
         actor:
           artifact.origin.kind === 'imported' ? artifact.origin.actor : producingTurn!.triggerActor,
         threadId: artifact.threadId,
@@ -4330,7 +4339,7 @@ export class FsStore {
         'recovery_required',
         'The Artifact version history is unavailable.'
       );
-    return versions.map((record) => structuredClone(record.version));
+    return versions.map((record) => structuredClone(projectArtifactVersion(record)));
   }
 
   /** Resolves one exact immutable Artifact version and verifies its retained original. */
@@ -4338,7 +4347,7 @@ export class FsStore {
     workspaceId: string,
     artifactId: string,
     artifactVersion: number
-  ): ArtifactVersionRecord {
+  ): ReadArtifactVersionResponse {
     const current = this.getArtifact(workspaceId, artifactId);
     if (
       !Number.isSafeInteger(artifactVersion) ||
@@ -4377,7 +4386,7 @@ export class FsStore {
         'The retained Artifact version authority is contradictory.'
       );
     this.assertArtifactContent(record.artifact);
-    return structuredClone(record);
+    return structuredClone({ artifact: record.artifact, version: projectArtifactVersion(record) });
   }
 
   /** Checks current version and audience before staging or publishing a manual revision. */
@@ -4435,7 +4444,7 @@ export class FsStore {
   public commitArtifactVersion(
     input: CommitArtifactVersionInput,
     payload?: StagedArtifactPayload
-  ): ArtifactVersionRecord {
+  ): ReadArtifactVersionResponse {
     this.assertArtifactVersionCommit(input);
     const current = this.getArtifact(input.workspaceId, input.artifactId);
     const command = input.command ?? 'artifact.version-commit';
@@ -4483,13 +4492,7 @@ export class FsStore {
     const record = ArtifactVersionRecordSchema.parse({
       artifact,
       version: {
-        artifactId: current.id,
-        workspaceId: input.workspaceId,
-        artifactVersion: artifact.version,
         parentVersion: current.version,
-        title: artifact.title,
-        summary: artifact.summary,
-        contentDigest,
         actor: input.actor,
         threadId: input.threadId,
         turnId,
@@ -4565,7 +4568,7 @@ export class FsStore {
       this.persist(input.workspaceId);
       throw error;
     }
-    return structuredClone(record);
+    return structuredClone({ artifact: record.artifact, version: projectArtifactVersion(record) });
   }
 
   /** Resolves this Workspace's existing single Git content owner. */

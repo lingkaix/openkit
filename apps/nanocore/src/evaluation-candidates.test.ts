@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createArtifactReview } from './artifact-reviews.js';
 import {
   appendCandidateSetJudgement,
   createCandidateSet,
@@ -164,6 +165,20 @@ describe('Workspace candidate set authority', () => {
         choice: { ...state.candidates[0]!, artifactVersion: 9 },
       })
     ).rejects.toMatchObject({ code: 'invalid_request' });
+    for (const candidate of state.candidates) {
+      createArtifactReview(state.workspaceDb, {
+        ...candidate,
+        sourceThreadId: null,
+        sourceTurnId: null,
+        sourceAgentId: null,
+        materialProposal: null,
+        createdAt: state.store.getArtifactVersion(
+          state.workspace.id,
+          candidate.artifactId,
+          candidate.artifactVersion
+        ).version.recordedAt,
+      });
+    }
     const reviewsBeforeChoice = state.workspaceDb.sqlite
       .prepare('SELECT * FROM artifact_reviews ORDER BY review_id')
       .all();

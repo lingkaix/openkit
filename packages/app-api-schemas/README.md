@@ -224,3 +224,5 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 `external-trigger.ts` and `external-trigger-operations.ts` declare the scheduled poll event admission input and its ordinary Worker references. The operation accepts only Worker-package credentials. Native invocation binds source scope; model arguments cannot select another schedule or target Thread. `external-trigger.test.ts` checks that boundary without adding event execution states.
 
 Evaluation Material-range targets use the existing half-open UTF-16 contract without a duplicate unit field. Candidate-set select judgements and independent version-owned Review choices have separate targets and are never dual-written; [Evaluation Foundation](../../docs/specs/20261017-evaluation_foundation.md) owns that boundary.
+
+`material.ts` keeps the existing Artifact version list, detail and commit response fields as derived projections of the retained snapshot and producing facts. `material-range.ts` owns the unchanged exact Material-base UTF-16 range schema, which `material.ts` imports and re-exports.

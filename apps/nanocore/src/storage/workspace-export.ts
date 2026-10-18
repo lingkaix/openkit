@@ -961,10 +961,10 @@ export function assertPortableArtifactHistory(
               item.threadId === publication.threadId &&
               item.turnId === publication.turnId &&
               item.artifactId === artifact.id &&
-              item.artifactVersion === publication.artifactVersion &&
+              item.artifactVersion === record.artifact.version &&
               item.lastMutationRequestId === publication.requestId &&
-              item.title === publication.title &&
-              item.summary === publication.summary
+              item.title === record.artifact.title &&
+              item.summary === record.artifact.summary
           )
         ) {
           throw new Error('Artifact export history lacks its exact publication Item.');

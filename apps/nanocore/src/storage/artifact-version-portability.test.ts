@@ -243,8 +243,9 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
     expect(raw.artifact.origin.actor.description).toBe('Original importer');
     expect(raw.artifact.content.description).toBe(`Exact original ${version}`);
     expect(raw.artifact.id).toBe(restored.id);
-    expect(raw.version.artifactId).toBe(restored.id);
-    expect(raw.version.workspaceId).toBe(imported.importedWorkspaceId);
+    expect(raw.version).not.toHaveProperty('artifactId');
+    expect(raw.version).not.toHaveProperty('workspaceId');
+    expect(raw.artifact.workspaceId).toBe(imported.importedWorkspaceId);
   }
   const first = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 1);
   const second = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 2);

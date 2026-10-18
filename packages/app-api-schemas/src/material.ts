@@ -38,7 +38,24 @@ export const ListArtifactVersionsResponseSchema = z.object({
 });
 
 /** Exact historical Artifact state and the immutable lineage of that version. */
-export const ReadArtifactVersionResponseSchema = ArtifactVersionRecordSchema;
+export const ReadArtifactVersionResponseSchema = ArtifactVersionRecordSchema.safeExtend({
+  version: ArtifactVersionSchema,
+}).superRefine(({ artifact, version }, context) => {
+  if (
+    artifact.id !== version.artifactId ||
+    artifact.workspaceId !== version.workspaceId ||
+    artifact.version !== version.artifactVersion ||
+    artifact.title !== version.title ||
+    artifact.summary !== version.summary ||
+    artifact.contentDigest !== version.contentDigest
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['version'],
+      message: 'Artifact version summary must match its exact Artifact snapshot.',
+    });
+  }
+});
 
 /** One manual inline revision, communicated by a new Core-local Turn in the selected idle Thread. */
 export const CommitArtifactVersionRequestSchema = z
@@ -61,7 +78,7 @@ export const CommitArtifactFileVersionRequestSchema = CommitArtifactVersionReque
 });
 
 /** Exact version result shared by inline and streamed publication. */
-export const CommitArtifactVersionResponseSchema = ArtifactVersionRecordSchema;
+export const CommitArtifactVersionResponseSchema = ReadArtifactVersionResponseSchema;
 
 /** Public retained-version inventory. */
 export type ListArtifactVersionsResponse = z.infer<typeof ListArtifactVersionsResponseSchema>;
