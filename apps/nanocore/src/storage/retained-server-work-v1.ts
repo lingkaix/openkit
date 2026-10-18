@@ -15,7 +15,6 @@ import {
 } from './retained-work-events-v1.js';
 import {
   isPermittedStoredApprovalDecisionV1,
-  StoredApprovalDecisionItemV1Schema,
   StoredItemPayloadV1Schema,
 } from './retained-work-items-v1.js';
 import { StoredTurnPayloadV1Shape } from './retained-work-metadata-v1.js';
@@ -26,21 +25,49 @@ const ServerOwnershipV1Shape = {
   workspaceId: z.never().optional(),
 };
 
-const serverItems = StoredItemPayloadV1Schema.options.map((schema) => {
-  if (schema === StoredApprovalDecisionItemV1Schema) {
-    return z
-      .object({ ...StoredApprovalDecisionItemV1Schema.shape, ...ServerOwnershipV1Shape })
-      .refine(isPermittedStoredApprovalDecisionV1, {
-        message: 'A system approval decision must be a repository-push policy grant.',
-      });
-  }
-  return schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape);
-});
+const [
+  UserMessageV1Schema,
+  AssistantMessageV1Schema,
+  ContextSummaryV1Schema,
+  ReasoningV1Schema,
+  ArtifactReferenceV1Schema,
+  CommandExecutionV1Schema,
+  ApprovalRequestV1Schema,
+  ApprovalDecisionV1Schema,
+  UserInputRequestV1Schema,
+  UserInputResponseV1Schema,
+  FileChangeV1Schema,
+  ToolCallV1Schema,
+  AgentHandoffV1Schema,
+  StatusV1Schema,
+  PlanV1Schema,
+  KnowledgeInjectionV1Schema,
+  GenerativeUiReferenceV1Schema,
+] = StoredItemPayloadV1Schema.options;
 
-/** Fixed Server Item payloads share the retained Item vocabulary and its approval refinement. */
+/** Fixed Server variants preserve each Item shape; explicit adaptation retains discriminator typing. */
 export const StoredServerItemPayloadV1Schema = z.discriminatedUnion('type', [
-  serverItems[0]!,
-  ...serverItems.slice(1),
+  UserMessageV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  AssistantMessageV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  ContextSummaryV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  ReasoningV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  ArtifactReferenceV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  CommandExecutionV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  ApprovalRequestV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  z
+    .object({ ...ApprovalDecisionV1Schema.shape, ...ServerOwnershipV1Shape })
+    .refine(isPermittedStoredApprovalDecisionV1, {
+      message: 'A system approval decision must be a repository-push policy grant.',
+    }),
+  UserInputRequestV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  UserInputResponseV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  FileChangeV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  ToolCallV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  AgentHandoffV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  StatusV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  PlanV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  KnowledgeInjectionV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
+  GenerativeUiReferenceV1Schema.omit({ workspaceId: true }).extend(ServerOwnershipV1Shape),
 ]);
 
 const serverItemRows = StoredServerItemPayloadV1Schema.options.map((schema) =>
