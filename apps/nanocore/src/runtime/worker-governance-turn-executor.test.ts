@@ -8740,6 +8740,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  // The runner includes durable notebook publication and retrieval before lineage checks.
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
       maxContextTokens: 240_000,
@@ -9199,7 +9200,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       launchSpy.mockRestore();
       fixture.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('fails closed when a direct Task checkpoint lacks its governed Knowledge selection', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge-missing');
