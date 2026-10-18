@@ -28,10 +28,39 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
+import {
+  dispatchOpenkitWorkTool,
+  OPENKIT_WORK_TOOL_DEFINITIONS,
+  OPENKIT_WORK_TOOLS,
+} from './openkit-work-mcp.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
 import { readWorkerRawOutput } from './worker-raw-output.js';
+
+it('advertises the canonical Knowledge and Work Tool projections in their fixed order', () => {
+  expect(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
+    'knowledge.ask',
+    'knowledge.tell',
+    'work.input.request',
+    'work.peer.list',
+    'work.peer.read',
+    'work.source.read',
+    'work.source.search',
+    'work.source.view',
+    'work.artifact.submit',
+  ]);
+  expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toEqual([
+    'knowledge_ask',
+    'knowledge_tell',
+    'work_input_request',
+    'work_peer_list',
+    'work_peer_read',
+    'work_source_read',
+    'work_source_search',
+    'work_source_view',
+    'work_artifact_submit',
+  ]);
+});
 
 /** Creates real canonical owners; the capture double stands outside the Core publication seam. */
 function submissionFixture() {
@@ -126,7 +155,7 @@ function submissionFixture() {
     );
   };
   const submit = (requestId = 'req_file_1', overrides: Record<string, unknown> = {}) =>
-    dispatchOpenkitWorkTool(input, 'work_submit_artifact', {
+    dispatchOpenkitWorkTool(input, 'work_artifact_submit', {
       requestId,
       path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
       kind: 'report',
@@ -163,6 +192,25 @@ function submissionFixture() {
     credentialCheckValues,
   };
 }
+
+it('refuses old and unregistered Work spellings before an owner effect', async () => {
+  const fixture = submissionFixture();
+  const before = fixture.counts();
+  for (const name of [
+    'work_submit_artifact',
+    'work_request_input',
+    'work_read_source',
+    'work_search_source',
+    'work_view_source',
+    'work.artifact.submit',
+  ]) {
+    await expect(dispatchOpenkitWorkTool(fixture.input, name, {})).rejects.toMatchObject({
+      code: 'capability_denied',
+    });
+  }
+  expect(fixture.captureArtifact).not.toHaveBeenCalled();
+  expect(fixture.counts()).toEqual(before);
+});
 
 /** Extracts the acknowledged id without inferring successful publication from assistant text. */
 function acknowledgedArtifactId(
@@ -203,8 +251,8 @@ describe('synchronous Worker file submission', () => {
     expect(fixture.captureArtifact).toHaveBeenCalledOnce();
   });
 
-  it('advertises work_submit_artifact on the existing work supply', () => {
-    expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_submit_artifact');
+  it('advertises work_artifact_submit on the existing work supply', () => {
+    expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_artifact_submit');
   });
 
   it('returns an Artifact id only after Artifact, reference, Review and receipt are durable', async () => {
@@ -583,7 +631,7 @@ describe('submission authority and byte evidence', () => {
       return firstCapture(request);
     });
     const submit = (requestId: string) =>
-      dispatchOpenkitWorkTool({ ...fixture.input, fileAdmission }, 'work_submit_artifact', {
+      dispatchOpenkitWorkTool({ ...fixture.input, fileAdmission }, 'work_artifact_submit', {
         requestId,
         path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
         kind: 'report',
@@ -615,7 +663,7 @@ describe('submission authority and byte evidence', () => {
       return captured;
     });
     await expect(
-      dispatchOpenkitWorkTool({ ...fixture.input, signal: abort.signal }, 'work_submit_artifact', {
+      dispatchOpenkitWorkTool({ ...fixture.input, signal: abort.signal }, 'work_artifact_submit', {
         requestId: 'cancelled',
         path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
         kind: 'report',
@@ -796,7 +844,7 @@ function createPdfFixture(pages: readonly string[]): Buffer {
 it('dispatches bounded source reads and refuses a path outside the accepted Turn inventory', async () => {
   const fixture = submissionFixture();
   await expect(
-    dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+    dispatchOpenkitWorkTool(fixture.input, 'work_source_read', {
       path: 'sources/artifacts/not-selected/1.txt',
       mode: 'read',
     })
@@ -804,7 +852,7 @@ it('dispatches bounded source reads and refuses a path outside the accepted Turn
     isError: false,
     structuredContent: { status: 'unavailable' },
   });
-  expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_read_source');
+  expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_source_read');
   expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
 });
 
@@ -973,7 +1021,7 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   const stagingBaseline = readdirSync(stagingRoot).sort();
   expect(stagingBaseline.some((name) => name.startsWith('vision-view-'))).toBe(false);
   const args = { path: f.packagePath, crop: { left: 8, top: 0, width: 8, height: 8 } };
-  const result = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_view', args);
   expect(result).not.toHaveProperty('structuredContent');
   expect(result.isError).toBe(false);
   const image = result.content.find((block) => block.type === 'image');
@@ -1021,7 +1069,7 @@ it('returns an actual cropped selected image through standard MCP carriage and w
       return view;
     });
   onTestFinished(() => revoke.mockRestore());
-  const denied = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
+  const denied = await dispatchOpenkitWorkTool(f.input, 'work_source_view', args);
   expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(denied.content.some((block) => block.type === 'image')).toBe(false);
   expect(JSON.stringify(denied)).not.toContain(f.artifactId);
@@ -1034,7 +1082,7 @@ it('returns an actual cropped selected image through standard MCP carriage and w
 it('reads retained bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
   const fixture = await sourceToolFixture(Buffer.from('Finished report\n'), 'text/plain');
   const { packagePath, proof, artifactId } = fixture;
-  const result = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+  const result = await dispatchOpenkitWorkTool(fixture.input, 'work_source_read', {
     path: packagePath,
     mode: 'read',
   });
@@ -1045,7 +1093,7 @@ it('reads retained bytes through the real dispatcher and withholds them after cu
   });
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
   expect(proof).toHaveBeenCalledOnce();
-  const unselected = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+  const unselected = await dispatchOpenkitWorkTool(fixture.input, 'work_source_read', {
     path: `${packagePath}/not-selected`,
     mode: 'read',
   });
@@ -1055,7 +1103,7 @@ it('reads retained bytes through the real dispatcher and withholds them after cu
   fixture.coreDb.sqlite.transaction(() => {
     disableCanonicalUser(fixture.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
   })();
-  const denied = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
+  const denied = await dispatchOpenkitWorkTool(fixture.input, 'work_source_read', {
     path: packagePath,
     mode: 'read',
   });
@@ -1070,16 +1118,16 @@ it('continues selected Knowledge at its actual commit after later publication an
   const path = f.knowledge!.packagePath;
   const processor = vi.spyOn(visionProcessor, 'processVisionView');
   onTestFinished(() => processor.mockRestore());
-  const viewed = await dispatchOpenkitWorkTool(f.input, 'work_view_source', { path });
+  const viewed = await dispatchOpenkitWorkTool(f.input, 'work_source_view', { path });
   expect(viewed.structuredContent).toEqual({ status: 'unavailable', reason: 'unsupported' });
   expect(viewed.content.some((block) => block.type === 'image')).toBe(false);
   expect(processor).not.toHaveBeenCalled();
-  const searched = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+  const searched = await dispatchOpenkitWorkTool(f.input, 'work_source_search', {
     path,
     query: 'Exact',
   });
   expect(searched.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
-  const preview = await dispatchOpenkitWorkTool(f.input, 'work_read_source', { path });
+  const preview = await dispatchOpenkitWorkTool(f.input, 'work_source_read', { path });
   const page = preview.structuredContent as {
     status: string;
     text: string;
@@ -1093,7 +1141,7 @@ it('continues selected Knowledge at its actual commit after later publication an
   f.publishKnowledge(
     f.knowledgeContent.replace('Exact selected Notebook body.', 'Later current Notebook body.')
   );
-  const continued = await dispatchOpenkitWorkTool(f.input, 'work_read_source', {
+  const continued = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
     path,
     mode: 'read',
     cursor: page.cursor,
@@ -1104,14 +1152,14 @@ it('continues selected Knowledge at its actual commit after later publication an
   });
   expect(JSON.stringify(continued)).toContain('Exact selected Notebook body.');
   expect(JSON.stringify(continued)).not.toContain('Later current Notebook body.');
-  const unselected = await dispatchOpenkitWorkTool(f.input, 'work_read_source', {
+  const unselected = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
     path: 'knowledge/pages/not-selected.md',
   });
   expect(unselected.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   f.coreDb.sqlite.transaction(() => {
     disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
   })();
-  const denied = await dispatchOpenkitWorkTool(f.input, 'work_read_source', {
+  const denied = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
     path,
     mode: 'read',
     cursor: page.cursor,
@@ -1127,7 +1175,7 @@ it('searches only the selected retained PDF text through the real Worker Tool an
     'application/pdf'
   );
   expect(f.source.projection.pdfTextLayer).toBeDefined();
-  const result = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_search', {
     path: f.packagePath,
     mode: 'exact',
     query: 'needle',
@@ -1148,7 +1196,7 @@ it('searches only the selected retained PDF text through the real Worker Tool an
     },
   });
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
-  const denied = await dispatchOpenkitWorkTool(f.input, 'work_search_source', {
+  const denied = await dispatchOpenkitWorkTool(f.input, 'work_source_search', {
     path: `${f.packagePath}/unselected`,
     query: 'needle',
   });

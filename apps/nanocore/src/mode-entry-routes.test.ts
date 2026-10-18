@@ -1406,6 +1406,14 @@ describe('conversation.submit worker acceptance wait', () => {
         },
       },
     });
+    const started = Promise.withResolvers<{ turnId: string; completion: Promise<void> }>();
+    const startTurn = runtime.turnExecutor.startTurn.bind(runtime.turnExecutor);
+    let completion: Promise<void> | undefined;
+    const execution = vi.spyOn(runtime.turnExecutor, 'startTurn').mockImplementation((...args) => {
+      completion = startTurn(...args);
+      started.resolve({ turnId: args[1], completion });
+      return completion;
+    });
     const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
       .backend;
     if (cleanupFails)
@@ -1441,6 +1449,12 @@ describe('conversation.submit worker acceptance wait', () => {
       const accepted = await submit();
       expect(accepted.status, await accepted.clone().text()).toBe(202);
       const original = await accepted.json();
+      // Admission does not await asynchronous Context Package preparation or failure publication.
+      const observed = await started.promise;
+      expect(observed.turnId).toBe(original.turn.id);
+      await expect(observed.completion).rejects.toThrow(
+        'Controlled native image preparation refusal.'
+      );
       await vi.waitFor(() => expect(store.getTurnById(original.turn.id).status).toBe('failed'));
       await vi.waitFor(() =>
         expect(runtime.turnExecutor.isTurnExecutionActive?.(original.turn.id)).toBe(false)
@@ -1465,6 +1479,8 @@ describe('conversation.submit worker acceptance wait', () => {
         )
       ).toHaveLength(1);
     } finally {
+      await completion?.catch(() => undefined);
+      execution.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -2269,7 +2285,7 @@ describe('Task durable admission response', () => {
             id: 1,
             method: 'tools/call',
             params: {
-              name: 'call',
+              name: 'openkit_call',
               arguments: {
                 operation: 'task.start',
                 input: {
@@ -4450,7 +4466,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());
       expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
-        'workspace_state_read',
+        'workspace_dashboard',
         'thread_history_read',
         'knowledge_ask',
         'knowledge_tell',
@@ -4477,7 +4493,7 @@ describe('#144 real Assistant command wiring', () => {
         'kernel_records_create',
         'kernel_records_update',
         'kernel_records_batch',
-        'generative_ui_publish',
+        'generative-ui_publish',
       ]);
       const requestId = uuidv5(
         JSON.stringify([

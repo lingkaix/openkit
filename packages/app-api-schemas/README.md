@@ -210,4 +210,6 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 
 `src/feedback.ts` projects each retained Turn feedback submission with its native actor, submission time, rating and note in ordered `history`. The current rating/note remain available. Submit requests accept no actor or history override. [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md#turn-feedback-attribution-and-history) owns attribution and retention; NanoCore supplies the authenticated actor and durable append.
 
+`assertOperationNames` checks current composed operation and supplied Tool ids for canonical grammar, the 40-character model limit and collisions after additional hyphen folding. Repeated use of the same canonical id is allowed. `operationToolName` replaces dots with underscores and preserves hyphens.
+
 `light-apps.ts` exposes the actual kernel format, admitted definition digest, and nullable explicit catalog source separately. It also declares snapshot inventory and exact-revision rollback payloads. Snapshots identify consistent recovery copies with original format, definition and app/schema revisions, time, cause and content digest. Restoring an older kernel format produces an unavailable app until explicit format upgrade; the response keeps the actual restored marker and revision instead of inferring current compatibility.

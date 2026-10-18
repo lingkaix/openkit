@@ -91,7 +91,7 @@ function request(model: string) {
     tools: [
       {
         type: 'function',
-        name: 'work_view_source',
+        name: 'work_source_view',
         parameters: { type: 'object', properties: {} },
         strict: false,
       },
@@ -118,7 +118,7 @@ function request(model: string) {
         type: 'function_call',
         id: 'fc_view',
         call_id: 'call_view',
-        name: 'work_view_source',
+        name: 'work_source_view',
         arguments: '{}',
       },
       {

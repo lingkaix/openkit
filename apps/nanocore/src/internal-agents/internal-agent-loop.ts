@@ -53,7 +53,7 @@ export interface AgentToolResult {
   readonly isError?: boolean;
 }
 
-/** Fixed model-visible Tool definition bound to one server-side closure. */
+/** Canonically named Tool definition bound to one server-side closure; the provider derives its model name. */
 export interface AgentTool<TInput = unknown> {
   readonly name: string;
   readonly description: string;
