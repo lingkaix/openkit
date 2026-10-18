@@ -5,7 +5,6 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   ArchivedGitPushRecordSchema,
   ArchivedWorkspaceRepositoryGitConfigSchema,
-  ArtifactReviewViewSchema,
   BackendWorkspaceHandleReaderSchema,
   BackendWorkspaceHandleSchema,
   EvidenceBundleRecordSchema,
@@ -24,7 +23,6 @@ import {
   StagedWorkspaceReviewSchema,
   WorkerOutputManifestReaderSchema,
   WorkerOutputManifestSchema,
-  WorkspaceApplyPlanSchema,
   WorkspaceApplyResultReaderSchema,
   WorkspaceApplyResultSchema,
   WorkspaceChangeSetReaderSchema,
@@ -90,6 +88,7 @@ import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
+import { StoredArtifactReviewV1Schema } from '../artifact-review-v1.js';
 import {
   ArtifactReviewFollowUpRequestSchema,
   deriveArtifactReviewFollowUpTurnId,
@@ -137,6 +136,7 @@ import {
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
+import { StoredWorkspaceApplyPlanV1Schema } from '../runtime/workspace-apply-plans.js';
 import {
   RECURRING_PORTABLE_FEATURE,
   readRecurringPortableFiles,
@@ -196,7 +196,7 @@ type WorkspaceMaterializationRecord = z.infer<typeof WorkspaceMaterializationRec
 type BackendWorkspaceHandle = z.infer<typeof BackendWorkspaceHandleSchema>;
 type WorkerOutputManifest = z.infer<typeof WorkerOutputManifestSchema>;
 type WorkspaceChangeSet = z.infer<typeof WorkspaceChangeSetSchema>;
-type WorkspaceApplyPlan = z.infer<typeof WorkspaceApplyPlanSchema>;
+type WorkspaceApplyPlan = z.infer<typeof StoredWorkspaceApplyPlanV1Schema>;
 type WorkspaceQuarantineRecord = z.infer<typeof WorkspaceQuarantineRecordSchema>;
 type WorkspaceReconciliationRecord = z.infer<typeof WorkspaceReconciliationRecordSchema>;
 
@@ -219,19 +219,9 @@ const ImportedThreadMaterialBindingSchema = z
     updatedAt: z.string().datetime(),
   })
   .strip();
-const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.safeExtend({
-  materialProposal: ArtifactReviewViewSchema.shape.materialProposal.unwrap().strip().nullable(),
-  rangeFeedback: ArtifactReviewViewSchema.shape.rangeFeedback
-    .unwrap()
-    .unwrap()
-    .strip()
-    .nullable()
-    .optional(),
-  candidateSelections: z
-    .array(ArtifactReviewViewSchema.shape.candidateSelections.unwrap().element.strip())
-    .default([]),
+const ImportedArtifactReviewSchema = StoredArtifactReviewV1Schema.safeExtend({
   decisionRequestId: z.string().min(1).nullable(),
-}).strip();
+});
 
 /** Known-field portable Workspace Material owner accepted by import. */
 type ImportedWorkspaceMaterial = z.infer<typeof ImportedWorkspaceMaterialSchema>;
@@ -2600,9 +2590,9 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-apply-plans.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceApplyPlanSchema.parse(record);
+    const parsed = StoredWorkspaceApplyPlanV1Schema.parse(record);
 
-    return WorkspaceApplyPlanSchema.parse({
+    return StoredWorkspaceApplyPlanV1Schema.parse({
       ...parsed,
       workspaceId: context.targetWorkspaceId,
     });
@@ -3357,6 +3347,7 @@ function readWorkResourceImportState(
     const artifactId = requiredMapValue(context.artifactIds, review.artifactId, 'artifact');
     const materialProposal = review.materialProposal
       ? {
+          ...review.materialProposal,
           materialId: requiredMapValue(
             context.materialIds,
             review.materialProposal.materialId,

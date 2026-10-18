@@ -1,15 +1,16 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deriveEntityId, isEntityId } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
 import {
   createArtifactReview,
   decideArtifactReview,
   getArtifactReview,
   listArtifactReviews,
+  listExportableArtifactReviews,
   replayArtifactReviewDecision,
   selectArtifactReviewCandidate,
 } from './artifact-reviews.js';
@@ -564,4 +565,87 @@ it('chooses an accepted Material candidate after whole-revision apply advances i
   } finally {
     db.sqlite.close();
   }
+});
+
+/** Opens a temporary SQL-only Review fixture and removes its owned files after the test. */
+function retainedReviewFixture(): {
+  readonly db: WorkspaceDb;
+  readonly input: Parameters<typeof createArtifactReview>[1];
+} {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-retained-review-'));
+  const db = openWorkspaceDb(root, 'ws_00000000-0000-7716-b700-bc790c21df4a');
+  onTestFinished(() => {
+    db.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  applyScopedMigrations(db);
+  const input = {
+    artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
+    artifactVersion: 1,
+    contentDigest: contentDigest('retained review'),
+    sourceThreadId: null,
+    sourceTurnId: null,
+    sourceAgentId: null,
+    materialProposal: null,
+    createdAt: '2026-07-19T00:00:00.000Z',
+  };
+  createArtifactReview(db, input);
+  return { db, input };
+}
+
+describe('retained Artifact Review SQL format', () => {
+  it('writes v1 and retains descriptive choice annotations without rewriting a read', () => {
+    const { db, input } = retainedReviewFixture();
+    const choices = JSON.stringify([
+      {
+        actorId: 'reviewer',
+        requestId: 'selection',
+        reason: null,
+        selectedAt: '2026-07-19T00:00:01.000Z',
+        note: 'Retained description',
+      },
+    ]);
+    db.sqlite.prepare('UPDATE artifact_reviews SET candidate_selections=?').run(choices);
+    const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').get();
+    expect(before).toMatchObject({ schema_version: 1 });
+    const review = getArtifactReview(db, input.artifactId, input.artifactVersion);
+    expect(review.candidateSelections[0]).toMatchObject({
+      requestId: 'selection',
+    });
+    expect(review.candidateSelections[0]).not.toHaveProperty('note');
+    expect(listExportableArtifactReviews(db)[0]?.candidateSelections[0]).toMatchObject({
+      note: 'Retained description',
+    });
+    expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual(before);
+    selectArtifactReviewCandidate(db, {
+      actorId: 'reviewer',
+      artifactId: input.artifactId,
+      artifactVersion: input.artifactVersion,
+      contentDigest: input.contentDigest,
+      requestId: 'selection-next',
+      selectedAt: '2026-07-19T00:00:02.000Z',
+    });
+    expect(
+      JSON.parse(
+        (
+          db.sqlite.prepare('SELECT candidate_selections FROM artifact_reviews').get() as {
+            candidate_selections: string;
+          }
+        ).candidate_selections
+      )[0]
+    ).toMatchObject({ note: 'Retained description' });
+  });
+
+  it('refuses an unknown row format before JSON decoding or replacement', () => {
+    const { db, input } = retainedReviewFixture();
+    db.sqlite
+      .prepare("UPDATE artifact_reviews SET schema_version=2, candidate_selections='{invalid'")
+      .run();
+    const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').get();
+    expect(() => getArtifactReview(db, input.artifactId, input.artifactVersion)).toThrow(
+      'Unsupported retained record format'
+    );
+    expect(() => createArtifactReview(db, input)).toThrow('Unsupported retained record format');
+    expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual(before);
+  });
 });

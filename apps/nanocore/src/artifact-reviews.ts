@@ -15,13 +15,16 @@ import {
   ArtifactIdSchema,
   ArtifactReviewIdSchema,
   deriveEntityId,
+  readRetainedV1,
   ThreadIdSchema,
   TimestampSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 
+import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
 import type { WorkspaceDb } from './storage/db.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
 import {
@@ -200,7 +203,7 @@ export type ExportableArtifactReview = ArtifactReviewView & {
   readonly decisionRequestId: string | null;
 };
 
-const REVIEW_SELECT = `SELECT
+const REVIEW_SELECT = `SELECT schema_version AS schemaVersion,
   workspace_id AS workspaceId, review_id AS reviewId, artifact_id AS artifactId,
   artifact_version AS artifactVersion, content_digest AS contentDigest,
   source_thread_id AS sourceThreadId, source_turn_id AS sourceTurnId,
@@ -249,13 +252,14 @@ export function createArtifactReview(
 
     workspaceDb.sqlite
       .prepare(`INSERT INTO artifact_reviews (
-        workspace_id, review_id, artifact_id, artifact_version, content_digest,
+        schema_version, workspace_id, review_id, artifact_id, artifact_version, content_digest,
         source_thread_id, source_turn_id, source_agent_id,
         proposal_material_id, proposal_base_revision_id, proposal_base_content_digest,
         decision, decision_actor_id, decision_request_id, feedback, decided_at,
         follow_up_turn_id, applied_material_revision_id, range_feedback, candidate_selections, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '[]', ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '[]', ?)`)
       .run(
+        writeRetainedV1({}).schemaVersion,
         workspaceDb.workspaceId,
         reviewId,
         input.artifactId,
@@ -304,7 +308,10 @@ export function listExportableArtifactReviews(
   rows.forEach((row) => {
     assertStoredReview(workspaceDb, row);
   });
-  return rows.map((row) => ({ ...toView(row), decisionRequestId: row.decisionRequestId }));
+  return rows.map((row) => ({
+    ...readStoredReviewV1(row),
+    decisionRequestId: row.decisionRequestId,
+  }));
 }
 
 /**
@@ -477,7 +484,7 @@ export function selectArtifactReviewCandidate(
   if (replay)
     throw reviewError('recovery_required', 'The candidate choice receipt has no matching choice.');
   const candidateSelections = [
-    ...review.candidateSelections,
+    ...readStoredReviewV1(row).candidateSelections,
     {
       actorId: input.actorId,
       requestId: input.requestId,
@@ -955,9 +962,10 @@ function assertStoredReview(workspaceDb: WorkspaceDb, row: ArtifactReviewRow): v
   }
 }
 
-/** Projects a Review view. @param row Private row. @returns Closed view. @throws ArtifactReviewError for invalid fields. */
-function toView(row: ArtifactReviewRow): ArtifactReviewView {
-  const parsed = ArtifactReviewViewSchema.safeParse({
+/** Decodes the fixed retained tuple before projection; descriptive JSON additions stay available to native updates. */
+function readStoredReviewV1(row: ArtifactReviewRow): z.infer<typeof StoredArtifactReviewV1Schema> {
+  readRetainedV1(row, (value) => value);
+  const parsed = StoredArtifactReviewV1Schema.safeParse({
     workspaceId: row.workspaceId,
     reviewId: row.reviewId,
     artifactId: row.artifactId,
@@ -981,6 +989,43 @@ function toView(row: ArtifactReviewRow): ArtifactReviewView {
     throw reviewError('recovery_required', 'The stored Artifact Review tuple is invalid.');
   }
   return parsed.data;
+}
+
+/** Projects current API fields without leaking retained descriptive additions into closed wire objects. */
+function toView(row: ArtifactReviewRow): ArtifactReviewView {
+  const stored = readStoredReviewV1(row);
+  const proposal = stored.materialProposal;
+  const range = stored.rangeFeedback;
+  return {
+    ...stored,
+    materialProposal:
+      proposal === null
+        ? null
+        : {
+            materialId: proposal.materialId,
+            baseRevisionId: proposal.baseRevisionId,
+            baseContentDigest: proposal.baseContentDigest,
+          },
+    rangeFeedback:
+      range == null
+        ? null
+        : {
+            materialId: range.materialId,
+            revisionId: range.revisionId,
+            contentDigest: range.contentDigest,
+            start: range.start,
+            end: range.end,
+            originalText: range.originalText,
+          },
+    candidateSelections: stored.candidateSelections.map(
+      ({ actorId, requestId, reason, selectedAt }) => ({
+        actorId,
+        requestId,
+        reason,
+        selectedAt,
+      })
+    ),
+  };
 }
 
 /** Reconstructs a proposal. @param row Review row. @returns Proposal or null. @throws ArtifactReviewError for an incomplete tuple. */

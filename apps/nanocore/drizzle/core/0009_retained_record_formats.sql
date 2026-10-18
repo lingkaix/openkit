@@ -57,3 +57,6 @@ ALTER TABLE `worker_image_settlements` ADD `schema_version` integer DEFAULT 1 NO
 --> statement-breakpoint
 
 ALTER TABLE `worker_storage_bindings` ADD `schema_version` integer DEFAULT 1 NOT NULL;
+
+--> statement-breakpoint
+ALTER TABLE vault_grants ADD schema_version integer DEFAULT 1 NOT NULL;
