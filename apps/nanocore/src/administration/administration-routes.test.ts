@@ -166,7 +166,7 @@ describe('administration conversation route', () => {
     const inertTools = inertEnvironmentTools();
     const environmentTools = [
       {
-        name: 'worker_environment.list',
+        name: 'worker-environment.list',
         description: 'List retained Worker environments in one exact Workspace.',
         inputSchema: {
           type: 'object',
@@ -190,7 +190,7 @@ describe('administration conversation route', () => {
           'NanoHost is the execution host, not an LLM Provider.'
         );
         expect(request.instructions).toContain(
-          'Use nanohost.runtime-target to read host RuntimeTarget readiness'
+          'Use nanohost_runtime-target to read host RuntimeTarget readiness'
         );
         expect(request.instructions).toContain(
           'returns Core stored projection at observedAt rather than a live host probe'
@@ -199,9 +199,7 @@ describe('administration conversation route', () => {
           'Never infer that NanoHost is unconfigured or unready from Provider catalog absence or zero Worker environments.'
         );
         expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual([
-          ...ADMINISTRATION_TOOL_NAMES.map((name) =>
-            name.replaceAll('.', '_').replaceAll('-', '_')
-          ),
+          ...ADMINISTRATION_TOOL_NAMES.map((name) => name.replaceAll('.', '_')),
         ]);
         primaryConfigured = true;
         return {
@@ -212,7 +210,7 @@ describe('administration conversation route', () => {
             {
               type: 'function_call',
               call_id: 'call_environment_list',
-              name: 'worker_environment_list',
+              name: 'worker-environment_list',
               arguments: JSON.stringify({ workspaceId }),
             },
           ],
@@ -932,7 +930,7 @@ describe('administration conversation route', () => {
 
 function inertEnvironmentTools(): AdministrationEnvironmentTools {
   return ['list', 'status', 'prepare', 'recover'].map((operation) => ({
-    name: `worker_environment.${operation}`,
+    name: `worker-environment.${operation}`,
     description: `Inert ${operation} Tool.`,
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     execute: async () => ({ content: [] }),

@@ -1,4 +1,4 @@
-import { operationToolName } from '@openkit/app-api-schemas';
+import { assertOperationNames, operationToolName } from '@openkit/app-api-schemas';
 
 import {
   type CapabilityAuditLineage,
@@ -494,6 +494,7 @@ function projectInternalAgentRequest(
   request: Pick<InternalAgentProviderRequest, 'systemPrompt' | 'messages' | 'tools'>
 ) {
   // Transport aliases are request-local; only this exact map may restore canonical identity.
+  assertOperationNames(request.tools.map(({ name }) => name));
   const canonicalToAlias = new Map<string, string>();
   const aliasToCanonical = new Map<string, string>();
   for (const { name } of request.tools) {
@@ -517,7 +518,7 @@ function projectInternalAgentRequest(
     name: canonicalToAlias.get(name)!,
     description,
     parameters: inputSchema,
-    // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as task_start's tuple prefixItems.
+    // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as goal.task.dispatch's tuple prefixItems.
     strict: false,
   }));
   return { canonicalToAlias, aliasToCanonical, providerInput, providerTools };

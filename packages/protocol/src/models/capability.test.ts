@@ -50,7 +50,7 @@ describe('CapabilityCall system-prompt digest slot', () => {
     expect(
       CapabilityCallSchema.safeParse({
         ...runningCapabilityCall(),
-        capabilityId: 'mcp.call_tool',
+        capabilityId: 'mcp.call-tool',
         systemPromptDigest: SYSTEM_PROMPT_DIGEST,
       }).success
     ).toBe(false);

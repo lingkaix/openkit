@@ -24,7 +24,7 @@ const terms: VaultGrantRequestTerms = {
   lifetime: 'workspace',
   injectionPath: 'gateway-only',
   targetAgentId: 'agent_review',
-  targetCapabilityId: 'mcp.call_tool',
+  targetCapabilityId: 'mcp.call-tool',
 };
 const effectDetail = JSON.stringify({ operation: 'vault.grant-issue', terms });
 const request: VaultGrantRequestView = {

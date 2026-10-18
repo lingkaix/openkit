@@ -210,8 +210,8 @@ POST /api/app/operations/provider-subscription.account-create
 POST /api/app/operations/provider-subscription.account-update
 POST /api/app/operations/provider-subscription.account-delete
 POST /api/app/operations/provider-subscription.account-status
-POST /api/app/operations/provider-subscription.account-login-start
-POST /api/app/operations/provider-subscription.account-login-cancel
+POST /api/app/operations/provider-subscription.login-start
+POST /api/app/operations/provider-subscription.login-cancel
 POST /api/app/operations/provider-subscription.account-logout
 POST /api/app/operations/provider-subscription.account-quota
 POST /api/app/operations/provider-subscription.account-auto-topup

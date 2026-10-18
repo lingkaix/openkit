@@ -3268,7 +3268,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
               credentialCheckValues: (await backend.collectTranscript()).credentialCheckValues!,
             }),
           },
-          'work_submit_artifact',
+          'work_artifact_submit',
           {
             requestId: 'request_material_submission',
             path: `${environmentPackage.workspace.outputs[0]!.path}/report.md`,
