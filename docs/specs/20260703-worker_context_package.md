@@ -198,7 +198,7 @@ The worker-visible package should be materialized under:
 
 The exact file set is constrained by the AEP snapshot, Knowledge Manager material selection, and Workflow Coordinator semantic context decision, then materialized by the owning mode service without adding excluded material.
 
-`package.json` is the worker-visible index. It carries package lineage, relative paths, source references, sensitivity labels, budget metadata, and the digest inventory for every other package file. It MUST NOT contain `contextPackageDigest` or an inventory entry for itself. The Turn-owned trace computes the actual `package.json` digest after that file is complete and includes it in `fileInventory`; this one-way ordering prevents a self-referential digest.
+`package.json` is the worker-visible index. It carries package lineage, relative paths, source references, sensitivity labels, budget metadata, and the digest inventory for every other retained package file. It MUST NOT contain `contextPackageDigest` or an inventory entry for itself. The Turn-owned trace computes the actual `package.json` digest after that file is complete and includes it in `fileInventory`; this one-way ordering prevents a self-referential digest.
 
 ## Input Categories
 

@@ -469,7 +469,7 @@ export interface WorkerContextPackageTrace {
   readonly materialSelections: readonly WorkerContextPackageMaterialSelection[];
   /** Exact addressed Material exclusions with limited metadata. */
   readonly materialExclusions: readonly WorkerContextPackageMaterialExclusion[];
-  /** Complete worker-visible file inventory. */
+  /** Exact retained delivered-file inventory; live originals derive from captured source metadata. */
   readonly fileInventory: readonly WorkerContextPackageFileInventoryEntry[];
   /** Digest over every other trace field. */
   readonly contextPackageDigest: string;
@@ -1110,7 +1110,12 @@ export function workerContextPackageDeliveryInventory(
   sources: readonly Pick<WorkerContextPackageSourceFile, 'originalDigest' | 'byteLength'>[] = []
 ): WorkerContextPackageFileInventoryEntry[] {
   const retainedPaths = new Set(retained.map((entry) => entry.path));
-  const files = new Map(retained.map((entry) => [entry.path, { ...entry }]));
+  const files = new Map(
+    retained.map(({ byteLength, contentDigest, path }) => [
+      path,
+      { byteLength, contentDigest, path },
+    ])
+  );
   for (const source of sources) {
     const path = workerContextPackageOriginalPath(source.originalDigest);
     if (retainedPaths.has(path))
@@ -1119,9 +1124,9 @@ export function workerContextPackageDeliveryInventory(
     if (previous && previous.byteLength !== source.byteLength)
       throw new Error('Worker Context Package original size conflicts with its digest.');
     files.set(path, {
-      path,
       byteLength: source.byteLength,
       contentDigest: source.originalDigest,
+      path,
     });
   }
   return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
