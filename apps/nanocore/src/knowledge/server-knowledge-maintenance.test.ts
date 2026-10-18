@@ -9,20 +9,23 @@ import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb } from '../storage/db.js';
-import { resolveWorkspaceKnowledgeRetrievalPages, retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
+import {
+  resolveWorkspaceKnowledgeRetrievalPages,
+  retrieveWorkspaceKnowledge,
+} from '../storage/index-rebuild.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
-import { registerServerKnowledgeSource } from './server-knowledge-owner.js';
 import {
   prepareServerKnowledgeMaintenance,
   runServerKnowledgeMaintenanceCommand,
   type ServerKnowledgeMaintenanceDependencies,
   serverNotebookAdmission,
 } from './server-knowledge-maintenance.js';
+import { registerServerKnowledgeSource } from './server-knowledge-owner.js';
 import {
   createServerNotebookProposal,
   decideServerNotebookProposal,
@@ -196,42 +199,99 @@ it('recalls the exact Server candidate only after its human Review publishes the
     revalidate: () => serverNotebookAdmission(f.dependencies, f.requestActor),
   };
   const source = await registerServerKnowledgeSource(context, {
-    requestId: randomUUID(), kind: 'document', title: 'Server release rule',
+    requestId: randomUUID(),
+    kind: 'document',
+    title: 'Server release rule',
     content: 'The Server release rule uses BLUE-HERON-7.',
   });
   const sourceReference = `source:${source.id}@${source.contentDigest}`;
-  const content = serializeUserAuthoredKnowledgePage({
-    id: 'release-rule', kind: 'project-context', title: 'Server release rule',
-    content: 'The Server release rule uses BLUE-HERON-7.', sourceReferences: [sourceReference],
-    createdAt: '2026-10-18T00:00:00.000Z', updatedAt: '2026-10-18T00:00:00.000Z',
-  }, { kind: 'server' });
-  const producer = { kind: 'agent' as const, id: 'knowledge-manager', responsibleUserId: f.requestActor.userId };
-  const proposal = createServerNotebookProposal(context, {
-    requestId: randomUUID(), baseRevision: f.human, summary: 'Save the explicit Server release rule.',
-    changes: [{ path: 'release-rule.md', content }],
-  }, producer, [sourceReference]);
+  const content = serializeUserAuthoredKnowledgePage(
+    {
+      id: 'release-rule',
+      kind: 'project-context',
+      title: 'Server release rule',
+      content: 'The Server release rule uses BLUE-HERON-7.',
+      sourceReferences: [sourceReference],
+      createdAt: '2026-10-18T00:00:00.000Z',
+      updatedAt: '2026-10-18T00:00:00.000Z',
+    },
+    { kind: 'server' }
+  );
+  const producer = {
+    kind: 'agent' as const,
+    id: 'knowledge-manager',
+    responsibleUserId: f.requestActor.userId,
+  };
+  const proposal = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision: f.human,
+      summary: 'Save the explicit Server release rule.',
+      changes: [{ path: 'release-rule.md', content }],
+    },
+    producer,
+    [sourceReference]
+  );
   expect(f.notebook.publishedRevision()).toBe(f.human);
   const selected = readServerNotebookProposal(context, proposal.id);
-  const preview = readServerNotebookProposalPreview(context, { proposalId: proposal.id, path: 'release-rule.md', offset: 0 });
-  const request = { requestId: randomUUID(), proposalId: proposal.id, proposalDigest: selected.proposalDigest,
-    baseRevision: proposal.baseRevision, candidateRevision: proposal.candidateRevision, decision: 'accepted' as const };
+  const preview = readServerNotebookProposalPreview(context, {
+    proposalId: proposal.id,
+    path: 'release-rule.md',
+    offset: 0,
+  });
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision: 'accepted' as const,
+  };
   const accepted = await decideServerNotebookProposal(context, request);
   expect(await decideServerNotebookProposal(context, request)).toEqual(accepted);
   const published = f.notebook.readRevision(accepted.notebookRevision!);
   expect(published.metadata.producer).toEqual(producer);
   expect(published.files['release-rule.md']).toBe(preview.after);
   const workspace = f.store.createWorkspace('Server review recall');
-  recordWorkspaceOwnerMembership({ coreDb: f.coreDb, workspaceId: workspace.id, ownerUserId: f.requestActor.userId });
-  const thread = f.store.createThread(workspace.id, 'Shared Server query', undefined, 'conversation', { visibility: 'workspace' });
-  const query = { dataRoot: f.coreDb.dataRoot, workspaceId: workspace.id,
-    access: { store: f.store, coreDb: f.coreDb, actor: f.input.actor, requestActor: f.requestActor, outputThreadId: thread.id },
-    caller: 'app-api' as const, sourceScope: 'server' as const, query: 'release rule' };
+  recordWorkspaceOwnerMembership({
+    coreDb: f.coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: f.requestActor.userId,
+  });
+  const thread = f.store.createThread(
+    workspace.id,
+    'Shared Server query',
+    undefined,
+    'conversation',
+    { visibility: 'workspace' }
+  );
+  const query = {
+    dataRoot: f.coreDb.dataRoot,
+    workspaceId: workspace.id,
+    access: {
+      store: f.store,
+      coreDb: f.coreDb,
+      actor: f.input.actor,
+      requestActor: f.requestActor,
+      outputThreadId: thread.id,
+    },
+    caller: 'app-api' as const,
+    sourceScope: 'server' as const,
+    query: 'release rule',
+  };
   try {
     const selection = await retrieveWorkspaceKnowledge(query);
     expect(selection.selected.map(({ reference }) => reference.objectId)).toContain('release-rule');
-    expect(resolveWorkspaceKnowledgeRetrievalPages({ ...query, selection })?.find(({ knowledgePageId }) => knowledgePageId === 'release-rule')?.content).toBe(preview.after);
+    expect(
+      resolveWorkspaceKnowledgeRetrievalPages({ ...query, selection })?.find(
+        ({ knowledgePageId }) => knowledgePageId === 'release-rule'
+      )?.content
+    ).toBe(preview.after);
     expect(published.files['release-rule.md']).toMatch(/review_state: ["']?accepted/);
-  } finally { await closeRetrievalServices(); }
+  } finally {
+    await closeRetrievalServices();
+  }
 });
 
 it('retains skipped active-writer and missing-authority schedule outcomes without a model call', async () => {

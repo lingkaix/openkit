@@ -88,7 +88,8 @@ export function createServerNotebookProposal(
       content:
         content === null || base.files[path] === content
           ? content
-          : attributedNotebookPageBytes(path, content, { kind: 'server' }, 'delegated'),
+          : // Freeze final reviewed bytes; this candidate stays unpublished until human acceptance.
+            attributedNotebookPageBytes(path, content, { kind: 'server' }, 'accepted'),
     }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const files = { ...base.files };
