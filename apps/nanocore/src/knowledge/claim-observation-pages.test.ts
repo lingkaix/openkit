@@ -84,33 +84,51 @@ describe('governed Claim and reusable Observation fields', () => {
     expect(report.errors).toContainEqual(expect.objectContaining({ field: 'confidence' }));
   });
 
-  it.each(['unresolved', 'resolved'])('retains only conflict-specific Claim state %s', (conflict_status) => {
+  it.each([
+    'unresolved',
+    'resolved',
+  ])('retains only conflict-specific Claim state %s', (conflict_status) => {
     expect(validate(page('Claim', { confidence: 0.75, conflict_status }))).toMatchObject({
-      conformance: 'scope-schema-valid', errors: [],
+      conformance: 'scope-schema-valid',
+      errors: [],
     });
   });
 
   it.each([
-    'none', 'conflicting', 'weak_evidence', 'stale', 'needs_review',
-    'superseded', 'partially_superseded', 'unrecognized',
+    'none',
+    'conflicting',
+    'weak_evidence',
+    'stale',
+    'needs_review',
+    'superseded',
+    'partially_superseded',
+    'unrecognized',
   ])('refuses overloaded or unsupported conflict state %s', (conflict_status) => {
     for (const type of ['Claim', 'Observation'] as const) {
-      const report = validate(page(type, { confidence: 0.75, conflict_status, subject_refs: [subjectUri] }));
+      const report = validate(
+        page(type, { confidence: 0.75, conflict_status, subject_refs: [subjectUri] })
+      );
       expect(report.errors).toContainEqual(expect.objectContaining({ field: 'conflict_status' }));
     }
   });
 
   it('keeps freshness, Review, lifecycle and confidence independent from actual conflicts', () => {
     const content = page('Claim', {
-      confidence: 0.1, freshness: 'stale', review_state: 'needs-review',
-      openkit_status: 'superseded', status: 'deprecated',
+      confidence: 0.1,
+      freshness: 'stale',
+      review_state: 'needs-review',
+      openkit_status: 'superseded',
+      status: 'deprecated',
     });
     expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
     const parsed = parseOkfDocument({ path: 'facts/release.md', content });
     if (!parsed.ok) throw new Error('The canonical fixture must parse.');
     expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
     expect(parsed.document.frontmatter).toMatchObject({
-      confidence: 0.1, freshness: 'stale', review_state: 'needs-review', openkit_status: 'superseded',
+      confidence: 0.1,
+      freshness: 'stale',
+      review_state: 'needs-review',
+      openkit_status: 'superseded',
     });
   });
 
@@ -127,7 +145,9 @@ describe('governed Claim and reusable Observation fields', () => {
 
   it('keeps subject-bound review and freshness without inventing an actual conflict', () => {
     const content = page('Observation', {
-      subject_refs: [subjectUri], review_state: 'needs-review', freshness: 'stale',
+      subject_refs: [subjectUri],
+      review_state: 'needs-review',
+      freshness: 'stale',
     });
     expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
     const parsed = parseOkfDocument({ path: 'facts/release.md', content });
@@ -138,7 +158,8 @@ describe('governed Claim and reusable Observation fields', () => {
 
   it('does not assign core assessment meaning to an Observation confidence annotation', () => {
     expect(validate(page('Observation', { confidence: 'author annotation' }))).toMatchObject({
-      conformance: 'scope-schema-valid', errors: [],
+      conformance: 'scope-schema-valid',
+      errors: [],
     });
   });
 
