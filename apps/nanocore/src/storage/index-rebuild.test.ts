@@ -31,6 +31,7 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
+import { readRetrievalTrace } from './retrieval-traces.js';
 import { serializeUserAuthoredKnowledgePage } from './workspace-file-records.js';
 
 const fixtureRoots: string[] = [];
@@ -504,7 +505,10 @@ describe('workspace derived index rebuild', () => {
       'retrieval-traces',
       `${traceId}.json`
     );
-    const row = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(tracePath, 'utf8')));
+    expect(JSON.parse(readFileSync(tracePath, 'utf8')).schemaVersion).toBe(1);
+    const row = KnowledgeRetrievalTraceSchema.parse(
+      readRetrievalTrace(workspaceRoot, trace.retrievalTraceRef!)
+    );
     expect(row).toEqual({
       traceId,
       queryContext: {
@@ -768,8 +772,11 @@ describe('workspace derived index rebuild', () => {
     const first = await retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
     const tracePath = join(traceRoot, `${firstTraceId}.json`);
     expect(
-      KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(tracePath, 'utf8')))
+      KnowledgeRetrievalTraceSchema.parse(
+        readRetrievalTrace(workspaceRoot, first.retrievalTraceRef!)
+      )
     ).toEqual(expect.objectContaining({ traceId: firstTraceId }));
+    expect(JSON.parse(readFileSync(tracePath, 'utf8')).schemaVersion).toBe(1);
     expect(first.retrievalTraceRef).toEqual({
       scopeId: `retrieval-trace/thread/${workspace.id}/${thread.id}`,
       objectId: firstTraceId,

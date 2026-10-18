@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveEntityId } from '@openkit/protocol';
+import { deriveEntityId, formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import {
@@ -32,6 +33,14 @@ describe('descriptive canonical history extensions', () => {
       (record) => record.workspace.id === workspace.id
     )!;
     const body = 'Knowledge candidate.\n';
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: workspace.id },
+    });
+    const sourceReference = formatReferenceUri(
+      { scopeId: `page/workspace/${workspace.id}/${knowledgeBaseId}`, objectId: 'source' },
+      `sha256:${'b'.repeat(64)}`
+    );
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(root, 'knowledge', 'notebook.git'),
     });
@@ -49,7 +58,7 @@ describe('descriptive canonical history extensions', () => {
         },
         producer,
         authority: { kind: 'proposal', proposalId },
-        sourceReferences: [`knowledge:source@sha256:${'b'.repeat(64)}`],
+        sourceReferences: [sourceReference],
       },
     });
     notebook.retainCandidate({ proposalId, candidateRevision });
@@ -63,7 +72,7 @@ describe('descriptive canonical history extensions', () => {
       knowledgePageId: 'candidate',
       canonicalPageBytes: body,
       contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-      sourceReferences: [`knowledge:source@sha256:${'b'.repeat(64)}`],
+      sourceReferences: [sourceReference],
       rationale: 'Retained rationale',
       confidence: 1,
       producer: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
