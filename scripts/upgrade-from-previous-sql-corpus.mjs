@@ -23,7 +23,7 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'Workspace capability calls and Usage',
   'Pending Requests, Workspace receipts and Worker checkpoints',
   'Material content, revisions and Thread bindings',
-  'Artifact Review decisions, range feedback, independent candidate choices and apply lineage',
+  'Artifact Review decisions, range feedback, independent candidate choices, judgements and apply lineage',
   'Goals, cards, immutable Plans and Task facts',
   'EvidenceBundle and normalized runtime evidence metadata',
   'Resolved Agent setup and MCP Tool-schema snapshots',
@@ -41,6 +41,8 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'Runtime provenance and admitted raw streams',
   'Notification attention and delivery attempts',
   'Discord bindings, pairing, disclosures and inbound receipts',
+  'Human judgement records',
+  'Candidate sets and selections',
 ]);
 
 /** Loads product code only from the explicit previous or candidate package root. */
@@ -1018,6 +1020,68 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     feedback: 'Synthetic retained acceptance.',
     requestId: 'upgrade-corpus-review',
   });
+  const evaluation = await o.load('evaluation-candidates');
+  const judgements = await o.load('artifact-judgements');
+  const access = {
+    coreDb: core,
+    workspaceDb: workspace,
+    store,
+    actor: { kind: 'session', userId: sql.userId },
+    inflightCommands: new WeakMap(),
+  };
+  workspace.sqlite.transaction(() =>
+    judgements.appendArtifactJudgement(access, {
+      requestId: 'upgrade-corpus-artifact-judgement',
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      contentDigest: artifact.contentDigest,
+      kind: 'accept',
+      choice: null,
+      note: 'Synthetic retained human assessment.',
+    })
+  )();
+  const secondBody = `${content}Second synthetic candidate.\n`;
+  const secondDigest = `sha256:${digest(secondBody)}`;
+  const second = store.createArtifact({
+    ...artifact,
+    id: id('ar', 'evaluation-candidate'),
+    threadId: null,
+    turnId: null,
+    title: 'Second synthetic candidate',
+    version: 1,
+    content: { format: 'text', body: secondBody },
+    contentDigest: secondDigest,
+    lastMutationRequestId: 'upgrade-corpus-candidate',
+    origin: {
+      kind: 'imported',
+      sourceKind: 'direct-import',
+      sourceId: 'upgrade-corpus-candidate',
+      sourceDigest: secondDigest,
+      actor,
+      requestId: 'upgrade-corpus-candidate',
+      recordedAt: NOW,
+    },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  const members = [artifact, second].map((entry) => ({
+    artifactId: entry.id,
+    artifactVersion: entry.version,
+    contentDigest: entry.contentDigest,
+  }));
+  const candidateSet = await evaluation.createCandidateSet(access, {
+    workspaceId,
+    requestId: 'upgrade-corpus-candidate-set',
+    candidates: members,
+  });
+  sql.candidateSetId = candidateSet.candidateSetId;
+  await evaluation.selectCandidateSet(access, {
+    workspaceId,
+    candidateSetId: candidateSet.candidateSetId,
+    requestId: 'upgrade-corpus-candidate-selection',
+    choice: members[1],
+    note: 'Synthetic retained comparison.',
+  });
   const pendingFlow = await o.load('runtime/pending-request-flow');
   sql.pendingRequestId = '00000000-0000-4000-8000-000000000901';
   pendingFlow.raiseRecordedPendingRequest(store, workspace.sqlite, {
@@ -1645,6 +1709,21 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
     const receipt = (handle, key) =>
       o.commands.readCommandRequestRecordsFromSqlite(handle.sqlite).find((row) => row.key === key);
     const linked = await readLinkedEvidence(o, core, workspace, store, sql);
+    const evaluation = await o.load('evaluation-candidates');
+    const candidateSet = evaluation.readCandidateSet(
+      {
+        coreDb: core,
+        workspaceDb: workspace,
+        store,
+        actor: { kind: 'session', userId: sql.userId },
+      },
+      sql.candidateSetId
+    );
+    const artifactReview = o.reviews.getArtifactReview(
+      workspace,
+      sql.artifactId,
+      sql.artifactVersion
+    );
     const pending = required(
       o.pending.readPendingRequest(workspace.sqlite, sql.pendingRequestId),
       SQL_CORPUS_FAMILIES[12]
@@ -1920,6 +1999,29 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
         discordReceipt.get(sql.discordPairEventId),
         discordReceipt.get(sql.discordInspectEventId),
       ]),
+      [SQL_CORPUS_FAMILIES[32]]: one(SQL_CORPUS_FAMILIES[32], [
+        ...artifactReview.judgements,
+        ...candidateSet.judgements,
+      ]),
+      [SQL_CORPUS_FAMILIES[33]]: one(
+        SQL_CORPUS_FAMILIES[33],
+        [candidateSet],
+        candidateSet.candidates.flatMap((candidate) => {
+          const root = join(
+            dataRoot,
+            'workspaces',
+            workspaceId,
+            'artifacts',
+            candidate.artifactId,
+            'versions',
+            String(candidate.artifactVersion)
+          );
+          return [
+            fileBytes(dataRoot, join(root, 'version-record.json')),
+            fileBytes(dataRoot, join(root, 'payload')),
+          ];
+        })
+      ),
     };
   } finally {
     app?.sqlite.close();

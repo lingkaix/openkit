@@ -143,6 +143,11 @@ test('reopens every SQL family and its linked file owners with exact readback', 
   const input = await fixture(t, true);
   const original = await readSqlCorpus(input);
   assert.deepEqual(Object.keys(original).sort(), [...SQL_CORPUS_FAMILIES].sort());
+  const candidateSet = original['Candidate sets and selections'].values[0];
+  assert.equal(candidateSet.candidates.length, 2);
+  assert.equal(candidateSet.judgements.at(-1)?.kind, 'select');
+  assert.deepEqual(candidateSet.judgements.at(-1)?.choice, candidateSet.candidates[1]);
+  assert.equal(original['Human judgement records'].values.length, 2);
   for (const [family, observed] of Object.entries(original)) {
     assert.ok(observed.values.length > 0, `${family} has actual retained records`);
     for (const bytes of observed.bytes) {
