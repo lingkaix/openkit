@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
-import { deriveEntityId, isEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
+import { deriveEntityId, isEntityId, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { parseJsoncObject } from '../config/jsonc.js';
@@ -766,10 +766,12 @@ describe('workspace export verifier', () => {
     expect
       .soft(exported.checkedFiles)
       .toContain('artifacts/ar_00000000-0000-7e0d-8050-96f36ec9a01f/files/content.md');
-    expect.soft(artifactMetadata).toEqual({
-      ...artifact,
-      content: { format: artifact.content.format },
-    });
+    expect.soft(artifactMetadata).toEqual(
+      writeRetainedV1({
+        ...artifact,
+        content: { format: artifact.content.format },
+      })
+    );
     expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
     expect.soft(readFileSync(artifactBodyPath, 'utf8')).toBe(artifact.content.body);
     expect.soft(verifyWorkspaceExportTree({ exportRoot: root })).toEqual(exported);
@@ -1590,7 +1592,7 @@ describe('workspace export verifier', () => {
     mkdirSync(join(sourcePortableRoot, 'threads', thread.id, 'retrieval-traces'), {
       recursive: true,
     });
-    const sourceTraceText = `${JSON.stringify(sourceTrace)}\n`;
+    const sourceTraceText = `${JSON.stringify(writeRetainedV1(sourceTrace))}\n`;
     writeFileSync(join(sourcePortableRoot, sourceTracePath), sourceTraceText);
     // The codec reads the current canonical content owner even for a trace-only Workspace.
     new KnowledgeNotebook({

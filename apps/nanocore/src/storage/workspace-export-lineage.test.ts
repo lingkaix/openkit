@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RuntimeEvidenceRecordSchema } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   ArtifactReviewFollowUpRequestSchema,
@@ -3284,28 +3284,30 @@ describe('workspace auxiliary lineage reminting', () => {
     const rawPath = `workspace-files/evidence/backend/${rawBundleId}/raw/native-canary.bin`;
     const sourceOriginRef = `rto_${'a'.repeat(24)}`;
     const sourceTurnRef = `rtt_${'b'.repeat(24)}`;
-    const indexText = `${JSON.stringify({
-      lineage: {
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        turnId: source.turnId,
-        agentSessionId: source.sessionId,
-        packageSnapshotId,
-        requestId: 'request_source',
-      },
-      streamRef: 'stream-0000.jsonl',
-      frameSequence: 0,
-      byteOffset: 0,
-      byteLength: 24,
-      frameSha256: `sha256:${'1'.repeat(64)}`,
-      eventKind: 'thread.started',
-      parseStatus: 'parsed',
-      runtimeOriginRef: sourceOriginRef,
-      parentRuntimeOriginRef: null,
-      runtimeTurnRef: sourceTurnRef,
-      runtimeRole: 'worker',
-      runtimeDepth: 0,
-    })}\n`;
+    const indexText = `${JSON.stringify(
+      writeRetainedV1({
+        lineage: {
+          workspaceId: source.workspaceId,
+          threadId: source.threadId,
+          turnId: source.turnId,
+          agentSessionId: source.sessionId,
+          packageSnapshotId,
+          requestId: 'request_source',
+        },
+        streamRef: 'stream-0000.jsonl',
+        frameSequence: 0,
+        byteOffset: 0,
+        byteLength: 24,
+        frameSha256: `sha256:${'1'.repeat(64)}`,
+        eventKind: 'thread.started',
+        parseStatus: 'parsed',
+        runtimeOriginRef: sourceOriginRef,
+        parentRuntimeOriginRef: null,
+        runtimeTurnRef: sourceTurnRef,
+        runtimeRole: 'worker',
+        runtimeDepth: 0,
+      })
+    )}\n`;
     const indexDigest = `sha256:${createHash('sha256').update(indexText).digest('hex')}`;
     input.evidenceBundles = [
       {
