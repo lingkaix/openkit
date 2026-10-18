@@ -50,11 +50,15 @@ async function fixture() {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
+  const completedAt = new Date().toISOString();
+  const durationMs = turn.startedAt
+    ? Math.max(0, Date.parse(completedAt) - Date.parse(turn.startedAt))
+    : 0;
   const terminal = {
     ...turn,
     status: 'completed' as const,
-    completedAt: new Date().toISOString(),
-    durationMs: 0,
+    completedAt,
+    durationMs,
   };
   return { root, store, db, goalId, turn, terminal };
 }
@@ -80,7 +84,7 @@ describe('retained Task terminal fact format', () => {
       status: 'completed',
       error: null,
       completedAt: f.terminal.completedAt,
-      durationMs: 0,
+      durationMs: f.terminal.durationMs,
     });
     expect(f.db.sqlite.prepare('SELECT payload_json FROM task_turn_terminal_facts').get()).toEqual({
       payload_json: annotatedBytes,

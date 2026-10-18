@@ -748,7 +748,9 @@ describe('Proposed Plan eligibility', () => {
         admittedAt: new Date().toISOString(),
       };
       f.db.sqlite
-        .prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)')
+        .prepare(
+          'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json) VALUES (?,?,?,?)'
+        )
         .run(link.threadId, link.goalId, link.cardId, JSON.stringify(link));
       const before = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
       let interrupts = 0;
