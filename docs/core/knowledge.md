@@ -70,6 +70,8 @@ Claim MUST be an OKF page managed and queried by the Knowledge Manager, without 
 
 Rule, Effect and business Objective pages use governed Scope Schema types and applicability metadata for type-aware retrieval; an Objective page does not own Goal execution. An Effect states its basis and last check. Retrieved rules and confidence MUST NOT grant authority; safety-critical rules use a pinned Skill or a Policy-bound independent validator.
 
+The Server Knowledge maintenance Thread is Server-owned and visible under current Server administration authority. Workspace membership does not admit its history.
+
 The Knowledge Manager uses existing Thread, Turn and Item owners for conversation continuity. It owns no separate runtime, scheduler, retry queue or publication authority.
 
 ## Authority And Projection
@@ -188,3 +190,5 @@ External domain systems own their raw source-of-truth records; OpenKit may cite,
 - Worker receipt of selected Knowledge requires its owning Context Package delivery trace or the exact answer bytes in its existing Knowledge Manager capability call.
 - Knowledge Pages MUST NOT store secret values.
 - Raw external records MUST remain owned by their external system unless explicitly captured as OpenKit source material.
+
+Server Knowledge maintenance records its work and approval on a Server-owned Thread. Current Server administration authority controls visibility; Workspace membership grants no access. A run uses explicit Server inputs and human notebook changes, with no automatic learning across Workspaces.

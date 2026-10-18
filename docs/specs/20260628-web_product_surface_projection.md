@@ -83,7 +83,7 @@ Thread lists, search, notification and Artifact/widget access obey `20260909-thr
 
 ## Decision
 
-Web is the product projection for every currently supported canonical-user or Workspace-authorized NanoCore operation. Page names and mockups are not the inventory authority. The included universe is the 242 `PUBLIC_OPERATION_ACCESS` entries whose scope is `user` or `workspace`, excluding the two Gateway-actor compatibility operations and the one Worker-only operation. That 242 equals the 321 catalog entries minus 76 server-scoped deployment-admin or bootstrap operations minus those two Gateway-actor operations minus the one Worker-only operation.
+Web is the product projection for every currently supported canonical-user or Workspace-authorized NanoCore operation. Page names and mockups are not the inventory authority. The included universe is the 242 `PUBLIC_OPERATION_ACCESS` entries whose scope is `user` or `workspace`, excluding the two Gateway-actor compatibility operations and the one Worker-only operation. That 242 equals the 328 catalog entries minus 83 server-scoped deployment-admin or bootstrap operations minus those two Gateway-actor operations minus the one Worker-only operation.
 
 Workspace Knowledge Manager answers show the returned citation titles and excerpts. A citation links to current full content only when its qualified owner and page identity match an available current page; a missing or foreign reference never aliases a local page. The link labels current content because it may differ from the cited answer. The direct Add knowledge form offers explicit registered-Source selection and submits that exact Source identity and captured digest as a page source reference. Equal content alone creates no relationship, and switching Workspaces never carries a selected Source into another Workspace's command.
 
@@ -101,7 +101,7 @@ An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS
 
 The following are excluded from ordinary-user Web and MUST NOT appear on a published ordinary-user route:
 
-- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 76 keys. Roadmap R048 owns their future separate admin surface.
+- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 83 keys. Roadmap R048 owns their future separate admin surface.
 - Gateway-actor operations `POST /v1/chat/completions` and `POST /v1/responses`.
 - Worker-only catalog operations whose definitions admit only `worker-package` credentials, currently `automation.event-admit`, and Worker-private routes outside the public catalog, including `/api/worker-control/*`.
 

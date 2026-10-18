@@ -62,3 +62,7 @@ A retained Task-to-Goal status Item keeps its immutable `goalId` separately from
 Knowledge list items project the exact canonical page contentDigest at the response notebookRevision. This read field supports explicit confirmed removal without adding a second digest or revision authority to durable KnowledgeEntry records.
 
 `src/common/retained-format.ts` supplies the single retained marker helper: `writeRetainedV1` emits `schemaVersion: 1`, and `readRetainedV1` checks that exact marker before its family decoder runs. Stored schemas remain with their persistence owners; wire schemas, content versions and digests do not select a retained decoder.
+
+`ServerThreadSchema`, `ServerTurnSchema`, `ServerItemSchema` and `ServerTurnEventEnvelopeSchema` preserve the same narrative, lifecycle, Item vocabulary and transcript event families for the immutable `{ kind: 'server' }` owner. Server records prohibit a Workspace anchor and use Server visibility. The existing Workspace schemas retain required Workspace placement and their current audiences. Current Server administration authority governs admission outside these record schemas.
+
+`ServerCapabilityCallSchema` and `ServerUsageRecordSchema` add Server attribution to the existing call and measurement families. They require `owner: { kind: 'server' }`, forbid `workspaceId`, and retain the same call lifecycle and measurement fields. Existing Workspace schemas and types stay unchanged.

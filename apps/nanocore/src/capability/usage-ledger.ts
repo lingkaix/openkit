@@ -9,20 +9,24 @@ import {
   RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
+  type ServerCapabilityCall,
+  ServerCapabilityCallSchema,
+  type ServerUsageRecord,
+  ServerUsageRecordSchema,
   type UsageRecord,
   UsageRecordSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { WorkerRawOutputStateSchema } from '../runtime/worker-raw-output.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
 
 type CapabilityCallRow = {
   schema_version: number;
   call_id: string;
-  workspace_id: string;
+  workspace_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
   item_id: string | null;
@@ -70,6 +74,10 @@ export interface CapabilityCallLedgerRecord extends CapabilityCall {
   redactionClass: string;
 }
 
+/** Server call record using the same SQL columns and lifecycle as Workspace calls. */
+export type ServerCapabilityCallLedgerRecord = Omit<CapabilityCallLedgerRecord, 'workspaceId'> &
+  ServerCapabilityCall;
+
 /** Gateway call context accepted by the shared capability usage ledger. */
 export interface GatewayCallContext {
   /** Workspace that owns the call. */
@@ -114,9 +122,22 @@ export interface GatewayCallContext {
   redactionClass: string;
 }
 
+/** Server attribution has no Workspace identity; its database supplies the unique owner. */
+export interface ServerGatewayCallContext extends Omit<GatewayCallContext, 'workspaceId'> {
+  readonly owner: { readonly kind: 'server' };
+  readonly workspaceId?: never;
+}
+
+/** Server input for the shared capability-call writer. */
+export interface StartServerCapabilityCallInput extends ServerGatewayCallContext {
+  readonly workspaceDb: CoreDb;
+  readonly callId?: string;
+  readonly now?: Date;
+}
+
 /** Input for starting one capability call. */
 export interface StartCapabilityCallInput extends GatewayCallContext {
-  /** Workspace-scoped database handle. */
+  /** Database handle for the immutable call owner. */
   workspaceDb: WorkspaceDb;
   /** Stable call id for deterministic tests. */
   callId?: string;
@@ -125,13 +146,15 @@ export interface StartCapabilityCallInput extends GatewayCallContext {
 }
 
 /** Started capability call summary returned to producers. */
-export interface StartedCapabilityCall {
+export interface StartedCapabilityCall<
+  C extends GatewayCallContext | ServerGatewayCallContext = GatewayCallContext,
+> {
   /** Durable call id. */
   id: string;
   /** Whether this invocation created the durable call row. */
   inserted: boolean;
   /** Gateway call context copied from the stored row. */
-  context: GatewayCallContext;
+  context: C;
 }
 
 /** Usage measurement input linked to one call. */
@@ -160,10 +183,10 @@ export interface CapabilityAuditLineage {
 
 /** Input for recording usage rows for one capability call. */
 export interface RecordUsageInput {
-  /** Workspace-scoped database handle. */
-  workspaceDb: WorkspaceDb;
+  /** Database handle for the immutable call owner. */
+  workspaceDb: WorkspaceDb | CoreDb;
   /** Started call returned by startCapabilityCall. */
-  call: StartedCapabilityCall;
+  call: StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext>;
   /** Usage rows to record. */
   records: UsageMeasurementInput[];
   /** Trusted command lineage for the audit event if usage recording fails. */
@@ -176,8 +199,8 @@ export interface RecordUsageInput {
 export interface FinishCapabilityCallInput {
   /** Existing call retains the exact delivered Knowledge answer; no parallel delivery record. */
   deliveredKnowledgeAnswer?: string;
-  /** Workspace-scoped database handle. */
-  workspaceDb: WorkspaceDb;
+  /** Database handle for the immutable call owner. */
+  workspaceDb: WorkspaceDb | CoreDb;
   /** Durable call id. */
   callId: string;
   /** Terminal status. */
@@ -192,8 +215,8 @@ export interface FinishCapabilityCallInput {
 
 /** Input for binding a running call to its observed schema snapshot. */
 export interface StampCapabilityCallSchemaSnapshotInput {
-  /** Workspace-scoped database handle. */
-  readonly workspaceDb: WorkspaceDb;
+  /** Database handle for the immutable call owner. */
+  readonly workspaceDb: WorkspaceDb | CoreDb;
   /** Durable running capability call id. */
   readonly callId: string;
   /** Stable schema snapshot id used for validation. */
@@ -202,8 +225,8 @@ export interface StampCapabilityCallSchemaSnapshotInput {
 
 /** Input for recovering non-terminal capability calls after restart. */
 export interface RecoverRunningCapabilityCallsInput {
-  /** Workspace-scoped database handle. */
-  workspaceDb: WorkspaceDb;
+  /** Database handle for the immutable call owner. */
+  workspaceDb: WorkspaceDb | CoreDb;
   /** Recovery time. */
   now?: Date;
 }
@@ -226,7 +249,13 @@ export function normalizeCapabilityRequestId(requestId: string | null | undefine
  * @param input Gateway call context and database handle.
  * @returns Durable call summary.
  */
-export function startCapabilityCall(input: StartCapabilityCallInput): StartedCapabilityCall {
+export function startCapabilityCall(
+  input: StartServerCapabilityCallInput
+): StartedCapabilityCall<ServerGatewayCallContext>;
+export function startCapabilityCall(input: StartCapabilityCallInput): StartedCapabilityCall;
+export function startCapabilityCall(
+  input: StartCapabilityCallInput | StartServerCapabilityCallInput
+): StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> {
   const {
     workspaceDb: _workspaceDb,
     now: _now,
@@ -238,9 +267,20 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
 
   const startedAt = (input.now ?? new Date()).toISOString();
   const callId = input.callId ?? allocateEntityId('cap');
-  const protocolCall = CapabilityCallSchema.parse({
+  if (
+    input.workspaceDb.scope === 'core'
+      ? input.workspaceId !== undefined || !('owner' in input) || input.owner.kind !== 'server'
+      : input.workspaceId !== input.workspaceDb.workspaceId
+  ) {
+    throw new Error('Capability call database owner mismatch.');
+  }
+  const protocolCall = (
+    input.workspaceDb.scope === 'core' ? ServerCapabilityCallSchema : CapabilityCallSchema
+  ).parse({
     id: callId,
-    workspaceId: input.workspaceId,
+    ...(input.workspaceDb.scope === 'core'
+      ? { owner: { kind: 'server' } }
+      : { workspaceId: input.workspaceId }),
     threadId: input.threadId ?? null,
     turnId: input.turnId ?? null,
     itemId: input.itemId ?? null,
@@ -293,7 +333,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
     .run(
       writeRetainedV1(protocolCall).schemaVersion,
       protocolCall.id,
-      protocolCall.workspaceId,
+      protocolCall.workspaceId ?? null,
       protocolCall.threadId,
       protocolCall.turnId,
       protocolCall.itemId,
@@ -344,7 +384,9 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       summary: stored.summary,
       threadId: stored.thread_id,
       turnId: stored.turn_id,
-      workspaceId: stored.workspace_id,
+      ...(stored.workspace_id === null
+        ? { owner: { kind: 'server' as const } }
+        : { workspaceId: stored.workspace_id }),
     },
   };
 }
@@ -356,6 +398,15 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
  * @returns Retained IDs, including existing equivalent measurements, in input order.
  */
 export function recordUsage(input: RecordUsageInput): string[] {
+  const context = input.call.context;
+  if (
+    input.workspaceDb.scope === 'core'
+      ? context.workspaceId !== undefined ||
+        !('owner' in context) ||
+        context.owner.kind !== 'server'
+      : context.workspaceId !== input.workspaceDb.workspaceId
+  )
+    throw new Error('Usage record database owner mismatch.');
   const ids: string[] = [];
   const recordedAt = (input.now ?? new Date()).toISOString();
 
@@ -363,9 +414,13 @@ export function recordUsage(input: RecordUsageInput): string[] {
     for (const record of input.records) {
       assertNoUnsafeLedgerValue(record);
 
-      const usage = UsageRecordSchema.parse({
+      const usage = (
+        input.workspaceDb.scope === 'core' ? ServerUsageRecordSchema : UsageRecordSchema
+      ).parse({
         id: record.usageId ?? allocateEntityId('use'),
-        workspaceId: input.call.context.workspaceId,
+        ...(input.workspaceDb.scope === 'core'
+          ? { owner: { kind: 'server' } }
+          : { workspaceId: input.call.context.workspaceId }),
         responsibleUserId: input.call.context.authorityActor
           ? responsibleUserIdForActor(input.call.context.authorityActor)
           : null,
@@ -417,7 +472,7 @@ export function recordUsage(input: RecordUsageInput): string[] {
         .run(
           writeRetainedV1(usage).schemaVersion,
           usage.id,
-          usage.workspaceId,
+          usage.workspaceId ?? null,
           usage.threadId,
           usage.turnId,
           usage.itemId,
@@ -459,8 +514,8 @@ export function recordUsage(input: RecordUsageInput): string[] {
  * @returns The retained measurement ID when an equivalent record is already stored.
  */
 function hasEquivalentUsageRecord(
-  workspaceDb: WorkspaceDb,
-  usage: UsageRecord
+  workspaceDb: WorkspaceDb | CoreDb,
+  usage: UsageRecord | ServerUsageRecord
 ): string | undefined {
   const row = workspaceDb.sqlite
     .prepare(
@@ -519,13 +574,16 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
                 'openkit.knowledge/delivery': { answer: input.deliveredKnowledgeAnswer },
               })
             );
-      capabilityCallFromRow({
-        ...call,
-        completed_at: completedAt,
-        error_code: input.errorCode ?? null,
-        status: input.status,
-        extensions_json: extensions,
-      });
+      capabilityCallFromRow(
+        {
+          ...call,
+          completed_at: completedAt,
+          error_code: input.errorCode ?? null,
+          status: input.status,
+          extensions_json: extensions,
+        },
+        input.workspaceDb.scope === 'core'
+      );
       const result = input.workspaceDb.sqlite
         .prepare(
           `UPDATE capability_calls
@@ -537,7 +595,7 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
         throw new Error(`Capability call changed concurrently: ${input.callId}`);
       }
 
-      recordWorkspaceAuditEvent({
+      const audit: Omit<Parameters<typeof recordServerAuditEvent>[0], 'coreDb'> = {
         action: 'capability.finish',
         agentId: call.agent_id,
         agentSessionId: call.agent_session_id,
@@ -554,9 +612,15 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
         summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null),
         threadId: call.thread_id,
         turnId: call.turn_id,
-        workspaceDb: input.workspaceDb,
-        workspaceId: call.workspace_id,
-      });
+      };
+      if (input.workspaceDb.scope === 'core')
+        recordServerAuditEvent({ ...audit, coreDb: input.workspaceDb });
+      else
+        recordWorkspaceAuditEvent({
+          ...audit,
+          workspaceDb: input.workspaceDb,
+          workspaceId: call.workspace_id!,
+        });
     })
     .immediate();
 }
@@ -624,7 +688,7 @@ export function listWorkspaceCapabilityCalls(
        ORDER BY started_at, call_id`
     )
     .all(workspaceId)
-    .map(capabilityCallFromRow);
+    .map((row) => capabilityCallFromRow(row));
 }
 
 /**
@@ -645,7 +709,23 @@ export function listWorkspaceUsageRecords(
        ORDER BY recorded_at, usage_id`
     )
     .all(workspaceId)
-    .map(usageRecordFromRow);
+    .map((row) => usageRecordFromRow(row));
+}
+
+/** Reads Server calls from the same ledger family after Server audience authorization. */
+export function listServerCapabilityCalls(coreDb: CoreDb): ServerCapabilityCallLedgerRecord[] {
+  return coreDb.sqlite
+    .prepare('SELECT * FROM capability_calls ORDER BY started_at, call_id')
+    .all()
+    .map((row) => capabilityCallFromRow(row, true) as ServerCapabilityCallLedgerRecord);
+}
+
+/** Reads Server measurements after Server audience authorization. */
+export function listServerUsageRecords(coreDb: CoreDb): ServerUsageRecord[] {
+  return coreDb.sqlite
+    .prepare('SELECT * FROM usage_records ORDER BY recorded_at, usage_id')
+    .all()
+    .map((row) => usageRecordFromRow(row, true) as ServerUsageRecord);
 }
 
 /** Latest current-session LLM usage joined to a family=llm capability call. */
@@ -752,7 +832,7 @@ export function importWorkspaceCapabilityUsageLedger(input: {
  * @returns Stored row when present.
  */
 function findCapabilityCallById(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   callId: string
 ): CapabilityCallRow | undefined {
   const row = workspaceDb.sqlite
@@ -879,16 +959,24 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
 }
 
 /** Converts one stored capability call row into an exportable record. */
-function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
+function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord;
+function capabilityCallFromRow(
+  row: unknown,
+  server: boolean
+): CapabilityCallLedgerRecord | ServerCapabilityCallLedgerRecord;
+function capabilityCallFromRow(
+  row: unknown,
+  server = false
+): CapabilityCallLedgerRecord | ServerCapabilityCallLedgerRecord {
   const call = row as CapabilityCallRow;
   readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
   const extensions =
     call.extensions_json === null
       ? undefined
       : CanonicalCapabilityCallExtensionsSchema.parse(JSON.parse(call.extensions_json));
-  const protocolCall = CapabilityCallSchema.parse({
+  const protocolCall = (server ? ServerCapabilityCallSchema : CapabilityCallSchema).parse({
     id: call.call_id,
-    workspaceId: call.workspace_id,
+    ...(server ? { owner: { kind: 'server' } } : { workspaceId: call.workspace_id }),
     threadId: call.thread_id,
     turnId: call.turn_id,
     itemId: call.item_id,
@@ -924,13 +1012,15 @@ function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
 }
 
 /** Converts one stored usage row into a protocol usage record. */
-function usageRecordFromRow(row: unknown): UsageRecord {
+function usageRecordFromRow(row: unknown): UsageRecord;
+function usageRecordFromRow(row: unknown, server: boolean): UsageRecord | ServerUsageRecord;
+function usageRecordFromRow(row: unknown, server = false): UsageRecord | ServerUsageRecord {
   const usage = row as Record<string, unknown>;
   readRetainedV1({ schemaVersion: usage.schema_version }, () => undefined);
 
-  return UsageRecordSchema.parse({
+  return (server ? ServerUsageRecordSchema : UsageRecordSchema).parse({
     id: usage.usage_id,
-    workspaceId: usage.workspace_id,
+    ...(server ? { owner: { kind: 'server' } } : { workspaceId: usage.workspace_id }),
     threadId: usage.thread_id,
     turnId: usage.turn_id,
     itemId: usage.item_id,
@@ -1050,21 +1140,21 @@ function capabilityAuditSummary(
  * @returns Stored capability call row.
  */
 function findCapabilityCallByIdOrIdempotency(
-  workspaceDb: WorkspaceDb,
-  input: StartCapabilityCallInput
+  workspaceDb: WorkspaceDb | CoreDb,
+  input: StartCapabilityCallInput | StartServerCapabilityCallInput
 ): CapabilityCallRow {
   if (input.requestId) {
     const storedByRequest = workspaceDb.sqlite
       .prepare(
         `SELECT * FROM capability_calls
-         WHERE workspace_id = ?
+         WHERE workspace_id IS ?
            AND request_id = ?
            AND family = ?
            AND operation = ?
          ORDER BY started_at
          LIMIT 1`
       )
-      .get(input.workspaceId, input.requestId, input.family, input.operation) as
+      .get(input.workspaceId ?? null, input.requestId, input.family, input.operation) as
       | CapabilityCallRow
       | undefined;
 
@@ -1079,7 +1169,7 @@ function findCapabilityCallByIdOrIdempotency(
 
     if (
       storedById &&
-      storedById.workspace_id === input.workspaceId &&
+      storedById.workspace_id === (input.workspaceId ?? null) &&
       storedById.request_id === (input.requestId ?? null) &&
       storedById.family === input.family &&
       storedById.operation === input.operation
@@ -1100,8 +1190,8 @@ function findCapabilityCallByIdOrIdempotency(
  */
 function assertMatchingCapabilityCallAttribution(
   stored: CapabilityCallRow,
-  incoming: CapabilityCall,
-  input: StartCapabilityCallInput
+  incoming: CapabilityCall | ServerCapabilityCall,
+  input: StartCapabilityCallInput | StartServerCapabilityCallInput
 ): void {
   if (
     stored.capability_id !== incoming.capabilityId ||
@@ -1163,10 +1253,10 @@ function findUnsafeLedgerKey(value: unknown): string | null {
   return null;
 }
 
-/** Existing call and Workspace authority supplied to the shared Gateway dispatcher. */
+/** Existing call and admitted owner supplied to the shared Gateway dispatcher. */
 export interface GatewayCallLedgerBinding {
-  readonly workspaceDb: WorkspaceDb;
-  readonly call: StartedCapabilityCall;
+  readonly workspaceDb: WorkspaceDb | CoreDb;
+  readonly call: StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext>;
 }
 
 /** Appends or settles one entry atomically; the open logical call remains the sole owner. */

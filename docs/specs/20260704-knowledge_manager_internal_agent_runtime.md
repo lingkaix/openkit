@@ -22,7 +22,7 @@ kind: boundary
 - Semantic worker-context composition, which Workflow Coordinator owns, or final worker-context persistence, materialization, delivery, and delivery proof, which the owning Task or Goal mode service and `docs/specs/20260703-worker_context_package.md` own.
 - Assistant direct answers outside knowledge query support.
 - Generic provider execution, the shared internal Agent loop, role-profile resolution, event hooks, or scheduling. `docs/specs/20260813-internal_agent_runtime.md` owns the role-agnostic provider and loop mechanism; this specification owns only when and how the Knowledge Manager role may use it.
-- Goal Mode Knowledge calls or a `goal-mode` caller value; both require a separately accepted Goal-owner update.
+- Goal progression, Task admission or a separate `goal-mode` caller value; the Goal Coordinator uses the admitted `internal-agent` ask/tell path.
 
 ## Core References
 
@@ -74,6 +74,12 @@ Knowledge Manager is the existing Internal Core Role listed in [Core Architectur
 - Every internal role uses configurable role profiles. Knowledge Manager selects its logical model through the existing resolver, without a separate model selector.
 
 ## Contract / Expected Behavior
+
+### Server maintenance Thread
+
+Server Knowledge maintenance uses the general `server` Thread owner from [Core Concepts](../core/core-concepts.md#thread), with no Workspace anchor. Its Turns, Items, model usage and review records retain that same owner. Current Server administration authority admits every read and effect; Workspace membership and asking-call lineage grant no Server access. This version implements only Knowledge Manager maintenance on that owner.
+
+One nonresident maintenance Thread serializes the Server's bounded request and daily runs. Each run starts fresh from the Server overview, explicit requests and their admitted Sources, human Server notebook changes and needed authorized records. No Workspace Thread enters Server learning. Existing run-input retention, fixed-base conflict checks, delegation, candidate review, visible failure/skip outcomes, Stop and no-model-replay rules apply. The independent Server daily switch defaults off. Revoked authority refuses further disclosure or publication. No Server maintenance request is recorded under a Workspace.
 
 ### Operation families
 
@@ -160,7 +166,7 @@ Entry paths use `assistant`, `task-mode`, `app-api`, `internal-agent` and `worke
 - `answer` and both Task and public `prepare-context-material` share the `knowledge.read` admission in [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) and the one governed retrieval in [Knowledge Store Implementation](20260703-knowledge_store_implementation.md). They keep the caller rows and output views in this section. `task-mode` remains trusted caller context assigned by the Task service and is never a caller-supplied field. Source and audience rules remain in force. The S61 trace remains selection evidence only. Retrieval keeps the mutating posture [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) states when the call updates an authoritative index or trace, and `answer` still never mutates knowledge.
 - Daily scheduled `maintain` uses the trusted `internal-agent` caller and the existing recurring schedule owner. It binds current scope and responsible authority without fabricating a Worker or Automation identity. No passive learning hook or other trigger is admitted.
 
-The caller table constrains the operation entries. Worker ask/tell and native internal-role ask/tell are the admitted integrations; they do not broaden the older operation rows. Goal Mode Knowledge calls require a separately accepted update to the Goal owner and this specification before `goal-mode` can enter the caller vocabulary.
+The caller table constrains the operation entries. Worker ask/tell and native internal-role ask/tell, including the Goal Coordinator, are admitted integrations. Goal Tools bind the responsible actor, current Goal Workspace and Coordinator Thread/Turn through native assembly and recheck current Goal authority before execution and delivery. They ask Workspace Knowledge plus currently admitted Server Knowledge with scope-labelled citations; they tell only Workspace Knowledge. Model arguments cannot select a scope or owner. User Memory remains excluded from shared work. No `goal-mode` caller value is added.
 
 ### Write rules
 
@@ -265,3 +271,11 @@ S18 alone owns the real Knowledge L6 story. This specification adds no story or 
 - `docs/specs/20260704-chat_mode_assistant.md`
 - `docs/specs/20260704-workflow_coordinator_internal_agent.md`
 - `docs/specs/20260813-internal_agent_runtime.md`
+
+### Server Maintenance Implementation
+
+The Server maintenance Thread uses the general `server` owner and has no Workspace selector. Current Server administration authority admits its history, Stop, explicit inputs and human Review. `knowledge.server.tell` and `knowledge.server.maintain` start bounded Turns; `thread.server.list`, `thread.server.read` and `turn.server.interrupt` expose their existing work records. Workers retain Workspace-only tell. Server administration and evaluation roles are not implemented by this change.
+
+Server maintenance learns only from its explicit requests, their retained Server Sources, and human changes in its own notebook since the last completed processed base. Its retained `sourceRange` is empty because it does not learn from Threads. No Workspace or User Thread history, or prior Knowledge Manager run output, is supplied. Explicit tell bytes use the existing Server Source owner. The run's bounded input includes exact Source references, the pinned notebook base, human edit diffs, trigger and instructions. Selected pages are fixed-base inputs; omitted pages remain immutable. Daily scheduling is independently off by default and uses the existing scanner. Current usable Server administration responsibility supplies the scheduled system actor; missing authority or an active writer produces a visible failed or skipped Turn, without a model effect.
+
+Delegated publication uses the existing Server `knowledgeMaintenance.enabled` setting and notebook publisher. Otherwise the existing Proposal and Review families retain the Server owner, base, candidate, sources, producer and decision without a Workspace field. `knowledge.server.proposal.read` exposes the exact candidate diff, and `knowledge.server.proposal.decide` accepts only that reviewed tuple under current authority. Changed bases conflict before publication. The shared role runner, result Tool, one repair limit, model resolver, compaction, usage and restart rules apply unchanged. Exact current-run compaction ranges are readable through `thread.history.read`; that Tool cannot read other work.

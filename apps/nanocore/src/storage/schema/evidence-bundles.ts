@@ -29,8 +29,8 @@ export const evidenceBundles = sqliteTable(
     schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable evidence bundle id. */
     evidenceBundleId: text('evidence_bundle_id').primaryKey().notNull(),
-    /** Workspace that owns the bundle. */
-    workspaceId: text('workspace_id').notNull(),
+    /** Workspace owner, or null for a Server-owned row in Core. */
+    workspaceId: text('workspace_id'),
     /** Thread lineage when available. */
     threadId: text('thread_id'),
     /** Goal lineage when available. */

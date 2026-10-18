@@ -32,7 +32,10 @@ import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
-import { createOperationInvocation } from '../operation-composition.js';
+import {
+  createOperationInvocation,
+  type OperationInvocationDependencies,
+} from '../operation-composition.js';
 import { OperationError, projectOperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
@@ -104,6 +107,8 @@ export interface GoalCoordinatorOptions {
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly taskTool: (goalId: string, turnId: string) => AgentTool;
   readonly services: () => GoalOwnerServices;
+  /** Existing bounded KM service; Goal Tools retain the responsible actor and shared audience. */
+  readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
   /** Reuses ordinary Task setup and live readiness, without a reusable conversation pin. */
   readonly workerCandidates: (
     workspaceId: string,
@@ -389,7 +394,76 @@ export function createGoalTools(input: {
       }
     },
   };
-  return [...goalTools, ...evidenceTools, discovery];
+  const knowledgeTools: AgentTool[] = (['knowledge.ask', 'knowledge.tell'] as const).map((id) => {
+    const definition = OPERATION_DEFINITIONS[id];
+    const modelInput = operationModelInput(definition.inputSchema, [
+      'workspaceId',
+      'requestId',
+    ]).strict();
+    const { $schema: _schema, ...schema } = z.toJSONSchema(modelInput);
+    return {
+      name: id,
+      description: definition.description,
+      inputSchema: schema,
+      async execute(value, context) {
+        try {
+          const parsed = modelInput.safeParse(value);
+          if (!parsed.success)
+            throw new OperationError('invalid_request', 'Invalid operation input.', 400);
+          const current = () =>
+            input.invoke(
+              'goal.read',
+              {},
+              {
+                kind: 'coordinator',
+                actor: input.actor,
+                workspaceId: goal.workspaceId,
+                threadId: goal.threadId,
+                goalId: goal.goalId,
+                turnId: input.turnId,
+                requestId: randomUUID(),
+                signal: context.signal,
+              }
+            );
+          await current();
+          const result = await input.invoke(
+            id,
+            {
+              ...parsed.data,
+              workspaceId: goal.workspaceId,
+              ...(id === 'knowledge.tell' ? { requestId: randomUUID() } : {}),
+            },
+            {
+              kind: 'public',
+              actor: input.actor,
+              delivery: 'model',
+              queryContext: { threadId: goal.threadId, turnId: input.turnId },
+              signal: context.signal,
+            }
+          );
+          await current();
+          return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  projectOperationError(error) ?? {
+                    code: 'knowledge_unavailable',
+                    message: 'Knowledge Manager is unavailable.',
+                    status: 503,
+                  }
+                ),
+              },
+            ],
+          };
+        }
+      },
+    };
+  });
+  return [...goalTools, ...evidenceTools, discovery, ...knowledgeTools];
 }
 /** Runs ordinary internal-agent Turns and owns their terminal closeout and wake opportunities. */
 export function createGoalCoordinator(options: GoalCoordinatorOptions) {
@@ -469,6 +543,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             repositoryWorkspaceDb: options.openWorkspace,
             inflightCommands: options.services().inflightCommands!,
             workspaceMutationAdmission: options.workspaceMutationAdmission,
+            knowledgeAgent: options.knowledgeAgent,
           }),
         }),
         options.taskTool(goal.goalId, turnId),
