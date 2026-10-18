@@ -37,8 +37,14 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
+  acceptWorkspaceInvitation,
+  createWorkspaceInvitation,
+  leaveWorkspace,
+} from '../workspace-sharing.js';
+import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
+  rotateOpenKitAccessTokenRecord,
 } from './access-token-store.js';
 import type { Actor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
@@ -52,6 +58,8 @@ import {
   currentWorkspaceAuthority,
   isCanonicalUserOperationAuthorized,
   registerOperationAccessGuards,
+  type WorkspaceAuthorityEvaluation,
+  type WorkspaceAuthorityOptions,
 } from './operation-authorizer.js';
 
 // Clone the immutable projection only in this test module so a definition fixture can replace its matching access row.
@@ -764,7 +772,7 @@ describe('central Workspace operation authorizer', () => {
         }
       : undefined;
     const strict = { dependencyFailure: 'throw' as const };
-    const evaluate = (options?: typeof strict) => [
+    const evaluate = (options?: WorkspaceAuthorityOptions) => [
       () =>
         currentWorkspaceAuthority(
           fixture.coreDb,
@@ -787,6 +795,121 @@ describe('central Workspace operation authorizer', () => {
         currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true, options),
     ];
     for (const check of evaluate(strict)) expect(check()).toBe(authority);
+    const capture = vi.fn<(event: WorkspaceAuthorityEvaluation) => void>();
+    const capturedOptions = { ...strict, onEvaluation: capture };
+    const membership = fixture.coreDb.sqlite
+      .prepare('SELECT revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+      .get(entry.workspaceId, actor.id) as { revision: number };
+    const expectedFacts = {
+      workspaceId: entry.workspaceId,
+      operation: 'tool.use',
+      responsibleUserId: actor.id,
+      relation: authority,
+      presentedTokenId: token?.tokenId ?? null,
+      membershipRevision: token ? null : membership.revision,
+      presentedTokenState: token
+        ? {
+            tokenId: token.tokenId,
+            ownerUserId: token.ownerUserId,
+            scope: token.scope,
+            workspaceIds: token.workspaceIds,
+            status: token.status,
+            expiresAt: token.expiresAt,
+            revokedAt: token.revokedAt,
+            predecessorTokenId: token.predecessorTokenId,
+            rotatedGraceExpiresAt: token.rotatedGraceExpiresAt,
+          }
+        : null,
+    };
+    for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
+    expect(capture).toHaveBeenCalledTimes(3);
+    for (const [event] of capture.mock.calls) {
+      expect(event.facts).toEqual(expectedFacts);
+      expect(event.decision.effect).toBe('allow');
+      expect(event.decision.reasons).toBeDefined();
+      expect(event.decision.trace).toBeDefined();
+    }
+    capture.mockClear();
+    if (token) {
+      const rotated = rotateOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId, {
+        graceSeconds: 3600,
+      });
+      if (!rotated) throw new Error('Expected the real Token rotation to succeed.');
+      expectedFacts.presentedTokenState = {
+        ...expectedFacts.presentedTokenState!,
+        status: rotated.rotatedRecord.status,
+        rotatedGraceExpiresAt: rotated.rotatedRecord.rotatedGraceExpiresAt,
+      };
+    } else {
+      const left = fixture.coreDb.sqlite.transaction(() =>
+        leaveWorkspace({
+          coreDb: fixture.coreDb,
+          workspaceId: entry.workspaceId,
+          memberUserId: actor.id,
+          expectedRevision: membership.revision,
+        })
+      )();
+      expect(left.kind).toBe('removed');
+      for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+      expect(capture).not.toHaveBeenCalled();
+      const rejoined = fixture.coreDb.sqlite.transaction(() => {
+        const invited = createWorkspaceInvitation({
+          coreDb: fixture.coreDb,
+          workspaceId: entry.workspaceId,
+          inviterUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          inviteeEmail: 'viewer-member@example.com',
+        });
+        if (invited.kind !== 'created') throw new Error('Expected a real rejoin invitation.');
+        return acceptWorkspaceInvitation({
+          coreDb: fixture.coreDb,
+          workspaceId: entry.workspaceId,
+          invitationId: invited.invitation.invitationId,
+          inviteeUserId: actor.id,
+          expectedRevision: invited.invitation.revision,
+        });
+      })();
+      if (rejoined.kind !== 'accepted') throw new Error('Expected a real membership rejoin.');
+      expect(rejoined.member.revision).toBeGreaterThan(membership.revision);
+      expectedFacts.membershipRevision = rejoined.member.revision;
+    }
+    for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
+    expect(capture).toHaveBeenCalledTimes(3);
+    for (const [event] of capture.mock.calls) expect(event.facts).toEqual(expectedFacts);
+    capture.mockClear();
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const kernel = vi
+      .spyOn(policyKernel, 'evaluateAccess')
+      .mockImplementation((policy, request) =>
+        actualEvaluate({ ...policy, associations: [] }, request)
+      );
+    try {
+      for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+      expect(capture).toHaveBeenCalledTimes(3);
+      for (const [index, [event]] of capture.mock.calls.entries()) {
+        expect(event.facts).toEqual(expectedFacts);
+        expect(event.decision).toEqual(kernel.mock.results[index]?.value);
+        expect(event.decision.effect).toBe('deny');
+      }
+      for (const check of evaluate({
+        ...strict,
+        onEvaluation: (event) => {
+          event.decision.effect = 'allow';
+        },
+      }))
+        expect(check()).toBeNull();
+    } finally {
+      kernel.mockRestore();
+    }
+    const callbackError = new Error('Evaluation capture unavailable');
+    const failedCapture = {
+      onEvaluation: () => {
+        throw callbackError;
+      },
+    };
+    for (const check of evaluate(failedCapture)) expect(check()).toBeNull();
+    for (const check of evaluate({ ...strict, ...failedCapture }))
+      expect(check).toThrow(callbackError);
+    capture.mockClear();
     const table = token ? 'openkit_access_tokens' : 'workspace_members';
     fixture.coreDb.sqlite.exec(`ALTER TABLE ${table} RENAME TO unreadable_authority`);
     try {
@@ -802,16 +925,18 @@ describe('central Workspace operation authorizer', () => {
         .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
         .run(entry.workspaceId, actor.id);
     }
-    for (const check of evaluate(strict)) expect(check()).toBeNull();
+    for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
     expect(
       currentWorkerLineageWorkspaceAuthority(
         fixture.coreDb,
         { ...lineage, packageSnapshotId: 'missing_snapshot' },
         'tool.use',
         true,
-        strict
+        capturedOptions
       )
     ).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
   });
 
   it('derives collection candidates from active Core memberships before loading content', async () => {
