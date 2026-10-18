@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,7 +9,7 @@ import {
 } from '@openkit/app-api-schemas';
 import * as policyKernel from '@openkit/policy-kernel';
 import { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import {
@@ -719,6 +719,8 @@ describe('central Workspace operation authorizer', () => {
     'member',
     'administrator',
   ] as const)('propagates unreadable %s authority only when strict dependency failures are requested', (authority) => {
+    const dataRoot = fixture.dataRoot;
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const actor = {
       kind: 'user' as const,
       id:
