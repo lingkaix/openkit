@@ -1944,6 +1944,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'backend',
     'typed-preview',
     'native-proof',
+    'retained-aep',
   ] as const)('retains safe capacity inspection cause and request correlation: %s', async (scenario) => {
     const store = createDemoStore();
     const turn = createAssignedTurn(
@@ -1964,9 +1965,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
               originPhysicalEpoch: 'a'.repeat(64),
               attachmentPhysicalEpoch: 'b'.repeat(64),
             })
-          : Object.assign(new Error('credential-canary /private/package-path received=secret'), {
-              name: 'secret-error-name',
-            });
+          : scenario === 'retained-aep'
+            ? new snapshotLedger.AgentEnvironmentSnapshotReadError(
+                new Error('credential-canary /private/package-path received=secret')
+              )
+            : Object.assign(new Error('credential-canary /private/package-path received=secret'), {
+                name: 'secret-error-name',
+              });
     if (cause instanceof WorkerNativeProofValidationError && cause.diagnostic) {
       Object.assign(cause.diagnostic, { packageBytes: 'credential-canary /private/package-path' });
     }
@@ -2044,7 +2049,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
             ? 'WorkerNativeProofValidationError'
             : scenario === 'typed-preview'
               ? 'TurnStartValidationError'
-              : 'Error',
+              : scenario === 'retained-aep'
+                ? 'AgentEnvironmentSnapshotReadError'
+                : 'Error',
+        ...(scenario === 'retained-aep'
+          ? { causeMessage: 'The retained record could not be read.' }
+          : {}),
         message:
           scenario === 'native-proof'
             ? 'Retained native-session proof disagrees with its original binding and package provenance.'

@@ -10141,6 +10141,12 @@ describe('createConfiguredTurnExecutor', () => {
     'cross-thread-handoff',
     'cross-thread-closed-handoff',
     'cross-thread-old-epoch-handoff',
+    'cross-thread-pre-naming-recorded',
+    'cross-thread-pre-naming-live',
+    'cross-thread-pre-naming-unrecorded',
+    'cross-thread-pre-naming-conflicting-digest',
+    'cross-thread-pre-naming-conflicting-snapshot',
+    'cross-thread-pre-naming-conflicting-attachment',
     'ignored-package-proof-handoff',
     'ignored-package-cross-thread-handoff',
     'ignored-package-restoration',
@@ -10377,7 +10383,19 @@ describe('createConfiguredTurnExecutor', () => {
           `workspaces/ws_00000000-0000-7af1-aea9-339aceb3f05b/runtime/agent-sessions/${testEntityId('as', 'as_resume_1')}/session.json`
         );
         const record = JSON.parse(readFileSync(recordPath, 'utf8'));
-        if (!['intact', 'image-intact'].includes(scenario)) record.nativeHandleDigest = null;
+        if (
+          !['intact', 'image-intact'].includes(scenario) &&
+          (!scenario.includes('pre-naming') || scenario.endsWith('unrecorded'))
+        )
+          record.nativeHandleDigest = null;
+        if (scenario.endsWith('conflicting-digest')) record.nativeHandleDigest = 'e'.repeat(64);
+        if (scenario.endsWith('conflicting-snapshot'))
+          record.environmentPackageSnapshotId = 'snapshot_unrelated';
+        if (scenario.endsWith('conflicting-attachment'))
+          record.retainedStorage.workSlotRef = workerStorageDefaultWorkSlotRef(
+            predecessor.workspaceId,
+            testEntityId('th', 'thread_other_attachment')
+          );
         if (['missing-fact', 'cross-thread-missing-fact'].includes(scenario))
           record.retainedStorage = null;
         writeFileSync(recordPath, JSON.stringify(record));
@@ -10418,6 +10436,101 @@ describe('createConfiguredTurnExecutor', () => {
             )
             .get(predecessor.id)
         ).toMatchObject({ state: 'ready', digest });
+        if (scenario.includes('pre-naming')) {
+          const snapshotPath = join(
+            coreDb.dataRoot,
+            'workspaces',
+            predecessor.workspaceId,
+            'runtime/agent-sessions',
+            predecessor.id,
+            'aep-snapshots',
+            `${predecessor.environmentPackageSnapshotId}.json`
+          );
+          const retained = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+          // An admitted historical package is no longer executable after the naming cutover.
+          retained.snapshot.capabilities.routes = [
+            'mcp.list_servers',
+            'mcp.list_tools',
+            'mcp.call_tool',
+          ];
+          retained.contentDigest = createHash('sha256')
+            .update(JSON.stringify(retained.snapshot))
+            .digest('hex');
+          writeFileSync(snapshotPath, JSON.stringify(retained));
+          const historicalBytes = readFileSync(snapshotPath, 'utf8');
+          const packageDb = openWorkspaceDb(coreDb.dataRoot, predecessor.workspaceId);
+          try {
+            expect(() =>
+              requireAgentEnvironmentPackageSnapshot(
+                packageDb,
+                predecessor.workspaceId,
+                predecessor.environmentPackageSnapshotId!
+              )
+            ).toThrow();
+          } finally {
+            packageDb.sqlite.close();
+          }
+          if (!scenario.endsWith('live'))
+            coreDb.sqlite
+              .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
+              .run('f'.repeat(64));
+          const desired = completeNanoHostPackage({
+            runtime: {
+              image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
+            },
+            scope: {
+              agentSessionId: testEntityId('as', 'as_capacity_preview'),
+              threadId: testEntityId('th', 'thread_resume_1'),
+              turnId: testEntityId('tu', 'turn_capacity_preview'),
+              workspaceId: predecessor.workspaceId,
+            },
+            snapshotId: 'snapshot_capacity_preview',
+          });
+          if (scenario !== 'cross-thread-pre-naming-recorded') {
+            const effectsBefore = [...effects];
+            expect(() => restoredBackend.inspectMaterializationCapacity!(desired)).toThrow();
+            await expect(
+              (
+                restoredBackend as WorkerGovernanceBackend & {
+                  evictIncompatibleIdleSandbox(
+                    preview: AgentEnvironmentPackage,
+                    force: boolean
+                  ): Promise<unknown>;
+                }
+              ).evictIncompatibleIdleSandbox(desired, true)
+            ).rejects.toThrow();
+            expect(
+              coreDb.sqlite
+                .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+                .get(predecessor.id)
+            ).toBeDefined();
+            expect(readFileSync(snapshotPath, 'utf8')).toBe(historicalBytes);
+            expect(effects).toEqual(effectsBefore);
+            return;
+          }
+          // Preflight preserves the old rows; actual admission must retire them through the same rule.
+          expect(restoredBackend.inspectMaterializationCapacity!(desired)).toBe('available');
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+              .get(predecessor.id)
+          ).toBeDefined();
+          await run(2, 1);
+          expect(opens).toHaveLength(2);
+          expect(opens[1]).toMatchObject({ resume: null });
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+              .get(predecessor.id)
+          ).toBeUndefined();
+          expect(readFileSync(snapshotPath, 'utf8')).toBe(historicalBytes);
+          expect(store.getAgentSession(predecessor.id)).toMatchObject({
+            nativeHandleDigest: digest,
+            retainedStorage: predecessor.retainedStorage,
+            environmentPackageSnapshotId: predecessor.environmentPackageSnapshotId,
+          });
+          return;
+        }
         if (scenario === 'cross-thread-closed-handoff') {
           coreDb.sqlite
             .prepare("UPDATE agent_session_runtime_bindings SET lifecycle_state = 'closed'")
