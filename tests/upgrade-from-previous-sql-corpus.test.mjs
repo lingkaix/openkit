@@ -310,7 +310,7 @@ test('detects changes in selected Discord disclosure values', async (t) => {
 });
 
 test('idle native corpus preserves historical AEP bytes and requires fenced retirement evidence', async (t) => {
-  const input = await fixture(t);
+  const input = await fixture(t, true);
   const { openCoreDb, openWorkspaceDb } = await input.load('storage/db');
   const { FsStore } = await input.load('lib/store');
   const harness = await input.load('runtime/nanohost-harness-records');
@@ -462,30 +462,35 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     workspace.sqlite.close();
   }
   assert.equal((await checkIdleNativeBinding(input, previous)).aepBytesPreserved, true);
-  await assert.rejects(checkIdleNativeBinding(input, previous, true), /not retired/);
+  const candidateWorker = {
+    workspaceId: input.selectors.workspaceId,
+    threadId: input.selectors.threadId,
+    turnId: input.selectors.turnId,
+  };
+  await assert.rejects(checkIdleNativeBinding(input, previous, candidateWorker), /not retired/);
   harness.removeNanoHostSandboxRuntimeByBinding(core, 'idle-corpus-sandbox');
-  await assert.rejects(checkIdleNativeBinding(input, previous, true), /physical Epoch/);
+  await assert.rejects(
+    checkIdleNativeBinding(input, previous, {
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      turnId: sql.contextTurnId,
+    }),
+    /physical Epoch/
+  );
+  // The ordered guest driver already checked live readiness before stopping these writers.
   targets.fenceNanoHostRuntimeTargetAfterRestart(core, now);
-  const reconnected = targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
-    targetId: target.targetId,
-    identityId: target.identityId,
-    deploymentId: target.deploymentId,
-    observedAt: now,
-  });
-  targets.upsertNanoHostRuntimeTarget(core, {
-    ...reconnected,
-    physicalEpoch: 'f'.repeat(64),
-    ready: true,
-    freshEmpty: true,
-    predecessorFenced: true,
-    observedAt: now,
-  });
-  assert.equal((await checkIdleNativeBinding(input, previous, true)).idleBindingRetired, true);
+  assert.equal(
+    (await checkIdleNativeBinding(input, previous, candidateWorker)).idleBindingRetired,
+    true
+  );
   assert.deepEqual(readFileSync(snapshotPath), oldBytes);
   writeFileSync(snapshotPath, Buffer.concat([oldBytes, Buffer.from(' ')]));
-  await assert.rejects(checkIdleNativeBinding(input, previous, true), /AEP bytes changed/);
   await assert.rejects(
-    checkIdleNativeBinding(input, undefined, true),
+    checkIdleNativeBinding(input, previous, candidateWorker),
+    /AEP bytes changed/
+  );
+  await assert.rejects(
+    checkIdleNativeBinding(input, undefined, candidateWorker),
     /selected retained record is missing/
   );
 });

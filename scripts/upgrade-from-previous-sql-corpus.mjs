@@ -369,7 +369,7 @@ export async function captureIdleNativeBinding({ appRoot, dataRoot }, worker) {
 }
 
 /** Checks retained proof and opaque AEP bytes without admitting an old package for execution. */
-export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, retired = false) {
+export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, candidateWorker) {
   required(previous, 'Previous Worker idle native binding');
   const o = await owners(appRoot);
   const core = o.db.openCoreDb(dataRoot);
@@ -385,7 +385,7 @@ export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, re
       previous.aepBytes,
       'Previous Worker AEP bytes changed.'
     );
-    if (retired) {
+    if (candidateWorker) {
       assert.equal(
         core.sqlite
           .prepare(`SELECT 1 FROM agent_session_runtime_bindings
@@ -394,22 +394,27 @@ export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, re
         undefined,
         'Previous Worker idle binding was not retired.'
       );
-      const target = required(
-        o.targets.getNanoHostRuntimeTarget(core, previous.runtimeTargetId),
-        'Candidate RuntimeTarget'
-      );
-      assert.ok(
-        target.ready && target.freshEmpty && target.predecessorFenced,
-        'Candidate retirement lacks fresh fenced readiness.'
-      );
-      assert.match(target.physicalEpoch, /^[a-f0-9]{64}$/);
+      // The successful live Worker check proves fresh fenced readiness. Its immutable anchor
+      // retains the exact Epoch after the ordered stop clears live RuntimeTarget readiness.
+      const anchors = core.sqlite
+        .prepare(`SELECT attempt_id AS attemptId
+        FROM worker_backend_sessions WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?`)
+        .all(candidateWorker.workspaceId, candidateWorker.threadId, candidateWorker.turnId);
+      assert.equal(anchors.length, 1, 'Candidate Worker backend anchor is missing or ambiguous.');
+      const anchor = o.backend.getWorkerBackendSession(core, anchors[0].attemptId);
+      assert.equal(anchor.runtimeTargetId, previous.runtimeTargetId);
+      assert.match(anchor.originPhysicalEpoch, /^[a-f0-9]{64}$/);
       assert.notEqual(
-        target.physicalEpoch,
+        anchor.originPhysicalEpoch,
         previous.physicalEpoch,
         'Candidate retirement did not cross a physical Epoch.'
       );
     }
-    return { nativeProofPreserved: true, aepBytesPreserved: true, idleBindingRetired: retired };
+    return {
+      nativeProofPreserved: true,
+      aepBytesPreserved: true,
+      idleBindingRetired: Boolean(candidateWorker),
+    };
   } finally {
     core.sqlite.close();
   }
