@@ -382,11 +382,7 @@ function readSnapshotRecord(
       validateSnapshotRecord(workspaceDb, value)
     );
   } catch (cause) {
-    if (
-      cause instanceof SyntaxError ||
-      cause instanceof z.ZodError ||
-      cause instanceof TypeError
-    ) {
+    if (cause instanceof SyntaxError || cause instanceof z.ZodError || cause instanceof TypeError) {
       throw new AgentEnvironmentSnapshotReadError(cause);
     }
     throw cause;
