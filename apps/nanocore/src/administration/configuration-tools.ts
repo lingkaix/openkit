@@ -97,7 +97,7 @@ export function createAdministrationConfigurationTools(
       execute: async (value) => catalogResult(() => catalog.propose(value)),
     },
     {
-      name: 'administration.configuration.apply',
+      name: 'administration.configuration.dispatch',
       description:
         'Apply an exact Worker Git-read candidate only under the current finite Server Policy assignment. Provider and Gateway candidates require human confirmation through their public command. Inspect the receipt and source after an unknown outcome; do not regenerate a request to retry.',
       inputSchema: z.toJSONSchema(ApplyDelegatedAdministrationConfigurationRequestSchema),

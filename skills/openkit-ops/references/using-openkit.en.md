@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Using OpenKit
 
-Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP guide, search, describe and call to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
+Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP `openkit_guide`, `openkit_search`, `openkit_describe` and `openkit_call` to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
 
 Select the intended Workspace and inspect the data sources selected for the task, Agent and model before a source task. Quick conversation is for short assistance; use a Worker task for bounded execution and Goal Mode for planned work requiring coordination. In the current Web composer, the Worker target may be presented as **New Shard + Worker**, which creates a linked execution Thread. Follow that receiving Thread rather than treating submission as completion.
 

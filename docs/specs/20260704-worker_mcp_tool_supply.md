@@ -6,9 +6,11 @@ updated: "2026-10-17"
 ---
 # Worker MCP Tool Supply
 
+Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
+
 ## Owns
 
-- The `mcp.*` capability route family on worker-local `capability.local`, projected through `/capabilities/mcp/*`: `mcp.list_servers`, `mcp.list_tools`, `mcp.call_tool`.
+- The `mcp.*` capability route family on worker-local `capability.local`, projected through `/capabilities/mcp/*`: `mcp.list-servers`, `mcp.list-tools`, `mcp.call-tool`.
 - The effective Workspace MCP server catalog projection: named server entries, transports, credential references, tool rules, and current digest validation for Gateway execution.
 - NanoCore ownership of MCP server lifecycle: spawn, connect, supervise, health, teardown.
 - Gateway-side credential injection binding for MCP server calls.
@@ -43,7 +45,7 @@ updated: "2026-10-17"
 
 This specification owns Gateway-mediated MCP integration, not every use of the MCP protocol: catalog and built-in servers, integrations using Gateway-held credentials, and operations requiring Gateway-mediated approval or audit remain on this plane, while separately admitted credential-free public non-LLM endpoints may use the Sandbox network path. This spec defines the accepted MCP plane for that traffic: a worker reaches catalog and built-in MCP servers only through NanoCore, whose gateway serves them at worker-local loopback endpoints that the runtime loads as MCP servers; the runtime presents the session capability loopback credential, and Sandbox Integration carries the request through `/capabilities/mcp/*` under the capability route token of the Turn bound when it arrives, as [Worker Agent Capability](20260703-worker_agent_capability.md) defines; NanoCore owns the servers, credentials, policy checks, audit trail, and tool schema history. MCP servers the worker configures inside its own Sandbox are outside this plane.
 
-In the accepted target, Gateway-managed MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: upstream server endpoints and launch configs never appear inline in AgentManifest.mcp. Every `mcp.call_tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted; tool schemas are snapshotted per server version so calls stay interpretable after servers change; credentials are injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
+In the accepted target, Gateway-managed MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: upstream server endpoints and launch configs never appear inline in AgentManifest.mcp. Every `mcp.call-tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted; tool schemas are snapshotted per server version so calls stay interpretable after servers change; credentials are injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
 
 ## Goals / Non-goals
 
@@ -81,8 +83,8 @@ The decision and its reason are recorded in [a decision record](../decisions/202
 - Gateway-managed MCP servers are declared in a workspace-scoped catalog (with read-only projection of server-scoped shared entries) and referenced by name from agent manifests.
 - NanoCore owns catalog MCP server lifecycle: it spawns stdio servers and connects to HTTP servers; workers never hold handles to those servers.
 - Credentials resolve from vault references at the gateway with `gateway-only` visibility.
-- Every `mcp.call_tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted. Tool schemas are snapshotted per server version.
-- `tool.use` is the policy-kernel action for `mcp.call_tool`; the default posture is deny-unless-enabled at the catalog level plus policy allow at call level.
+- Every `mcp.call-tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted. Tool schemas are snapshotted per server version.
+- `tool.use` is the policy-kernel action for `mcp.call-tool`; the default posture is deny-unless-enabled at the catalog level plus policy allow at call level.
 
 ## Contract / Expected Behavior
 
@@ -123,24 +125,24 @@ Gateway sessions and mutable MCP process data stay partitioned by the actual con
 
 Three operations occupy the current narrow capability plane, using the envelope, lineage, authentication, and verification rules owned by the worker capability spec:
 
-- `mcp.list_servers`: returns the servers enabled for this AgentSession — entry names, transport kind, health state, and tool-name summaries only. No endpoints, no launch configs, no credential hints.
-- `mcp.list_tools`: returns the tool schemas for one named server, served from the snapshot fixed for the current Turn (see Tool schema retention), not live from the server, so listing is deterministic within a Turn.
-- `mcp.call_tool`: invokes one tool on one named server with JSON arguments; returns the tool result or a typed error.
+- `mcp.list-servers`: returns the servers enabled for this AgentSession — entry names, transport kind, health state, and tool-name summaries only. No endpoints, no launch configs, no credential hints.
+- `mcp.list-tools`: returns the tool schemas for one named server, served from the snapshot fixed for the current Turn (see Tool schema retention), not live from the server, so listing is deterministic within a Turn.
+- `mcp.call-tool`: invokes one tool on one named server with JSON arguments; returns the tool result or a typed error.
 
-The native worker projection uses the one fixed loopback Integration listener. `mcp.list_servers` is exact authenticated `POST /capabilities/mcp/_list-servers` with body `{}` and returns `{ "servers": [{ "id", "transport", "health", "toolNames" }] }`; the underscore-prefixed reserved segment cannot collide with a valid catalog id. Each selected server is exposed as authenticated MCP Streamable HTTP at exact `POST /capabilities/mcp/{serverId}` for `tools/list` and `tools/call`, served statelessly with one JSON response per request, and negotiated by the SDK for both the session and stateless protocol eras. Sandbox Integration forwards both forms unchanged over the existing capability family, and NanoCore maps them to its private `/api/worker-capabilities/*` handlers; no endpoint, command, arguments, environment, Vault reference, credential hint, or raw schema enters the list response.
+The native worker projection uses the one fixed loopback Integration listener. `mcp.list-servers` is exact authenticated `POST /capabilities/mcp/_list-servers` with body `{}` and returns `{ "servers": [{ "id", "transport", "health", "toolNames" }] }`; the underscore-prefixed reserved segment cannot collide with a valid catalog id. Each selected server is exposed as authenticated MCP Streamable HTTP at exact `POST /capabilities/mcp/{serverId}` for `tools/list` and `tools/call`, served statelessly with one JSON response per request, and negotiated by the SDK for both the session and stateless protocol eras. Sandbox Integration forwards both forms unchanged over the existing capability family, and NanoCore maps them to its private `/api/worker-capabilities/*` handlers; no endpoint, command, arguments, environment, Vault reference, credential hint, or raw schema enters the list response.
 
 Native clients may initialize distinct supplied MCP servers concurrently. The qualified startup workload MUST expose each healthy selected server's admitted tools through the native discovery path without relying on retries of a transport-capacity refusal. Qualification includes the always-supplied built-ins and states its concurrent request demand against the current transport envelope; it does not guarantee successful discovery under arbitrary overload or upstream failure and adds no native inference-readiness gate. The rationale is recorded in [a decision record](../decisions/20261003-capability_stream_ceiling_default.md).
 
 Rules:
 
-- A session sees only servers that its resolved AEP enables; `mcp.list_servers` MUST NOT reveal disabled or out-of-scope entries.
+- A session sees only servers that its resolved AEP enables; `mcp.list-servers` MUST NOT reveal disabled or out-of-scope entries.
 - One complete upstream native MCP protocol response is bounded to 1 MiB on both stdio and HTTP transports before semantic parsing; this is an internal envelope allowance, not the worker-native carriage in-flight bound. The parsed tools list or tool result is bounded to 512 KiB by capability-plane policy. An oversized semantic result fails typed with `mcp-result-too-large` and a hint to route bulk output through artifacts or the data plane; the gateway MUST NOT truncate silently.
 - Calls carry the full capability lineage (workspace, thread, turn, AgentSession, package snapshot); the gateway stamps the catalog entry id and schema snapshot id onto the call record.
 - Timeouts are enforced at the gateway (default 60s per call, catalog-entry configurable); a timed-out call fails typed and MUST NOT leave the worker waiting on a hung server.
 
 ### Server lifecycle
 
-The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_request_input`, `work_list_peers`, `work_read_peer` and `work_submit_artifact`, whose semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It also supplies `knowledge_ask` and `knowledge_tell` under [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md). It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Until that resource family is cut over, the in-process dispatch named here remains the contract.
+The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_input_request`, `work_peer_list`, `work_peer_read`, `work_source_read`, `work_source_search`, `work_source_view` and `work_artifact_submit`, whose semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It also supplies `knowledge_ask` and `knowledge_tell` under [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md). It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Until that resource family is cut over, the in-process dispatch named here remains the contract.
 
 The synchronous file-submission Tool carries only path and bounded metadata on this capability route; its file bytes use the existing independent NanoHost file-data reservation. The native call may await that effect while inference, heartbeat, and cancellation continue. Its durable success, request replay, and product-safe refusal semantics belong to [Worker Agent Capability](20260703-worker_agent_capability.md#built-in-work-target). This adds no runtime-specific Artifact branch, external MCP process, App API bearer, seventh Harness operation, or new capability family. Discovery must expose the same Tool and schema across Codex, Pi, OpenCode, and DeepSeek. A timed-out response never proves that publication did not commit; exact command replay and authorized Artifact read decide that fact.
 
@@ -167,13 +169,13 @@ When the family is cut over, the accepted target applies. Built-in worker MCP To
 - NanoCore owns the lifecycle. States: `inactive`, `starting`, `ready`, `degraded`, `failed`. Transitions are recorded as operational diagnostics; health checks run while any live session has the entry enabled.
 - `stdio` servers are spawned and supervised by NanoCore on demand (first call or session start, an implementation choice) and reaped when idle past a bound. Spawned server processes run in NanoCore's host context in this slice; sandboxing them is deferred, and server trust is therefore deployment configuration. Import is inactive and has no spawn or discovery effect. Activation of a new or changed stdio command or package executable requires deployment-admin authority, separately from ordinary Workspace catalog management.
 - `http` servers are connected from NanoCore with pooled clients. The actual fetch boundary rejects every redirect before following it, including same-origin redirects; no fixed header, Vault authentication, or request body reaches a redirect target. Endpoint changes require an explicit authorized configuration revision, without inferred credential forwarding or alternate transport.
-- A `failed` or unreachable server yields typed `mcp-server-unavailable` errors on calls, never hangs; repeated failures mark the entry `degraded` in `mcp.list_servers` output so workers can adapt.
+- A `failed` or unreachable server yields typed `mcp-server-unavailable` errors on calls, never hangs; repeated failures mark the entry `degraded` in `mcp.list-servers` output so workers can adapt.
 - One catalog entry may be reused across successive and co-resident AgentSessions. This specification does not authorize a harness of agents that control each other or fleet behavior; the read-only peer tools create no control edge. Per-AgentSession server instances remain a deferred lifecycle option for stateful or isolation-sensitive servers.
 
 ### Credential injection
 
 - Credential resolution happens at the gateway when NanoCore spawns or calls the server: vault references resolve through the vault backend, values land in the server's process environment (`stdio`) or request auth material (`http`), with visibility class `gateway-only` per the vault injection contract.
-- Workers MUST NOT be able to obtain MCP credentials through any route: not in `mcp.list_servers`, not in error payloads, not in tool results echoing server environment. The gateway MUST apply redaction filters to tool results for known credential shapes as defense in depth.
+- Workers MUST NOT be able to obtain MCP credentials through any route: not in `mcp.list-servers`, not in error payloads, not in tool results echoing server environment. The gateway MUST apply redaction filters to tool results for known credential shapes as defense in depth.
 - Vault grant revocation takes effect on the next capability call: the gateway re-checks grant validity per call (cheap check against the grant record), and revocation also triggers teardown of spawned `stdio` servers holding the revoked material in their environment.
 - Every credential resolution emits `VaultUse` success or typed-failure evidence per the Vault contract; that evidence is not injection authority or proof that the MCP sink completed.
 
@@ -183,13 +185,13 @@ Raw presentation injects the exact resolved Vault string through the existing co
 
 - At Turn admission NanoCore fixes, for each selected server, the `McpToolSchemaSnapshot` the worker sees during that Turn; the snapshot is captured on first use of a server and on drift detected at a Turn boundary under `tracking` policy. A snapshot holds the catalog entry id, server-reported identity/version when available, the full tool list with JSON schemas, a content digest, and captured-at time. Upstream `tools/list` pagination is followed to the end within a bounded page count, and the complete list stays under the 512 KiB semantic bound.
 - A runtime that refreshes its tool list at Turn start sees a changed snapshot at the next Turn. For a runtime whose adapter declares that it cannot refresh, a changed snapshot is a setup change that the continuity owner applies by replacing the binding at that boundary, and the successor resumes the native conversation.
-- Every `CapabilityCall` for `mcp.call_tool` records the schema snapshot id it was validated against, so calls remain interpretable for replay and audit after servers change.
+- Every `CapabilityCall` for `mcp.call-tool` records the schema snapshot id it was validated against, so calls remain interpretable for replay and audit after servers change.
 - Schema drift handling follows the entry's pin policy: `pinned` entries fail calls typed with `mcp-schema-drift` until an operator re-pins; `tracking` entries record a diagnostic and capture a new snapshot, which the worker sees from the next Turn. Within a Turn, calls are validated against the Turn's snapshot, and a call whose tool left the upstream or no longer matches it fails typed rather than silently changing the surface.
 - Tool arguments are validated against the snapshot schema at the gateway before the server is called; validation failures are typed `mcp-invalid-arguments` and never reach the server.
 
 ### Policy binding
 
-- `tool.use` is the policy-kernel action for `mcp.call_tool`. Policy associations MAY scope by catalog entry name and tool name; the decision context includes the standard capability lineage.
+- `tool.use` is the policy-kernel action for `mcp.call-tool`. Policy associations MAY scope by catalog entry name and tool name; the decision context includes the standard capability lineage.
 - Default posture: deny-unless-enabled at the catalog level (an entry not enabled for the workspace/agent yields no access at all) plus policy allow at call level (an enabled entry still requires an `allow` decision for `tool.use`).
 - Tools marked `approval-required` raise a pending approval under [Pending Requests](20260930-pending_requests.md). After current authorization and argument validation against the Turn's snapshot, the gateway captures the immutable binding: server id, catalog revision, schema snapshot, tool, the full canonical arguments, and the originating authorization context. It makes no upstream contact, records the raising `CapabilityCall` as `denied` with no contact, and returns at once a tool result with `isError: true` whose structured and text content carry `status: "pending-approval"`, the request id, and a next step telling the agent that the outcome arrives on a later Turn and that it must not call again to claim it. The Turn continues. A repeated call with the same qualified binding while the request is pending returns the same request.
 - After a grant, the gateway re-evaluates current Workspace membership and Agent authority, the Thread's current supply for that server and tool, current credentials and Vault grants, current `tool.use` policy, and the current schema against the captured binding, inside the approval response command. On success it claims the request once and executes the captured call with the ordinary timeout, bounds, and credential rules. The execution `CapabilityCall` id is derived from the request id; its fresh `allow` PermissionDecision links the grant and the call. Its disposition is `approved-executed`, `execution-error`, or `outcome-unknown`, or `denied-not-executed` when re-evaluation fails. A claimed call that did not finish before a restart is `outcome-unknown` and is never executed again. The agent never re-issues the call, and no approval expires by time.
@@ -203,8 +205,8 @@ Raw presentation injects the exact resolved Vault string through the existing co
 
 ### Usage and audit
 
-- Every `mcp.call_tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/agent-capability.md`.
-- `mcp.list_servers` and `mcp.list_tools` are capability calls for audit purposes but do not emit usage rows.
+- Every `mcp.call-tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/agent-capability.md`.
+- `mcp.list-servers` and `mcp.list-tools` are capability calls for audit purposes but do not emit usage rows.
 - Server lifecycle transitions, schema snapshot captures, and credential-bearing spawns emit audit events.
 - Usage rows and audit rows MUST NOT contain tool arguments or results; those belong to redacted diagnostics and restricted evidence per the audit spec's visibility split.
 
@@ -218,7 +220,7 @@ The gateway has an MCP subsystem beside the inference dispatcher: the existing w
 
 ## Current Implementation Projection
 
-Worker Knowledge ask/tell and the maintained overview supply are not implemented. The accepted additions reuse `openkit-work`, CapabilityCall evidence and the Knowledge Manager runtime; this specification adds no new worker transport.
+Worker Knowledge ask/tell use `openkit-work`, CapabilityCall evidence and the Knowledge Manager runtime. The maintained overview supply is not implemented. This specification adds no new worker transport.
 
 The selected `openkit-repository` builtin and `repository_push` binding are removed. Retained captured calls whose tool left supply resolve to `denied-not-executed` before claim or Gateway contact under Pending Requests. Generic captured vendor MCP execution and configured approval remain implemented.
 
