@@ -14,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
@@ -54,6 +55,31 @@ def digest(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(chunk)
     return "sha256:" + h.hexdigest()
+
+
+def worker_archive_identity(path):
+    """Verify the saved OCI archive's own descriptor without assuming its published index identity."""
+    with tarfile.open(path, "r:*") as archive:
+        require(json.load(archive.extractfile("oci-layout"))["imageLayoutVersion"] == "1.0.0",
+                "worker_archive_not_oci")
+        index = json.load(archive.extractfile("index.json"))
+        require(index["schemaVersion"] == 2 and len(index["manifests"]) == 1,
+                "worker_archive_descriptor_ambiguous")
+        descriptor = index["manifests"][0]
+        source = descriptor["digest"]
+        require(DIGEST.fullmatch(source) and type(descriptor["size"]) is int and descriptor["size"] > 0,
+                "worker_archive_descriptor_invalid")
+        blob = archive.getmember("blobs/sha256/" + source[7:])
+        require(blob.isfile() and blob.size == descriptor["size"], "worker_archive_blob_size_mismatch")
+        h = hashlib.sha256()
+        size = 0
+        with archive.extractfile(blob) as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                h.update(chunk)
+                size += len(chunk)
+        require(size == descriptor["size"] and "sha256:" + h.hexdigest() == source,
+                "worker_archive_blob_digest_mismatch")
+    return {"sha256": digest(path), "sourceDescriptor": source}
 
 
 class DockerConnection(http.client.HTTPConnection):
@@ -365,10 +391,14 @@ class Upgrade:
     def import_worker(self, revision):
         """Use the exact stopped guest Host to import the prepared OCI archive."""
         require(self.stopped, "worker_import_requires_stop")
+        path = Path(self.layout["guestRoot"]) / self.input[revision + "WorkerArchive"].lstrip("/")
+        identity = worker_archive_identity(path)
+        self.result[revision + "WorkerArchive"] = identity
+        self.note(revision + "_worker_archive_verified")
         observed = self.boundary.run([
             "systemd-run", "-M", GUEST, "--wait", "--pipe", "--collect",
             "/opt/published-nanohost", "image", "import", self.input[revision + "WorkerArchive"],
-            self.input[revision]["workerImage"],
+            identity["sourceDescriptor"],
         ], timeout=660)
         require(observed == self.input[revision]["workerPlatformImage"], "worker_platform_image_mismatch")
         self.result[revision + "WorkerPlatformImage"] = observed
