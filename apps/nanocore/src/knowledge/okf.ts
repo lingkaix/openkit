@@ -1,4 +1,9 @@
-import { isEntityId, type KnowledgeOwnerScope, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
+import {
+  isEntityId,
+  type KnowledgeOwnerScope,
+  KnowledgeOwnerScopeSchema,
+  ReferenceUriSchema,
+} from '@openkit/protocol';
 import { type Document, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 
 export const OKF_SNAPSHOT_ID = 'docs/okf-spec-v0.2-snapshot.md#v0.2';
@@ -59,6 +64,25 @@ const OPENKIT_BASE_TYPES = new Set([
 ]);
 // These domain types use the same governance boundary, not a new portable OKF base.
 const OPENKIT_DOMAIN_TYPES = new Set(['Rule', 'Effect', 'Objective']);
+/** Retained Claim uncertainty values; the notebook replaces the former row authority. */
+const CLAIM_CONFLICT_STATES = new Set([
+  'none',
+  'conflicting',
+  'weak_evidence',
+  'stale',
+  'superseded',
+  'partially_superseded',
+]);
+/** Retained conflict analysis values; publication and retrieval keep distinct eligibility rules. */
+const OBSERVATION_CONFLICT_STATES = new Set([
+  'conflicting',
+  'needs_review',
+  'weak_evidence',
+  'stale',
+  'resolved',
+  'superseded',
+  'partially_superseded',
+]);
 const DEFAULT_STATUS_VALUES = ['draft', 'active', 'archived', 'superseded', 'invalid', 'deleted'];
 const STANDARD_STATUS_BY_OPENKIT_STATUS = {
   active: 'stable',
@@ -503,6 +527,61 @@ export function validateScopeKnowledgeSchema(
         message:
           'Rule, Effect and Objective pages require applies_to as a nonempty list of tool or work-step identifiers.',
       });
+    }
+  }
+
+  const factType = document.frontmatter.type;
+  if (factType === 'Claim' || factType === 'Observation') {
+    const confidence = document.frontmatter.confidence;
+    if (
+      (factType === 'Claim' || confidence !== undefined) &&
+      (typeof confidence !== 'number' ||
+        !Number.isFinite(confidence) ||
+        confidence < 0 ||
+        confidence > 1)
+    ) {
+      errors.push({
+        code: 'scope_schema.invalid_confidence',
+        field: 'confidence',
+        message:
+          'Claim confidence is required; any Claim or Observation confidence must be a finite number from zero through one.',
+      });
+    }
+    const conflictStatus = document.frontmatter.conflict_status;
+    if (
+      factType === 'Claim' &&
+      (typeof conflictStatus !== 'string' || !CLAIM_CONFLICT_STATES.has(conflictStatus))
+    ) {
+      errors.push({
+        code: 'scope_schema.invalid_claim_conflict_status',
+        field: 'conflict_status',
+        message: 'Claim pages require a supported conflict_status.',
+      });
+    }
+    if (
+      factType === 'Observation' &&
+      (conflictStatus !== undefined || document.frontmatter.subject_refs !== undefined)
+    ) {
+      if (typeof conflictStatus !== 'string' || !OBSERVATION_CONFLICT_STATES.has(conflictStatus)) {
+        errors.push({
+          code: 'scope_schema.invalid_observation_conflict_status',
+          field: 'conflict_status',
+          message: 'Structured conflict Observations require a supported conflict_status.',
+        });
+      }
+      const subjects = document.frontmatter.subject_refs;
+      if (
+        !Array.isArray(subjects) ||
+        subjects.length === 0 ||
+        !subjects.every((reference) => ReferenceUriSchema.safeParse(reference).success)
+      ) {
+        errors.push({
+          code: 'scope_schema.invalid_conflict_subjects',
+          field: 'subject_refs',
+          message:
+            'Structured conflict Observations require a nonempty list of canonical reference URIs; the reference owner admits their targets.',
+        });
+      }
     }
   }
 
