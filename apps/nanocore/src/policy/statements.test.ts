@@ -64,6 +64,83 @@ const proposal = {
 };
 
 describe('native Policy statement owner', () => {
+  it('recognizes an author reducing or withdrawing passive observation disclosure', () => {
+    const secondPrincipal = {
+      kind: 'human' as const,
+      id: 'usr_00000000-0000-7000-8000-000000000002',
+    };
+    const widerScope = { ...scope, subjects: [principal, secondPrincipal] };
+    const observer = {
+      ...binding,
+      mode: 'observe' as const,
+      stage: 'completed' as const,
+      point: 'mcp.call-tool@completed',
+      outputContract: 'observation-v1' as const,
+      scope: widerScope,
+      inputDisclosure: widerScope,
+      lifetime: { anchor: binding.lifetime.anchor, notAfter: '2026-12-31T00:00:00Z' },
+    };
+    const current: PolicyDocumentV1 = { schemaVersion: 1, statements: [observer] };
+    const reduced = preparePolicyDocument({
+      current,
+      proposed: {
+        schemaVersion: 1,
+        statements: [
+          {
+            ...observer,
+            scope,
+            inputDisclosure: scope,
+            lifetime: { ...observer.lifetime, notAfter: '2026-11-30T00:00:00Z' },
+          },
+        ],
+      },
+      userId,
+      now: '2026-10-18T01:00:00Z',
+    });
+    expect(reduced.classification).toBe('narrowing');
+    expect(reduced.document.statements[0]?.lifetime.notAfter).toBe('2026-11-30T00:00:00Z');
+    expect(
+      preparePolicyDocument({
+        current,
+        proposed: { schemaVersion: 1, statements: [] },
+        userId,
+        now: '2026-10-18T01:00:00Z',
+      }).classification
+    ).toBe('narrowing');
+  });
+
+  it('keeps constraint withdrawal and changes to disclosure authority under widening review', () => {
+    const observer = {
+      ...binding,
+      mode: 'observe' as const,
+      stage: 'completed' as const,
+      point: 'mcp.call-tool@completed',
+      outputContract: 'observation-v1' as const,
+      lifetime: { anchor: binding.lifetime.anchor, notAfter: '2026-12-31T00:00:00Z' },
+    };
+    const prepare = (current: PolicyDocumentV1, statements: unknown[], author = userId) =>
+      preparePolicyDocument({
+        current,
+        proposed: { schemaVersion: 1, statements },
+        userId: author,
+        now: '2026-10-18T01:00:00Z',
+      }).classification;
+    expect(prepare(document, [])).toBe('widening');
+    const observed: PolicyDocumentV1 = { schemaVersion: 1, statements: [observer] };
+    expect(
+      prepare(observed, [{ ...observer, lifetime: { anchor: observer.lifetime.anchor } }])
+    ).toBe('widening');
+    expect(
+      prepare(observed, [
+        {
+          ...observer,
+          participant: { ...observer.participant, version: `sha256:${'2'.repeat(64)}` },
+        },
+      ])
+    ).toBe('widening');
+    expect(prepare(observed, [], 'usr_00000000-0000-7000-8000-000000000002')).toBe('widening');
+  });
+
   it('pins content independently of object key order and preserves unrelated statement versions', () => {
     expect(policyDigest({ b: 1, a: 2 })).toBe(policyDigest({ a: 2, b: 1 }));
     const original = policyDigest(binding);

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, type PolicyDocumentV1 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
@@ -165,7 +165,109 @@ function fixture() {
   };
 }
 
+/** Builds the supported active binding without performing discovery or credential access. */
+function activePolicyDocument(
+  f: ReturnType<typeof fixture>,
+  workspaceId = f.workspaceId
+): PolicyDocumentV1 {
+  const principal = { kind: 'human' as const, id: f.actor.userId };
+  const scope = {
+    subjects: [principal],
+    actions: ['tool.use'],
+    resources: [{ kind: 'mcp-tool' as const, workspaceId, serverId: 'issues', toolName: 'read' }],
+  };
+  return {
+    schemaVersion: 1,
+    statements: [
+      {
+        id: 'current-input',
+        kind: 'binding',
+        author: principal,
+        authority: { kind: 'human', userId: f.actor.userId },
+        authoredAt: '2026-10-18T00:00:00Z',
+        state: 'active',
+        scope,
+        lifetime: {
+          anchor: { owner: { kind: 'workspace', workspaceId }, kind: 'workspace', id: workspaceId },
+        },
+        operation: 'mcp.call-tool',
+        stage: 'decide',
+        point: 'mcp.call-tool@decide',
+        mode: 'gate',
+        participant: { kind: 'deterministic', id: 'test', version: `sha256:${'1'.repeat(64)}` },
+        inputContract: 'mcp-tool-summary-v1',
+        inputDisclosure: scope,
+        outputContract: 'gate-v1',
+        order: 0,
+        timeoutMs: 100,
+        failure: 'escalate-to-human',
+        circuit: { failures: 2, recoveryAfterMs: 100 },
+      },
+    ],
+  };
+}
+
 describe('administration catalog configuration', () => {
+  it('refuses an active binding whose input Workspace has no current authority', () => {
+    const f = fixture();
+    const serverPath = join(f.dataRoot, 'config/server.jsonc');
+    const original = readFileSync(serverPath, 'utf8');
+    expect(() =>
+      f.service.propose(
+        {
+          targetFamily: 'policy',
+          targetId: 'server',
+          expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+          changes: {
+            proposed: activePolicyDocument(f, testEntityId('ws', 'missing-policy-input')),
+            rationale: 'Do not activate input disclosure for a missing Workspace.',
+          },
+        },
+        f.home
+      )
+    ).toThrow('Policy binding input authority');
+    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+    expect(f.reload).not.toHaveBeenCalled();
+  });
+
+  it('rechecks binding input authority when the Workspace closes after proposal', async () => {
+    const f = fixture();
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      ownerUserId: f.actor.userId,
+      workspaceId: f.workspaceId,
+    });
+    const serverPath = join(f.dataRoot, 'config/server.jsonc');
+    const original = readFileSync(serverPath, 'utf8');
+    const proposal = f.service.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed: activePolicyDocument(f),
+          rationale: 'Review current bounded input disclosure.',
+        },
+      },
+      f.home
+    );
+    f.coreDb.sqlite
+      .prepare(
+        "UPDATE workspace_registry SET status = 'deleting', revision = revision + 1 WHERE workspace_id = ?"
+      )
+      .run(f.workspaceId);
+    await expect(f.service.apply(f.confirm(proposal))).rejects.toThrow(
+      'Policy binding input authority'
+    );
+    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+    expect(f.reload).not.toHaveBeenCalled();
+    expect(
+      listServerPermissionDecisions(f.coreDb).filter(
+        (row) => row.mediation?.operation === 'policy.write'
+      )
+    ).toEqual([]);
+  });
+
   it('retains inactive Policy forms through the exact human candidate and records actual activation', async () => {
     const f = fixture();
     const principal = { kind: 'human' as const, id: f.actor.userId };
