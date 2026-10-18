@@ -1333,6 +1333,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       snapshot,
       store: input.store,
       triggerActor: input.triggerActor,
+      triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
       turnExecutor,
       workerPlacement,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),

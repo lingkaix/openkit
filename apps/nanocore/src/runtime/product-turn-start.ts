@@ -45,6 +45,8 @@ interface StartProductTurnInput
   readonly input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { input: string }>;
   /** Exact actor that triggered this scheduler admission. */
   readonly triggerActor: ActorRef;
+  /** Known native entry cause, separate from actor identity and unavailable to model input. */
+  readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
   /** Authenticating request actor when the caller still holds the HTTP credential context. */
   readonly requestActor?: Actor;
   /** Resolver used to prove provider profile credentials before worker admission. */
@@ -283,6 +285,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
         status: 'pending',
         agentId: requestedAgentId,
         executorKind: 'worker',
+        ...(input.triggerSource !== undefined ? { triggerSource: input.triggerSource } : {}),
         ...(input.fileInputs?.length
           ? {
               fileInputs: input.fileInputs,

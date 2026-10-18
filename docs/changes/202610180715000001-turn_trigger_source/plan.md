@@ -15,3 +15,5 @@ Core Concepts and Identity distinguish cause from actor; Protocol owns the exist
 ## Verification
 
 Strengthen existing native direct-input, confirmed Task handoff, recurring initial-publication and scheduled-event Tool admission regressions. Expected pre-change failure: each newly published Turn lacks its known triggerSource. Keep all original identity, authorization, once-only publication and replay assertions. Run complete runtime and affected root admission suites through the bounded local gate; obtain independent Sol review and express land on green main after the preceding text increment.
+
+The four focused regressions failed on owner/test head `0524dbd8c` because each source was absent, then passed with the native producer correction. Logs: backlog `evidence/L-GO/c3-trigger-source-red.log` and `c3-trigger-source-green.log`. This focused proof does not replace the complete module gate.
