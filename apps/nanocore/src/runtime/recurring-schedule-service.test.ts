@@ -113,6 +113,12 @@ describe('serialized recurring scanner', () => {
     await service.runOnce();
     expect(setTimer).toHaveBeenCalledWith(expect.any(Function), 5000);
     expect(createTurn).toHaveBeenCalledTimes(1);
+    expect(
+      store.listThreadTurns(schedule.workspaceId, schedule.threadId)[0]?.triggerSource
+    ).toEqual({
+      kind: 'automation',
+      summary: 'Recurring schedule admission.',
+    });
     const occurrence = schedules.listHistory(schedule.id).items[0]!.record;
     expect(occurrence).toMatchObject({
       state: 'admission-accepted',

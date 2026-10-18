@@ -790,6 +790,10 @@ describe('Assistant pending input', () => {
         visibility: 'workspace',
         parentThreadId: 'th_00000000-0000-7000-8000-000000000001',
       });
+      expect(store.getTurnById(lease.turnId).triggerSource).toEqual({
+        kind: 'handoff',
+        summary: 'Task Worker handoff.',
+      });
       expect(JSON.parse(executor.inputs[0]!).objective).toBe(brief);
       expect(executor.startContexts).toHaveLength(1);
       expect(provider.createResponses).toHaveBeenCalledTimes(2);

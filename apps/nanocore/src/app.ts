@@ -1293,6 +1293,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   async function startModeWorkerTurn(input: {
     readonly store: FsStore;
     readonly triggerActor: ActorRef;
+    /** Native admission cause; unrelated Worker restarts and follow-ups leave it absent. */
+    readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
     readonly requestActor?: Actor;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -1344,6 +1346,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       snapshot,
       store: input.store,
       triggerActor: input.triggerActor,
+      ...(input.triggerSource !== undefined ? { triggerSource: input.triggerSource } : {}),
       turnExecutor,
       workerPlacement,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
