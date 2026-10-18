@@ -186,7 +186,8 @@ test('grouped coverage prepares once and writes a distinct original-owner execut
       },
     });
     const expected = shardPlan(root).find((shard) => shard.id === 'coverage-packages').owners;
-    assert.equal(expected.length, 7);
+    assert.equal(expected.length, 8);
+    assert(expected.includes('@openkit/storage'));
     assert.deepEqual(prepared, [expected]);
     assert.deepEqual(
       executions.map((item) => item.owner),

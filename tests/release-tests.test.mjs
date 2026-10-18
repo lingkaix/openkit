@@ -106,6 +106,7 @@ test('unchanged skip guard refuses an injected TAP skip and command failure', (t
 test('root and native suites remain distinct discovered owners', () => {
   const owners = testOwners(process.cwd());
   assert.equal(owners.filter((o) => o.vitest).length, 11);
+  assert(owners.some((o) => o.name === '@openkit/storage' && o.vitest));
   assert(owners.some((o) => o.name === '@openkit/nanohost' && !o.vitest));
   assert(owners.some((o) => o.name === '@openkit/models-dev-catalog' && !o.vitest));
 });
