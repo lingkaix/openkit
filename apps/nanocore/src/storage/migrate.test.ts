@@ -253,6 +253,7 @@ describe('database setup', () => {
 
         '0005_channel_notifications.sql',
         '0006_external_trigger_admissions.sql',
+        '0007_discord_capture_origin.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
