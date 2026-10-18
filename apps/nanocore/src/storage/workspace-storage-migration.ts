@@ -17,7 +17,7 @@ import {
   redactAgentEnvironmentPackageSnapshot,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId, readRetainedV1 } from '@openkit/protocol';
+import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
@@ -466,7 +466,7 @@ function migrateStagedWorkspaceMetadata(workspaceRoot: string, workspaceId: stri
       )
     : WorkspaceConfigSchema.parse({ schemaVersion: 1, workspace: { name, defaultAgentId } });
 
-  writeJsonAtomically(join(workspaceRoot, 'workspace-record.json'), record);
+  writeJsonAtomically(join(workspaceRoot, 'workspace-record.json'), writeRetainedV1(record));
   if (!hasCurrentConfig) writeJsonAtomically(configPath, config);
   rmSync(predecessorPath);
 }

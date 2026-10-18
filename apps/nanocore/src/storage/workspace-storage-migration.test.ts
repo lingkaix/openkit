@@ -120,6 +120,7 @@ function createOwnerNestedWorkspaceRoot(
     dataRoot,
     workspaceRoot,
     scope: { kind: 'workspace', workspaceId },
+    knowledgeBaseId: testEntityId('kb', `storage-layout:${workspaceId}`),
   });
 
   // This fixture varies the outer storage layout, not the current Notebook content format.
