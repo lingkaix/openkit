@@ -508,8 +508,8 @@ for (const point of ['before-rename', 'after-rename'] as const) {
     );
     expect(descriptor).toMatchObject({
       formatVersion: 1,
-      version: { artifactVersion: 1, parentVersion: null, actor: localActor },
-      artifact: { contentDigest },
+      version: { parentVersion: null, actor: localActor },
+      artifact: { version: 1, contentDigest },
     });
     expect(readFileSync(join(directory, 'versions', '1', 'payload'))).toEqual(bytes);
     const reopened = await reload(captured.snapshot);
