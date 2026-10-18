@@ -166,7 +166,10 @@ export function initializeScopedNotebook(
       resolve(userDb.dataRoot) !== resolve(input.coreDb.dataRoot))
   )
     throw new NotebookError('invalid_request');
-  initializeDefaultKnowledgeBaseId({ dataRoot: input.coreDb.dataRoot, scope: owner.ownerScope });
+  const knowledgeBaseId = initializeDefaultKnowledgeBaseId({
+    dataRoot: input.coreDb.dataRoot,
+    scope: owner.ownerScope,
+  });
   return initializeNotebook({
     notebookRoot: owner.notebookRoot,
     owner: userDb ? { kind: 'user', userDb } : { kind: 'server', coreDb: input.coreDb },
@@ -178,6 +181,10 @@ export function initializeScopedNotebook(
     revalidate: () => {
       resolveScopedNotebookOwner(input);
       return {
+        pageScopeId:
+          owner.ownerScope.kind === 'user'
+            ? `page/user/${owner.ownerScope.userId}/${knowledgeBaseId}`
+            : `page/server/${knowledgeBaseId}`,
         scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
         reviewRequiredPageIds: [],
         registeredSources: new Map(),

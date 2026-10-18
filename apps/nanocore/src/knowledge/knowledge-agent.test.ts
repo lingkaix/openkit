@@ -354,7 +354,9 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
   return {
     dataRoot,
     workspaceScope: `page/workspace/${workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId: workspace.id } })}`,
-    serverScope: withServerKnowledge ? `page/server/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'server' } })}` : undefined,
+    serverScope: withServerKnowledge
+      ? `page/server/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'server' } })}`
+      : undefined,
     store,
     coreDb,
     workspaceDb,
@@ -531,13 +533,19 @@ it('keeps real Workspace and Server selections distinct while reading exact page
     uncertainty: 'No launch date is documented.',
     citations: [
       {
-        reference: formatReferenceUri({scopeId: f.workspaceScope, objectId: 'launch-evidence'}, f.contentDigest),
+        reference: formatReferenceUri(
+          { scopeId: f.workspaceScope, objectId: 'launch-evidence' },
+          f.contentDigest
+        ),
         revision: f.revision,
         contentDigest: f.contentDigest,
         sourceReferences: [f.sourceReference],
       },
       {
-        reference: formatReferenceUri({scopeId: f.serverScope!, objectId: 'launch-evidence'}, f.server!.contentDigest),
+        reference: formatReferenceUri(
+          { scopeId: f.serverScope!, objectId: 'launch-evidence' },
+          f.server!.contentDigest
+        ),
         revision: f.server!.revision,
         contentDigest: f.server!.contentDigest,
         sourceReferences: [],
@@ -942,11 +950,7 @@ it('refuses a reused call id during output repair without losing the original To
   const f = await fixture();
   f.createResponses
     .mockResolvedValueOnce(
-      call(
-        'knowledge.page.read',
-        { pageId: `openkit:${f.workspaceScope}/index` },
-        'reused-call'
-      )
+      call('knowledge.page.read', { pageId: `openkit:${f.workspaceScope}/index` }, 'reused-call')
     )
     .mockResolvedValueOnce({
       id: 'markdown',
@@ -1098,9 +1102,18 @@ async function memoryFixture() {
     timeline,
     question,
     pageId,
-    memoryPageDigest: `sha256:${createHash('sha256').update(new KnowledgeNotebook({ repositoryPath: join(f.dataRoot, 'users', f.userId, 'memory', 'notebook.git') }).readRevision(publication.notebookRevision, [`${pageId}.md`]).files[`${pageId}.md`]!).digest('hex')}`,
-    memoryScope: `page/user/${f.userId}/${readDefaultKnowledgeBaseId({dataRoot: f.dataRoot, scope: {kind:'user', userId: f.userId}})}`,
-    citation: formatReferenceUri({scopeId: `page/user/${f.userId}/${readDefaultKnowledgeBaseId({dataRoot: f.dataRoot, scope: {kind:'user', userId: f.userId}})}`, objectId: pageId}),
+    memoryPageDigest: `sha256:${createHash('sha256')
+      .update(
+        new KnowledgeNotebook({
+          repositoryPath: join(f.dataRoot, 'users', f.userId, 'memory', 'notebook.git'),
+        }).readRevision(publication.notebookRevision, [`${pageId}.md`]).files[`${pageId}.md`]!
+      )
+      .digest('hex')}`,
+    memoryScope: `page/user/${f.userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: f.userId } })}`,
+    citation: formatReferenceUri({
+      scopeId: `page/user/${f.userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: f.userId } })}`,
+      objectId: pageId,
+    }),
     askMemory: () => askKnowledgeAgent(f.dependencies, question),
   };
 }
