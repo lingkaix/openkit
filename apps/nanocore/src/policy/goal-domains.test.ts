@@ -299,7 +299,7 @@ describe('jointly approved Goal-domain publication', () => {
     expect(f.service().close(f.key).changed).toBe(true);
     expect(f.service().read(f.key)).toBeNull();
     expect(f.service().close(f.key).changed).toBe(false);
-    expect(() => f.activate()).toThrow(/different content|withdrawn/);
+    expect(() => f.activate()).toThrow(/inactive or changed/);
   });
 
   it('rechecks the approving credential after configuration validation before publication', async () => {

@@ -22,7 +22,6 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import {
-  listServerPermissionDecisions,
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
@@ -271,23 +270,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         principal: context.actor ? { kind: 'human', id: context.actor.userId } : null,
         responsibleHumanId: context.responsibleUserId,
       },
-      resourceSummary: {
-        kind: 'policy',
-        policyRevision: revision,
-        ...(!context.actor
-          ? {
-              withdrawnStatements: current.document.statements
-                .filter(
-                  (statement) =>
-                    statement.kind === 'delegation' &&
-                    statement.state === 'active' &&
-                    statement.source.workspaceId === context.key.workspaceId &&
-                    statement.source.goalId === context.key.goalId
-                )
-                .map((statement) => ({ id: statement.id, digest: policyDigest(statement) })),
-            }
-          : {}),
-      },
+      resourceSummary: { kind: 'policy', policyRevision: revision },
       contextSummary: {
         operation: 'policy.write',
         cause: context.actor ? 'goal-domain.activate' : 'goal-domain.close',
@@ -354,29 +337,20 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       const existing = current.document.statements.find(({ id }) => id === statement.id);
       if (existing && policyDigest(existing) === policyDigest(statement))
         return { statement, policyRevision: current.revision };
-      if (
-        existing?.state === 'inactive' &&
-        listServerPermissionDecisions(deps.coreDb).some((decision) => {
-          const context = decision.contextSummary as { cause?: unknown } | null;
-          const resource = decision.resourceSummary as {
-            withdrawnStatements?: { id: string; digest: string }[];
-          } | null;
-          return (
-            context?.cause === 'goal-domain.close' &&
-            resource?.withdrawnStatements?.some(
-              (reference) =>
-                reference.id === statement.id && reference.digest === policyDigest(statement)
-            )
+      if (existing) {
+        if (
+          existing.kind !== 'delegation' ||
+          existing.source.workspaceId !== input.workspaceId ||
+          existing.source.goalId !== statement.source.goalId
+        )
+          throw new Error('Goal-domain statement identity belongs to another authority.');
+        // A withdrawn current declaration cannot be revived by its old approval.
+        // A later joint Plan approval can replace the same Goal-owned identity.
+        if (existing.source.approvalRequestId === input.requestId)
+          throw new Error(
+            'Goal-domain statement is inactive or changed; a new joint approval is required.'
           );
-        })
-      )
-        throw new Error('Goal-domain publication was withdrawn; a new joint approval is required.');
-      if (
-        existing &&
-        policyDigest(existing) !==
-          policyDigest(CapturedDomain.parse(approval.request.governedIntent!.goalDomain).statement)
-      )
-        throw new Error('Goal-domain statement identity already has different content.');
+      }
       const document = validatePolicyDocument({
         schemaVersion: 1,
         statements: [
