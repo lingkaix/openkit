@@ -2025,6 +2025,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     resolveGatewayProvider,
     runtimeConfig,
+    runtimeConfigManager,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
     goalServices,

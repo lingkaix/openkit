@@ -247,7 +247,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
   },
   'memory.list': {
     ...self,
-    description: 'List current personally authored Memory without disclosing suppressed entries.',
+    description: 'List current admitted Memory without disclosing suppressed entries.',
     inputSchema: z.object({}).strict(),
     outputSchema: z.object({
       notebookRevision: z.string().min(1),
@@ -257,7 +257,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
   },
   'memory.read': {
     ...self,
-    description: 'Read one current personally authored Memory page.',
+    description: 'Read one current admitted Memory page.',
     inputSchema: z.object({ pageId: PageIdSchema }).strict(),
     outputSchema: z.object({
       page: PageFactsSchema.extend({
