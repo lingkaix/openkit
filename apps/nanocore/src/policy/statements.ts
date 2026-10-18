@@ -49,10 +49,16 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     if (statement.kind === 'delegation' && statement.purpose === 'goal-domain') {
       const source = statement.source!;
       const anchor = statement.lifetime.anchor;
-      if (statement.author.kind !== 'human' || statement.authority.kind !== 'human' ||
-        statement.author.id !== statement.authority.userId || statement.delegate.kind !== 'agent' ||
-        anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== source.workspaceId ||
-        anchor.kind !== 'goal' || anchor.id !== source.goalId)
+      if (
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        statement.delegate.kind !== 'agent' ||
+        anchor.owner.kind !== 'workspace' ||
+        anchor.owner.workspaceId !== source.workspaceId ||
+        anchor.kind !== 'goal' ||
+        anchor.id !== source.goalId
+      )
         throw new Error('Active Goal domain requires its human author and exact Goal anchor.');
       continue;
     }
