@@ -372,8 +372,8 @@ async function waitForAnswerTurn(
 test('completes the fixed visible Material handoff and proposal-conflict sequence', async ({
   page,
 }) => {
-  // Cold startup, two worker turns, and two Core restarts share this bounded harness budget. Per-action and assertion timeouts still detect stalled progress.
-  test.setTimeout(120_000);
+  // Cold startup, two worker turns, two Core restarts, and post-202 Context Package acceptance share this bounded harness budget. Per-action and assertion timeouts still detect stalled progress.
+  test.setTimeout(150_000);
   const browserRuntimeErrors: string[] = [];
   page.on('pageerror', (error) => browserRuntimeErrors.push(error.message));
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
@@ -811,7 +811,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     artifactVersion?: number;
     text?: string;
   }> = [];
-  // 202 admits the Turn. The Worker request Item is published with the Context Package snapshot.
+  // 202 admits the Turn. The Worker request Item is published at emitStartedEnvelope (simulator.ts:852);
+  // turn.read digest exists only after acceptPreparedWorkerTurnContextPackage (simulator.ts:931).
+  // Knowledge overview/page views on that path use a 30s source-view bound, so readiness has its own budget.
   await expect(async () => {
     const snapshot = await getJson<{ contextPackageDigest: string | null }>(
       '/api/app/operations/turn.read',
@@ -822,6 +824,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       }
     );
     expect(snapshot.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+  }).toPass({ timeout: 30_000 });
+  await expect(async () => {
     nextItems = (
       await getJson<{ items: typeof nextItems }>('/api/app/operations/thread.items', {
         workspaceId: nextTurn.receivingWorkspaceId,
