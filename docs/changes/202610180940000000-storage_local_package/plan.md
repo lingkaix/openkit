@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: blocked
 date: "2026-10-18"
 ---
 # Local Storage Package
@@ -23,4 +23,10 @@ An independent test author exercises real Protocol-to-Storage references, JSON b
 
 ## Working Checkpoint
 
-The branch normally merges L-ID's shared Protocol schema preparation as a dependency. That stack also contains reset-dependent L-ID work and cannot land before its owner and coordinator release it; after it reaches main, merge main and recompute the actual small Storage delta. The independent scaffold run collected33 tests and failed29 at the expected unsupported responses; the earlier offline metadata failure was setup-only. Exact pinned dependencies are now linked through pnpm with the new Storage importer. Independent review found a parent-path mutation defect; the correction pins each segment to an open directory handle, refuses symlinks and unsupported safe primitives, and rechecks the binding before disclosure. Its regression changes only a disposable fixture and asserts refusal. Source at280ad1ed is independently approved after a real temporary-filesystem refusal check. Complete Storage build and coverage passed34/34 tests, with92.05% lines and80.67% branches. The repository gate passed check:repo/lint and Storage typecheck, then stopped at the L-ID dependency's unupdated importedWorkspaceNotebookReferences call in Core lib/store.ts:1468. Shared inventory execution found one additional grouped-owner count fixture; both inventory fixtures now explicitly require Storage and their complete families will be rerun. No full gate pass or publication is claimed.
+The branch normally merges L-ID's shared Protocol schema preparation as a dependency. That stack contains reset-dependent work and cannot land before its owner and coordinator release it. Merge main after that dependency lands and recompute the actual Storage delta. No landing window, branch CI, host or reset action has occurred.
+
+The independent scaffold run collected33 tests and failed29 at the expected unsupported responses; its earlier offline metadata failure was setup-only. Package-manager resolution then supplied the new Storage importer. A fresh independent Sol found a parent-path mutation defect; pinned no-follow traversal and a disposable-fixture refusal regression corrected it. Source280ad1ed and the subsequent inventory-only heads are independently approved. Complete Protocol/Storage build and Storage coverage passed34/34, with92.05% lines,80.67% branches and100% functions. All33 cases in the complete release-tests, release-shards and Vitest temporary-directory families passed after updating their package-owner cardinalities; exact-owner and distinct-report assertions remain.
+
+The repository gate passed check:repo, all15 lint tasks and16 of17 typecheck tasks, including Storage. Its only failure is the unupdated importedWorkspaceNotebookReferences call in Core lib/store.ts:1468, where the L-ID dependency now requires files plus scopeId. This file has no authored Storage delta. The dependency branch still contains that call; L-AW has not changed its owner's path. No complete repository-gate pass is claimed. Next: join the owning correction, rerun the required gate, preserve source approval through clean joins, then express after the dependency reaches main and the coordinator releases reset-dependent landing.
+
+The authored increment changes15 files, including one governing specification's implementation projection and two shared test-inventory fixtures. It adds one transient eight-operation service contract, not a retained registry, entity, grant or publication authority. Context and Knowledge consumer adoption remain later increments.
