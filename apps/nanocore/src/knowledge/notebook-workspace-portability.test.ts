@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -269,6 +270,10 @@ describe('canonical Notebook Workspace portability', () => {
         visibility: 'workspace',
       }
     );
+    const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'workspace', workspaceId: f.workspace.id },
+    });
     const selected = await retrieveWorkspaceKnowledge({
       dataRoot: f.dataRoot,
       workspaceId: f.workspace.id,
@@ -276,7 +281,10 @@ describe('canonical Notebook Workspace portability', () => {
       query: 'Exact portable note',
       limit: 1,
       pinnedReferences: [
-        { scopeId: `page/workspace/${f.workspace.id}`, objectId: 'notes/portable' },
+        {
+          scopeId: `page/workspace/${f.workspace.id}/${sourceKnowledgeBaseId}`,
+          objectId: 'notes/portable',
+        },
       ],
       access: {
         store: f.store,
@@ -323,6 +331,10 @@ describe('canonical Notebook Workspace portability', () => {
     });
     const revision = notebook.publishedRevision();
     const page = notebook.readRevision(revision).files['notes/portable.md']!;
+    const targetKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: target.dataRoot,
+      scope: { kind: 'workspace', workspaceId: imported.workspace.id },
+    });
     const trace = readRetrievalTrace(targetRoot, {
       scopeId: `retrieval-trace/thread/${imported.workspace.id}/${importedThread!.id}`,
       objectId: selected.retrievalTraceRef!.objectId,
@@ -332,7 +344,7 @@ describe('canonical Notebook Workspace portability', () => {
       selected: [
         {
           reference: {
-            scopeId: `page/workspace/${imported.workspace.id}`,
+            scopeId: `page/workspace/${imported.workspace.id}/${targetKnowledgeBaseId}`,
             objectId: 'notes/portable',
           },
           revision,
