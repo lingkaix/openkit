@@ -1642,6 +1642,7 @@ describe('canonical administration Workspace admission', () => {
     const definition: OperationDefinition = {
       ...OPERATION_DEFINITIONS[id],
       credentials: ['deployment-administrator'],
+      policyOperation: 'workspace.read',
       inputSchema: z.object({ workspaceId: z.string(), turnId: z.string() }).strict(),
       scope:
         strategy === 'body-workspace'
@@ -1663,7 +1664,7 @@ describe('canonical administration Workspace admission', () => {
           scope: 'workspace',
           resolver: strategy,
           authentication: 'deployment-admin',
-          policyOperation: 'api.call',
+          policyOperation: 'workspace.read',
           mutating: false,
         },
       ],
@@ -1684,7 +1685,7 @@ describe('canonical administration Workspace admission', () => {
     vi.spyOn(nanoHostOperations, 'createNanoHostOperationImplementations').mockImplementation(
       (dependencies) => ({ ...factory(dependencies), [id]: execute })
     );
-    const admission = vi.spyOn(operationAuthorizer, 'authorizeWorkspace');
+    const admission = vi.spyOn(policyKernel, 'evaluateAccess');
     try {
       for (const [table, value] of patches)
         Object.defineProperty(table, id, { ...Object.getOwnPropertyDescriptor(table, id), value });
