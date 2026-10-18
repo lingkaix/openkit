@@ -17,6 +17,7 @@ import {
   allocateEntityId,
   deriveEntityId,
   isSealedTurnTerminal,
+  PolicyDelegationV1Schema,
   type TurnSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -29,6 +30,7 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { FsStore } from '../lib/store.js';
+import { policyDigest } from '../policy/statements.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   commandInputHash,
@@ -340,6 +342,10 @@ function raiseIntent(
       'The proposal request Turn was not admitted.',
       409
     );
+  const description =
+    exact.operation === 'goal.plan.approve'
+      ? 'Approve the exact Plan and typed Goal domain.'
+      : 'Approve the exact captured commitment.';
   const itemId = allocateEntityId('it');
   raiseRecordedPendingRequest(store, db.sqlite, {
     requestId,
@@ -352,7 +358,7 @@ function raiseIntent(
     agentId: 'goal-coordinator',
     responsibleUserId: goal.responsibleUserId,
     governedIntent: exact,
-    approval: { kind: 'permission', title, description: 'Approve the exact captured commitment.' },
+    approval: { kind: 'permission', title, description },
     now: now(),
   });
   store.createItem({
@@ -366,10 +372,37 @@ function raiseIntent(
     status: 'completed',
     completedAt: now(),
     title,
-    description: 'Approve the exact captured commitment.',
+    description,
     createdAt: now(),
   });
 }
+/** Pins the typed proposal to native Plan lineage before the human sees either effect. */
+function captureGoalDomain(
+  input: OperationInput<'goal.plan.propose'>['goalDomain'],
+  goal: GoalRecord,
+  version: GoalPlanVersion,
+  context: GoalOwnerContext
+): { statement: z.infer<typeof PolicyDelegationV1Schema>; digest: string } {
+  const statement = PolicyDelegationV1Schema.parse({
+    ...input,
+    kind: 'delegation',
+    state: 'inactive',
+    purpose: 'goal-domain',
+    delegate: { kind: 'agent', id: 'goal-coordinator' },
+    author: { kind: 'human', id: context.actor.userId },
+    authority: { kind: 'human', userId: context.actor.userId },
+    authoredAt: version.createdAt,
+    source: {
+      workspaceId: goal.workspaceId,
+      goalId: goal.goalId,
+      planVersionId: version.planVersionId,
+      planDigest: version.digest,
+      approvalRequestId: version.pendingRequestId,
+    },
+  });
+  return { statement, digest: policyDigest(statement) };
+}
+
 /** Re-evaluates exact authority synchronously before CAS, with no Task effect. */
 function consumeGrant(
   store: FsStore,
@@ -795,6 +828,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               pendingRequestId: `ap_${commandInput.requestId}`,
               createdAt: now(),
             };
+            const goalDomain = captureGoalDomain(input.goalDomain, goal, version, context);
             invalidateGoalPendingRequests(
               db.sqlite,
               goalId,
@@ -818,6 +852,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
                 planVersionId: version.planVersionId,
                 digest: version.digest,
                 bytes,
+                goalDomain,
               },
               version.pendingRequestId,
               'Approve Goal Plan',

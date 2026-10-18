@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import {
   ActorRefSchema,
   AgentSessionIdSchema,
+  AuditEventIdSchema,
   ItemIdSchema,
   ReasoningEffortSchema,
   ThreadIdSchema,
@@ -491,6 +492,8 @@ export const AgentEnvironmentSkillSchema = z
         baseDigest: z.string().min(1).nullable(),
         pluginMemberKey: z.string().min(1).nullable(),
         pluginVersionDigest: z.string().min(1).nullable(),
+        /** Winning pin command admission Audit; absent for other selection sources. */
+        pinAuditRef: AuditEventIdSchema.optional(),
       })
       .strict()
       .optional(),
