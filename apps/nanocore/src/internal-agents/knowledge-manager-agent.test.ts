@@ -62,6 +62,19 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       dataRoot: f.store.getDataRoot(),
       providerRegistry,
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        profiles: [
+          {
+            id: 'km-selected',
+            roleId: 'knowledge-manager',
+            preferredLogicalModelId: 'km-model',
+            compatibleLogicalModelIds: [],
+            requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
+            limits: { maxModelTurns: 7, maxToolCalls: 19, deadlineMs: 90_000 },
+          },
+        ],
+      },
       gatewayConfig: {
         schemaVersion: 1,
         enabled: true,
@@ -78,12 +91,14 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
       },
     });
     let calls = 0;
+    let executionAtDispatch: ReturnType<FsStore['getTurnById']>['internalExecution'];
     const createResponses = vi.fn(
       async (
         _provider: unknown,
         _request: unknown,
         context: Parameters<LLMGatewayProviderDispatcher['createResponses']>[2]
       ) => {
+        executionAtDispatch ??= f.store.getTurnById(f.turn.id).internalExecution;
         context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
         return {
           id: `response-${++calls}`,
@@ -167,6 +182,10 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
         },
       }
     );
+    expect(executionAtDispatch).toMatchObject({
+      profileId: 'km-selected',
+      limits: { maxModelTurns: 7, maxToolCalls: 19, deadlineMs: 90_000 },
+    });
     expect(JSON.parse(result.text)).toEqual({ answer: 'Cited answer.' });
     expect(execute).toHaveBeenCalledTimes(1);
     const stored = f.store.getTurnById(f.turn.id);
@@ -177,6 +196,8 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
         logicalModelId: 'km-model',
         contextStrategy: 'compaction',
         threshold: 32_000,
+        profileId: 'km-selected',
+        limits: { maxModelTurns: 7, maxToolCalls: 19, deadlineMs: 90_000 },
       },
     });
     expect(stored.items.map((item) => item.type)).toEqual([
