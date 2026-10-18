@@ -45638,6 +45638,43 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "profileId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "maxModelTurns": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "maxToolCalls": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "deadlineMs": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "maxModelTurns",
+                        "maxToolCalls",
+                        "deadlineMs"
+                      ],
+                      "additionalProperties": false
+                    },
                     "contextStrategy": {
                       "type": "string",
                       "enum": [
@@ -48889,6 +48926,43 @@
                 "type": "string",
                 "minLength": 1
               },
+              "profileId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "maxModelTurns": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "maxToolCalls": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "deadlineMs": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "maxModelTurns",
+                  "maxToolCalls",
+                  "deadlineMs"
+                ],
+                "additionalProperties": false
+              },
               "contextStrategy": {
                 "type": "string",
                 "enum": [
@@ -51673,6 +51747,43 @@
               "logicalModelId": {
                 "type": "string",
                 "minLength": 1
+              },
+              "profileId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "maxModelTurns": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "maxToolCalls": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "deadlineMs": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "maxModelTurns",
+                  "maxToolCalls",
+                  "deadlineMs"
+                ],
+                "additionalProperties": false
               },
               "contextStrategy": {
                 "type": "string",
@@ -54673,6 +54784,43 @@
               "logicalModelId": {
                 "type": "string",
                 "minLength": 1
+              },
+              "profileId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "maxModelTurns": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "maxToolCalls": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "deadlineMs": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "maxModelTurns",
+                  "maxToolCalls",
+                  "deadlineMs"
+                ],
+                "additionalProperties": false
               },
               "contextStrategy": {
                 "type": "string",
@@ -78581,6 +78729,43 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "profileId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "limits": {
+                    "type": "object",
+                    "properties": {
+                      "maxModelTurns": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "maxToolCalls": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "deadlineMs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "maxModelTurns",
+                      "maxToolCalls",
+                      "deadlineMs"
+                    ],
+                    "additionalProperties": false
+                  },
                   "contextStrategy": {
                     "type": "string",
                     "enum": [
@@ -83673,6 +83858,43 @@
                   "logicalModelId": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "profileId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "limits": {
+                    "type": "object",
+                    "properties": {
+                      "maxModelTurns": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "maxToolCalls": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "deadlineMs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "maxModelTurns",
+                      "maxToolCalls",
+                      "deadlineMs"
+                    ],
+                    "additionalProperties": false
                   },
                   "contextStrategy": {
                     "type": "string",
@@ -92404,6 +92626,43 @@
                     "logicalModelId": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "profileId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "maxModelTurns": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "maxToolCalls": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "deadlineMs": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "maxModelTurns",
+                        "maxToolCalls",
+                        "deadlineMs"
+                      ],
+                      "additionalProperties": false
                     },
                     "contextStrategy": {
                       "type": "string",
@@ -107502,6 +107761,43 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "profileId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "limits": {
+                    "type": "object",
+                    "properties": {
+                      "maxModelTurns": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "maxToolCalls": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "deadlineMs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "maxModelTurns",
+                      "maxToolCalls",
+                      "deadlineMs"
+                    ],
+                    "additionalProperties": false
+                  },
                   "contextStrategy": {
                     "type": "string",
                     "enum": [
@@ -122326,5 +122622,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:0fdbf329186265a37c483de875c1bd77574323182100e59b599b6f54d51a9a54"
+  "x-openkit-source-digest": "sha256:11a6f071cd62378dc0dcac205989bb1dc061a8232dea114a630a17a843d3a58e"
 }
