@@ -76,7 +76,8 @@ afterEach(() => {
 function fixture(
   schemaPolicy: 'tracking' | 'pinned' = 'tracking',
   credentialRequired = false,
-  mediated = false
+  mediated = false,
+  sourceResult: 'require_approval' | 'require_escalation' = 'require_escalation'
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-captured-schema-'));
   const coreDb = openCoreDb(dataRoot);
@@ -106,7 +107,7 @@ function fixture(
         enabled: true,
         allowedTools: ['echo', 'allowed-other'],
         deniedTools: ['excluded-other'],
-        approvalRequiredTools: mediated ? [] : ['echo'],
+        approvalRequiredTools: mediated && sourceResult !== 'require_approval' ? [] : ['echo'],
         credentialBindings: credentialRequired
           ? [
               {
@@ -214,7 +215,8 @@ function fixture(
     recordProductPermissionDecision({
       ...decisionBase,
       decisionId: sourceDecisionId,
-      result: 'require_escalation',
+      result: sourceResult,
+      ...(sourceResult === 'require_approval' ? { requiredApprovalKind: 'permission' } : {}),
       mediation: sourceMediation,
       contextSummary: { threadId: turn.threadId, turnId: turn.id },
     });
@@ -399,6 +401,54 @@ describe('captured pending MCP schema identity at grant', () => {
     });
     expect(credentials).not.toHaveBeenCalled();
     expectNoExecution(f);
+  });
+
+  it('requires exact mediated review for a catalog approval and keeps its once-only claim', async () => {
+    const refused = fixture('tracking', true, true, 'require_approval');
+    const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+    expect(await refused.grant()).toMatchObject({
+      disposition: 'denied-not-executed',
+      dispositionReason: 'policy-changed',
+    });
+    expect(credentials).not.toHaveBeenCalled();
+    expectNoExecution(refused);
+
+    const admitted = fixture('tracking', false, true, 'require_approval');
+    const source = listExportableWorkspacePermissionDecisions(
+      admitted.db,
+      admitted.record.workspaceId
+    );
+    expect(source).toEqual([
+      expect.objectContaining({
+        decisionId: admitted.record.policyDecisionId,
+        result: 'require_approval',
+        requiredApprovalKind: 'permission',
+        mediation: admitted.sourceMediation,
+      }),
+    ]);
+    const statement = { id: 'catalog-once', digest: `sha256:${'d'.repeat(64)}` };
+    expect(
+      await admitted.grant(
+        undefined,
+        admitted.reviewPolicy(() => true, { consumedStatements: [statement] })
+      )
+    ).toMatchObject({ disposition: 'approved-executed', claim: 'finished' });
+    expect(admitted.callTool).toHaveBeenCalledTimes(1);
+    const decisions = listExportableWorkspacePermissionDecisions(
+      admitted.db,
+      admitted.record.workspaceId
+    );
+    expect(decisions).toHaveLength(3);
+    const derivedId = deriveEntityId('pd', ['pending_execution', admitted.record.requestId]);
+    const preparation = decisions.find(
+      ({ decisionId }) => decisionId !== admitted.sourceDecisionId && decisionId !== derivedId
+    );
+    expect(decisions.find(({ decisionId }) => decisionId === derivedId)).toMatchObject({
+      approvalId: admitted.record.requestId,
+      contextSummary: { originEvaluationDecisionId: preparation?.decisionId },
+      mediation: { ...admitted.sourceMediation, consumedStatements: [] },
+    });
+    expect(readPolicyStatementUseCount(admitted.db, statement)).toBe(1);
   });
 
   it('rejects changed mediation pins before credentials or execution', async () => {
