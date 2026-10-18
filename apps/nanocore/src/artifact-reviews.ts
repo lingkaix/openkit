@@ -481,7 +481,7 @@ export function selectArtifactReviewCandidate(
   if (replay)
     throw reviewError('recovery_required', 'The candidate choice receipt has no matching choice.');
   const candidateSelections = [
-    ...review.candidateSelections,
+    ...readStoredReviewV1(row).candidateSelections,
     {
       actorId: input.actorId,
       requestId: input.requestId,
@@ -959,8 +959,8 @@ function assertStoredReview(workspaceDb: WorkspaceDb, row: ArtifactReviewRow): v
   }
 }
 
-/** Projects a Review view. @param row Private row. @returns Closed view. @throws ArtifactReviewError for invalid fields. */
-function toView(row: ArtifactReviewRow): ArtifactReviewView {
+/** Decodes the fixed retained tuple before projection; descriptive JSON additions stay available to native updates. */
+function readStoredReviewV1(row: ArtifactReviewRow): z.infer<typeof StoredArtifactReviewV1Schema> {
   readRetainedV1(row, (value) => value);
   const parsed = StoredArtifactReviewV1Schema.safeParse({
     workspaceId: row.workspaceId,
@@ -986,6 +986,43 @@ function toView(row: ArtifactReviewRow): ArtifactReviewView {
     throw reviewError('recovery_required', 'The stored Artifact Review tuple is invalid.');
   }
   return parsed.data;
+}
+
+/** Projects current API fields without leaking retained descriptive additions into closed wire objects. */
+function toView(row: ArtifactReviewRow): ArtifactReviewView {
+  const stored = readStoredReviewV1(row);
+  const proposal = stored.materialProposal;
+  const range = stored.rangeFeedback;
+  return {
+    ...stored,
+    materialProposal:
+      proposal === null
+        ? null
+        : {
+            materialId: proposal.materialId,
+            baseRevisionId: proposal.baseRevisionId,
+            baseContentDigest: proposal.baseContentDigest,
+          },
+    rangeFeedback:
+      range == null
+        ? null
+        : {
+            materialId: range.materialId,
+            revisionId: range.revisionId,
+            contentDigest: range.contentDigest,
+            start: range.start,
+            end: range.end,
+            originalText: range.originalText,
+          },
+    candidateSelections: stored.candidateSelections.map(
+      ({ actorId, requestId, reason, selectedAt }) => ({
+        actorId,
+        requestId,
+        reason,
+        selectedAt,
+      })
+    ),
+  };
 }
 
 /** Reconstructs a proposal. @param row Review row. @returns Proposal or null. @throws ArtifactReviewError for an incomplete tuple. */

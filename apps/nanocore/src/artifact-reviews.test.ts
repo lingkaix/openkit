@@ -610,8 +610,8 @@ describe('retained Artifact Review SQL format', () => {
     const review = getArtifactReview(db, input.artifactId, input.artifactVersion);
     expect(review.candidateSelections[0]).toMatchObject({
       requestId: 'selection',
-      note: 'Retained description',
     });
+    expect(review.candidateSelections[0]).not.toHaveProperty('note');
     expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual(before);
     selectArtifactReviewCandidate(db, {
       actorId: 'reviewer',
