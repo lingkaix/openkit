@@ -30339,6 +30339,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -30464,6 +30470,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -30838,6 +30845,12 @@
           "purpose": {
             "type": "string"
           },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "collections": {
             "minItems": 1,
             "maxItems": 16,
@@ -31085,6 +31098,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -31210,6 +31229,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -31327,6 +31347,12 @@
               },
               "purpose": {
                 "type": "string"
+              },
+              "references": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               },
               "collections": {
                 "minItems": 1,
@@ -31589,6 +31615,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -31714,6 +31746,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -31942,6 +31975,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -32067,6 +32106,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -95922,6 +95962,12 @@
               "purpose": {
                 "type": "string"
               },
+              "references": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
               "collections": {
                 "minItems": 1,
                 "maxItems": 16,
@@ -96802,6 +96848,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -96927,6 +96979,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -97170,6 +97223,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -97295,6 +97354,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -97617,6 +97677,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -97742,6 +97808,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -97970,6 +98037,12 @@
                   "purpose": {
                     "type": "string"
                   },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "collections": {
                     "minItems": 1,
                     "maxItems": 16,
@@ -98095,6 +98168,7 @@
                   "schemaRevision",
                   "title",
                   "purpose",
+                  "references",
                   "collections"
                 ],
                 "additionalProperties": false
@@ -122626,5 +122700,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:cf87bea413f326cb262975c7cb385bf92c79f1347b9db5e7384f555d74dc7b3c"
+  "x-openkit-source-digest": "sha256:fded1a2e68f696f587273e4a7842ab457e916171a4a86d2581570e9e74bc7aa3"
 }
