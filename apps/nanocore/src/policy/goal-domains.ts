@@ -52,6 +52,9 @@ export interface GoalDomainPolicyDependencies {
   readonly reload: () => ReturnType<RuntimeConfigManager['reload']>;
 }
 
+/** Known ended or unapproved authority is distinct from a failed dependency read. */
+class GoalDomainUnavailable extends Error {}
+
 const CapturedDomain = z
   .object({
     statement: PolicyDelegationV1Schema,
@@ -110,7 +113,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       statement.delegate.kind !== 'agent' ||
       statement.delegate.id !== request.agentId
     )
-      throw new Error('Goal domain requires the exact completed joint human approval.');
+      throw new GoalDomainUnavailable(
+        'Goal domain requires the exact completed joint human approval.'
+      );
     const view = readGoalView(deps.store, db, source.goalId);
     const version = view.versions.find((item) => item.planVersionId === source.planVersionId);
     if (
@@ -126,7 +131,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       version.bytes !== intent.bytes ||
       `sha256:${createHash('sha256').update(version.bytes).digest('hex')}` !== source.planDigest
     )
-      throw new Error('Goal-domain Plan is absent, obsolete or closed.');
+      throw new GoalDomainUnavailable('Goal-domain Plan is absent, obsolete or closed.');
     const actor = request.decidingActorContext;
     const active: GoalDomainStatement = {
       ...statement,
@@ -149,14 +154,14 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         readPolicyStatementUseCount(db, { id: active.id, digest: policyDigest(active) }) >=
           active.lifetime.uses)
     )
-      throw new Error('Goal-domain lifetime is unavailable.');
+      throw new GoalDomainUnavailable('Goal-domain lifetime is unavailable.');
     if (
       !authorizeWorkspace(deps.coreDb, actor, workspaceId, {
         policyOperation: 'workspace.write',
         mutating: true,
       })
     )
-      throw new Error('Goal-domain deciding credential is no longer authorized.');
+      throw new GoalDomainUnavailable('Goal-domain deciding credential is no longer authorized.');
     for (const resource of active.scope.resources) {
       const resourceWorkspaceId =
         resource.kind === 'mcp-tool'
@@ -165,7 +170,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
             ? resource.container.owner.workspaceId
             : null;
       if (resourceWorkspaceId !== workspaceId)
-        throw new Error('Goal-domain resources must remain in their approved Workspace.');
+        throw new GoalDomainUnavailable(
+          'Goal-domain resources must remain in their approved Workspace.'
+        );
       if (resource.kind === 'container') {
         const container = resource.container;
         const valid =
@@ -193,7 +200,8 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
                 )
               );
             })());
-        if (!valid) throw new Error('Goal-domain resource container is unavailable.');
+        if (!valid)
+          throw new GoalDomainUnavailable('Goal-domain resource container is unavailable.');
       }
       for (const action of active.scope.actions) {
         if (
@@ -203,7 +211,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
             mutating: true,
           })
         )
-          throw new Error('Goal-domain scope exceeds the deciding human authority.');
+          throw new GoalDomainUnavailable(
+            'Goal-domain scope exceeds the deciding human authority.'
+          );
       }
     }
     return { statement: active, actor, goal: view.goal, request };
@@ -395,8 +405,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         try {
           const approval = approved(key.workspaceId, statement.source.approvalRequestId);
           return policyDigest(approval.statement) === policyDigest(statement);
-        } catch {
-          return false;
+        } catch (error) {
+          if (error instanceof GoalDomainUnavailable) return false;
+          throw error;
         }
       });
       return currentStatements.length === 1 ? (currentStatements[0]! as GoalDomainStatement) : null;

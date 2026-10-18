@@ -329,6 +329,19 @@ describe('jointly approved Goal-domain publication', () => {
     expect(() => f.activate()).toThrow(/obsolete or closed/);
   });
 
+  it('keeps an unavailable Workspace read distinct from an absent grant', async () => {
+    const f = await fixture();
+    await f.approve();
+    await f.consume();
+    f.activate();
+    const prepare = vi.spyOn(f.db.sqlite, 'prepare').mockImplementationOnce(() => {
+      throw new Error('Injected Workspace read failure');
+    });
+    expect(() => f.service().read(f.key)).toThrow('Injected Workspace read failure');
+    prepare.mockRestore();
+    expect(f.service().read(f.key)).not.toBeNull();
+  });
+
   it('retains truthful saved versus loaded outcomes when reload fails', async () => {
     const f = await fixture();
     await f.approve();
