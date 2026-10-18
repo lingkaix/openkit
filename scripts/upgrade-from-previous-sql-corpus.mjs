@@ -992,6 +992,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
   store.assertArtifactContent(artifact);
   const content = artifact.content.body;
   sql.artifactVersion = artifact.version;
+  const publication = store.getArtifactVersion(workspaceId, artifact.id, artifact.version);
   const review = o.reviews.createArtifactReview(workspace, {
     artifactId: sql.artifactId,
     artifactVersion: artifact.version,
@@ -1000,7 +1001,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     sourceTurnId: artifact.turnId,
     sourceAgentId: artifact.turnId ? (store.getTurnById(artifact.turnId).agentId ?? null) : null,
     materialProposal: null,
-    createdAt: turn.startedAt,
+    createdAt: publication.version.recordedAt,
   });
   sql.reviewId = review.reviewId;
   o.reviews.decideArtifactReview(workspace, {
