@@ -108,6 +108,77 @@ function fixture() {
 }
 
 describe('native Skill management command evidence', () => {
+  it('retains the exact winning pin command across identical pins, replay and clear', async () => {
+    const f = fixture();
+    const pinInput = {
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      skillId: 'management-example',
+      digest: f.first,
+      expectedPinDigest: null,
+    };
+    const first = await f.call('catalog.skill-pin', pinInput);
+    expect(first.status, await first.clone().text()).toBe(200);
+    const prior = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.pins[0]!;
+    const firstAudit = f.workspaceDb.sqlite
+      .prepare('SELECT id FROM audit_events WHERE request_id = ? AND action = ?')
+      .get(pinInput.requestId, 'catalog.skill-pin.admit') as { id: string };
+    expect(prior).toMatchObject({ digest: f.first, pinAuditRef: firstAudit.id });
+
+    const repeated = {
+      ...pinInput,
+      requestId: randomUUID(),
+      expectedRevision: 3,
+      expectedPinDigest: f.first,
+    };
+    const second = await f.call('catalog.skill-pin', repeated);
+    expect(second.status, await second.clone().text()).toBe(200);
+    const winning = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.pins[0]!;
+    const winner = f.workspaceDb.sqlite
+      .prepare(
+        'SELECT id, request_id AS requestId, actor_json AS actor FROM audit_events WHERE request_id = ? AND action = ?'
+      )
+      .get(repeated.requestId, 'catalog.skill-pin.admit') as {
+      id: string;
+      requestId: string;
+      actor: string;
+    };
+    expect(winning).toMatchObject({ digest: f.first, pinAuditRef: winner.id });
+    expect(winner.id).not.toBe(firstAudit.id);
+    expect(winner.requestId).toBe(repeated.requestId);
+    expect(JSON.parse(winner.actor)).toEqual({ kind: 'user', id: f.userId });
+    const read = await f.call('catalog.read', {});
+    expect(read.status, await read.clone().text()).toBe(200);
+    expect((await read.json()).skills[0]).toMatchObject({
+      pinDigest: f.first,
+      pinAuditRef: winner.id,
+    });
+    const auditCount = () =>
+      (
+        f.workspaceDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get() as {
+          count: number;
+        }
+      ).count;
+    const beforeReplay = auditCount();
+    const replay = await f.call('catalog.skill-pin', repeated);
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.pins[0]).toEqual(
+      winning
+    );
+    expect(auditCount()).toBe(beforeReplay);
+    const cleared = await f.call('catalog.skill-pin', {
+      ...repeated,
+      requestId: randomUUID(),
+      expectedRevision: 4,
+      digest: null,
+    });
+    expect(cleared.status, await cleared.clone().text()).toBe(200);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.pins).toEqual([]);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT id FROM audit_events WHERE id = ?').get(winner.id)
+    ).toEqual({ id: winner.id });
+  });
+
   it('keeps unexpired evidence bytes and purges after its existing retention owner expires them', async () => {
     const f = fixture();
     recordWorkspaceEvidenceBundle(f.workspaceDb, {
