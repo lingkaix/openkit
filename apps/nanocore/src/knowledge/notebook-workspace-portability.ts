@@ -4,7 +4,12 @@ import {
   KnowledgeRetrievalTraceSchema,
   type ProductRetrievalTrace,
 } from '@openkit/app-api-schemas';
-import { KnowledgeOwnerScopeSchema } from '@openkit/protocol';
+import {
+  formatReferenceUri,
+  KnowledgeBaseIdSchema,
+  KnowledgeOwnerScopeSchema,
+  parseReferenceUri,
+} from '@openkit/protocol';
 import {
   type KnowledgeRetrievalAccess,
   readAuthorizedWorkspaceNotebookPages,
@@ -76,14 +81,15 @@ function pageDigest(content: string): string {
 /** Resolves a pinned page only when the supplied tree contains its exact source version. */
 function pinnedNotebookPage(
   reference: string,
-  files: Readonly<Record<string, string>>
+  files: Readonly<Record<string, string>>,
+  scopeId: string
 ): string | null {
-  const pin = /^knowledge:([^@]+)@(sha256:[a-f0-9]{64})$/.exec(reference);
-  if (!pin) return null;
-  const content = files[`${pin[1]}.md`];
-  if (content === undefined || pageDigest(content) !== pin[2])
+  const pin = parseReferenceUri(reference);
+  if (!pin || pin.reference.scopeId !== scopeId || pin.contentDigest === undefined) return null;
+  const content = files[`${pin.reference.objectId}.md`];
+  if (content === undefined || pageDigest(content) !== pin.contentDigest)
     throw new Error('Portable Knowledge Page requires unavailable pinned source bytes.');
-  return pin[1]!;
+  return pin.reference.objectId;
 }
 
 /** Remints dependent exact page pins from leaf bytes before hashing their referring pages. */
@@ -91,11 +97,15 @@ export function remintPortableWorkspaceNotebookPages(input: {
   readonly pages: ReadonlyMap<string, string>;
   readonly sourceWorkspaceId: string;
   readonly targetWorkspaceId: string;
+  readonly sourceKnowledgeBaseId: string;
+  readonly targetKnowledgeBaseId: string;
   readonly rewriteReferences: (references: readonly string[]) => readonly string[];
 }): {
   readonly pages: ReadonlyMap<string, string>;
   readonly referenceReplacements: ReadonlyMap<string, string>;
 } {
+  const sourceScope = `page/workspace/${input.sourceWorkspaceId}/${KnowledgeBaseIdSchema.parse(input.sourceKnowledgeBaseId)}`;
+  const targetScope = `page/workspace/${input.targetWorkspaceId}/${KnowledgeBaseIdSchema.parse(input.targetKnowledgeBaseId)}`;
   const files = importedWorkspaceNotebookFiles(input.pages);
   const reminted = new Map<string, string>();
   const active = new Set<string>();
@@ -111,10 +121,13 @@ export function remintPortableWorkspaceNotebookPages(input: {
       rewriteReferences: (references) => {
         const rewritten = input.rewriteReferences(references);
         return references.map((reference, index) => {
-          const pageId = pinnedNotebookPage(reference, files);
+          const pageId = pinnedNotebookPage(reference, files, sourceScope);
           return pageId === null
             ? rewritten[index]!
-            : `knowledge:${pageId}@${pageDigest(remint(`${pageId}.md`))}`;
+            : formatReferenceUri(
+                { scopeId: targetScope, objectId: pageId },
+                pageDigest(remint(`${pageId}.md`))
+              );
         });
       },
     });
@@ -127,8 +140,14 @@ export function remintPortableWorkspaceNotebookPages(input: {
     pages: new Map([...reminted].map(([path, content]) => [`knowledge/pages/${path}`, content])),
     referenceReplacements: new Map(
       [...reminted].map(([path, content]) => [
-        `knowledge:${path.slice(0, -3)}@${pageDigest(files[path]!)}`,
-        `knowledge:${path.slice(0, -3)}@${pageDigest(content)}`,
+        formatReferenceUri(
+          { scopeId: sourceScope, objectId: path.slice(0, -3) },
+          pageDigest(files[path]!)
+        ),
+        formatReferenceUri(
+          { scopeId: targetScope, objectId: path.slice(0, -3) },
+          pageDigest(content)
+        ),
       ])
     ),
   };
@@ -136,7 +155,8 @@ export function remintPortableWorkspaceNotebookPages(input: {
 
 /** Supplies only exact target-tree page pins to initial validation, with no Review or work grant. */
 export function importedWorkspaceNotebookReferences(
-  files: Readonly<Record<string, string>>
+  files: Readonly<Record<string, string>>,
+  scopeId: string
 ): ReadonlyMap<string, ReadonlySet<string>> {
   return new Map(
     Object.entries(files).map(([path, content]) => {
@@ -146,7 +166,9 @@ export function importedWorkspaceNotebookReferences(
       if (refs === null && !parsed.document.reserved) throw new NotebookError('invalid_request');
       return [
         path.slice(0, -3),
-        new Set((refs ?? []).filter((reference) => pinnedNotebookPage(reference, files) !== null)),
+        new Set(
+          (refs ?? []).filter((reference) => pinnedNotebookPage(reference, files, scopeId) !== null)
+        ),
       ];
     })
   );
@@ -192,6 +214,7 @@ export function assertPortableWorkspaceNotebookDisclosure(input: {
 export function bindImportedWorkspaceNotebookTraces(input: {
   readonly workspaceRoot: string;
   readonly workspaceId: string;
+  readonly knowledgeBaseId: string;
   readonly traces: ReadonlyMap<string, ProductRetrievalTrace>;
 }): ReadonlyMap<string, ProductRetrievalTrace> {
   const notebook = new KnowledgeNotebook({
@@ -201,7 +224,11 @@ export function bindImportedWorkspaceNotebookTraces(input: {
   const { files } = notebook.readRevision(revision);
   return new Map(
     [...input.traces].map(([path, trace]) => {
-      if ('sourceKind' in trace || trace.sourceScope !== `page/workspace/${input.workspaceId}`)
+      if (
+        'sourceKind' in trace ||
+        trace.sourceScope !==
+          `page/workspace/${input.workspaceId}/${KnowledgeBaseIdSchema.parse(input.knowledgeBaseId)}`
+      )
         return [path, trace];
       const bind = <
         T extends {

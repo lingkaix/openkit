@@ -955,6 +955,7 @@ export function importVerifiedWorkspace({
       retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
         workspaceRoot,
         workspaceId: importedWorkspaceId,
+        knowledgeBaseId: snapshot.defaultKnowledgeBaseId,
         traces: snapshot.portableFileState.retrievalTraceFiles,
       }),
     });

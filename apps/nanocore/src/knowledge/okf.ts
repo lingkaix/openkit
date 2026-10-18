@@ -2,6 +2,8 @@ import {
   isEntityId,
   type KnowledgeOwnerScope,
   KnowledgeOwnerScopeSchema,
+  parseReferenceScope,
+  parseReferenceUri,
   ReferenceUriSchema,
 } from '@openkit/protocol';
 import { type Document, isMap, isScalar, isSeq, parseDocument } from 'yaml';
@@ -676,6 +678,8 @@ export function validateKnowledgePageCandidate(input: {
   knowledgeIds: ReadonlySet<string>;
   /** Closed references already verified by their owning authority. */
   resolvedReferences?: ReadonlySet<string>;
+  /** Exact page scope supplied by current owner admission, including its retained Knowledge Base. */
+  pageScopeId?: string;
 }): KnowledgeProfileValidationReport {
   const parsed = parseOkfDocument({ path: input.path, content: input.content });
 
@@ -712,7 +716,8 @@ export function validateKnowledgePageCandidate(input: {
     parsed.document,
     input.registeredSources,
     input.knowledgeIds,
-    input.resolvedReferences
+    input.resolvedReferences,
+    input.pageScopeId
   );
 
   return referenceErrors.length === 0 ? schemaReport : { ...schemaReport, errors: referenceErrors };
@@ -821,20 +826,35 @@ export function resolveRegisteredKnowledgeSourceReference(
   };
 }
 
+/** Parses a canonical Page source reference only within the exact scope admitted by its owner. */
+export function parseKnowledgePageSourceReference(
+  reference: string,
+  expectedPageScopeId: string | undefined
+): ReturnType<typeof parseReferenceUri> {
+  const parsed = parseReferenceUri(reference);
+  return parsed &&
+    parseReferenceScope(parsed.reference.scopeId)?.family === 'page' &&
+    parsed.reference.scopeId === expectedPageScopeId
+    ? parsed
+    : null;
+}
+
 /**
  * Validates local and external references declared by one Knowledge Page.
  *
  * @param document Parsed candidate document.
  * @param registeredSources Registered Source ids and digests in the owning scope.
  * @param knowledgeIds Knowledge page ids that exist after the candidate write.
- * @param resolvedReferences Closed non-page references verified by their owners.
+ * @param resolvedReferences Exact references verified by their owners.
+ * @param pageScopeId Exact page scope supplied by current owner admission.
  * @returns Reference-resolution errors.
  */
 export function knowledgeReferenceErrors(
   document: OkfDocument,
   registeredSources: ReadonlyMap<string, string | null>,
   knowledgeIds: ReadonlySet<string>,
-  resolvedReferences: ReadonlySet<string> = new Set()
+  resolvedReferences: ReadonlySet<string> = new Set(),
+  pageScopeId?: string
 ): KnowledgeValidationError[] {
   const sourceRefs = document.frontmatter.source_refs;
 
@@ -852,14 +872,21 @@ export function knowledgeReferenceErrors(
         : [referenceError('reference.unresolved_source')];
     }
 
-    if (resolvedReferences.has(reference)) {
-      return [];
+    if (reference.startsWith('openkit:')) {
+      const parsed = parseKnowledgePageSourceReference(reference, pageScopeId);
+      return parsed &&
+        knowledgeIds.has(parsed.reference.objectId) &&
+        (parsed.contentDigest === undefined || resolvedReferences.has(reference))
+        ? []
+        : [referenceError('reference.unresolved_knowledge')];
     }
 
     if (reference.startsWith('knowledge:')) {
-      return knowledgeIds.has(reference.slice('knowledge:'.length))
-        ? []
-        : [referenceError('reference.unresolved_knowledge')];
+      return [referenceError('reference.unresolved_knowledge')];
+    }
+
+    if (resolvedReferences.has(reference)) {
+      return [];
     }
 
     try {

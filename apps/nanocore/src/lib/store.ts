@@ -34,9 +34,12 @@ import {
   ArtifactSchema,
   allocateEntityId,
   deriveEntityId,
+  formatReferenceUri,
   ItemSchema,
   isSealedTurnTerminal,
   PROTOCOL_VERSION,
+  parseReferenceScope,
+  parseReferenceUri,
   RequestIdSchema,
   responsibleUserIdForActor,
   type ServerItem,
@@ -53,6 +56,10 @@ import {
   type TurnStatus,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from '../config/knowledge-base.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
@@ -144,6 +151,7 @@ import {
   type WorkspaceFileRecords,
   writeFileAtomic,
   writeWorkspaceFileRecords,
+  writeWorkspaceMetadata,
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
@@ -1502,6 +1510,7 @@ export class FsStore {
    * Publishes one new workspace with its migrated database through a same-filesystem staging root.
    *
    * @param records Complete canonical records to publish.
+   * @param knowledgeBaseId Fresh or already-reminted default identity supplied by native creation/import.
    * @param stageWorkspace Optional side-effect writer that runs under the staging root.
    * @param notebookInitialization Actual native creation attribution, required for file-backed publication.
    * @param initialNotebookFiles Exact admitted root tree; retained imports must not be regenerated from entry projections.
@@ -1509,6 +1518,7 @@ export class FsStore {
    */
   private persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
+    knowledgeBaseId: string,
     stageWorkspace?: (stage: ImportWorkspaceStage) => void,
     notebookInitialization?: NotebookInitialization,
     initialNotebookFiles?: Readonly<Record<string, string>>,
@@ -1544,6 +1554,14 @@ export class FsStore {
 
     try {
       rmSync(stagingRoot, { recursive: true, force: true });
+      writeWorkspaceMetadata(stagingRoot, records.workspace, false);
+      initializeDefaultKnowledgeBaseId({
+        dataRoot: this.dataRoot,
+        workspaceRoot: stagingRoot,
+        scope: { kind: 'workspace', workspaceId },
+        knowledgeBaseId,
+      });
+      const pageScopeId = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
       const workspaceDb = openWorkspaceDbAtRoot({
         dataRoot: this.dataRoot,
         workspaceId,
@@ -1559,12 +1577,16 @@ export class FsStore {
           initialization: notebookInitialization,
           files: initialNotebookFiles ?? {},
           revalidate: () => ({
+            pageScopeId,
             scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
             reviewRequiredPageIds: [],
             registeredSources: new Map(
               records.knowledgeSources.map((source) => [source.id, source.contentDigest])
             ),
-            resolvedReferences: importedWorkspaceNotebookReferences(initialNotebookFiles ?? {}),
+            resolvedReferences: importedWorkspaceNotebookReferences(
+              initialNotebookFiles ?? {},
+              pageScopeId
+            ),
           }),
         });
       } finally {
@@ -1650,6 +1672,21 @@ export class FsStore {
   }
 
   /**
+   * Returns the retained page scope used by Workspace citation admission.
+   *
+   * @param workspaceId Workspace whose default Knowledge Base owns the pages.
+   * @returns Exact retained scope, or undefined for a store without a data root.
+   */
+  private workspaceKnowledgePageScopeId(workspaceId: string): string | undefined {
+    if (!this.dataRoot) return undefined;
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: this.dataRoot,
+      scope: { kind: 'workspace', workspaceId },
+    });
+    return `page/workspace/${workspaceId}/${knowledgeBaseId}`;
+  }
+
+  /**
    * Validates exact direct-write Knowledge Page bytes before store mutation.
    *
    * @param workspaceId Workspace that owns the candidate page.
@@ -1669,8 +1706,10 @@ export class FsStore {
   ): void {
     let scopeSchemaText: string | undefined;
     let resolvedReferences: ReadonlySet<string> = new Set();
+    let pageScopeId: string | undefined;
 
     try {
+      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
       if (this.dataRoot) {
         const schemaPath = join(
           this.workspaceRootPath(workspaceId),
@@ -1683,8 +1722,9 @@ export class FsStore {
           scopeSchemaText = readCanonicalTextFile(schemaPath);
         }
       }
-      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter((reference) =>
-        /^(?:source|knowledge):.+@sha256:[a-f0-9]{64}$/.test(reference)
+      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter(
+        (reference) =>
+          /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
       );
       if (qualifiedLocalReferences.length > 0) {
         resolvedReferences = this.resolveKnowledgePageSourceReferences(
@@ -1700,6 +1740,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: `knowledge/pages/${candidate.id}.md`,
       content: candidateContent,
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
@@ -1728,8 +1769,10 @@ export class FsStore {
     verifiedExternalReferences: readonly string[]
   ): KnowledgeEntry | undefined {
     let scopeSchemaText: string | undefined;
+    let pageScopeId: string | undefined;
     try {
       KnowledgeProposalRecordSchema.parse(proposal);
+      pageScopeId = this.workspaceKnowledgePageScopeId(proposal.workspaceId);
       if (this.dataRoot) {
         const schemaPath = join(
           this.workspaceRootPath(proposal.workspaceId),
@@ -1772,10 +1815,12 @@ export class FsStore {
       const resolved = this.resolveKnowledgePageSourceReferences(
         proposal.workspaceId,
         proposal.sourceReferences,
-        verifiedExternalReferences
+        verifiedExternalReferences,
+        proposal.baseRevision
       );
       const result = validateNotebookCandidate({
         ownerScope: proposal.ownerScope,
+        ...(pageScopeId === undefined ? {} : { pageScopeId }),
         base,
         candidate: { files },
         scopeSchemaText: scopeSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -1829,12 +1874,14 @@ export class FsStore {
     const resolvedReferences = this.resolveKnowledgePageSourceReferences(
       proposal.workspaceId,
       proposal.sourceReferences,
-      verifiedExternalReferences
+      verifiedExternalReferences,
+      proposal.baseRevision
     );
 
     const report = validateKnowledgePageCandidate({
       path: candidatePath,
       content: proposal.canonicalPageBytes,
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       expectedOwnerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
@@ -1866,13 +1913,15 @@ export class FsStore {
    * @param workspaceId Workspace that must own every local reference.
    * @param sourceReferences Complete source references carried by the page.
    * @param verifiedExternalReferences Exact work-history references verified outside the store.
+   * @param notebookRevision Immutable Proposal base, or the current published revision for direct edits.
    * @returns Complete reference set after every current owner is verified.
    * @throws KnowledgePageValidationError when any reference is missing or contradictory.
    */
   private resolveKnowledgePageSourceReferences(
     workspaceId: string,
     sourceReferences: readonly string[],
-    verifiedExternalReferences: readonly string[]
+    verifiedExternalReferences: readonly string[],
+    notebookRevision?: string
   ): ReadonlySet<string> {
     const externalReferences = new Set(verifiedExternalReferences);
     if (
@@ -1886,18 +1935,39 @@ export class FsStore {
       throw new KnowledgePageValidationError();
     }
 
-    const knowledge = this.getWorkspaceResources(workspaceId).knowledge;
     const resolvedReferences = new Set(externalReferences);
     for (const reference of sourceReferences) {
-      const qualifiedReference = /^(source|knowledge):(.+)@(sha256:[a-f0-9]{64})$/.exec(reference);
-      if (!qualifiedReference) {
-        if (!externalReferences.has(reference)) {
-          throw new KnowledgePageValidationError();
-        }
+      const qualifiedSource = /^source:(.+)@(sha256:[a-f0-9]{64})$/.exec(reference);
+      const pagePin = parseReferenceUri(reference);
+      const pageScope = pagePin && parseReferenceScope(pagePin.reference.scopeId);
+      if (!qualifiedSource && !pagePin) {
+        if (!externalReferences.has(reference)) throw new KnowledgePageValidationError();
         continue;
       }
-      const [, family, ownerId, expectedDigest] = qualifiedReference;
-      if (family === 'source') {
+      let ownerId: string;
+      let expectedDigest: string;
+      if (qualifiedSource) {
+        ownerId = qualifiedSource[1]!;
+        expectedDigest = qualifiedSource[2]!;
+      } else {
+        if (
+          !pagePin?.contentDigest ||
+          pageScope?.family !== 'page' ||
+          pageScope.kind !== 'workspace' ||
+          pageScope.workspaceId !== workspaceId ||
+          !this.dataRoot
+        )
+          throw new KnowledgePageValidationError();
+        try {
+          if (pagePin.reference.scopeId !== this.workspaceKnowledgePageScopeId(workspaceId))
+            throw new KnowledgePageValidationError();
+        } catch {
+          throw new KnowledgePageValidationError();
+        }
+        ownerId = pagePin.reference.objectId;
+        expectedDigest = pagePin.contentDigest;
+      }
+      if (qualifiedSource) {
         const source = this.knowledgeSources.get(ownerId!);
         if (
           !source ||
@@ -1921,14 +1991,11 @@ export class FsStore {
 
       let pageBytes: string | null;
       try {
-        pageBytes = this.dataRoot
-          ? readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), ownerId!)
-          : (() => {
-              const entry = knowledge.find((candidate) => candidate.id === ownerId);
-              return entry
-                ? serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId })
-                : null;
-            })();
+        pageBytes = readWorkspaceKnowledgePage(
+          this.workspaceRootPath(workspaceId),
+          ownerId,
+          notebookRevision
+        );
       } catch {
         throw new KnowledgePageValidationError();
       }
@@ -1947,7 +2014,8 @@ export class FsStore {
         parsed.document.frontmatter.openkit_status !== 'active' ||
         (parsed.document.frontmatter.status !== undefined &&
           parsed.document.frontmatter.status !== 'stable') ||
-        parsed.document.frontmatter.review_state !== 'user-authored'
+        parsed.document.frontmatter.review_state !== 'user-authored' ||
+        !isDeepStrictEqual(parsed.document.frontmatter.scope, { kind: 'workspace', workspaceId })
       ) {
         throw new KnowledgePageValidationError();
       }
@@ -1964,17 +2032,20 @@ export class FsStore {
    * @throws Knowledge Proposal conflict failure before any Review or Page mutation.
    */
   private assertNoUnresolvedKnowledgeProposalConflict(proposal: KnowledgeProposalRecord): void {
+    const scopeId = this.workspaceKnowledgePageScopeId(proposal.workspaceId);
+    if (scopeId === undefined) throw new KnowledgePageValidationError();
+    const targetIds = proposal.changes
+      ? proposal.changes.map(({ path }) => path.slice(0, -3))
+      : [proposal.knowledgePageId!];
     const relevantReferences = new Set<string>([
-      ...(proposal.changes
-        ? proposal.changes.map(({ path }) => `knowledge:${path.slice(0, -3)}`)
-        : [`knowledge:${proposal.knowledgePageId}`]),
+      ...targetIds.map((objectId) => formatReferenceUri({ scopeId, objectId })),
       ...proposal.sourceReferences,
     ]);
     for (const reference of proposal.sourceReferences) {
-      const qualifiedReference = /^(source|knowledge):(.+)@sha256:[a-f0-9]{64}$/.exec(reference);
-      if (qualifiedReference) {
-        relevantReferences.add(`${qualifiedReference[1]}:${qualifiedReference[2]}`);
-      }
+      const qualifiedSource = /^source:(.+)@sha256:[a-f0-9]{64}$/.exec(reference);
+      if (qualifiedSource) relevantReferences.add(`source:${qualifiedSource[1]}`);
+      const pagePin = parseReferenceUri(reference);
+      if (pagePin) relevantReferences.add(formatReferenceUri(pagePin.reference));
     }
 
     if (
@@ -2173,11 +2244,16 @@ export class FsStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    this.persistNewWorkspaceAtomically(emptyWorkspaceFileRecords(workspace), undefined, {
-      requestId: uuidv5(`openkit:personal-workspace-initialize:${workspaceId}`),
-      producer: { kind: 'user', id: userId },
-      instructionReference: `personal-workspace-initialize:${workspaceId}`,
-    });
+    this.persistNewWorkspaceAtomically(
+      emptyWorkspaceFileRecords(workspace),
+      allocateEntityId('kb'),
+      undefined,
+      {
+        requestId: uuidv5(`openkit:personal-workspace-initialize:${workspaceId}`),
+        producer: { kind: 'user', id: userId },
+        instructionReference: `personal-workspace-initialize:${workspaceId}`,
+      }
+    );
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, createWorkspaceResources());
     return workspace;
@@ -2205,6 +2281,7 @@ export class FsStore {
     const resources = createWorkspaceResources();
     this.persistNewWorkspaceAtomically(
       emptyWorkspaceFileRecords(workspace),
+      allocateEntityId('kb'),
       undefined,
       notebookInitialization ?? {
         requestId: randomUUID(),
@@ -2226,6 +2303,8 @@ export class FsStore {
    */
   public importWorkspaceSnapshot(input: {
     workspace: WorkspaceRecord;
+    /** Already reminted target binding from the verified import; synthetic imports allocate a fresh base. */
+    defaultKnowledgeBaseId?: string;
     threads: readonly Thread[];
     turns: readonly Turn[];
     knowledge: readonly KnowledgeEntry[];
@@ -2338,6 +2417,7 @@ export class FsStore {
 
     this.persistNewWorkspaceAtomically(
       records,
+      input.defaultKnowledgeBaseId ?? allocateEntityId('kb'),
       (stage) => {
         this.writeKnowledgeSourceMaterialsToRoot(
           stage.workspaceRoot,
@@ -4557,7 +4637,9 @@ export class FsStore {
 
     let content: string | null;
     let scopeSchemaText: string | undefined;
+    let pageScopeId: string | undefined;
     try {
+      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
       const workspaceRoot = this.workspaceRootPath(workspaceId);
       content = readWorkspaceKnowledgePage(workspaceRoot, knowledgePageId);
       const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
@@ -4600,6 +4682,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path,
       content,
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]

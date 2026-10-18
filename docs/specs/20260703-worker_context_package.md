@@ -110,6 +110,8 @@ Context package preparation is not a separate internal agent. The Knowledge Mana
 
 ## Ownership Boundary With Knowledge
 
+An available scope overview MUST retain its exact `knowledgeBaseId` once in metadata while keeping `index.md` as its logical path. Knowledge selection and exclusion rows MUST retain the exact `knowledgeBaseId` supplied by their admitted source. Ordering, duplicate detection, overlap checks and continuation identity MUST use the Knowledge Base plus page ID; a matching page path alone is insufficient. The current default Knowledge Base keeps its existing `knowledge/pages/<pageId>.md` Worker-delivered path. Retained manifest and trace entries carry the base identity, and current reads MUST refuse a missing or different base. Additional Knowledge Bases can add distinct delivered paths later without rewriting these retained default paths. The [Protocol reference owner](../core/protocol.md#scope-qualified-object-references) owns the qualified identity and URI; this field grants no access.
+
 `docs/core/knowledge.md` owns the canonical definition of Knowledge, Source, Knowledge Manager, Agent-Near Context, retrieval, injection, and the statement that a Context Package is a task-time projection.
 
 This spec owns the worker-facing projection mechanics for that concept:

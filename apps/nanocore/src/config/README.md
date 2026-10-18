@@ -17,6 +17,7 @@ This directory owns NanoCore-specific configuration discovery, loading, preceden
 - New Agent files created without supplied content select `openkit/worker-runtimes:dev` with the Codex adapter and its image pin `0.160.0`, prefer the `smart` logical tier, and allow `all` configured logical models; creation does not rewrite existing authored files.
 - MCP catalog changes are session-scoped; stdio enablement requires deployment-admin. Catalog App API mutations reload the runtime snapshot and close Gateway sessions for that Workspace.
 - A failed reload must not publish a partially updated runtime snapshot.
+- `knowledge-base.ts` reads the immutable `defaultKnowledgeBaseId` from the existing Server, User or Workspace configuration. Explicit fresh Knowledge-scope initialization records it once; reads never allocate or repair a missing binding. Ordinary configuration edits cannot add, replace or remove it. Existing Notebook or Source storage with no binding requires recovery, not another ID.
 - Reload failure diagnostics must redact the concrete data root. Accepted Workspace-name changes refresh the joined store projection immediately; session-scoped Agent changes apply to later composition, while startup-captured Provider changes remain restart-required.
 
 ## Verification

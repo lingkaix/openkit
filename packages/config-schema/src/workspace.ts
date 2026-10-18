@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { VaultGrantIdSchema } from '@openkit/protocol';
+import { KnowledgeBaseIdSchema, VaultGrantIdSchema } from '@openkit/protocol';
 
 import { z } from 'zod';
 import {
@@ -95,6 +95,8 @@ export const WorkspaceRootSchema = z
 export const WorkspaceConfigWorkspaceSchema = z
   .object({
     name: z.string().trim().min(1),
+    /** Fixed scope binding after Knowledge Base creation; parsing never allocates an ID. */
+    defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     defaultAgentId: z.string().min(1).nullable().optional(),
     agents: z.array(WorkspaceAgentBindingSchema).default([]),

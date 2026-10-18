@@ -9,8 +9,9 @@ import {
   operationToolName,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
@@ -161,6 +162,12 @@ function createQuickChatProviderOptions() {
 /** Builds one explicit Assistant-targeted conversation submission. */
 function conversationRequest(input: string, requestId: string) {
   return { input, requestId, targetRef: 'internal-role:assistant', artifactRefs: [] };
+}
+
+/** Reads the real demo Workspace's retained collection without creating fixture identity. */
+function fixtureKnowledgeScope(dataRoot: string): string {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  return `page/workspace/${workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } })}`;
 }
 
 /** Opens the fixture's published Git Notebook for fixed-base edits and exact citation bytes. */
@@ -1609,8 +1616,10 @@ describe('quick chat app API', () => {
                     step === 0
                       ? { query: 'Launch cadence' }
                       : {
-                          pageId:
-                            'page/workspace/ws_00000000-0000-7000-8000-000000000001/launch-cadence',
+                          pageId: formatReferenceUri({
+                            scopeId: fixtureKnowledgeScope(dataRoot),
+                            objectId: 'launch-cadence',
+                          }),
                         }
                   ),
                 },
@@ -1624,7 +1633,10 @@ describe('quick chat app API', () => {
                     answer:
                       'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
                     citationIds: [
-                      'page/workspace/ws_00000000-0000-7000-8000-000000000001/launch-cadence',
+                      formatReferenceUri({
+                        scopeId: fixtureKnowledgeScope(dataRoot),
+                        objectId: 'launch-cadence',
+                      }),
                     ],
                     uncertainty: 'Server Knowledge is unavailable in this fixture.',
                   }),
@@ -1697,9 +1709,6 @@ describe('quick chat app API', () => {
     expect(parsed.item.text).toContain(
       'OpenKit ships release candidates only after NanoCore smoke passes on a1.'
     );
-    expect(parsed.item.text).toContain(
-      `Sources: page/workspace/ws_00000000-0000-7000-8000-000000000001/${knowledge.id}@${fixtureNotebook(dataRoot).publishedRevision()}`
-    );
     const replayRes = await app.request(
       ...operationRequest(
         'conversation.submit',
@@ -1727,6 +1736,9 @@ describe('quick chat app API', () => {
       pagePath
     ]!;
     const contentDigest = `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`;
+    expect(parsed.item.text).toContain(
+      `Sources: ${formatReferenceUri({ scopeId: fixtureKnowledgeScope(dataRoot), objectId: knowledge.id }, contentDigest)}`
+    );
     const traceRoot = join(
       dataRoot,
       'workspaces',
@@ -1750,7 +1762,7 @@ describe('quick chat app API', () => {
           expect.objectContaining({
             contentDigest,
             reference: {
-              scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+              scopeId: fixtureKnowledgeScope(dataRoot),
               objectId: knowledge.id,
             },
           }),

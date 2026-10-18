@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import {
   findAssistantTimeline,
@@ -148,7 +149,7 @@ describe('User Memory selection trace portability', () => {
       access: source.access,
       caller: 'app-api',
       query,
-      pinnedReferences: [{ scopeId: `page/user/${source.userId}`, objectId: 'preferences' }],
+      pinnedReferences: [{ scopeId: userPageScope(source), objectId: 'preferences' }],
     });
     expect(selected.selected).toHaveLength(1);
     const original = readRetrievalTrace(
@@ -204,7 +205,7 @@ describe('User Memory selection trace portability', () => {
     });
     expect(importedTrace.queryContext.serverId).toBe(sourceServerId);
     expect(importedTrace.selected[0]).toMatchObject({
-      reference: { scopeId: `page/user/${source.userId}`, objectId: 'preferences' },
+      reference: { scopeId: userPageScope(source), objectId: 'preferences' },
       revision: saved.notebookRevision,
       sourceReferences: sourceRefs,
     });
@@ -263,7 +264,7 @@ describe('User Memory selection trace portability', () => {
     expect(fresh.queryContext.serverId).toBe(targetServerId);
     expect(fresh.selected).toMatchObject([
       {
-        reference: { scopeId: `page/user/${target.userId}`, objectId: 'preferences' },
+        reference: { scopeId: userPageScope(target), objectId: 'preferences' },
         contentDigest: targetPage.digest,
       },
     ]);
@@ -299,3 +300,8 @@ describe('User Memory selection trace portability', () => {
     ).toEqual(original.selected);
   });
 });
+
+/** Keeps each deployment's actual User base in retained trace references. */
+function userPageScope(owner: ReturnType<typeof deployment>): string {
+  return `page/user/${owner.userId}/${readDefaultKnowledgeBaseId({ dataRoot: owner.dataRoot, scope: { kind: 'user', userId: owner.userId } })}`;
+}
