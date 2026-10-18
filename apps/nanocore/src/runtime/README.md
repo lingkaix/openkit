@@ -136,6 +136,8 @@ The MCP Gateway's existing teardown-required fence refuses late tool and listing
 
 The stdio group-refusal regression reads the detached supervisor PID from the descendant's Node fixture receipt and checks real group addressability before exercising teardown under injected signal refusals. It requires no Python or external process lookup and runs with ordinary user authority in the test image.
 
+A correlated `reference.import` file-data admission refusal uses the existing exact `effect_failed` result. The dispatcher settles only the accepted pending request on the authoritative physical connection, without treating failure as a reference or invalidating that connection. This covers rejection before any Sandbox import starts; unknown outcomes and file-export/bridge special-result rules stay with the [transport owner](../../../../docs/specs/20260802-nanohost_runtime_and_transport.md#fixed-nanohost-effect-carriage). Run the complete `src/runtime/` suites after changing this dispatcher.
+
 ## Related Design
 
 - [AgentSession](../../../../docs/core/agent-session.md)
@@ -313,3 +315,5 @@ Worker overview delivery appends a fixed native read pointer while retaining the
 ## External Events From Scheduled Polls
 
 `external-trigger-service.ts` binds a live scheduled poll Worker to one ordinary isolated Worker admission per stable source event. Each new event uses a new Workspace-visible child Thread and fresh conversation/storage; sourceTurnId records lineage without a per-poll uniqueness limit. `external-trigger-source.ts` inspects accepted canonical source and target lineage for duplicate reads and dispatch. The four-field join remains in Core storage, while scheduler and Turn owners retain execution. Native dispatch and cancellation refuse a contradictory Store cache before writing canonical history; duplicate inspection and export use canonical data. Missing accepted history requires inspection; this service publishes no replacement Turn and never retries an accepted effect. The scheduler owner defines the accepted pull boundary; source reads and human effect approvals still use the existing MCP Gateway.
+
+Native Worker entry points supply their known cause through the existing Turn `triggerSource`. Direct `turn.start` records user input, mode-selected Task admission records handoff, and recurring/poll-event publication records automation. `product-turn-start.ts` accepts this trusted metadata separately from the public request and ActorRef; it never infers a cause from an actor. Its existing-Turn branch preserves canonical metadata, including absence. The recurring scanner adds the cause only during its once-only initial publication. No replay, restart or dispatch rewrites old source history.

@@ -93,6 +93,7 @@ export async function admitExternalTriggerEvent(
         subscriptionAccounts: input.subscriptionAccounts,
         workerPlacement: input.workerPlacement,
         triggerActor: schedule.actor,
+        triggerSource: { kind: 'automation', summary: 'Scheduled event admission.' },
         reservedTurnId,
         workerStorageChoice: { kind: 'fresh', goalId: null, taskId: null },
         input: {

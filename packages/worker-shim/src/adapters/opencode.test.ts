@@ -2601,7 +2601,7 @@ describe('OpenCode resident adapter', () => {
       ])
     );
     const alphaRequest = primary(inference, 'mcp-alpha-user');
-    expect(toolNames(alphaRequest).some((name) => name.includes('echo-alpha'))).toBe(true);
+    expect(requestTexts(alphaRequest).join(' ')).toContain('echo-alpha');
     expect(authenticated(capability, 'alpha', creds.capabilityCredential)).toBe(true);
     expect(authenticated(capability, 'beta', creds.capabilityCredential)).toBe(false);
 

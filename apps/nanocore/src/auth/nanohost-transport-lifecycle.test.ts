@@ -17,6 +17,7 @@ import {
   fenceNanoHostTransportOnTokenUnusable,
   revokeNanoHostTransportTokenAndFence,
 } from './nanohost-transport-lifecycle.js';
+import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import { deliverNanoHostTransportTokenToNamedSlot } from './nanohost-transport-sink.js';
 import {
@@ -225,6 +226,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       ).toBeNull();
       expect(
         admitNanoHostTransportConnection(coreDb, authority, {
+          transportRevision: String(transportRevision),
           physicalConnection: null,
           secret: issued.secret,
           now: new Date('2026-08-08T02:00:00.000Z'),
@@ -259,6 +261,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       expectRuntimeTargetUnready(coreDb);
       expect(
         admitNanoHostTransportConnection(coreDb, authority, {
+          transportRevision: String(transportRevision),
           physicalConnection: null,
           secret: issued.secret,
           now: new Date('2026-08-08T01:30:00.000Z'),

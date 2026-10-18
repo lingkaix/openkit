@@ -97,6 +97,7 @@ export function startRecurringScheduleService(
               status: 'pending',
               agentId: entry.requestedAgentId,
               executorKind: 'worker',
+              triggerSource: { kind: 'automation', summary: 'Recurring schedule admission.' },
               ...(entry.reasoningEffort !== undefined
                 ? { reasoningEffort: entry.reasoningEffort }
                 : {}),
