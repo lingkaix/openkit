@@ -60,21 +60,28 @@ export const StoredTurnSnapshotV1Schema = z
   .object(StoredTurnPayloadV1Shape)
   .omit({ captureCoverage: true, requiredFeatures: true })
   .extend({ items: z.array(StoredItemPayloadV1Schema) })
-  .superRefine((turn, context) => {
-    const responsible =
-      turn.triggerActor.kind === 'user'
-        ? turn.triggerActor.id
-        : turn.triggerActor.responsibleUserId;
-    for (const [index, item] of turn.items.entries()) {
-      if (item.type === 'user-input-request' && item.responsibleUserId !== responsible) {
-        context.addIssue({
-          code: 'custom',
-          message: 'User-input request responsible user must match the turn trigger actor.',
-          path: ['items', index, 'responsibleUserId'],
-        });
-      }
+  .superRefine(refineStoredTurnItemsV1);
+
+/** Preserves the fixed responsible User relationship for both Workspace and Server Turn snapshots. */
+export function refineStoredTurnItemsV1(
+  turn: {
+    triggerActor: z.infer<typeof StoredTurnPayloadV1Shape.triggerActor>;
+    items: readonly { type: string; responsibleUserId?: string | undefined }[];
+  },
+  context: z.RefinementCtx
+): void {
+  const responsible =
+    turn.triggerActor.kind === 'user' ? turn.triggerActor.id : turn.triggerActor.responsibleUserId;
+  for (const [index, item] of turn.items.entries()) {
+    if (item.type === 'user-input-request' && item.responsibleUserId !== responsible) {
+      context.addIssue({
+        code: 'custom',
+        message: 'User-input request responsible user must match the turn trigger actor.',
+        path: ['items', index, 'responsibleUserId'],
+      });
     }
-  });
+  }
+}
 
 /** Event history keeps the published inline body rather than the disk-only descriptor. */
 export const StoredArtifactSnapshotV1Schema = z
@@ -586,3 +593,10 @@ export const StoredEventPayloadV1Schema = z.object({
 export const StoredEventV1Schema = StoredEventPayloadV1Schema.extend({
   schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
 });
+
+/** Fixed common snapshot and delta components reused by the native Server transcript owner. */
+export {
+  ItemDeltaEventSchema as StoredItemDeltaEventV1Schema,
+  StopReasonSchema as StoredStopReasonV1Schema,
+  ThreadSnapshotV1Schema as StoredWorkspaceThreadSnapshotV1Schema,
+};

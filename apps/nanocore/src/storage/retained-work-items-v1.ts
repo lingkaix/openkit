@@ -164,7 +164,7 @@ const ApprovalRequestItemSchema = BaseItemSchema.extend({
 /**
  * Product-visible approval decision item. The only system actor is the repository-push policy grant.
  */
-const ApprovalDecisionItemSchema = BaseItemSchema.extend({
+export const StoredApprovalDecisionItemV1Schema = BaseItemSchema.extend({
   type: z.literal('approval-decision'),
   actor: z.union([
     UserActorRefSchema.strip(),
@@ -180,12 +180,20 @@ const ApprovalDecisionItemSchema = BaseItemSchema.extend({
   approvalRequestId: z.string().min(1),
   decision: z.enum(['granted', 'denied']),
   decidedAt: TimestampSchema,
-}).refine(
-  (item) =>
+}).refine(isPermittedStoredApprovalDecisionV1, {
+  message: 'A system approval decision must be a repository-push policy grant.',
+});
+
+/** Retained system approval attribution can only describe the existing repository-push policy grant. */
+export function isPermittedStoredApprovalDecisionV1(item: {
+  actor: { kind: string; id: string };
+  decision: string;
+}): boolean {
+  return (
     item.actor.kind === 'user' ||
-    (item.actor.id === 'nanocore-repo-push-policy' && item.decision === 'granted'),
-  { message: 'A system approval decision must be a repository-push policy grant.' }
-);
+    (item.actor.id === 'nanocore-repo-push-policy' && item.decision === 'granted')
+  );
+}
 
 /**
  * Selectable option attached to one agent user-input question.
@@ -345,7 +353,7 @@ export const StoredItemPayloadV1Schema = z.discriminatedUnion('type', [
   ArtifactReferenceItemSchema,
   CommandExecutionItemSchema,
   ApprovalRequestItemSchema,
-  ApprovalDecisionItemSchema,
+  StoredApprovalDecisionItemV1Schema,
   UserInputRequestItemSchema,
   UserInputResponseItemSchema,
   FileChangeItemSchema,
