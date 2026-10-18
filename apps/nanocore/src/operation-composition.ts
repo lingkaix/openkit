@@ -19,6 +19,7 @@ import {
   prepareCatalogSkillDecision,
 } from './catalog/catalog-operations.js';
 import { retainedWorkspaceSkillReferences } from './catalog/skill-retention.js';
+import { type ChannelServices, createChannelOperationImplementations } from './channel-services.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
@@ -89,6 +90,8 @@ export interface OperationInvocationDependencies {
       }
     | undefined;
   readonly coreDb: CoreDb | undefined;
+  /** Shared deployment-local channel and notification owners. */
+  readonly channelServices?: ChannelServices;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
   /** Existing deployment configuration family services. */
@@ -169,6 +172,7 @@ export interface OperationInvocationDependencies {
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
     createCallerOperationImplementations(dependencies),
+    createChannelOperationImplementations(dependencies.channelServices),
     createMaterialOperationImplementations({
       coreDb: dependencies.coreDb,
       store: dependencies.store!,

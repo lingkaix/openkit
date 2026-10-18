@@ -98,6 +98,16 @@ export interface PendingAdmissionDependencies extends PendingRequestDatabase {
   goalTerminal?: (turn: ReturnType<FsStore['getTurnById']>) => void;
 }
 
+const attentionObservers = new WeakMap<FsStore, (record: PendingRequestRecord) => void>();
+
+/** Installs the optional external attention projection after Core request ownership is composed. */
+export function setPendingRequestAttentionObserver(
+  store: FsStore,
+  observer: (record: PendingRequestRecord) => void
+): void {
+  attentionObservers.set(store, observer);
+}
+
 const refusedOutcomeTurns = new Set<string>();
 const outcomeCauses = new Map<string, 'outcome'>();
 
@@ -292,6 +302,15 @@ export function raiseRecordedPendingRequest(
     deletePendingRequest(sqlite, raised.record.requestId);
     throw error;
   }
+  // The caller completes its request Item in this turn of the event loop. Attention runs afterward.
+  // A failed external projection cannot reverse the canonical request; boot re-enumerates its source.
+  queueMicrotask(() => {
+    try {
+      attentionObservers.get(store)?.(raised.record);
+    } catch {
+      /* Core remains the request authority. */
+    }
+  });
   return raised.record;
 }
 
