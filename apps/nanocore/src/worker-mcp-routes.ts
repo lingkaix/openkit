@@ -1430,11 +1430,12 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         const oldRow = input.workspaceDb.sqlite
           .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
           .get(duplicate.policyDecisionId);
-        const previous = oldRow ? readPermissionDecisionRowV1(oldRow).mediation : undefined;
+        const previousRecord = oldRow ? readPermissionDecisionRowV1(oldRow) : undefined;
+        const previous = previousRecord?.mediation;
         if (
           !previous ||
           previous.proposalDigest !== policyDecision.proposalDigest ||
-          previous.policyRevision !== policyDecision.policyRevision ||
+          previousRecord?.policySnapshotId !== policyDecision.policyRevision ||
           previous.authorizationRevision !== policyDecision.authorizationRevision
         )
           throw new WorkerControlGatewayError(
