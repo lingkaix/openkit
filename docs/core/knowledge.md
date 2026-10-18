@@ -92,6 +92,12 @@ One published notebook revision owns the current OKF content tree and retained h
 
 Capture, successful no-op, draft, required Review, publication, conflict and incomplete command evidence are distinct outcomes. Restart reads published content and existing evidence; it never resumes a hidden editor or infers publication from a candidate.
 
+## Knowledge Base Files
+
+A Knowledge Base combines OKF pages, schema, navigation, log and Source references. Its `raw/<mount>/<path>` namespace resolves through Storage mounts; the default mount is a physical `raw/` folder inside the Knowledge Base. Additional locations can remain reference-only. The Knowledge Manager maintains interpretation and chooses media recipes through a Skill, without modifying originals.
+
+Knowledge interchange preserves canonical paths wherever possible, with each required difference stated explicitly. Backup copies canonical files unchanged; Workspace export serves external use. Missing originals retain honest metadata, not replacement bytes. Derivation supplies indexable units, retrieval owns embeddings and indexes, and content access stays NanoCore-mediated. The [layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) records the approved format scope.
+
 ## Sources And Generated Learning
 
 Sources preserve evidence identity and lineage; knowledge preserves reusable interpretation.

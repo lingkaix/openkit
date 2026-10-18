@@ -129,6 +129,12 @@ In this release, configuration operations MUST refuse unsupported Workspace root
 
 An Agent write MUST check only its own selections against current authored catalogs; a catalog write MUST check every Agent's selections against prospective catalogs after replacing the current file with the candidate: a reference with matches is refused only when none is Git with no `vaultGrantRef` and a valid credential-free HTTPS locator; a reference with no matches keeps its late resolution refusal, and an inline input without `sourceRef` is refused only on an Agent write.
 
+### Leased Storage Projection
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns later Storage adoption and reference formats. The existing Workspace/Artifact planes admit NanoCore-mediated MCP access or a leased read-only backend subpath mounted host-side by NanoHost. Writes stage for NanoCore commit; no sandbox FUSE or direct retrieval-engine route is introduced. Implementing host mounts needs explicit engineer approval.
+
+Policy owns grant scope/expiry; runtime removes or fences revoked exposure without deleting retained work. Disposable running-Turn snapshots preserve current readiness proof, not historical retention copies. Context/source owners activate their retained-reference transition together; the current eager input-transfer and Turn cleanup rules remain the pre-adoption baseline.
+
 ### Read-Only Turn Source Snapshot
 
 For each Turn, eagerly materialize only selected, currently authorized Artifact versions, uploads, Material revisions, and admitted source snapshots. Use existing input slots and data-plane transfers. Verify source revision, size, and digest before readiness. Record the exact immutable inventory through the existing Workspace Input Snapshot, Materialization Record, and Context Package proof. Model-visible inventories and their pagination remain bounded under [Context Package](20260703-worker_context_package.md#bounded-model-projection). The [large-file decision](../decisions/20261015-large_files_and_model_context.md) adds no lazy hydration, host-checkout reader, or source registry.
