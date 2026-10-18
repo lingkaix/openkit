@@ -11,6 +11,8 @@ This document does not own runtime session continuity, workflow progression, con
 
 Memory is the user-facing name for User-owned reusable understanding, preferences, learning and personal context. Knowledge is the name for reusable understanding owned by a Workspace or CoreServer. They use one governed knowledge model; Memory is not a second storage engine or a hidden Agent state.
 
+Server Knowledge is the Server's shared knowledge base, mainly for sharing information across Workspaces on that Server. Workspace work can query both its Workspace Knowledge and Server Knowledge when the Server Knowledge owner admits the actor; User Memory does not enter shared work.
+
 Knowledge is not runtime session state, a prompt dump, hidden agent memory, raw source storage, or a replacement for an external system of record.
 
 ## Purpose
@@ -62,7 +64,11 @@ Knowledge does not own workflow progression, worker execution, final semantic co
 
 Artifacts may become Knowledge Sources, but artifacts are not required between ordinary source ingest and a Knowledge Proposal.
 
-The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Its operations are trusted at this stage; review by another model and confidence marks are out of scope. Current authority and required human decisions still apply.
+The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Claim confidence retains its numeric 0..1 meaning; a future Policy-bound assessor supplies evidence, never publication authority. Current authority and required human decisions still apply; the approved unified assessment mechanism is Not Started.
+
+Claim MUST be an OKF page managed and queried by the Knowledge Manager, without a separate canonical claims ledger. Solidified reusable procedures belong in Skills; all other reusable understanding belongs in the owner-scoped Knowledge Base. Operational history, raw Sources, candidates, app records and authority configuration retain their owners and MUST NOT become extra curated grounding stores. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this consolidation.
+
+Rule, Effect and business Objective pages use governed Scope Schema types and applicability metadata for type-aware retrieval; an Objective page does not own Goal execution. An Effect states its basis and last check. Retrieved rules and confidence MUST NOT grant authority; safety-critical rules use a pinned Skill or a Policy-bound independent validator.
 
 The Knowledge Manager uses existing Thread, Turn and Item owners for conversation continuity. It owns no separate runtime, scheduler, retry queue or publication authority.
 
@@ -89,6 +95,12 @@ Sources and interactions supply evidence; human and Agent edits work from one fi
 One published notebook revision owns the current OKF content tree and retained history. An editing workspace is temporary, and indexes, summaries and materialized directories are rebuildable projections. Multiple file changes publish as one revision after an exact-base check; a stale writer cannot overwrite a newer edit. Creation, editing, merge, split, archive and restoration use this same boundary. Restoration appends a new revision; it never erases intervening history or reverses external effects.
 
 Capture, successful no-op, draft, required Review, publication, conflict and incomplete command evidence are distinct outcomes. Restart reads published content and existing evidence; it never resumes a hidden editor or infers publication from a candidate.
+
+## Knowledge Base Files
+
+Each scope retains a fixed default Knowledge Base ID, carried by its references. Version 0.1.0 has one Knowledge Base per scope. A Knowledge Base combines OKF pages, schema, navigation, log and admitted SourceSummary pointer pages in Notebook Git, replacing the external Source registry. Its default local mount is physical `raw/`; additional Storage mounts occupy declared `raw/<mount>/` subdirectories. Additional locations can remain reference-only. The Knowledge Manager maintains interpretation and chooses media recipes through a Skill, without modifying originals.
+
+Knowledge interchange preserves canonical paths wherever possible, with each required difference stated explicitly. Backup copies canonical files unchanged; Workspace export serves external use. Missing originals retain honest metadata, not replacement bytes. Derivation supplies indexable units, retrieval owns embeddings and indexes, and content access stays NanoCore-mediated. The [layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) records the approved format scope.
 
 ## Sources And Generated Learning
 

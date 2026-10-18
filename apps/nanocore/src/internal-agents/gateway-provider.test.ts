@@ -59,6 +59,7 @@ import { attachPiAiFailure } from '../llm/pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 import { type InternalAgentProviderRequest, runInternalAgentLoop } from './internal-agent-loop.js';
+import { internalContextFailure } from './rolling-context.js';
 
 const logicalModel: ResolvedLogicalModel = {
   id: 'assistant',
@@ -145,7 +146,7 @@ describe('internal Agent Gateway provider', () => {
       provider({
         ...request('prompt-canary'),
         tools: [
-          { name: 'declared', description: 'schema-canary', inputSchema: { type: 'object' } },
+          { name: 'test.declared', description: 'schema-canary', inputSchema: { type: 'object' } },
         ],
       })
     ).rejects.toHaveProperty('failure.kind', 'unsupported');
@@ -315,7 +316,7 @@ describe('internal Agent Gateway provider', () => {
       ...request('prompt-canary'),
       tools: [
         {
-          name: 'task_start',
+          name: 'goal.task.dispatch',
           description: 'schema-canary',
           inputSchema: {
             type: 'object',
@@ -326,7 +327,7 @@ describe('internal Agent Gateway provider', () => {
     }).catch((error: unknown) => error);
     expect(failure).toHaveProperty(
       'cause.message',
-      'Tool "task_start" requires JSON-schema constrained sampling, but prefixItems schemas are unsupported.'
+      'Tool "goal_task_dispatch" requires JSON-schema constrained sampling, but prefixItems schemas are unsupported.'
     );
     expect(fetch).not.toHaveBeenCalled();
     const calls = listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId);
@@ -349,7 +350,7 @@ describe('internal Agent Gateway provider', () => {
     });
     const serialized = JSON.stringify(diagnostic);
     for (const prohibited of [
-      'task_start',
+      'goal.task.dispatch',
       'prefixItems',
       'constrained sampling',
       'schema-canary',
@@ -645,8 +646,12 @@ describe('internal Agent Gateway provider', () => {
           description: 'Read target.',
           inputSchema: { type: 'object' },
         },
-        { name: 'task_start', description: 'Start task.', inputSchema: { type: 'object' } },
-        { name: 'a'.repeat(64), description: 'Boundary.', inputSchema: { type: 'object' } },
+        { name: 'goal.task.dispatch', description: 'Start task.', inputSchema: { type: 'object' } },
+        {
+          name: `test.${'a'.repeat(35)}`,
+          description: 'Boundary.',
+          inputSchema: { type: 'object' },
+        },
       ],
       messages: [
         ...request().messages,
@@ -666,7 +671,7 @@ describe('internal Agent Gateway provider', () => {
               name: 'nanohost.runtime-target',
               arguments: {},
             },
-            { type: 'toolCall', callId: 'earlier_task', name: 'task_start', arguments: {} },
+            { type: 'toolCall', callId: 'earlier_task', name: 'goal.task.dispatch', arguments: {} },
           ],
         },
       ],
@@ -686,21 +691,21 @@ describe('internal Agent Gateway provider', () => {
         },
         {
           type: 'function',
-          name: 'nanohost_runtime_target',
+          name: 'nanohost_runtime-target',
           description: 'Read target.',
           parameters: { type: 'object' },
           strict: false,
         },
         {
           type: 'function',
-          name: 'task_start',
+          name: 'goal_task_dispatch',
           description: 'Start task.',
           parameters: { type: 'object' },
           strict: false,
         },
         {
           type: 'function',
-          name: 'a'.repeat(64),
+          name: `test_${'a'.repeat(35)}`,
           description: 'Boundary.',
           parameters: { type: 'object' },
           strict: false,
@@ -728,16 +733,21 @@ describe('internal Agent Gateway provider', () => {
       {
         type: 'function_call',
         call_id: 'earlier_target',
-        name: 'nanohost_runtime_target',
+        name: 'nanohost_runtime-target',
         arguments: '{}',
       },
-      { type: 'function_call', call_id: 'earlier_task', name: 'task_start', arguments: '{}' },
+      {
+        type: 'function_call',
+        call_id: 'earlier_task',
+        name: 'goal_task_dispatch',
+        arguments: '{}',
+      },
     ]);
     expect(currentRequest.tools.map(({ name }) => name)).toEqual([
       'environment.status',
       'nanohost.runtime-target',
-      'task_start',
-      'a'.repeat(64),
+      'goal.task.dispatch',
+      `test.${'a'.repeat(35)}`,
     ]);
     expect(response.message).toEqual({
       role: 'assistant',
@@ -799,7 +809,7 @@ describe('internal Agent Gateway provider', () => {
     ['environment.status', 'openkit_unavailable_tool', 'environment.status'],
     ['undeclared', 'undeclared', 'environment.status'],
     ['invalid/name', 'openkit_unavailable_tool', 'environment.status'],
-    ['environment-status', 'openkit_unavailable_tool', 'environment-status'],
+    ['environment.status-result', 'openkit_unavailable_tool', 'environment.status-result'],
   ])('corrects an unadmitted spelling through the real loop and Gateway history: %s', async (name, historyName, canonicalName) => {
     const execute = vi.fn(async () => ({
       content: [{ type: 'text' as const, text: 'Available.' }],
@@ -818,7 +828,7 @@ describe('internal Agent Gateway provider', () => {
       .mockImplementationOnce(async (_provider, payload) => {
         expect(execute).not.toHaveBeenCalled();
         expect(payload.tools.map((tool: { name: string }) => tool.name)).toEqual([
-          'environment_status',
+          canonicalName.replaceAll('.', '_'),
         ]);
         expect(payload.input.slice(1)).toEqual([
           {
@@ -844,7 +854,7 @@ describe('internal Agent Gateway provider', () => {
             {
               type: 'function_call',
               call_id: 'admitted_call',
-              name: 'environment_status',
+              name: canonicalName.replaceAll('.', '_'),
               arguments: JSON.stringify(args),
             },
           ],
@@ -896,7 +906,7 @@ describe('internal Agent Gateway provider', () => {
       {
         type: 'function_call',
         call_id: 'admitted_call',
-        name: 'environment_status',
+        name: canonicalName.replaceAll('.', '_'),
         arguments: JSON.stringify(args),
       },
       { type: 'function_call_output', call_id: 'admitted_call', output: 'Available.' },
@@ -965,12 +975,12 @@ describe('internal Agent Gateway provider', () => {
 
   it.each([
     ['environment.status', 'environment_status'],
-    ['nanohost.runtime-target', 'nanohost.runtime_target'],
+    ['nanohost.runtime-target', 'nanohost.runtime.target'],
     [''],
-    ['a'.repeat(65)],
+    [`test.${'a'.repeat(36)}`],
     ['invalid/name'],
     ['openkit_unavailable_tool'],
-    ['openkit.unavailable-tool'],
+    ['openkit.unavailable.tool'],
   ])('rejects invalid or colliding Tool aliases before dispatch: %j', async (...names) => {
     const createResponses = vi.fn().mockResolvedValue({
       id: 'response',
@@ -1011,7 +1021,9 @@ describe('internal Agent Gateway provider', () => {
           inputSchema: { type: 'object' },
         })),
       })
-    ).rejects.toThrow('Internal Agent Tool aliases must be unique Responses function names.');
+    ).rejects.toThrow(
+      /Invalid operation name|exceeds 40 characters|name collision|Internal Agent Tool aliases must be unique Responses function names/
+    );
     expect(resolveGatewayProvider).not.toHaveBeenCalled();
     expect(createResponses).not.toHaveBeenCalled();
   });
@@ -1085,7 +1097,7 @@ describe('internal Agent Gateway provider', () => {
                 ? []
                 : [
                     {
-                      name: 'lookup',
+                      name: 'test.lookup',
                       description: 'Read status.',
                       inputSchema: {
                         type: 'object',
@@ -1107,7 +1119,9 @@ describe('internal Agent Gateway provider', () => {
       if (toolCount === 0) {
         expect(payloads[0]?.tools).toBeUndefined();
       } else {
-        expect(payloads[0]?.tools).toMatchObject([{ functionDeclarations: [{ name: 'lookup' }] }]);
+        expect(payloads[0]?.tools).toMatchObject([
+          { functionDeclarations: [{ name: 'test_lookup' }] },
+        ]);
         // Provider constrained generation is disabled; the internal loop retains schema admission.
         expect(payloads[0]?.toolConfig).toBeUndefined();
       }
@@ -1904,6 +1918,59 @@ describe('internal rolling context Gateway boundary', () => {
 
     expect(createResponses).not.toHaveBeenCalled();
     expect(assembled.messages).toEqual(before);
+  });
+
+  it('retains final serialized admission failure through stock normalization without replay', async () => {
+    const { provider, createResponses } = boundaryFixture();
+    createResponses.mockImplementationOnce(async (_provider, _input, context) => {
+      try {
+        context.transport.finalRequestAdmission({
+          payload: { instructions: 'Final overlay. '.repeat(30_000) },
+          contextWindowTokens: 64_000,
+          outputReserveTokens: 8_000,
+          codexTurnState: 'native-continuity',
+        });
+      } catch {
+        throw new Error('Stock normalized the local hook refusal.');
+      }
+      throw new Error('Final payload was not admitted.');
+    });
+
+    await expect(provider(request())).rejects.toMatchObject({
+      code: 'internal_agent_context_exceeded',
+      message: expect.stringContaining('retrieve a smaller excerpt'),
+    });
+    expect(createResponses).toHaveBeenCalledOnce();
+  });
+
+  it('retains a Provider context rejection through the shared loop and Assistant Turn projection', async () => {
+    const { provider, createResponses } = boundaryFixture();
+    createResponses.mockRejectedValueOnce(
+      Object.assign(new Error('private-provider-context'), {
+        failure: { kind: 'context_overflow', settled: true, status: 400 },
+      })
+    );
+    let observed: unknown;
+    const initial = request();
+    const result = await runInternalAgentLoop(
+      { ...initial, tools: [], limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 } },
+      async (call) => {
+        try {
+          return await provider(call);
+        } catch (error) {
+          observed = error;
+          throw error;
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ kind: 'failed', code: 'provider_call_failed' });
+    expect(internalContextFailure(observed)).toEqual({
+      code: 'internal_agent_context_exceeded',
+      message:
+        'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
+    });
+    expect(createResponses).toHaveBeenCalledOnce();
   });
 
   it('reserves known output capacity when fitting an otherwise admissible request', async () => {

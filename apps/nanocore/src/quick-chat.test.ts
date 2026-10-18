@@ -41,9 +41,10 @@ const EXPECTED_QUICK_CHAT_SYSTEM_PROMPT = BUILT_IN_SYSTEM_PROMPTS['quick-chat'];
 
 // Accepted order: Chat Mode Assistant's Core set followed by Resource Integration's native set.
 const EXPECTED_ASSISTANT_TOOL_NAMES = [
-  'workspace.state.read',
+  'workspace.dashboard',
   'thread.history.read',
-  'knowledge.search',
+  'knowledge.ask',
+  'knowledge.tell',
   'workspace.create',
   'task.start',
   'goal.create',
@@ -1569,17 +1570,66 @@ describe('quick chat app API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const providerOptions = createQuickChatProviderOptions();
+    // Summary production has separate tests; leave room for the KM query's complete Tool set.
+    providerOptions.gatewayConfig.logicalModels[0]!.contextManagement = [
+      { type: 'compaction', compactThreshold: 32_000 },
+    ];
+    let modelStep = 0;
+    const createResponses = vi.fn(
+      async (
+        _provider: Parameters<PiAiGatewayClient['createResponses']>[0],
+        request: Parameters<PiAiGatewayClient['createResponses']>[1]
+      ) => {
+        // The configured KM role performs real retrieval and page reads; only its Provider is fake.
+        expect(request.tools).toContainEqual(
+          expect.objectContaining({ name: operationToolName('knowledge.page.read') })
+        );
+        const step = modelStep++;
+        const output =
+          step < 2
+            ? [
+                {
+                  type: 'function_call',
+                  call_id: `knowledge-call-${step}`,
+                  name: operationToolName(
+                    step === 0 ? 'knowledge.retrieval' : 'knowledge.page.read'
+                  ),
+                  arguments: JSON.stringify(
+                    step === 0
+                      ? { query: 'Launch cadence' }
+                      : {
+                          pageId:
+                            'page/workspace/ws_00000000-0000-7000-8000-000000000001/launch-cadence',
+                        }
+                  ),
+                },
+              ]
+            : [
+                {
+                  type: 'function_call',
+                  call_id: 'knowledge-result',
+                  name: operationToolName('knowledge.result'),
+                  arguments: JSON.stringify({
+                    answer:
+                      'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
+                    citationIds: [
+                      'page/workspace/ws_00000000-0000-7000-8000-000000000001/launch-cadence',
+                    ],
+                    uncertainty: 'Server Knowledge is unavailable in this fixture.',
+                  }),
+                },
+              ];
+        return { id: `knowledge-response-${step}`, object: 'response', output };
+      }
+    );
     const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
+      ...providerOptions,
       coreDb,
       dataRoot,
       store: createDemoStore({ dataRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
-        createResponses: async () => {
-          throw new Error('Knowledge-backed Chat Mode must not call QuickChatAgent');
-        },
-      } as unknown as PiAiGatewayClient,
+      llmGatewayDispatcher: { createResponses } as unknown as LLMGatewayProviderDispatcher,
     });
 
     const createRes = await app.request(
@@ -1622,7 +1672,7 @@ describe('quick chat app API', () => {
       )
     );
 
-    expect(res.status).toBe(200);
+    expect(res.status, `KM Provider calls: ${createResponses.mock.calls.length}`).toBe(200);
     const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
     expect(parsed).toMatchObject({
@@ -1637,7 +1687,9 @@ describe('quick chat app API', () => {
     expect(parsed.item.text).toContain(
       'OpenKit ships release candidates only after NanoCore smoke passes on a1.'
     );
-    expect(parsed.item.text).toContain('Sources: Launch cadence');
+    expect(parsed.item.text).toContain(
+      `Sources: page/workspace/ws_00000000-0000-7000-8000-000000000001/${knowledge.id}@${fixtureNotebook(dataRoot).publishedRevision()}`
+    );
     const replayRes = await app.request(
       ...operationRequest(
         'conversation.submit',
@@ -1658,6 +1710,7 @@ describe('quick chat app API', () => {
 
     expect(replayRes.status).toBe(200);
     expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+    expect(createResponses).toHaveBeenCalledTimes(3);
     const notebook = fixtureNotebook(dataRoot);
     const pagePath = `${knowledge.id}.md`;
     const pageBytes = notebook.readRevision(notebook.publishedRevision(), [pagePath]).files[
@@ -1670,6 +1723,8 @@ describe('quick chat app API', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       'threads',
       'th_00000000-0000-7000-8000-000000000001',
+      'turns',
+      parsed.turn.id,
       'retrieval-traces'
     );
     const traces = existsSync(traceRoot)

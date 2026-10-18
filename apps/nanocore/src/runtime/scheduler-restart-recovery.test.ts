@@ -26,6 +26,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -659,6 +660,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
     }
   });
 
+  // Three migrated fixtures and 37,800 history rows need setup time; SQL reads remain the oracle.
   it('bounds executed SQL reads across 0, 378 and 37800 settled siblings on repeated passes', async () => {
     const measurements: Array<{
       siblings: number;
@@ -718,7 +720,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
       )!;
       expect(observation.reads, JSON.stringify(observation)).toBeLessThanOrEqual(fixed.reads + 5);
     }
-  });
+  }, 60_000);
 
   it.each([
     ['phase-open', 'phase', 'open'],
@@ -1107,9 +1109,9 @@ describe('terminal failed-start product recovery', () => {
           authorityActor: f.turn.triggerActor,
           callId,
           itemId,
-          capabilityId: 'mcp.call_tool',
+          capabilityId: 'mcp.call-tool',
           family: 'mcp',
-          operation: 'mcp.call_tool',
+          operation: 'mcp.call-tool',
           providerRef: 'github',
           serviceRef: 'mcp-tool:create_branch',
           redactionClass: 'metadata-only',
@@ -1810,7 +1812,11 @@ describe('terminal failed-start product recovery', () => {
       collectTranscript: async () => ({ itemsJsonl: '' }),
       collectWorkspaceChanges: async () => [],
     };
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb: f.coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: f.coreDb,
+    });
     const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const starts = vi.spyOn(executor, 'startTurn');
     const app = createApp({

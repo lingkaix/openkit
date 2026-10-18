@@ -131,7 +131,7 @@ it('binds the actual Administration prompt and ordered tools before model access
         coreDb,
         environmentToolsForTurn: () =>
           ['list', 'status', 'prepare', 'recover'].map((operation) => ({
-            name: `worker_environment.${operation}`,
+            name: `worker-environment.${operation}`,
             description: 'PRIVATE_TOOL_DESCRIPTION',
             inputSchema: { type: 'object', properties: {}, additionalProperties: false },
             execute: async () => ({ content: [] }),
@@ -181,12 +181,12 @@ it('binds the actual Administration prompt and ordered tools before model access
       'administration_configuration_read',
       'administration_schema_read',
       'administration_configuration_propose',
-      'administration_configuration_apply',
-      'worker_environment_list',
-      'worker_environment_status',
-      'worker_environment_prepare',
-      'worker_environment_recover',
-      'nanohost_runtime_target',
+      'administration_configuration_dispatch',
+      'worker-environment_list',
+      'worker-environment_status',
+      'worker-environment_prepare',
+      'worker-environment_recover',
+      'nanohost_runtime-target',
     ];
     expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual(providerToolNames);
     expect(rowsAtModelAccess).toHaveLength(1);

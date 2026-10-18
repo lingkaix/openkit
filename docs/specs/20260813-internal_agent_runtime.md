@@ -6,6 +6,8 @@ date: 2026-08-13
 ---
 # Internal Agent Runtime
 
+Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
+
 ## Owns
 
 This specification owns the role-agnostic bounded runtime used by every NanoCore-internal model-using role: its assembled input, transient loop algorithm, emergency fuses, typed exits, Tool execution boundary, transport-only streaming projection, prompt assembly contract, restart posture, and internal-role execution profile.
@@ -150,7 +152,7 @@ The runtime Tool contract is deliberately small:
 type JsonSchema = Record<string, unknown>;
 
 interface AgentTool<TInput = unknown> {
-  name: string;
+  name: string; // Canonical semantic ID; the provider seam derives its model spelling.
   description: string;
   inputSchema: JsonSchema;
   execute(input: TInput, context: ToolExecutionContext): Promise<AgentToolResult>;
@@ -174,7 +176,7 @@ interface AgentToolResult {
 
 interface AgentToolCall {
   callId: string;
-  name: string;
+  name: string; // Canonical semantic ID; the provider seam derives its model spelling.
   arguments: unknown;
 }
 

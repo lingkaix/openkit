@@ -341,7 +341,7 @@ describe('live Provider readiness composition', () => {
             jsonrpc: '2.0',
             id: 1,
             method: 'tools/call',
-            params: { name: 'call', arguments: { operation: 'turn.start', input } },
+            params: { name: 'openkit_call', arguments: { operation: 'turn.start', input } },
           }),
         });
         expect(response.status, await response.clone().text()).toBe(200);

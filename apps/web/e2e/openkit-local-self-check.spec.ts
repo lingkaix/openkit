@@ -228,7 +228,22 @@ async function createMaterial(
   await page.getByRole('button', { name: /^Create Material$/ }).click();
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   await page.getByLabel(title).fill(content);
+  const materialId = new URL(page.url()).pathname.split('/').at(-1);
+  const saveResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'POST' ||
+      new URL(response.url()).pathname !== '/api/app/operations/material.revision-save'
+    )
+      return false;
+    const input = response.request().postDataJSON();
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+      input.materialId === materialId
+    );
+  });
   await page.getByRole('button', { name: /^Save$/ }).click();
+  const saved = await saveResponse;
+  expect(saved.ok(), `Material save response ${saved.status()}: ${await saved.text()}`).toBe(true);
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
 
   const response = await getJson<{ materials: MaterialSummary[] }>(
@@ -603,7 +618,24 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   expect(materialAfterApply.currentRevisionId).toBe(appliedRevision.revisionId);
   const revisionThreeContent = '# Release note\n\nA newer user revision after proposal one.';
   await materialEditor.fill(revisionThreeContent);
+  const revisionThreeSaveResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'POST' ||
+      new URL(response.url()).pathname !== '/api/app/operations/material.revision-save'
+    )
+      return false;
+    const input = response.request().postDataJSON();
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+      input.materialId === primary.materialId
+    );
+  });
   await page.getByRole('button', { name: /^Save$/ }).click();
+  const revisionThreeSave = await revisionThreeSaveResponse;
+  expect(
+    revisionThreeSave.ok(),
+    `Revision three save response ${revisionThreeSave.status()}: ${await revisionThreeSave.text()}`
+  ).toBe(true);
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
   const revisionsAfterUserSave = await materialRevisions(primary.materialId);
   expect(revisionsAfterUserSave).toHaveLength(4);
@@ -771,20 +803,24 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     { artifactId: proposals[0]!.id, artifactVersion: proposals[0]!.version },
   ]);
   const nextTurn = SubmitConversationResponseSchema.parse(await nextResponse.json());
-  const nextItems = (
-    await getJson<{
-      items: Array<{
-        type: string;
-        turnId: string;
-        artifactId?: string;
-        artifactVersion?: number;
-        text?: string;
-      }>;
-    }>('/api/app/operations/thread.items', {
-      workspaceId: nextTurn.receivingWorkspaceId,
-      threadId: nextTurn.receivingThreadId,
-    })
-  ).items.filter((item) => item.turnId === nextTurn.turn.id);
+  let nextItems: Array<{
+    id: string;
+    type: string;
+    turnId: string;
+    artifactId?: string;
+    artifactVersion?: number;
+    text?: string;
+  }> = [];
+  // Acceptance precedes asynchronous source snapshot preparation and Worker request publication.
+  await expect(async () => {
+    nextItems = (
+      await getJson<{ items: typeof nextItems }>('/api/app/operations/thread.items', {
+        workspaceId: nextTurn.receivingWorkspaceId,
+        threadId: nextTurn.receivingThreadId,
+      })
+    ).items.filter((item) => item.turnId === nextTurn.turn.id);
+    expect(nextItems.find((item) => item.type === 'user-message')?.text).toBeTruthy();
+  }).toPass({ timeout: 15_000 });
   expect(nextItems).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -800,8 +836,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     objective: string;
     resources: Array<{ reference: string }>;
   };
-  expect(delegated.objective).toContain(proposals[0]!.contentDigest);
-  expect(delegated.objective).toContain(proposalTexts[0]!);
+  // S39 keeps raw intent separate from the exact original and bounded source representation.
+  expect(delegated.objective).toBe('Continue from this exact candidate.');
   expect(delegated.resources).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -818,6 +854,56 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     }
   );
   expect(deliveredTurn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+  const [{ readFile }, { join }, { parseWorkerContextPackageTrace }] = await Promise.all([
+    import('node:fs/promises'),
+    import('node:path'),
+    import('../../nanocore/dist/context/worker-context-package.js'),
+  ]);
+  const turnRoot = join(
+    stack.dataRoot,
+    'workspaces',
+    nextTurn.receivingWorkspaceId,
+    'threads',
+    nextTurn.receivingThreadId,
+    'turns',
+    nextTurn.turn.id
+  );
+  const trace = parseWorkerContextPackageTrace(
+    JSON.parse(await readFile(join(turnRoot, 'context-package.json'), 'utf8'))
+  );
+  expect(trace).toMatchObject({
+    workspaceId: nextTurn.receivingWorkspaceId,
+    threadId: nextTurn.receivingThreadId,
+    turnId: nextTurn.turn.id,
+    contextPackageDigest: deliveredTurn.contextPackageDigest,
+    workerRequestItemId: workerRequest!.id,
+    workerRequestDigest: `sha256:${createHash('sha256').update(workerRequest!.text!).digest('hex')}`,
+  });
+  const selectedSource = trace.sourceFiles?.find(
+    (entry) =>
+      entry.source.kind === 'artifact' && entry.source.reference.objectId === proposals[0]!.id
+  );
+  expect(selectedSource).toMatchObject({
+    source: {
+      kind: 'artifact',
+      reference: {
+        scopeId: `artifact/workspace/${nextTurn.receivingWorkspaceId}`,
+        objectId: proposals[0]!.id,
+      },
+      artifactVersion: proposals[0]!.version,
+    },
+    originalDigest: proposals[0]!.contentDigest,
+    byteLength: Buffer.byteLength(proposalTexts[0]!, 'utf8'),
+  });
+  const packageRoot = join(turnRoot, 'context-package');
+  expect(await readFile(join(packageRoot, selectedSource!.originalSnapshotPath))).toEqual(
+    Buffer.from(proposalTexts[0]!, 'utf8')
+  );
+  for (const file of trace.fileInventory) {
+    const bytes = await readFile(join(packageRoot, file.path));
+    expect(bytes.byteLength).toBe(file.byteLength);
+    expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(file.contentDigest);
+  }
   expect(browserRuntimeErrors, 'Plane 1 browser flow must not raise runtime errors').toEqual([]);
   await expect(page.locator('body')).not.toContainText('sk-openkit');
 });

@@ -38,7 +38,7 @@ The closed provider-subscription identities admit only `openai-codex` and `xai`,
 
 `@openkit/config-schema/native-environment` exposes the shared authored, resolved, and literal-value schemas through the browser-safe Worker native-environment entry. These three exports are absent from the config package root. `@openkit/config-schema/workspace-export` is the browser-safe entry for export format schemas and constants. App API consumers use these narrow entries under the [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md).
 
-Worker control has one canonical shape: the URL-free sandbox-local Integration binding with a non-secret token reference, required Event and Item transcript sinks, and exact `worker-control` backend capability. Unknown additive transcript keys are stripped, while known transcript fields retain closed value domains. Legacy direct-NanoCore, sidecar, relay, stdio, and disabled-control shapes are rejected. Worker capabilities use a separate token reference and enable only `mcp.list_servers`, `mcp.list_tools`, and `mcp.call_tool` when selected MCP supply is non-empty; packages without selected MCP supply remain explicitly disabled.
+Worker control has one canonical shape: the URL-free sandbox-local Integration binding with a non-secret token reference, required Event and Item transcript sinks, and exact `worker-control` backend capability. Unknown additive transcript keys are stripped, while known transcript fields retain closed value domains. Legacy direct-NanoCore, sidecar, relay, stdio, and disabled-control shapes are rejected. Worker capabilities use a separate token reference and enable only `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool` when selected MCP supply is non-empty; packages without selected MCP supply remain explicitly disabled.
 
 Relay-required Agent Environment Packages use the `trusted-worker-inference-relay` capability. The version 4 package requires one OpenAI-compatible NanoCore Gateway route, placeholder credential visibility, and no `providers` section, `workerBaseUrl`, native URL, direct inference credential, or provider-backed MCP supply. Runtime credential declarations remain secret-free references in the package and are materialized only by the backend effect path.
 
@@ -65,6 +65,8 @@ AEP `observability.captureCoverage` uses the shared Worker protocol schema as a 
 The session workspace planner declares `turn-output` for every package at `/openkit/sessions/<agent-session-id>/outputs`, using the existing Worker protocol session namespace. Generated outputs are Turn-scoped and remain separate from retained worktrees and authored sources. Run `src/session-workspace.test.ts` with `--maxWorkers=2`; [AgentSession Static Workspace Materialization](../../docs/specs/20260704-session_static_workspace_materialization.md) owns the namespace and hygiene rules.
 
 The NanoHost deployment schema admits optional positive `maxActiveTurnsPerSandbox`; the scheduling owner's current default is 20 when omitted. This schema field and its exported default do not themselves grant execution or prove adapter capacity. The native journal migration widens retained capacity constraints without raising retained declarations. NanoCore runtime consumption is not yet complete, so the schema addition alone does not remove its current single-active-Turn admission limit.
+
+`knowledgeMaintenance.enabled` delegates ordinary notebook publication. The separate `knowledgeMaintenance.schedule.enabled` selects fixed daily Knowledge Manager execution and defaults to `false`; the omitted schedule object also resolves to disabled. Server, User and Workspace settings use this same shape with independent authority. Scheduling grants no publication delegation or source access.
 
 ## Commands
 
@@ -102,6 +104,7 @@ Authored Gateway, Provider, model-catalog, internal-role, Agent image, logical-m
 
 Read-only REST access grants may explicitly declare boolean `allowEncodedSlash`; omission stays absent and means strict parsing. Rules, non-REST and read-write grants reject the field, and composed grants must agree at one canonical host/port. Authored configuration and retained AEP validation share this boundary; generated editor schemas expose the qualifying closed shape. See [Agent Manifest And AEP Resolution](../../docs/specs/20260703-agent_manifest_aep_resolution.md).
 
+`OpenKitChannelsConfigSchema` validates the optional startup-owned Discord application identity, public signature key, and environment credential reference. A configured Discord adapter requires an HTTPS `server.publicBaseUrl` for App link-back. Unknown channel authority fields fail closed. No credential value is admitted by this shape.
 
 User, Workspace and Server settings may declare knowledgeMaintenance with an enabled boolean and an exact unique reviewRequiredPageIds list. Omission means disabled with an empty list. Page IDs are bundle-relative concepts, never filesystem paths. The schema grants no delegation or Review authority; current native admission owns publication and observes revocation before an effect.
 

@@ -7,15 +7,21 @@ import {
 import {
   type Item,
   ItemSchema,
+  parseReferenceScope,
   type RetrievalTraceReference,
+  RetrievalTraceReferenceSchema,
   type ThreadSchema,
   TurnSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import {
+  internalContextEvidenceEntries,
+  mapInternalContextEvidenceReferences,
+} from '../internal-agents/internal-context-evidence.js';
+import {
   internalContextDigest,
   internalContextHistoryBody,
-  internalContextItems,
+  internalContextRange,
   internalContextSourceDigest,
 } from '../internal-agents/rolling-context.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
@@ -36,6 +42,7 @@ interface AssistantHistoryImportContext {
   readonly itemLineage: ReadonlyMap<string, Item>;
   readonly itemIds: ReadonlyMap<string, string>;
   readonly threadIds: ReadonlyMap<string, string>;
+  readonly turnIds: ReadonlyMap<string, string>;
 }
 
 /** Canonical owner projections at the import stage concerned. */
@@ -141,12 +148,13 @@ export function importAssistantHistoryTrace(input: {
   let retrievalParameters = sourceTrace.retrievalParameters;
   if (retrievalParameters.mode === 'range') {
     const sourceRange = retrievalParameters.range;
-    const sourceItems = importedContextRange(
+    const { items: sourceItems, strategy } = importedContextRange(
       sourceTurnRecords,
       sourceRange.threadId,
       sourceTrace.queryContext.turnId,
       sourceRange.firstItemId,
-      sourceRange.lastItemId
+      sourceRange.lastItemId,
+      sourceRange.sourceDigest
     );
     if (
       sourceRange.sourceDigest !==
@@ -155,19 +163,22 @@ export function importAssistantHistoryTrace(input: {
           getTurnById: (id) =>
             requiredMapValue(new Map(sourceTurnRecords.map((turn) => [turn.id, turn])), id, 'Turn'),
         },
-        sourceItems
+        sourceItems,
+        strategy
       )
     )
       throw new Error('Portable exact history range is contradictory.');
     const rangeThreadId = requiredMapValue(context.threadIds, sourceRange.threadId, 'Thread');
     const firstItemId = requiredMapValue(context.itemIds, sourceRange.firstItemId, 'Item');
     const lastItemId = requiredMapValue(context.itemIds, sourceRange.lastItemId, 'Item');
-    const targetRange = importedContextRange(
+    const { items: targetRange } = importedContextRange(
       targetCanonical.turns,
       rangeThreadId,
       targetTurnId!,
       firstItemId,
-      lastItemId
+      lastItemId,
+      sourceRange.sourceDigest,
+      strategy
     );
     retrievalParameters = {
       ...retrievalParameters,
@@ -184,7 +195,8 @@ export function importAssistantHistoryTrace(input: {
                 'Turn'
               ),
           },
-          targetRange
+          targetRange,
+          strategy
         ),
       },
       ...(retrievalParameters.cursor
@@ -244,19 +256,30 @@ export function reconcileImportedAssistantContext(
         context.report.exportedWorkspaceId
       )
     );
-  const evidenceDigest = (items: readonly Item[], entries: typeof sourceEvidence) => {
-    const turnIds = new Set(items.map((item) => item.turnId));
-    return internalContextDigest({
+  const evidenceDigest = (
+    items: readonly Item[],
+    entries: typeof sourceEvidence,
+    strategy: 'rolling' | 'compaction'
+  ) =>
+    internalContextDigest({
       version: 1,
-      entries: entries
-        .filter(({ trace }) => trace.queryContext.turnId && turnIds.has(trace.queryContext.turnId))
-        .sort(
-          (left, right) =>
-            left.trace.queryContext.turnId!.localeCompare(right.trace.queryContext.turnId!) ||
-            left.reference.objectId.localeCompare(right.reference.objectId)
-        )
-        .map(({ reference, trace }) => ({ reference, trace })),
+      entries: internalContextEvidenceEntries(items, entries, strategy),
     });
+  const compactionTurns = new Set(
+    canonical.turns
+      .filter((turn) =>
+        turn.items.some((item) => item.type === 'context-summary' && item.strategy === 'compaction')
+      )
+      .map((turn) => turn.id)
+  );
+  const remintEvidence = (item: Item) =>
+    compactionTurns.has(item.turnId) ? remintToolEvidence(item, context) : item;
+  canonical = {
+    itemRevisions: canonical.itemRevisions.map(remintEvidence),
+    turns: canonical.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.map(remintEvidence),
+    })),
   };
   const currentItems = new Map(canonical.itemRevisions.map((item) => [item.id, item]));
   // Work Resource import can change a Worker input's owned representation after initial trace reminting.
@@ -273,12 +296,13 @@ export function reconcileImportedAssistantContext(
     let retrievalParameters = trace.retrievalParameters;
     if (retrievalParameters.mode === 'range') {
       const range = retrievalParameters.range;
-      const items = importedContextRange(
+      const { items, strategy } = importedContextRange(
         canonical.turns,
         range.threadId,
         trace.queryContext.turnId,
         range.firstItemId,
-        range.lastItemId
+        range.lastItemId,
+        range.sourceDigest
       );
       retrievalParameters = {
         ...retrievalParameters,
@@ -286,7 +310,8 @@ export function reconcileImportedAssistantContext(
           ...range,
           sourceDigest: internalContextSourceDigest(
             { getTurnById: (id) => requiredMapValue(targetTurnMap, id, 'Turn') },
-            items
+            items,
+            strategy
           ),
         },
       };
@@ -310,21 +335,25 @@ export function reconcileImportedAssistantContext(
     )
     .sort((left, right) => left.sourceRange.itemCount - right.sourceRange.itemCount);
   for (const source of sourceSummaries) {
-    const originals = importedContextRange(
+    const { items: originals } = importedContextRange(
       sourceTurns,
       source.threadId,
       source.turnId,
       source.sourceRange.firstItemId,
-      source.sourceRange.lastItemId
+      source.sourceRange.lastItemId,
+      source.sourceRange.sourceDigest,
+      source.strategy
     );
     if (
       originals.length !== source.sourceRange.itemCount ||
       source.sourceRange.sourceDigest !==
         internalContextSourceDigest(
           { getTurnById: (id) => requiredMapValue(sourceTurnMap, id, 'Turn') },
-          originals
+          originals,
+          source.strategy
         ) ||
-      source.sourceRange.evidenceDigest !== evidenceDigest(originals, sourceEvidence)
+      source.sourceRange.evidenceDigest !==
+        evidenceDigest(originals, sourceEvidence, source.strategy)
     )
       throw new Error('Portable continuation summary source proof is contradictory.');
     const item = requiredMapValue(
@@ -351,12 +380,14 @@ export function reconcileImportedAssistantContext(
       );
       previousSummary = { itemId: previous.id, digest: internalContextDigest(previous) };
     }
-    const range = importedContextRange(
+    const { items: range } = importedContextRange(
       canonical.turns,
       item.threadId,
       item.turnId,
       item.sourceRange.firstItemId,
-      item.sourceRange.lastItemId
+      item.sourceRange.lastItemId,
+      item.sourceRange.sourceDigest,
+      item.strategy
     );
     if (
       range.length !== originals.length ||
@@ -374,9 +405,10 @@ export function reconcileImportedAssistantContext(
           ...item.sourceRange,
           sourceDigest: internalContextSourceDigest(
             { getTurnById: (id) => requiredMapValue(targetTurnMap, id, 'Turn') },
-            range
+            range,
+            item.strategy
           ),
-          evidenceDigest: evidenceDigest(range, targetEvidence),
+          evidenceDigest: evidenceDigest(range, targetEvidence, item.strategy),
         },
         ...(previousSummary ? { previousSummary } : {}),
       })
@@ -389,29 +421,55 @@ export function reconcileImportedAssistantContext(
   return { itemRevisions, turns };
 }
 
+/** Remints generated trace references in structured Tool results; arbitrary text stays unchanged. */
+function remintToolEvidence(item: Item, context: AssistantHistoryImportContext): Item {
+  if (item.type !== 'tool-call' || !item.result || !['completed', 'failed'].includes(item.status))
+    return item;
+  const result = mapInternalContextEvidenceReferences(item.result, (reference) => {
+    const scope = parseReferenceScope(reference.scopeId);
+    if (
+      !scope ||
+      scope.family !== 'retrieval-trace' ||
+      scope.kind !== 'turn' ||
+      scope.workspaceId !== context.report.exportedWorkspaceId
+    )
+      throw new Error('Portable Tool result trace owner is contradictory.');
+    return RetrievalTraceReferenceSchema.parse({
+      scopeId: `retrieval-trace/turn/${context.targetWorkspaceId}/${requiredMapValue(context.threadIds, scope.threadId, 'Thread')}/${requiredMapValue(context.turnIds, scope.turnId, 'Turn')}`,
+      objectId: reference.objectId,
+    });
+  });
+  return result === item.result ? item : { ...item, result };
+}
+
 /** Reconstructs the same exact source range during portable reminting without opening another store. */
 function importedContextRange(
   turns: readonly Turn[],
   threadId: string,
   queryTurnId: string,
   firstItemId: string,
-  lastItemId: string
-): Item[] {
+  lastItemId: string,
+  sourceDigest: string,
+  strategy?: 'rolling' | 'compaction'
+): ReturnType<typeof internalContextRange> {
   const query = turns.find((turn) => turn.id === queryTurnId);
   if (!query) throw new Error('Portable exact history query Turn is missing.');
-  const history = internalContextItems(
+  return internalContextRange(
     {
       listThreadTurns: (workspaceId, selectedThreadId) =>
         turns.filter(
           (turn) => turn.workspaceId === workspaceId && turn.threadId === selectedThreadId
         ),
+      getTurnById: (id) => {
+        const turn = turns.find((turn) => turn.id === id);
+        if (!turn) throw new Error('Portable exact history source Turn is missing.');
+        return turn;
+      },
     },
-    { ...query, threadId }
+    query,
+    { threadId, firstItemId, lastItemId, sourceDigest },
+    strategy
   );
-  const first = history.findIndex((item) => item.id === firstItemId);
-  const last = history.findIndex((item) => item.id === lastItemId);
-  if (first < 0 || last < first) throw new Error('Portable exact history range is missing.');
-  return history.slice(first, last + 1);
 }
 
 /** Resolves only references admitted by the existing import identity maps. */

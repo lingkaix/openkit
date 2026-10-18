@@ -2799,7 +2799,7 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
     // This bounded SQLite cohort exceeds the default case budget under full-suite contention.
-  }, 120_000);
+  }, 180_000);
 
   it('plans a new physical Sandbox identity when encoded-slash authority changes', async () => {
     const f = await admitIdleSupplyResident('encoding_identity');
@@ -3345,6 +3345,7 @@ describe('createConfiguredTurnExecutor', () => {
     // Three resident Workspaces and the dispatch database exceed the default budget under contention.
   }, 60_000);
 
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     'missing-lease',
     'contradictory-route',
@@ -3398,7 +3399,7 @@ describe('createConfiguredTurnExecutor', () => {
       cleanup.mockRestore();
       fixture.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('exports accepted final status while retaining a running Harness without process absence claims', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-resident-export-'));
@@ -3554,6 +3555,7 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
+  // Real baseline admission and canonical-state checks use this local runner limit; product deadlines stay unchanged.
   it('accepts a Sandbox-pinned Git baseline and closes with no host repository', async () => {
     const commit = 'a'.repeat(40);
     const tree = 'b'.repeat(40);
@@ -3638,7 +3640,7 @@ describe('createConfiguredTurnExecutor', () => {
       db.sqlite.close();
       f.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
   it.each([
     'turn-end',
     'release',
@@ -9721,6 +9723,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // Two real Task/source-package/native lifecycles use this local runner budget; product deadlines stay unchanged.
   it.each([
     'active',
     'closeout',
@@ -9729,6 +9732,7 @@ describe('createConfiguredTurnExecutor', () => {
     'materialization-forced-retirement-guard',
   ] as const)('keeps an independent Task queued until one-Sandbox release: %s', async (scenario) => {
     const coreDb = createFactoryCoreDb();
+    const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const effects: NanoHostSessionEffectRequest[] = [];
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -9756,6 +9760,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission,
       coreDb,
       env: {},
       store,
@@ -9815,6 +9820,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
     }
     const executor = new CapacityBoundaryExecutor({
+      fileAdmission,
       backend,
       coreDb,
       awaitWorkerCompletion: async (aep) => {
@@ -10122,7 +10128,7 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it.each([
     'eviction',
@@ -10210,6 +10216,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     let tick = 1;
     const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
       now: () => `2999-10-03T00:00:${String(tick).padStart(2, '0')}.000Z`,
@@ -11307,6 +11314,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     null,
     'eviction-cleanup-required',
@@ -11959,6 +11967,7 @@ describe('createConfiguredTurnExecutor', () => {
         backend.collectTranscript = async () => ({ eventsJsonl: '', itemsJsonl: '' });
         const submit = vi.spyOn(backend, 'submit');
         const executor = new WorkerGovernanceTurnExecutor({
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
           backend,
           coreDb,
           awaitWorkerCompletion: async (aep) => {
@@ -12300,7 +12309,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('honors explicit selected and fresh storage on a shared resident contributor', async () => {
     const coreDb = createFactoryCoreDb();

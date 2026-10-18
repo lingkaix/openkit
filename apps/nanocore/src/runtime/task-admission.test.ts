@@ -13,6 +13,7 @@ import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -106,7 +107,10 @@ it.each([
       const manifest = createTestAgentSetup().manifest;
       admitTestNativeEnvironment(coreDb, manifest);
       recordTestNativeRuntimeTarget(coreDb);
-      const turnExecutor = new SimulatedTurnExecutor({ coreDb });
+      const turnExecutor = new SimulatedTurnExecutor({
+        coreDb,
+        fileAdmission: new FileStorageAdmission(root, () => 1_000_000_000n),
+      });
       let result: ReturnType<FsStore['createTurn']> | undefined;
       // The interrupted variant models an admitted product interruption with no collected AEP;
       // its checkpoint must remain inspectable. Successful closeout uses the complete real simulator.
@@ -320,11 +324,22 @@ it.each([
       services
     );
     const connections: ReturnType<typeof openWorkspaceDb>[] = [];
+    const connectionClosures: Promise<void>[] = [];
     const taskTool = createCoordinatorTaskTool({
       store,
       coreDb,
       openWorkspace: (id) => {
         const connection = openWorkspaceDb(root, id);
+        connectionClosures.push(
+          new Promise<void>((resolve) => {
+            const close = connection.sqlite.close.bind(connection.sqlite);
+            vi.spyOn(connection.sqlite, 'close').mockImplementation(() => {
+              const result = close();
+              resolve();
+              return result;
+            });
+          })
+        );
         connections.push(connection);
         return connection;
       },
@@ -334,6 +349,7 @@ it.each([
       coordinatorTurnId: coordinator.id,
       startWorker,
     });
+    expect(taskTool.name).toBe('goal.task.dispatch');
     const request = createStructuredWorkerDelegationRequest({
       objective: 'Review the schema',
       acceptanceCriteria: ['A review exists'],
@@ -415,9 +431,9 @@ it.each([
         )
       ).toBe(false);
     }
-    await vi.waitFor(() =>
-      expect(connections.every((connection) => !connection.sqlite.open)).toBe(true)
-    );
+    // Admission returns before detached Worker closeout; join its real connection release.
+    await Promise.all(connectionClosures);
+    expect(connections.every((connection) => !connection.sqlite.open)).toBe(true);
     linked = readGoalView(store, db, goal.goalId);
     if (
       outcome === 'refused' ||

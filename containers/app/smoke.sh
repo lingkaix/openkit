@@ -40,7 +40,7 @@ mkdirSync(sources);
 const binary = '/usr/local/bin/retrieval-kernel';
 assert.equal(readFileSync(binary).readUInt16LE(18), process.arch === 'arm64' ? 183 : 62);
 function run(args, frames = []) {
-  const result = spawnSync(binary, args, { cwd: sources, input: frames.map(frame => JSON.stringify(frame)).join('\n') + '\n', encoding: 'utf8', timeout: 60000, maxBuffer: 8 * 1024 * 1024 });
+  const result = spawnSync(binary, args, { cwd: sources, input: frames.length > 0 ? frames.map(frame => JSON.stringify(frame)).join('\n') + '\n' : undefined, encoding: 'utf8', timeout: 60000, maxBuffer: 8 * 1024 * 1024 });
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim().split('\n').map(line => JSON.parse(line));
@@ -59,8 +59,8 @@ try {
   const mcp = run(['mcp'], [
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'image-smoke', version: '1' } } },
     { jsonrpc: '2.0', method: 'notifications/initialized' },
-    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search', arguments: { mode: 'lexical', query: '検索', limit: 20 } } },
-    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'search', arguments: { mode: 'exact', query: 'secret', limit: 20, path: '/' } } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'retrieval_search', arguments: { mode: 'lexical', query: '検索', limit: 20 } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'retrieval_search', arguments: { mode: 'exact', query: 'secret', limit: 20, path: '/' } } },
   ]);
   assert.equal(JSON.parse(mcp[1].result.content[0].text).hits[0].key.id, 'japanese.txt');
   assert.equal(mcp[2].error.code, -32602);

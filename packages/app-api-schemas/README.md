@@ -1,5 +1,9 @@
 # @openkit/app-api-schemas
 
+`src/knowledge-agent.ts` defines `knowledge.ask`, `knowledge.tell` and `knowledge.maintain`. Inputs select the current Workspace and carry no actor, source-scope or model override. Ask returns its separate KM Thread/Turn, scope-qualified citations and uncertainty. Tell and maintenance return the existing Turn/native notebook outcome. NanoCore owns current authority, Provider execution, capability delivery, fixed-base publication and required Review. User Memory and Server maintenance execution are separate joins.
+
+`knowledge.proposal.read` reads the saved candidate inventory or one bounded exact before/after part. Every response repeats the Proposal digest and base/candidate tuple. Its zero-based offset counts Unicode code points in both versions; `nextOffset: null` completes the selected path. A null version is absent, while an empty string is past that version's end. Current native authority and full Source disclosure checks precede every inventory and chunk.
+
 Catalog operation definitions expose immutable Skill version metadata, exact content reads, inventory comparison, removal and reference-gated purge. Version and candidate projections retain producer, source and decision lineage. Default selection and candidate decisions name the expected current digest; pin updates name the expected prior pin. Own-candidate withdrawal uses `workspace.write`, while configuration decisions retain `workspace.configure`. See the [Skill owner](../../docs/specs/20260711-skill_catalog_versioning_pinning.md).
 
 `NanoHostRuntimeTargetStatusResponseSchema` requires `physicalEpoch` as the exact stored 64-character lowercase hexadecimal witness or `null` when no current witness is proved. The configured server-admin `nanohost.runtime-target` read is a stored authenticated observation, not a live host probe; omitted witnesses are invalid. The existing RuntimeTarget owner clears its witness with readiness on connection or authority loss and restart.
@@ -127,7 +131,7 @@ Direct `task.start` accepts optional exact `agentId`. The selector narrows exist
 
 `workspace-archive-history.ts` validates pre-retirement Git push and repository metadata only for archive verification. It defines no public operations, live resource, or execution authority.
 
-`automation-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare nine browser-safe operations and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
+`automation-operations.ts`, `external-trigger-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare eleven browser-safe operation definitions and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
 
 `src/workspace-transfer.ts` defines `workspace.export`, `workspace.import-dry-run`, and `workspace.import`, reusing complete storage response and import request schemas. `operation-definitions.ts` composes the family statically; model schema views retain the existing handle refinements.
 
@@ -169,6 +173,7 @@ The App-update family has four operations, including the content-free deployment
 
 Knowledge derived-index inspection exposes only link, validation and source-reference projections. The Retrieval Kernel owns lexical state; no JSON term/posting read model remains. Governed Knowledge retrieval accepts qualified `pinnedReferences`, narrowing-only `sourceScope` and explicit app-only state inspection. Scored selection responses and immutable `KnowledgeRetrievalTraceSchema` evidence are separate: scores remain local result facts and never enter trace files. Threadless direct User calls return no trace reference. Query-owned evidence uses `retrievalTraceRef`; citations retain the qualified page reference. Current byte revisions do not claim retained notebook commits; `notebookRevision` remains null until the notebook owner is implemented.
 
+`src/channels.ts` defines current-user Discord settings and conditional notification sends. The pairing operation returns a one-use secret and is excluded from MCP. Send commands require the exact previous attempt identity, so a repeated failed retry cannot create another external send. Transport observations remain separate from Core outcomes.
 
 `automation.ts` keeps existing fixed `intervalSeconds` shapes and adds mutually exclusive bounded `monthlyUtc` rules. Create and retained definitions/ranges require exactly one timing shape; paused updates replace one complete shape atomically. `MonthlyUtcScheduleSchema` is the shared day-1-through-28, literal-UTC rule validator, and monthly occurrence snapshots retain that immutable rule. Definition-derived model and public projections retain the same cross-field checks.
 
@@ -206,4 +211,8 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 
 `src/feedback.ts` projects each retained Turn feedback submission with its native actor, submission time, rating and note in ordered `history`. The current rating/note remain available. Submit requests accept no actor or history override. [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md#turn-feedback-attribution-and-history) owns attribution and retention; NanoCore supplies the authenticated actor and durable append.
 
+`assertOperationNames` checks current composed operation and supplied Tool ids for canonical grammar, the 40-character model limit and collisions after additional hyphen folding. Repeated use of the same canonical id is allowed. `operationToolName` replaces dots with underscores and preserves hyphens.
+
 `light-apps.ts` exposes the actual kernel format, admitted definition digest, and nullable explicit catalog source separately. It also declares snapshot inventory and exact-revision rollback payloads. Snapshots identify consistent recovery copies with original format, definition and app/schema revisions, time, cause and content digest. Restoring an older kernel format produces an unavailable app until explicit format upgrade; the response keeps the actual restored marker and revision instead of inferring current compatibility.
+
+`external-trigger.ts` and `external-trigger-operations.ts` declare the scheduled poll event admission input and its ordinary Worker references. The operation accepts only Worker-package credentials. Native invocation binds source scope; model arguments cannot select another schedule or target Thread. `external-trigger.test.ts` checks that boundary without adding event execution states.

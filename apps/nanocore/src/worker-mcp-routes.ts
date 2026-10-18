@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
 import {
@@ -10,6 +11,7 @@ import {
   Server,
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
+import { operationToolName } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import {
@@ -33,11 +35,14 @@ import {
 } from './capability/usage-ledger.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   DISPLAY_PROJECTION_REFRESH_FIELDS,
   type FsStore,
 } from './lib/store.js';
+import type { OperationInvocationDependencies } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -136,6 +141,9 @@ interface WorkerMcpToolCallInput {
 
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
+  readonly automationStore?: OperationInvocationDependencies['automationStore'];
+  readonly turnStartServices?: OperationInvocationDependencies['turnStartServices'];
+  readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
   /** Existing configured-runtime capture; no secondary backend or registry. */
   readonly captureArtifact?: WorkerArtifactCapture;
   /** Shared Data Root capacity owner for live Artifact capture. */
@@ -215,10 +223,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: environmentPackage.scope.triggerActor,
         callId: allocateEntityId('cap'),
-        capabilityId: 'mcp.list_servers',
+        capabilityId: 'mcp.list-servers',
         family: 'mcp',
         itemId: environmentPackage.scope.itemId ?? null,
-        operation: 'mcp.list_servers',
+        operation: 'mcp.list-servers',
         packageSnapshotId: environmentPackage.snapshotId,
         redactionClass: 'metadata-only',
         requestId: null,
@@ -344,7 +352,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               .map((tool) => ({
                 name: tool.name,
                 description:
-                  tool.name === 'work_submit_artifact'
+                  tool.name === 'work_artifact_submit'
                     ? `${tool.description} Eligible roots: ${
                         environmentPackage.workspace.outputs
                           .filter(
@@ -393,7 +401,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               }
               if (
                 workBuiltin &&
-                request.params.name === 'work_request_input' &&
+                request.params.name === 'work_input_request' &&
                 workRequestInputIsSecret(
                   (request.params.arguments ?? {}) as Record<string, unknown>
                 )
@@ -410,7 +418,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               );
               applyScopedMigrations(activeWorkspaceDb);
               requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
-              if (workBuiltin && request.params.name === 'work_request_input') {
+              if (workBuiltin && request.params.name === 'work_input_request') {
                 try {
                   const duplicate = preflightWorkRequestInput(
                     environmentPackage,
@@ -430,10 +438,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               }
 
               const call = startMcpCapabilityCall({
-                capabilityId: `mcp.call_tool.${request.params.name}`,
+                capabilityId: `mcp.call-tool.${request.params.name}`,
                 environmentPackage,
                 itemId: environmentPackage.scope.itemId ?? null,
-                operation: 'mcp.call_tool',
+                operation: 'mcp.call-tool',
                 protocolRequestId: ctx.mcpReq.id,
                 serverId,
                 toolName: request.params.name,
@@ -447,6 +455,48 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       environmentPackage,
                       store: input.store,
                       workspaceDb: activeWorkspaceDb,
+                      knowledgeAgent: input.knowledgeAgent,
+                      automationStore: input.automationStore,
+                      turnStartServices: input.turnStartServices,
+                      knowledgeCallId: call.id,
+                      knowledgePublicationAdmission: (publication) =>
+                        readWorkspaceNotebookAdmission({
+                          store: input.store,
+                          coreDb: input.coreDb!,
+                          workspaceDb: activeWorkspaceDb!,
+                          request: publication,
+                          actor: {
+                            kind: 'user',
+                            id: responsibleUserIdForActor(environmentPackage.scope.triggerActor)!,
+                          },
+                          currentAuthority: () => {
+                            requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+                            requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+                            if (
+                              !currentWorkerLineageWorkspaceAuthority(
+                                input.coreDb!,
+                                {
+                                  ...environmentPackage.scope,
+                                  packageSnapshotId: environmentPackage.snapshotId,
+                                },
+                                'knowledge.write',
+                                true
+                              )
+                            )
+                              throw mcpDeniedError();
+                          },
+                          notebook: new KnowledgeNotebook({
+                            repositoryPath: join(
+                              input.coreDb!.dataRoot,
+                              'workspaces',
+                              environmentPackage.scope.workspaceId,
+                              'knowledge',
+                              'notebook.git'
+                            ),
+                          }),
+                          runtimeConfigManager: { current: input.runtimeConfig },
+                          workspaceMutationAdmission: input.workspaceMutationAdmission,
+                        }),
                       ...(input.fileAdmission ? { fileAdmission: input.fileAdmission } : {}),
                       ...(input.captureArtifact ? { captureArtifact: input.captureArtifact } : {}),
                       signal: toolCancellation.signal,
@@ -454,7 +504,25 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                         requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
                         requireRawOutputCapabilityAdmission(activeWorkspaceDb!, environmentPackage);
                         requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
-                        if (request.params.name === 'work_submit_artifact')
+                        if (
+                          [
+                            operationToolName('knowledge.ask'),
+                            operationToolName('knowledge.tell'),
+                          ].includes(request.params.name) &&
+                          !currentWorkerLineageWorkspaceAuthority(
+                            input.coreDb!,
+                            {
+                              ...environmentPackage.scope,
+                              packageSnapshotId: environmentPackage.snapshotId,
+                            },
+                            request.params.name === operationToolName('knowledge.ask')
+                              ? 'knowledge.read'
+                              : 'knowledge.write',
+                            true
+                          )
+                        )
+                          throw mcpDeniedError();
+                        if (request.params.name === 'work_artifact_submit')
                           requireCurrentArtifactWorkspaceAuthority(
                             input.coreDb!,
                             environmentPackage
@@ -464,12 +532,16 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     request.params.name,
                     (request.params.arguments ?? {}) as Record<string, unknown>
                   );
+                  const delivered = mcp.projectCallToolResult(result, undefined);
                   finishCapabilityCall({
                     callId: call.id,
                     status: 'succeeded',
                     workspaceDb: activeWorkspaceDb,
+                    ...(request.params.name === operationToolName('knowledge.ask')
+                      ? { deliveredKnowledgeAnswer: JSON.stringify(delivered) }
+                      : {}),
                   });
-                  return mcp.projectCallToolResult(result, undefined);
+                  return delivered;
                 }
                 const result = await dispatchOpenkitGenerativeTool(
                   {
@@ -575,10 +647,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           );
           applyScopedMigrations(activeWorkspaceDb);
           const call = startMcpCapabilityCall({
-            capabilityId: 'mcp.list_tools',
+            capabilityId: 'mcp.list-tools',
             environmentPackage,
             itemId: environmentPackage.scope.itemId ?? null,
-            operation: 'mcp.list_tools',
+            operation: 'mcp.list-tools',
             serverId,
             protocolRequestId: ctx.mcpReq.id,
             workspaceDb: activeWorkspaceDb,
@@ -611,7 +683,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               call,
               environmentPackage,
               input,
-              operation: 'mcp.list_tools',
+              operation: 'mcp.list-tools',
               resolved,
               selected,
               serverId,
@@ -988,7 +1060,7 @@ export function isAlreadyDecidedWorkerMcpItem(
   const row = workspaceDb.sqlite
     .prepare(
       `SELECT * FROM capability_calls WHERE call_id = ?
-       AND family = 'mcp' AND capability_id = 'mcp.call_tool' AND operation = 'mcp.call_tool'
+       AND family = 'mcp' AND capability_id = 'mcp.call-tool' AND operation = 'mcp.call-tool'
        AND status NOT IN ('queued', 'running')
        AND item_id IS NOT NULL AND provider_ref IS NOT NULL
        AND service_ref LIKE 'mcp-tool:%' AND completed_at IS NOT NULL`
@@ -1048,8 +1120,8 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
              workspace_id
            FROM capability_calls
            WHERE family = 'mcp'
-             AND capability_id = 'mcp.call_tool'
-             AND operation = 'mcp.call_tool'
+             AND capability_id = 'mcp.call-tool'
+             AND operation = 'mcp.call-tool'
              AND status NOT IN ('queued', 'running')
              AND item_id IS NOT NULL
              AND provider_ref IS NOT NULL
@@ -1126,7 +1198,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     mcpRequestName(
       input.environmentPackage,
       input.serverId,
-      'mcp.call_tool',
+      'mcp.call-tool',
       input.protocolRequestId
     )
   );
@@ -1194,10 +1266,10 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   const startCall = (callId?: string) =>
     startMcpCapabilityCall({
       ...(callId ? { callId } : {}),
-      capabilityId: 'mcp.call_tool',
+      capabilityId: 'mcp.call-tool',
       environmentPackage: input.environmentPackage,
       itemId,
-      operation: 'mcp.call_tool',
+      operation: 'mcp.call-tool',
       protocolRequestId: input.protocolRequestId,
       serverId: input.serverId,
       summary: `MCP tool call ${input.serverId}/${input.toolName}.`,
@@ -1237,10 +1309,10 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         !isDeepStrictEqual(replay, {
           agent_id: input.environmentPackage.agent.agentId,
           agent_session_id: input.environmentPackage.scope.agentSessionId,
-          capability_id: 'mcp.call_tool',
+          capability_id: 'mcp.call-tool',
           family: 'mcp',
           item_id: replay.item_id,
-          operation: 'mcp.call_tool',
+          operation: 'mcp.call-tool',
           package_snapshot_id: input.environmentPackage.snapshotId,
           provider_ref: input.serverId,
           service_ref: `mcp-tool:${input.toolName}`,
@@ -1336,7 +1408,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       call,
       environmentPackage: input.environmentPackage,
       input: input.input,
-      operation: 'mcp.call_tool',
+      operation: 'mcp.call-tool',
       resolved: input.resolved,
       selected: input.selected,
       serverId: input.serverId,
@@ -1642,7 +1714,7 @@ async function observeWorkerMcpTools(input: {
   readonly call: StartedCapabilityCall;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly input: RegisterWorkerMcpRoutesInput;
-  readonly operation: 'mcp.list_tools' | 'mcp.call_tool';
+  readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
   readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
   readonly selected: AgentEnvironmentPackage['supply']['mcpServers'][number];
   readonly serverId: string;
@@ -1742,7 +1814,7 @@ async function observeWorkerMcpTools(input: {
       409
     );
   }
-  if (input.operation === 'mcp.call_tool') {
+  if (input.operation === 'mcp.call-tool') {
     stampCapabilityCallSchemaSnapshot({
       callId: input.call.id,
       schemaSnapshotId: snapshotId,
@@ -1778,7 +1850,7 @@ export async function resolveWorkerMcpCredentials(input: {
     RegisterWorkerMcpRoutesInput,
     'coreDb' | 'workerMcpGateway' | 'vaultUnlockState'
   > & { readonly vaultBackend?: () => import('./vault/vault-backend.js').VaultBackend };
-  readonly operation: 'mcp.list_tools' | 'mcp.call_tool';
+  readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
   readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
   readonly workspaceDb: WorkspaceDb;
 }): Promise<{
@@ -1930,7 +2002,7 @@ export function assertCurrentMcpVaultAuthority(
       };
       readonly agent: { readonly agentId: string };
     };
-    readonly operation: 'mcp.list_tools' | 'mcp.call_tool';
+    readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
     readonly resolved?: { readonly scope?: 'server' | undefined };
   },
   grant: VaultGrantRecord | null,
@@ -1989,7 +2061,7 @@ function assertCurrentMcpVaultBindings(
     assertCurrentMcpVaultAuthority(
       {
         environmentPackage: input.environmentPackage,
-        operation: 'mcp.call_tool',
+        operation: 'mcp.call-tool',
         resolved: input.resolved,
       },
       grant,

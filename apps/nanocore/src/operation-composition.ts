@@ -19,11 +19,13 @@ import {
   prepareCatalogSkillDecision,
 } from './catalog/catalog-operations.js';
 import { retainedWorkspaceSkillReferences } from './catalog/skill-retention.js';
+import { type ChannelServices, createChannelOperationImplementations } from './channel-services.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
 import { createTaskConversationOperationImplementations } from './conversation-operation-implementations.js';
 import { createDiagnosticsOperationImplementations } from './diagnostics/diagnostics-operations.js';
+import { createExternalTriggerOperationImplementations } from './external-trigger-operations.js';
 import {
   createGenerativeUiOperationImplementations,
   createRemainingKernelOperationImplementations,
@@ -36,6 +38,7 @@ import {
 } from './internal-agents/assistant-skill-resources.js';
 import type { ToolExecutionContext } from './internal-agents/internal-agent-loop.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
+import { createKnowledgeProposalPreviewOperationImplementations } from './knowledge/notebook-proposal-preview.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
@@ -57,6 +60,7 @@ import { createSchedulerAdmissionOperationImplementations } from './runtime/sche
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
+import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createWorkspaceTransferOperationImplementations } from './storage/workspace-transfer-operations.js';
@@ -73,7 +77,22 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
+  /** App-owned capacity admission, shared by Artifact, ZIP and Workspace file transfers. */
+  readonly fileAdmission?: FileStorageAdmission;
+  /** Bounded Knowledge Manager role supplied by application assembly. */
+  readonly knowledgeAgent?:
+    | {
+        readonly ask: (
+          input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        readonly maintain: (
+          input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
+      }
+    | undefined;
   readonly coreDb: CoreDb | undefined;
+  /** Shared deployment-local channel and notification owners. */
+  readonly channelServices?: ChannelServices;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
   /** Existing deployment configuration family services. */
@@ -148,14 +167,13 @@ export interface OperationInvocationDependencies {
     Partial<OpenKitNanoHostConfig>;
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
-  /** Shared canonical capacity owner used by disposable ZIP extraction. */
-  readonly fileAdmission?: import('./storage/artifacts/file-admission.js').FileStorageAdmission;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
 }
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
     createCallerOperationImplementations(dependencies),
+    createChannelOperationImplementations(dependencies.channelServices),
     createMaterialOperationImplementations({
       coreDb: dependencies.coreDb,
       store: dependencies.store!,
@@ -203,6 +221,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       observation: dependencies,
     }),
     createAutomationOperationImplementations(dependencies),
+    createExternalTriggerOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),
     createWorkspaceSyncOperationImplementations({
@@ -222,6 +241,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),

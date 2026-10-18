@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Using OpenKit
 
-Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP guide, search, describe and call to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
+Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP `openkit_guide`, `openkit_search`, `openkit_describe` and `openkit_call` to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
 
 Select the intended Workspace and inspect the data sources selected for the task, Agent and model before a source task. Quick conversation is for short assistance; use a Worker task for bounded execution and Goal Mode for planned work requiring coordination. In the current Web composer, the Worker target may be presented as **New Shard + Worker**, which creates a linked execution Thread. Follow that receiving Thread rather than treating submission as completion.
 
@@ -118,6 +118,18 @@ The responsible user or an eligible administrator can inspect the complete captu
 
 The panel labels requested terms, actual grant, deciding actor, claim/disposition and decision delivery separately. After an uncertain result, refresh requests and inspect current grant inventory and Audit before another effect. Narrowing creates a replacement grant and requires an explicit binding update. Plans, successful backend resolution, completed delivery receipts and completed upstream work prove different facts. See [the credential-use procedure](nanocore-operations.en.md#request-and-review-credential-use) for the same App API, remote MCP and administrator CLI operations.
 
+## Use Discord Attention
+
+Open **Settings → Channels**. If the deployment has Discord configured, select **Pair Discord account**. Send the displayed one-use command in a private direct message to the configured bot. The challenge expires shortly. Select **Refresh** to confirm the account binding. Pairing permits attention links to your own direct messages; it grants no Workspace access.
+
+Attention messages contain App links only. Open the authenticated link to inspect the exact request in its Thread. The notification does not prove that anyone read or decided the request. Email carries digest or attention links only; a Discord connection does not mean Email, Slack, or Signal is implemented.
+
+When Discord is configured and your account is paired, each notification card in **Settings → Channels** shows the exact inspection command. Copy `/openkit inspect workspace:<id> thread:<id> request:<id>` from that card into a private direct message to the configured bot. For a supported request, read the complete current effect or non-secret questions that the bot returns. Copy the returned disclosure value into `/openkit deny` or `/openkit answer`. Supply the exact answer map for a non-secret question. The channel checks current responsibility, source access, audience, and request identity again. Approval grants and secret questions return to the App. If the exact disclosure is too large, use the App.
+
+Use **Revoke Discord binding** to prevent later channel responses and sends. Rebinding requires a new challenge. Pairing never retains an administrator credential. A revoked account cannot reuse an earlier disclosure.
+
+The delivery list distinguishes **Queued**, **Sending**, **Sent**, **Not sent**, and **Delivery unknown**. Retry is available only after a definite no-send result and uses that exact attempt. An unknown result can mean the message arrived. Inspect the request before another action; the system does not automatically resend or infer a Core outcome. A channel response that stays unknown also requires Core inspection before a new attempt.
+
 ## Knowledge Guidance
 
 Load this reference for knowledge sources, observations, claims, conflicts, retrieval, bounded context preparation, proposals, repair, or knowledge health.
@@ -138,7 +150,11 @@ Discover `knowledge.notebook.history`, `knowledge.notebook.diff` and `knowledge.
 
 Present knowledge proposals and conflicts to the user with their evidence and scope. Resolve or promote them only through an exposed operation and explicit user direction when that decision changes shared knowledge.
 
-A retrieved page is not automatically a sufficient answer. The Knowledge Manager answer operation checks distinct query-term coverage and can return `insufficient-evidence` even when retrieval found a page. Assistant Chat then uses its selected model; explicit Knowledge Manager calls retain the insufficient-evidence result.
+Read `knowledge.proposal.read` before accepting a saved Proposal. First read its changed paths, then request each path and follow `nextOffset` until it is null. Offsets count Unicode code points. Retain the returned Proposal digest, base and candidate commits for the human decision. Every part must match that tuple; a stale or unavailable preview needs inspection before another decision. Web presents the same complete diff before enabling acceptance.
+
+A retrieved page is not automatically a sufficient answer. `knowledge.ask` runs the configured Knowledge Manager model with governed retrieval and page reads. It returns scope-qualified citations and uncertainty, with its own Thread, Turn and usage. Workspace work may also read Server Knowledge when the current Server owner admits the actor. User Memory does not enter shared work. The existing `knowledge.answer` operation uses the same agent path.
+
+Use `openkit ops describe knowledge.ask` and `openkit ops call knowledge.ask --input -` for a one-shot question. Supply `workspaceId` and `question` in the JSON input. Use `knowledge.tell` for explicit information and Sources, or `knowledge.maintain` for an `instruction` with optional `pageIds` and `sourceIds`. Describe each operation first. A tell grants no publication authority: read its native outcome, and review the exact candidate when required. Retain the request identity for replay; use a new request only for new work. The daily Workspace switch defaults off and is separate from publication delegation. Server and User maintenance execution remain separate pending joins.
 
 Use retrieval or bounded context preparation to obtain scoped knowledge evidence. Worker delivery is owned by Task Mode and its governed Context Package; do not create or materialize a second standalone Knowledge package. Do not bulk-load the knowledge store when a scoped query is sufficient, and do not treat retrieved context as authorization to mutate another record or external system.
 
@@ -355,3 +371,11 @@ Source, Git, evidence and backup bytes remain retained under their existing rule
 To retain an exact literal document for later personal Knowledge work, use `memory.source.register` with `kind: document`, a title and the text. The Source belongs to your authenticated User and remains separate from the Memory notebook. Use `memory.source.list` and `memory.source.read` to inspect it. The retained text and digest are immutable; a retry with the same request id returns the same Source, while changed input conflicts. This operation supplies no conversation, URL or file provenance, creates no saved Memory page or candidate, and starts no model or automatic capture.
 
 To cite that Source in an explicitly authored page, put `source:<sourceId>` in its OKF `source_refs` list. You can also use `source:<sourceId>@<contentDigest>` to require the returned exact digest. The returned `contentDigest` includes `sha256:`; the pinned form is `source:ks_<uuid>@sha256:<64-hex-digest>`. Both forms require a currently admitted Source in your own registry; a raw Source id without `source:` is not a citation. These citations do not request generation or a Source-backed Proposal/Review. Retaining a Source does not enable automatic recall or internal semantic maintenance. Inspection of another User's Source collection remains unjoined.
+
+### External Events Through Scheduled Polls
+
+Use a bounded poll Skill on an existing recurring schedule to read a source through its admitted MCP tools. Give each source event a stable eventKey. The schedule already scopes that key; if one poll reads several sources, include the source name in the key. The live scheduled Worker calls automation.event-admit with that key and an explicit case brief. This is a Worker Tool operation; a human operator must not invoke it as a substitute for polling.
+
+Each new event gets its own Workspace-visible Worker Thread, conversation and storage. Repeated observation returns the original queue and Turn references and does not launch another case. The poll Turn is lineage only. Each case keeps the ordinary Worker Policy and captured human effect approvals; event admission grants no send, offer, Goal creation or Plan approval. Imported history is inert.
+
+Inspect an unknown, failed or incomplete accepted result through the existing poll Items, queue and Turn views. Do not choose a new key to relaunch that accepted event or reconstruct its history. If damaged accepted work blocks a queue entry, the existing queue cancel action releases it. Use the existing pause or delete controls to stop future polling; they do not undo accepted case work or an external effect. Push subscriptions and a separate event retry or recovery engine are outside this capability.

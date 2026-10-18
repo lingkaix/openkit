@@ -47,6 +47,7 @@ const NON_APP_API_ROUTE_PATTERNS = [
   /^\/api\/worker-control(?:\/|$)/,
   /^\/api\/worker-inference(?:\/|$)/,
   /^\/api\/worker-capabilities(?:\/|$)/,
+  /^\/api\/channels\/discord\/interactions$/,
   /^\/api\/nanohost\/transport\/session\/admit$/,
   /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|storage\.(?:inspect|purge)|bridge\.(?:open|close)|image\.(?:acquire|build|inspect)|file\.export|reference\.import|workspace\.collect)(?:\/result)?$/,
   /^\/api\/workspaces(?:\/|$)/,
@@ -1669,6 +1670,15 @@ describe('app api openapi projection', () => {
     expect(duplicateLiveOperations).toEqual([]);
     expect(staleExclusions).toEqual([]);
     expect(projectedLiveOperations).toEqual(documentedOperations);
+    // Hono records the body limit and handler separately for this signed ingress.
+    expect([
+      ...new Set(
+        app.routes
+          .filter(({ path }) => path === '/api/channels/discord/interactions')
+          .map(({ method, path }) => `${method} ${path}`)
+      ),
+    ]).toEqual(['POST /api/channels/discord/interactions']);
+    expect(document.paths).not.toHaveProperty('/api/channels/discord/interactions');
     expect(app.routes.map(({ method, path }) => `${method} ${path}`)).not.toContain(
       'POST /api/nanohost/transport/session/fence'
     );
@@ -2210,9 +2220,13 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
       ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(27);
+    expect(Object.keys(definitions)).toHaveLength(31);
     expect(Object.keys(definitions)).toEqual(
       expect.arrayContaining([
+        'knowledge.ask',
+        'knowledge.tell',
+        'knowledge.maintain',
+        'knowledge.proposal.read',
         'knowledge.notebook.history',
         'knowledge.notebook.diff',
         'knowledge.notebook.restore',

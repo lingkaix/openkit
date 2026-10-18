@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Button,
   Card,
@@ -10,6 +11,7 @@ import {
   PageHeader,
   Skeleton,
 } from '../../primitives';
+import { chatThreadPath } from '../chat/data';
 import {
   type AepSnapshotDetailRow,
   type AepSnapshotListRow,
@@ -247,6 +249,32 @@ function SnapshotDetail({ detail }: { detail: AepSnapshotDetailRow }) {
     <div className="flex flex-col gap-1">
       <p className="text-sm text-fg">{detail.runtimeKind}</p>
       <p className="text-sm text-fg">{detail.packageId}</p>
+      <Link
+        className="text-sm text-accent underline"
+        to={chatThreadPath(detail.workspaceId, detail.threadId)}
+      >
+        Open Thread {detail.threadId}
+      </Link>
+      <p className="break-all text-sm text-fg">Turn: {detail.turnId}</p>
+      <h3 className="text-sm font-bold text-fg">Recorded Skill supply</h3>
+      <p className="text-xs text-fg-muted">
+        These selections belong to this Turn's package, not the current catalog.
+      </p>
+      {detail.skills === null ? (
+        <p>Skill lineage unavailable.</p>
+      ) : detail.skills.length === 0 ? (
+        <p>No Skills recorded.</p>
+      ) : (
+        detail.skills.map((skill) => (
+          <div key={skill.id} className="flex flex-col gap-1">
+            <p className="break-all text-sm text-fg">{skill.id}</p>
+            <p className="break-all text-xs text-fg-muted">{skill.digest}</p>
+            <p className="text-xs text-fg-muted">
+              Selection source: {skill.selectionSource ?? 'Not recorded'}
+            </p>
+          </div>
+        ))
+      )}
     </div>
   );
 }

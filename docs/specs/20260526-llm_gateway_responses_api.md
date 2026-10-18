@@ -5,6 +5,8 @@ kind: boundary
 ---
 # LLM Gateway Responses API
 
+Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
+
 ## Owns
 
 This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the `gateway.jsonc` logical-model catalog, placement and Gateway projection of each logical model's context-management policy, model discovery, derived logical-model capabilities and model family, ordered private route planning, bounded pre-commit retries and failover, optional public cache-scope input, and the common public Gateway error envelope, redaction, and transport behavior. It also owns the routing rule that one route member references one Provider profile and that a subscription-backed Provider profile binds one explicit provider-subscription account slot.
@@ -56,7 +58,7 @@ Codex and xAI subscription providers are not special Gateway backends. Their pro
 
 - Do not expose pi-ai, Codex app-server, or provider-private adapter vocabulary through public requests, responses, config, or diagnostics.
 - Do not copy Gateway request or response schemas into `packages/protocol`; this is an external provider-capability surface, not the UI-to-Core workflow protocol.
-- Do not admit Responses built-in tools, remote MCP, computer use, file input, image input, or another unrepresentable modality merely because a stock adapter or native hook exists.
+- Do not admit Responses built-in tools, remote MCP, computer use, file input, image input outside the explicit native PNG/JPEG mapping below, or another unrepresentable modality merely because a stock adapter or native hook exists.
 - Do not expose subscription credentials, raw provider account ids, Vault references, authorization headers, or raw account quota responses.
 - Do not accept pasted subscription tokens through Gateway routes or provider profiles.
 - Do not expose or implement `POST /v1/completions`.
@@ -80,6 +82,8 @@ Streaming uses OpenAI-compatible SSE chunks and terminates with `[DONE]`. If a p
 ### `POST /v1/responses`
 
 The route accepts OpenAI-compatible Responses requests with `model`, `input`, optional `stream`, and supported passthrough fields. It returns a Responses projection directly from the selected pi-ai result or event stream under the [backend mapping contract](20260708-pi_ai_unified_llm_backend.md#request-routing-contract). Same-protocol native content that stock Context, call options or result blocks cannot represent uses the admitted native channel; the public response never depends on conversion through Chat Completions.
+
+Native Responses explicitly admits inline PNG/JPEG data URLs in user `input_image` content and complete `function_call_output.output` arrays containing text and images. The selected model's effective input modalities must include image input. Preserve image bytes, content order, instructions, text, Tool history and attributed reasoning. Preserve optional native image detail (`auto`, `low` or `high`) through the existing native channel. Existing request byte limits and final request admission still apply. Missing image capability, malformed inline encoding and unsupported image shapes fail with `unsupported_gateway_feature` before inference. This mapping adds no decoding, transcoding, state or lifecycle; the backend owner's native-channel lifecycle applies. Chat images, other roles, custom Tool output images, remote image URLs, file ids, other media and cross-protocol image mapping remain unsupported.
 
 Complete historical local-tool pairs may be admitted as non-callable context on a same-protocol native Responses request under the [backend owner's historical-pair contract](20260708-pi_ai_unified_llm_backend.md#codex-turn-state-continuity), even when their tool is absent from the current declarations. This changes neither current callable authority nor validation of new Provider calls. Gateway preserves the admitted structured history; it does not synthesize declarations, convert the pairs to prose, or discard them. A runtime-native textual summary request using ordinary Responses inputs is governed by ordinary request admission; its summarization purpose alone is not a forbidden Provider-native compaction control.
 
@@ -318,7 +322,7 @@ The bounded mapping rejects the following shapes; a same-protocol native feature
 - Responses built-in tools
 - remote MCP tools
 - computer-use tools
-- file and image input
+- file input and image content outside the explicit native PNG/JPEG mapping above, including all cross-protocol images
 - structured content that cannot be reduced to text without semantic loss
 - non-function tool schemas, nested namespaces and deferred function declarations on a cross-protocol mapping
 
@@ -390,7 +394,7 @@ The removed Gateway and account dependencies do not remove or rename `vault.boot
 ## Testing Strategy / Acceptance Criteria
 
 - L1 route and resolution tests prove authentication order, logical-model and context-management validation, catalog-enriched capability intersection, admission of exact hand-authored IDs with missing model or family metadata, cross-family and unknown-family multi-route admission with shared-or-null family projection, ordered member eligibility, provider-neutral slot binding, no default-slot guess, bounded pre-commit failover, no post-commit retry, exact subscription pre-dispatch errors, stable cache priority, and absence of a Provider-specific backend branch. A regression must observe an uncatalogued configured default in public discovery and an inference dispatch retaining its exact upstream model ID.
-- L1 mapping tests prove direct public-to-stock-IR input and stock-result-to-public output for both formats, the accepted readable reasoning and native-channel boundaries, and refusal of every unrepresentable shape before Provider access.
+- L1 mapping tests prove direct public-to-stock-IR input and stock-result-to-public output for both formats, the accepted readable reasoning and native-channel boundaries, and refusal of every unrepresentable shape before Provider access. Native PNG/JPEG acceptance observes unchanged user and function-result image bytes, instructions, text/Tool/reasoning history and final admission on the actual stock HTTP payload. A text-only selected model must make no Provider request.
 - L2 contract tests prove public Chat Completions, Responses, logical models, SSE, error, usage, route-attempt attribution, and redaction behavior across API-key and subscription-backed profiles, including non-`2xx` JSON rather than SSE for every pre-start terminal failure.
 - L3 black-box tests prove two logical models can dispatch through different Provider profiles on the same `/v1/*` routes, one logical model can advance across two subscription-account profiles on an admitted pre-commit failure when failover is enabled, discovery advertises only dispatchable logical IDs, and overlapping account slots remain isolated.
 - L3 opt-in real-provider evidence proves one authenticated public Codex Gateway request per run, accepted streaming behavior, stable public envelopes, and redaction.

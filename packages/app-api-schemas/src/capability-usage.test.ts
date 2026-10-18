@@ -43,7 +43,7 @@ describe('CapabilityUsageCallSchema system-prompt digest', () => {
     expect(
       CapabilityUsageCallSchema.safeParse({
         ...usageCall(),
-        capabilityId: 'mcp.call_tool',
+        capabilityId: 'mcp.call-tool',
         family: 'mcp',
         operation: 'call_tool',
         systemPromptDigest: SYSTEM_PROMPT_DIGEST,

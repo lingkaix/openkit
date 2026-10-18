@@ -14,13 +14,14 @@ import {
   type InternalAgentProviderResponse,
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
-import { prepareInternalAgentContext } from './rolling-context.js';
+import { internalContextFailure, prepareInternalAgentContext } from './rolling-context.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 const roots: string[] = [];
 const itemIdsByTurn = new Map<string, string[]>();
 const timestamp = '2026-10-16T00:00:00.000Z';
-const contextLimit = 14_000;
+// A single Turn fits, while four/eight-Turn histories still require advancing summary batches.
+const contextLimit = 7_000;
 const outputReserve = 512;
 const summaryText =
   'Keep the deployment constraint. Decision is pending. Exact sources remain in history.';
@@ -192,11 +193,29 @@ function files(root: string): string[] {
 }
 
 describe('source-bound internal rolling context', () => {
+  it('projects existing context failures as actionable redacted Turn errors', () => {
+    const error = new InternalAgentProviderError(
+      'internal_agent_context_exceeded',
+      'Private request and provider details.'
+    );
+    expect(internalContextFailure(error)).toEqual({
+      code: 'internal_agent_context_exceeded',
+      message:
+        'The selected model context capacity was exceeded. Reduce input or retrieve a smaller excerpt.',
+    });
+  });
+
   it('uses complete canonical history in first-seen order when it fits, including after restart', async () => {
     const f = fixture(1, true);
     const before = f.store.listThreadItems(f.workspace.id, f.thread.id);
     const request = input(f);
     const prepared = await prepareInternalAgentContext(request);
+    expect(f.store.getTurnById(f.turn.id).internalExecution).toEqual({
+      roleId: f.turn.agentId,
+      logicalModelId: model.logicalModelId,
+      contextStrategy: 'rolling',
+      threshold: contextLimit - outputReserve,
+    });
     expect(request.callProvider).not.toHaveBeenCalled();
     expect(prepared.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
     expect(text(prepared.messages)).toContain('Question 0:');
@@ -241,16 +260,17 @@ describe('source-bound internal rolling context', () => {
       tools: [tool],
       callProvider: vi.fn(async (call) => {
         requests.push(call);
-        // This independent byte check is deliberately conservative, not a claim of exact token usage.
-        expect(
-          Buffer.byteLength(
-            JSON.stringify({
-              systemPrompt: call.systemPrompt,
-              tools: call.tools,
-              messages: call.messages,
-            })
-          ) + outputReserve
-        ).toBeLessThan(contextLimit);
+        // Convert serialized UTF-8 bytes to the accepted local token estimate; byte caps have separate units.
+        // This oracle does not call the production estimator and makes no exact-token claim.
+        const requestBytes = Buffer.byteLength(
+          JSON.stringify({
+            systemPrompt: call.systemPrompt,
+            tools: call.tools,
+            messages: call.messages,
+          })
+        );
+        const estimatedInputTokens = Math.ceil(requestBytes / 3) + 4_096;
+        expect(estimatedInputTokens + outputReserve).toBeLessThan(contextLimit);
         expect(call.systemPrompt).toBe(request.systemPrompt);
         expect(call.tools).toEqual([
           { name: tool.name, description: tool.description, inputSchema: tool.inputSchema },
@@ -273,6 +293,8 @@ describe('source-bound internal rolling context', () => {
         evidence(f.history.slice(0, summary.sourceRange.itemCount))
       );
       expect(summary.turnId).toBe(f.turn.id);
+      expect(summary.strategy).toBe('rolling');
+      expect(summary.logicalModelId).toBe(model.logicalModelId);
       boundary = summary.sourceRange.itemCount;
     }
     expect(prepared.limits.maxModelTurns).toBe(limits.maxModelTurns - requests.length);
@@ -442,7 +464,7 @@ describe('source-bound internal rolling context', () => {
     const f = fixture();
     const execute = vi.fn(async () => ({ content: [] }));
     const tool: AgentTool = {
-      name: 'effect',
+      name: 'test.effect',
       description: 'A supplied Tool.',
       inputSchema: { type: 'object' },
       execute,
@@ -468,7 +490,7 @@ describe('source-bound internal rolling context', () => {
                   {
                     type: 'toolCall' as const,
                     callId: 'effect-call',
-                    name: 'effect',
+                    name: 'test.effect',
                     arguments: {},
                   },
                 ],

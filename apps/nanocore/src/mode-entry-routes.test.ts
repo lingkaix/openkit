@@ -71,6 +71,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import * as observationOwners from './storage/work-observations.js';
@@ -1372,6 +1373,7 @@ describe('conversation.submit worker acceptance wait', () => {
   ])('replays the original failed Task after native image preparation refusal only when cleanup completes (%s)', async (cleanupFails) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-image-refusal-'));
     const coreDb = openCoreDb(dataRoot);
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000n);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
@@ -1389,6 +1391,7 @@ describe('conversation.submit worker acceptance wait', () => {
       throw new Error('Controlled native image preparation refusal.');
     });
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      fileAdmission,
       coreDb,
       store,
       env: {},
@@ -1403,11 +1406,20 @@ describe('conversation.submit worker acceptance wait', () => {
         },
       },
     });
+    const started = Promise.withResolvers<{ turnId: string; completion: Promise<void> }>();
+    const startTurn = runtime.turnExecutor.startTurn.bind(runtime.turnExecutor);
+    let completion: Promise<void> | undefined;
+    const execution = vi.spyOn(runtime.turnExecutor, 'startTurn').mockImplementation((...args) => {
+      completion = startTurn(...args);
+      started.resolve({ turnId: args[1], completion });
+      return completion;
+    });
     const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
       .backend;
     if (cleanupFails)
       vi.spyOn(backend, 'cleanupSession').mockRejectedValue(new Error('Cleanup is unproved.'));
     const app = createAppWithWorkspaceAuthority({
+      fileAdmission,
       coreDb,
       dataRoot,
       store,
@@ -1437,6 +1449,12 @@ describe('conversation.submit worker acceptance wait', () => {
       const accepted = await submit();
       expect(accepted.status, await accepted.clone().text()).toBe(202);
       const original = await accepted.json();
+      // Admission does not await asynchronous Context Package preparation or failure publication.
+      const observed = await started.promise;
+      expect(observed.turnId).toBe(original.turn.id);
+      await expect(observed.completion).rejects.toThrow(
+        'Controlled native image preparation refusal.'
+      );
       await vi.waitFor(() => expect(store.getTurnById(original.turn.id).status).toBe('failed'));
       await vi.waitFor(() =>
         expect(runtime.turnExecutor.isTurnExecutionActive?.(original.turn.id)).toBe(false)
@@ -1461,6 +1479,8 @@ describe('conversation.submit worker acceptance wait', () => {
         )
       ).toHaveLength(1);
     } finally {
+      await completion?.catch(() => undefined);
+      execution.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -2265,7 +2285,7 @@ describe('Task durable admission response', () => {
             id: 1,
             method: 'tools/call',
             params: {
-              name: 'call',
+              name: 'openkit_call',
               arguments: {
                 operation: 'task.start',
                 input: {
@@ -4446,9 +4466,10 @@ describe('#144 real Assistant command wiring', () => {
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());
       expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
-        'workspace_state_read',
+        'workspace_dashboard',
         'thread_history_read',
-        'knowledge_search',
+        'knowledge_ask',
+        'knowledge_tell',
         'workspace_create',
         'task_start',
         'goal_create',
@@ -4472,7 +4493,7 @@ describe('#144 real Assistant command wiring', () => {
         'kernel_records_create',
         'kernel_records_update',
         'kernel_records_batch',
-        'generative_ui_publish',
+        'generative-ui_publish',
       ]);
       const requestId = uuidv5(
         JSON.stringify([
@@ -5073,6 +5094,7 @@ describe('#144 real Assistant command wiring', () => {
     }
   });
 
+  // This fixture includes real database, Notebook and HTTP setup; its runner limit is not an admission deadline.
   it.each([
     ...[
       'actor',
@@ -5130,7 +5152,7 @@ describe('#144 real Assistant command wiring', () => {
     } finally {
       f.close();
     }
-  });
+  }, 60_000);
 
   it('refuses a missing private handler binding before content access through the real command', async () => {
     const f = assistantWiringFixture(true);

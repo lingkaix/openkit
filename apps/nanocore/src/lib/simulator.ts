@@ -679,16 +679,36 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           )
         : false;
       const contextRequest = outcomeInitiated ? workerInput : input;
+      if (
+        this.coreDb &&
+        workspaceDb &&
+        (checkpoint || outcomeInitiated) &&
+        context.sandboxBindingRef &&
+        !this.fileAdmission
+      ) {
+        throw new TurnStartValidationError(
+          'source_unavailable',
+          'Worker Context Package storage admission is unavailable.',
+          503
+        );
+      }
       const preparedContext =
         this.coreDb && workspaceDb && (checkpoint || outcomeInitiated) && context.sandboxBindingRef
-          ? prepareWorkerTurnContextPackage(this.coreDb, workspaceDb, store, checkpoint, {
-              agentSessionId,
-              requestId: context.requestId ?? null,
-              threadId: turn.threadId,
-              turnId: turn.id,
-              workerRequest: contextRequest,
-              workspaceId: turn.workspaceId,
-            })
+          ? await prepareWorkerTurnContextPackage(
+              this.coreDb,
+              workspaceDb,
+              store,
+              checkpoint,
+              {
+                agentSessionId,
+                requestId: context.requestId ?? null,
+                threadId: turn.threadId,
+                turnId: turn.id,
+                workerRequest: contextRequest,
+                workspaceId: turn.workspaceId,
+              },
+              this.fileAdmission!
+            )
           : null;
       const environmentBackend = { kind: 'openshell' } as const;
       const resolvedEnvironmentPackage = captureCoverage
@@ -1516,10 +1536,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           store,
           workspaceDb,
         },
-        'work_request_input',
+        'work_input_request',
         { requestId: state.userInputRequestId, prompt, questions }
       );
-      state.userInputRequestId = result.structuredContent.requestId as string;
+      state.userInputRequestId = result.structuredContent!.requestId as string;
       const recordedItem = store
         .listThreadItems(state.workspaceId, state.threadId)
         .find(

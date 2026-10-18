@@ -31,6 +31,7 @@ import type {
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
+import { evaluateServerAccess } from './policy/server-access.js';
 import { requireCoordinatorGoal } from './runtime/goal-owner.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -196,7 +197,7 @@ export function admitOperation(
       if (
         entry.kind !== 'public' ||
         !coreDb ||
-        !isCanonicalUserOperationAuthorized(coreDb, entry.actor)
+        !isCanonicalUserOperationAuthorized(coreDb, entry.actor, definition.policyOperation)
       )
         throw denied();
       scope = { kind: 'user' };
@@ -227,6 +228,18 @@ export function admitOperation(
             { cause: error }
           );
         throw error;
+      }
+      try {
+        if (
+          evaluateServerAccess({
+            userId: entry.actor.userId,
+            operation: definition.policyOperation,
+            family: definition.target.kind === 'server' ? definition.target.family : undefined,
+          }).effect !== 'allow'
+        )
+          throw denied();
+      } catch {
+        throw denied();
       }
       scope = { kind: 'server' };
       break;

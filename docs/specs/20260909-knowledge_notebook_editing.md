@@ -6,6 +6,12 @@ date: 2026-09-09
 ---
 # Knowledge Notebook Editing And Publication
 
+## Source Pointer Extension
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) extends the published Git tree with admitted OKF SourceSummary pointers at `sources/<source-id>.md`, retaining the same fixed-base publisher, current source disclosure, history and suppression rules. This supersedes the external Source-registry authority on activation; raw bytes and backend locations remain outside Git. Original changes update one pointer through one commit; an old digest pin resolves only while matching authorized bytes remain available.
+
+The publisher also auto-admits embedded raw files and pins their digests in existing `sourceReferences` in the same commit; historical rendering uses those pins or shows unavailable. Embedded paths use RFC 3986 resolution from each page directory and must resolve inside Knowledge Base `raw/`. Raw renames/moves rewrite referrers, and admitted page relocation rewrites its embeds, under existing validation/review and page-identity constraints; no new move operation is added. The existing tree/editing paths below describe the current implementation until this extension lands. Package import validates the remapped Source/page graph before publication and cannot replace retained history merely because the current view is empty.
+
 ## Owns
 
 The single fixed-base editing and publication contract for an owner-scoped OKF notebook: retained Git content revisions, bounded Knowledge Manager file editing, final-tree validation, exact authority and conflict checks, multi-page publication, history/diff/restore, and their publication command projections. This contract replaces the former single-page generated-change restriction and mandatory per-edit human Review for ordinary explicitly delegated maintenance.
@@ -57,7 +63,7 @@ Commits used as saved review candidates are retained by the existing Proposal ow
 
 ## One Editing Workspace
 
-`knowledge.notebook_workspace.update` is a Knowledge Manager-only Tool taking `{script:string}`. Trusted invocation assembly binds one notebook, its fixed base commit, source audience and an in-memory just-bash filesystem populated from admitted files of that immutable revision. The same temporary filesystem persists across Tool calls in that bounded invocation. A separate read-only `/sources` tree may contain selected already-authorized Source material; `/notebook` contains editable OKF pages and reserved index/log files. Paths are virtual. Neither filesystem mounts live DATA_ROOT, another scope, mutable source originals, schema/settings, credentials or host Git metadata.
+`knowledge.notebook-workspace.update` is a Knowledge Manager-only Tool taking `{script:string}`. Trusted invocation assembly binds one notebook, its fixed base commit, source audience and an in-memory just-bash filesystem populated from admitted files of that immutable revision. The same temporary filesystem persists across Tool calls in that bounded invocation. A separate read-only `/sources` tree may contain selected already-authorized Source material; `/notebook` contains editable OKF pages and reserved index/log files. Paths are virtual. Neither filesystem mounts live DATA_ROOT, another scope, mutable source originals, schema/settings, credentials or host Git metadata.
 
 The editing result is `{exitCode,stdout,stderr,truncated}` with the combined output cap below; nonzero exit is visible and leaves only temporary edits, never implies publication. Invalid input, denied scope, exhausted bounds or runtime cancellation return the existing typed Tool failure. Scripts are at most 64 KiB UTF-8; no raw exception, host path or restricted source is copied into errors.
 
@@ -95,6 +101,8 @@ The default state filter admits only active pages. Explicit `states` selection o
 
 The Notebook UI provides page editing, state selection, source links, revision history, changed-file list and text diff with responsible human/Agent attribution. History defaults to the selected notebook and current permissions. It never exposes raw repository paths, Git configuration, unpublished candidates belonging to an unauthorized audience or data denied by current source restrictions. `index.md` and `log.md` may be edited with other pages, but the user-visible change history comes from Git and does not rely on an Agent's prose log.
 
+Required Proposal review reads the saved candidate through the existing Proposal owner, with current Source disclosure checks on both sides. Its preview binds the Proposal digest, base and candidate commits. A bounded preview names remaining text ranges; an excerpt cannot stand in for the complete diff. The Web review requires inspection of every complete changed page before acceptance and submits the displayed identity tuple. Rejection and deferral do not require acceptance. Unpublished candidates remain outside generic published history.
+
 Restore computes a candidate diff from selected historical paths into the current base and publishes it through the same validation and authority checks as any edit. It adds a new commit, never rewinds published history or undoes external effects. No generic cherry-pick/rebase/reset API is exposed. Missing historical bytes, revoked source access or now-invalid schema produces an explicit unavailable/conflict result, not a lossy restore.
 
 ## Administrator Masking (Not Implemented)
@@ -127,7 +135,7 @@ Explicit human operations support source-free self User Memory save, list, read,
 
 Forget binds the exact page revision and digest to an Item-backed human confirmation and rechecks current self authority. It suppresses normal current and historical reads before Git removal. Git, Source, evidence and backup bytes retain their separate retention authority.
 
-Server Knowledge operations, Source-bearing User Memory, private Memory recall and extraction, scoped virtual Agent editing, semantic maintenance, automatic consolidation and AI assessment remain incomplete. Full required-review invocation and full historical trace and archive disclosure closure also remain incomplete. This projection does not accept complete Notebook, Memory or P20 behavior.
+Workspace Knowledge Manager maintenance uses the in-memory notebook editor and the existing fixed-base publisher. Native publication retains the full changed path set in one candidate. An exact multi-page Proposal uses the existing Review flow when delegation is absent or the diff requires review. A retained Status Item records the native outcome before later model continuation can fail. Server maintenance, User Memory semantic maintenance, automatic extraction and AI assessment remain incomplete. This projection does not accept complete Notebook, Memory or P20 behavior.
 
 ## Implementation Cutover And Acceptance
 
@@ -152,4 +160,4 @@ The engineer ruling of 2026-10-16 removes conversion migrations, predecessor qua
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260704-workspace_backup_export_import.md`
 
-Codex [consolidation](https://github.com/openai/codex/blob/9e868bd9dc007c05e84a98e0b1f4e31dc98c5e6a/codex-rs/memories/write/src/phase2.rs) informs bounded source-driven editing and concise retrieval context; its destructive single-commit Git baseline reset is deliberately not copied. [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) informs the jointly maintained notebook. just-bash [filesystem](https://github.com/vercel-labs/just-bash/blob/062ce005c0a7676163852fb6f0c8590cbdaa1d45/packages/just-bash/src/fs/overlay-fs/overlay-fs.ts) and execution primitives are an implementation candidate with a scoped security/conformance check, not an OS isolation guarantee or already-installed OpenKit dependency.
+Codex [consolidation](https://github.com/openai/codex/blob/9e868bd9dc007c05e84a98e0b1f4e31dc98c5e6a/codex-rs/memories/write/src/phase2.rs) informs bounded source-driven editing and concise retrieval context; its destructive single-commit Git baseline reset is deliberately not copied. [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) informs the jointly maintained notebook. just-bash [filesystem](https://github.com/vercel-labs/just-bash/blob/062ce005c0a7676163852fb6f0c8590cbdaa1d45/packages/just-bash/src/fs/overlay-fs/overlay-fs.ts) and execution primitives implement the fixed in-memory command profile. They provide no OS isolation guarantee. NanoCore pins the dependency and supplies no host filesystem, network or process command.

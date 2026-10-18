@@ -13,7 +13,7 @@ import type { StatusTone } from '../../primitives';
  */
 
 /** Stable WP-8 Tier-B surface ids. */
-export const TIER_B_SURFACE_IDS = ['automations', 'channels'] as const;
+export const TIER_B_SURFACE_IDS = ['automations'] as const;
 
 export type TierBSurfaceId = (typeof TIER_B_SURFACE_IDS)[number];
 
@@ -47,23 +47,6 @@ export interface AutomationRow {
   statusTone: StatusTone;
 }
 
-/** Channel connection row for board 16. */
-export interface ChannelRow {
-  id: string;
-  name: string;
-  meta: string;
-  connected: boolean;
-  enabled: boolean;
-}
-
-/** Outbound travel preference for channels. */
-export interface ChannelTravelSetting {
-  id: string;
-  title: string;
-  help: string;
-  enabled: boolean;
-}
-
 const SAMPLE_AUTOMATIONS: AutomationRow[] = [
   {
     id: 'auto_1',
@@ -94,58 +77,6 @@ const SAMPLE_AUTOMATIONS: AutomationRow[] = [
   },
 ];
 
-const SAMPLE_CHANNELS: ChannelRow[] = [
-  {
-    id: 'chan_slack',
-    name: 'Slack',
-    meta: '#openkit-alerts in Acme HQ',
-    connected: true,
-    enabled: true,
-  },
-  {
-    id: 'chan_email',
-    name: 'Email digest',
-    meta: 'Daily at 8:00 · sw@acme.com',
-    connected: true,
-    enabled: true,
-  },
-  {
-    id: 'chan_discord',
-    name: 'Discord',
-    meta: 'Not connected',
-    connected: false,
-    enabled: false,
-  },
-  {
-    id: 'chan_signal',
-    name: 'Signal',
-    meta: 'Not connected',
-    connected: false,
-    enabled: false,
-  },
-];
-
-const SAMPLE_TRAVEL: ChannelTravelSetting[] = [
-  {
-    id: 'travel_approvals',
-    title: 'Approvals and blocked work',
-    help: 'Decide with one tap from the channel — no need to open OpenKit.',
-    enabled: true,
-  },
-  {
-    id: 'travel_finished',
-    title: 'Finished goals and reviews',
-    help: 'A short result note with a link back to the artifacts.',
-    enabled: true,
-  },
-  {
-    id: 'travel_progress',
-    title: 'Progress chatter',
-    help: 'Step-by-step updates stay in the thread.',
-    enabled: false,
-  },
-];
-
 /**
  * Automations list for board 09.
  *
@@ -155,17 +86,4 @@ export function useAutomations(): DemoQueryResult<AutomationRow[]> {
   const isDemo = useDemoFixtures('automations');
   // Live path (future): client.operations['automation.list'] → same AutomationRow[].
   return { data: SAMPLE_AUTOMATIONS, isDemo };
-}
-
-/**
- * Channels settings for board 16.
- *
- * @returns Sample channel + travel preferences while not live.
- */
-export function useChannels(): DemoQueryResult<{
-  channels: ChannelRow[];
-  travel: ChannelTravelSetting[];
-}> {
-  const isDemo = useDemoFixtures('channels');
-  return { data: { channels: SAMPLE_CHANNELS, travel: SAMPLE_TRAVEL }, isDemo };
 }

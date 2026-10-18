@@ -166,7 +166,7 @@ describe('administration conversation route', () => {
     const inertTools = inertEnvironmentTools();
     const environmentTools = [
       {
-        name: 'worker_environment.list',
+        name: 'worker-environment.list',
         description: 'List retained Worker environments in one exact Workspace.',
         inputSchema: {
           type: 'object',
@@ -190,7 +190,7 @@ describe('administration conversation route', () => {
           'NanoHost is the execution host, not an LLM Provider.'
         );
         expect(request.instructions).toContain(
-          'Use nanohost.runtime-target to read host RuntimeTarget readiness'
+          'Use nanohost_runtime-target to read host RuntimeTarget readiness'
         );
         expect(request.instructions).toContain(
           'returns Core stored projection at observedAt rather than a live host probe'
@@ -199,9 +199,7 @@ describe('administration conversation route', () => {
           'Never infer that NanoHost is unconfigured or unready from Provider catalog absence or zero Worker environments.'
         );
         expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual([
-          ...ADMINISTRATION_TOOL_NAMES.map((name) =>
-            name.replaceAll('.', '_').replaceAll('-', '_')
-          ),
+          ...ADMINISTRATION_TOOL_NAMES.map((name) => name.replaceAll('.', '_')),
         ]);
         primaryConfigured = true;
         return {
@@ -212,7 +210,7 @@ describe('administration conversation route', () => {
             {
               type: 'function_call',
               call_id: 'call_environment_list',
-              name: 'worker_environment_list',
+              name: 'worker-environment_list',
               arguments: JSON.stringify({ workspaceId }),
             },
           ],
@@ -691,8 +689,15 @@ describe('administration conversation route', () => {
       store.updateTurn(firstBody.turn.id, { status: 'running', completedAt: null, error: null })
     ).toThrow(/is terminal and does not admit this write/);
 
-    vi.spyOn(store, 'updateTurn').mockImplementationOnce(() => {
-      throw new Error('completion persistence failed');
+    const updateTurn = store.updateTurn.bind(store);
+    let completionFailureInjected = false;
+    vi.spyOn(store, 'updateTurn').mockImplementation((turnId, input, admission) => {
+      // Admission pins internalExecution first; fail the terminal publication this case exercises.
+      if (!completionFailureInjected && input.status === 'completed') {
+        completionFailureInjected = true;
+        throw new Error('completion persistence failed');
+      }
+      return updateTurn(turnId, input, admission);
     });
     const partialRequest = {
       input: 'Inspect another Worker environment.',
@@ -710,6 +715,7 @@ describe('administration conversation route', () => {
       )
     );
     expect(partial.status).toBe(409);
+    expect(completionFailureInjected).toBe(true);
     await expect(partial.json()).resolves.toMatchObject({ code: 'recovery_required' });
     const partialReplay = await app.request(
       ...operationRequest(
@@ -924,7 +930,7 @@ describe('administration conversation route', () => {
 
 function inertEnvironmentTools(): AdministrationEnvironmentTools {
   return ['list', 'status', 'prepare', 'recover'].map((operation) => ({
-    name: `worker_environment.${operation}`,
+    name: `worker-environment.${operation}`,
     description: `Inert ${operation} Tool.`,
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     execute: async () => ({ content: [] }),

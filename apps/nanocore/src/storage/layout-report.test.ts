@@ -1,11 +1,19 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db.js';
 import { createStorageLayoutReport } from './layout-report.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
+
+const dataRoots: string[] = [];
+
+afterEach(() => {
+  for (const dataRoot of dataRoots.splice(0)) {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
 
 /**
  * Creates a temporary NanoCore data root for storage report tests.
@@ -13,7 +21,9 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
  * @returns Temporary data root path.
  */
 function createDataRoot(): string {
-  return mkdtempSync(join(tmpdir(), 'openkit-storage-report-'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-storage-report-'));
+  dataRoots.push(dataRoot);
+  return dataRoot;
 }
 
 describe('storage layout report', () => {
@@ -37,6 +47,9 @@ describe('storage layout report', () => {
         'core_0002_durable_recurring_schedules',
         'core_0003_notebook_admission',
         'core_0004_equal_workspace_members',
+
+        'core_0005_channel_notifications',
+        'core_0006_external_trigger_admissions',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

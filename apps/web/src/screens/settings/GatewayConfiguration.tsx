@@ -275,7 +275,7 @@ export function GuidedSubscriptionSetup({
           setRevision(result.file.revision);
         }
         if (step === 2) {
-          const result = await client.operations['provider-subscription.account-login-start']({
+          const result = await client.operations['provider-subscription.login-start']({
             subscriptionProviderId: input.provider,
             accountSlotId: input.slot,
             mode: 'device_code',

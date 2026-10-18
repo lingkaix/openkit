@@ -6,6 +6,7 @@ import {
   OPERATION_DEFINITIONS,
   type OperationId,
   operationMcpEligible,
+  operationToolName,
 } from '@openkit/app-api-schemas';
 import type { Hono } from 'hono';
 import { z } from 'zod';
@@ -31,7 +32,7 @@ function mcpInputSchema(schema: z.ZodObject) {
 }
 
 /** Product guidance for plain MCP clients; tool presence and client approval never grant authority. */
-const GUIDE = `Use search to discover an operation, then describe it to learn its complete input and mutation posture. Call one operation at a time with that input. Discovery is metadata, never a permission decision. Remote MCP reaches the release operation definitions except one-time-secret results, the three streaming Workspace archives and raw Artifact import/download.
+const GUIDE = `Use openkit_search to discover an operation, then openkit_describe to learn its complete input and mutation posture. Use openkit_call for one canonical operation id at a time with that input. Use openkit_guide to read this guidance. Discovery is metadata, never a permission decision. Remote MCP reaches the release operation definitions except one-time-secret results, the three streaming Workspace archives and raw Artifact import/download.
 
 NanoCore owns authorization, durable state, approval, idempotency, audit, recovery and execution. Ask the user for each server-required human approval and convey only their explicit decision for the exact proposal and Pending Request identity. A client approval prompt is not an OpenKit human decision. Existing authorization for a bounded action remains valid; do not repeatedly request it. Never answer a secret question or infer approval, spending authority, review acceptance or budget extension.
 
@@ -123,30 +124,30 @@ export function registerRemoteMcpRoutes({
     server.setRequestHandler('tools/list', async () => ({
       tools: [
         {
-          name: 'search',
+          name: operationToolName('openkit.search'),
           description:
             'Search bounded operation metadata by semantic id and description; discovery is not permission.',
           inputSchema: mcpInputSchema(querySchema),
           annotations: { readOnlyHint: true, destructiveHint: false },
         },
         {
-          name: 'describe',
+          name: operationToolName('openkit.describe'),
           description:
             'Read one operation contract and its mutation annotations from the definition table.',
           inputSchema: mcpInputSchema(describeSchema),
           annotations: { readOnlyHint: true, destructiveHint: false },
         },
         {
-          name: 'guide',
+          name: operationToolName('openkit.guide'),
           description: 'Read product workflow, human-decision and recovery guidance.',
           inputSchema: mcpInputSchema(guideSchema),
           annotations: { readOnlyHint: true, destructiveHint: false },
         },
-        // A multiplexed call can mutate; describe carries the exact selected operation's posture.
+        // A multiplexed call can mutate; openkit_describe carries the exact selected operation's posture.
         {
-          name: 'call',
+          name: operationToolName('openkit.call'),
           description:
-            'Invoke one described operation as the authenticated Token user. May mutate; use describe for the selected operation. Ask the user for every server-required human decision.',
+            'Invoke one described operation as the authenticated Token user. May mutate; use openkit_describe for the selected operation. Ask the user for every server-required human decision.',
           inputSchema: mcpInputSchema(callSchema),
           annotations: {
             readOnlyHint: false,
@@ -162,19 +163,19 @@ export function registerRemoteMcpRoutes({
         const args = request.params.arguments ?? {};
         let result: unknown;
         switch (request.params.name) {
-          case 'search':
+          case 'openkit_search':
             result = search(querySchema.parse(args).query);
             break;
-          case 'guide':
+          case 'openkit_guide':
             guideSchema.parse(args);
             return { content: [{ type: 'text', text: GUIDE }] };
-          case 'describe': {
+          case 'openkit_describe': {
             const { operation } = describeSchema.parse(args);
             const definition = definitionFor(operation);
             result = descriptor(operation, definition);
             break;
           }
-          case 'call': {
+          case 'openkit_call': {
             const { operation, input } = callSchema.parse(args);
             const definition = definitionFor(operation);
             operationId = operation;
