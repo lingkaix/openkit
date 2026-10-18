@@ -1,6 +1,6 @@
 # @openkit/app-api-schemas
 
-`src/knowledge-agent.ts` defines `knowledge.ask`, `knowledge.tell` and `knowledge.maintain`. Inputs select the current Workspace and carry no actor, source-scope or model override. Ask returns its separate KM Thread/Turn, scope-qualified citations and uncertainty. Tell and maintenance return the existing Turn/native notebook outcome. NanoCore owns current authority, Provider execution, capability delivery, fixed-base publication and required Review. User Memory and Server maintenance execution are separate joins.
+`src/knowledge-agent.ts` defines `knowledge.ask`, `knowledge.tell` and `knowledge.maintain`. Inputs select the current Workspace and carry no actor, source-scope or model override. Ask returns its separate KM Thread/Turn, scope-qualified citations and uncertainty. Tell and maintenance return the existing Turn/native notebook outcome. NanoCore owns current authority, Provider execution, capability delivery, fixed-base publication and required Review. User Memory execution remains a separate join.
 
 `knowledge.proposal.read` reads the saved candidate inventory or one bounded exact before/after part. Every response repeats the Proposal digest and base/candidate tuple. Its zero-based offset counts Unicode code points in both versions; `nextOffset: null` completes the selected path. A null version is absent, while an empty string is past that version's end. Current native authority and full Source disclosure checks precede every inventory and chunk.
 
@@ -23,6 +23,8 @@ Thread dashboard schemas include the nullable authenticated viewer id and a narr
 Dashboard work-status and active-work schemas carry recorded activity and output summaries without product mode or routing fields. Their descriptive readers discard unknown additive fields; conversation, Task and Goal results retain their own mode and handoff contracts.
 
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
+
+The Skill row returned by `catalog.read` optionally exposes `pinAuditRef`, the recorded winning pin command's Audit identity. An absent field means that attribution was not retained; a digest alone does not identify the actor who last pinned it.
 
 `AuthGetSessionResultSchema` validates the existing Better Auth session read as an active user envelope or null, allowing the Web membership switcher to identify the caller without changing `AuthorizedWorkspaceSummary`.
 
@@ -219,6 +221,8 @@ Server operation targets carry an optional explicit `family` of administration, 
 
 
 `src/resource-policy-operations.ts` declares the Workspace named-resource request and confirmed application contracts. Request creation captures the existing configuration revision without resolving the proposed protected target. Apply selects `approvalRequestId`, independently of command correlation, and requires the exact human confirmation. Its result distinguishes saved revision from runtime reload status. The public catalog composes these definitions with their native handlers; the shared schema adds no assignment store or approval workflow. Its `@openkit/config-schema/workspace-resource-policy` dependency is a browser-safe schema-only subpath over protocol identities and Zod, with no server configuration loader.
+
+`src/server-threads.ts` supplies seven registered Server operations for explicit tell/maintenance, general history, Turn Stop and exact Proposal read/decide. These records omit Workspace identity and require current Server administration authority in NanoCore. Only the Knowledge Manager executes Server work in this increment.
 
 `memory.ask` and `memory.tell` project bounded User Knowledge Manager query and maintenance. Their strict schemas accept no User selector. `memory.maintain`, `memory.proposal.read` and `memory.proposal.decide` reuse the fixed-base notebook and human Review contracts. NanoCore binds the actual private Timeline, rejects shared delivery, and keeps required human Review unavailable to model callers.
 

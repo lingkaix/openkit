@@ -40,6 +40,14 @@ import {
   PROTOCOL_VERSION,
   RequestIdSchema,
   responsibleUserIdForActor,
+  type ServerItem,
+  ServerItemSchema,
+  type ServerThread,
+  ServerThreadSchema,
+  type ServerTurn,
+  type ServerTurnEventEnvelope,
+  ServerTurnEventEnvelopeSchema,
+  ServerTurnSchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
@@ -99,6 +107,15 @@ import {
   resolveDataRootPath,
 } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import {
+  appendServerThreadRecord,
+  assertServerItemRevision,
+  assertServerTurnEventLineage,
+  loadServerThreadRecords,
+  readServerTurnEvents,
+  writeServerThreadRecord,
+  writeServerTurnRecord,
+} from '../storage/server-thread-records.js';
 import {
   AgentSessionRecordSchema,
   appendWorkspaceItemRevision,
@@ -226,6 +243,8 @@ const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export type CommandRequestName =
   | 'knowledge.tell'
   | 'knowledge.maintain'
+  | 'knowledge.server.maintain'
+  | 'knowledge.server.tell'
   | 'administration.server-mcp-create'
   | 'administration.server-mcp-stage-version'
   | 'administration.server-mcp-select-version'
@@ -643,6 +662,55 @@ interface CreateTurnOptions {
   /** Executor that this admission may freeze outcomes for. */
   executorKind?: 'worker' | 'assistant' | 'coordinator' | 'person';
 }
+
+/** Server admission shares existing internal-role Turn choices without Workspace file or runtime hooks. */
+export type CreateServerTurnOptions = Pick<
+  CreateTurnOptions,
+  | 'turnId'
+  | 'startedAt'
+  | 'internalExecution'
+  | 'reasoningEffort'
+  | 'skillSelections'
+  | 'triggerSource'
+  | 'agentId'
+  | 'captureCoverage'
+> & { status?: ServerTurn['status']; completedAt?: string };
+
+const SERVER_TURN_UPDATE_FIELDS = [
+  'agentId',
+  'agentProfileId',
+  'agentSessionId',
+  'completedAt',
+  'configVersion',
+  'durationMs',
+  'error',
+  'status',
+  'triggerSource',
+  'internalExecution',
+];
+
+/** Existing mutable Turn lifecycle fields for Server-owned history. */
+export type ServerTurnUpdate = Partial<
+  Pick<
+    ServerTurn,
+    | 'agentId'
+    | 'agentProfileId'
+    | 'agentSessionId'
+    | 'completedAt'
+    | 'configVersion'
+    | 'durationMs'
+    | 'error'
+    | 'status'
+    | 'triggerSource'
+    | 'internalExecution'
+  >
+>;
+
+/** Transcript input without server-authored ordering and ownership. */
+export type ServerTurnEventInput = Omit<
+  ServerTurnEventEnvelope,
+  'owner' | 'protocolVersion' | 'requestId' | 'sequence' | 'timestamp'
+> & { requestId?: string | null };
 
 /** Hooks invoked when a Turn is admitted or first becomes terminal. */
 export interface TurnAdmissionHooks {
@@ -1152,6 +1220,17 @@ export class FsStore {
     | ((workspaceId: string) => readonly WorkspaceResourceAccessEntry[] | null)
     | null = null;
   private workspaceAgentCatalogProjection: (() => RuntimeAgent[]) | null = null;
+  private serverThreads = new Map<string, ServerThread>();
+  private serverTurns = new Map<string, ServerTurn>();
+  private serverItems = new Map<string, ServerItem>();
+  private serverStreams = new Map<
+    string,
+    {
+      sequence: number;
+      events: ServerTurnEventEnvelope[];
+      listeners: Set<(event: ServerTurnEventEnvelope) => void>;
+    }
+  >();
   private threads = new Map<string, Thread>();
   private turns = new Map<string, Turn>();
   private items = new Map<string, Item>();
@@ -1179,6 +1258,20 @@ export class FsStore {
       this.liveCaptureCoverage = captureCoverageBindingFromOpenKitConfig(
         loadOpenKitConfig(this.dataRoot)
       );
+      const serverRecords = loadServerThreadRecords(this.dataRoot);
+      for (const thread of serverRecords.threads) this.serverThreads.set(thread.id, thread);
+      for (const turn of serverRecords.turns) {
+        this.serverTurns.set(turn.id, turn);
+        for (const item of turn.items) this.serverItems.set(item.id, item);
+        const events = serverRecords.turnEvents.get(turn.id) ?? [];
+        this.serverStreams.set(turn.id, {
+          sequence: events.at(-1)?.sequence ?? 0,
+          events: events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
+          listeners: new Set(),
+        });
+      }
+      for (const [turnId, binding] of serverRecords.turnCaptureCoverage)
+        this.turnCaptureCoverage.set(turnId, binding);
       const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {
@@ -1206,6 +1299,8 @@ export class FsStore {
         createWorkspaceResources([...records.knowledge])
       );
       for (const thread of records.threads) {
+        if (this.serverThreads.has(thread.id))
+          throw new Error(`Thread has conflicting owners: ${thread.id}`);
         this.threads.set(thread.id, thread);
       }
       for (const turn of records.turns) {
@@ -1230,8 +1325,12 @@ export class FsStore {
             }
           }
         }
+        if (this.serverTurns.has(turn.id))
+          throw new Error(`Turn has conflicting owners: ${turn.id}`);
         this.turns.set(turn.id, turn);
         for (const item of turn.items) {
+          if (this.serverItems.has(item.id))
+            throw new Error(`Item has conflicting owners: ${item.id}`);
           this.items.set(item.id, item);
         }
       }
@@ -2708,6 +2807,285 @@ export class FsStore {
     return updated;
   }
 
+  /** Lists Server narratives for a caller already admitted by the Server authority owner. */
+  public listServerThreads(): ServerThread[] {
+    return [...this.serverThreads.values()];
+  }
+
+  /** Creates a Server narrative with no Workspace anchor or private User audience. */
+  public createServerThread(
+    title: string,
+    threadId?: string,
+    entryPath: ServerThread['entryPath'] = 'knowledge-manager'
+  ): ServerThread {
+    const thread = ServerThreadSchema.parse({
+      id: threadId ?? allocateEntityId('th'),
+      owner: { kind: 'server' },
+      visibility: 'server',
+      name: title,
+      preview: title,
+      status: 'active',
+      entryPath,
+      threadSource: 'conversation',
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    if (this.serverThreads.has(thread.id) || this.threads.has(thread.id))
+      throw new Error(`Thread already exists: ${thread.id}`);
+    if (this.dataRoot) writeServerThreadRecord(this.dataRoot, thread);
+    this.serverThreads.set(thread.id, thread);
+    return thread;
+  }
+
+  /** Reads one canonical Server narrative after current Server authority admission. */
+  public getServerThread(threadId: string): ServerThread {
+    const thread = this.serverThreads.get(threadId);
+    if (!thread) throw new StoreRecordNotFoundError(`Server Thread not found: ${threadId}`);
+    return thread;
+  }
+
+  /** Changes only mutable narrative metadata; placement, entry and lineage remain fixed. */
+  public updateServerThread(
+    threadId: string,
+    input: Partial<Pick<ServerThread, 'name' | 'status'>>
+  ): ServerThread {
+    const thread = this.getServerThread(threadId);
+    for (const key of Object.keys(input))
+      if (!['name', 'status'].includes(key))
+        throw new Error(`Server Thread update cannot change field: ${key}`);
+    const updated = ServerThreadSchema.parse({ ...thread, ...input, updatedAt: now() });
+    if (this.dataRoot) writeServerThreadRecord(this.dataRoot, updated);
+    this.serverThreads.set(threadId, updated);
+    return updated;
+  }
+
+  /** Admits one sequential Server Turn; the runtime owner chooses the model and performs execution. */
+  public createServerTurn(
+    threadId: string,
+    input: string,
+    triggerActor: ActorRef,
+    configVersion: number | null = null,
+    options: CreateServerTurnOptions = {}
+  ): ServerTurn {
+    const thread = this.getServerThread(threadId);
+    if (thread.status === 'archived') throw new Error(`Server Thread is archived: ${threadId}`);
+    const terminal = isSealedTurnTerminal(options.status ?? 'running');
+    if (
+      !terminal &&
+      this.listServerThreadTurns(threadId).some(
+        (turn) => turn.status === 'pending' || turn.status === 'running'
+      )
+    )
+      throw new Error(`Server Thread has a Turn in flight: ${threadId}`);
+    const timestamp = options.startedAt ?? now();
+    const turn = ServerTurnSchema.parse({
+      ...options,
+      id: options.turnId ?? allocateEntityId('tu'),
+      owner: { kind: 'server' },
+      threadId,
+      triggerActor,
+      items: [],
+      status: options.status ?? 'running',
+      error: null,
+      configVersion,
+      startedAt: timestamp,
+      completedAt: terminal ? (options.completedAt ?? timestamp) : null,
+      durationMs: terminal
+        ? Math.max(
+            0,
+            new Date(options.completedAt ?? timestamp).getTime() - new Date(timestamp).getTime()
+          )
+        : null,
+    });
+    if (this.serverTurns.has(turn.id) || this.turns.has(turn.id))
+      throw new Error(`Turn already exists: ${turn.id}`);
+    const updatedThread = { ...thread, preview: input, updatedAt: timestamp };
+    if (this.dataRoot)
+      writeServerTurnRecord(this.dataRoot, {
+        ...turn,
+        captureCoverage: options.captureCoverage ?? this.liveCaptureCoverage,
+      });
+    this.serverTurns.set(turn.id, turn);
+    this.serverStreams.set(turn.id, { sequence: 0, events: [], listeners: new Set() });
+    this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
+    if (this.dataRoot) writeServerThreadRecord(this.dataRoot, updatedThread);
+    this.serverThreads.set(threadId, updatedThread);
+    return turn;
+  }
+
+  /** Reads one Turn only within its exact Server Thread. */
+  public getServerTurn(threadId: string, turnId: string): ServerTurn {
+    const turn = this.getServerTurnById(turnId);
+    if (turn.threadId !== threadId)
+      throw new StoreRecordNotFoundError(`Server Turn not found: ${turnId}`);
+    return turn;
+  }
+
+  /** Reads a Server Turn by its opaque identity after Server authority admission. */
+  public getServerTurnById(turnId: string): ServerTurn {
+    const turn = this.serverTurns.get(turnId);
+    if (!turn) throw new StoreRecordNotFoundError(`Server Turn not found: ${turnId}`);
+    return turn;
+  }
+
+  /** Lists Server Turns in their canonical chronological order. */
+  public listServerThreadTurns(threadId: string): ServerTurn[] {
+    this.getServerThread(threadId);
+    return [...this.serverTurns.values()]
+      .filter((turn) => turn.threadId === threadId)
+      .sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''));
+  }
+
+  /** Updates the existing closed lifecycle without changing immutable Server owner or admission facts. */
+  public updateServerTurn(turnId: string, input: ServerTurnUpdate): ServerTurn {
+    const turn = this.getServerTurnById(turnId);
+    for (const key of Object.keys(input))
+      if (!SERVER_TURN_UPDATE_FIELDS.includes(key))
+        throw new Error(`Server Turn update cannot change field: ${key}`);
+    const updated = ServerTurnSchema.parse({
+      ...turn,
+      ...input,
+      durationMs:
+        (input.completedAt ?? turn.completedAt) && turn.startedAt
+          ? Math.max(
+              0,
+              new Date(input.completedAt ?? turn.completedAt!).getTime() -
+                new Date(turn.startedAt).getTime()
+            )
+          : (input.durationMs ?? turn.durationMs),
+    });
+    if (isSealedTurnTerminal(turn.status)) {
+      if (alreadyDecidedPublicationBytesEqual(turn, updated)) return turn;
+      throw terminalTurnWriteRejected(turn.id);
+    }
+    if (this.dataRoot) writeServerTurnRecord(this.dataRoot, updated);
+    this.serverTurns.set(turn.id, updated);
+    return updated;
+  }
+
+  /** Appends a full Item revision to its Server Turn before publishing its in-memory projection. */
+  public createServerItem(
+    input: ServerItem,
+    admission?: AlreadyDecidedPublicationAdmission
+  ): ServerItem {
+    const item = ServerItemSchema.parse(input);
+    const turn = this.getServerTurn(item.threadId, item.turnId);
+    const existing = this.serverItems.get(item.id);
+    if (this.items.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
+    if (existing) assertServerItemRevision(existing, item);
+    if (isSealedTurnTerminal(turn.status)) {
+      if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) return existing;
+      if (admission?.category !== 'already-decided-publication' || existing)
+        throw terminalTurnWriteRejected(turn.id);
+    }
+    const updatedTurn = ServerTurnSchema.parse({
+      ...turn,
+      items: existing
+        ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
+        : [...turn.items, item],
+    });
+    if (this.dataRoot) appendServerThreadRecord(this.dataRoot, item);
+    this.serverItems.set(item.id, item);
+    this.serverTurns.set(turn.id, updatedTurn);
+    return item;
+  }
+
+  /** Reads an Item within Server history after Server authority admission. */
+  public getServerItemById(itemId: string): ServerItem {
+    const item = this.serverItems.get(itemId);
+    if (!item) throw new StoreRecordNotFoundError(`Server Item not found: ${itemId}`);
+    return item;
+  }
+
+  /** Updates a Server Item through the same immutable identity and append boundary as creation. */
+  public updateServerItem(itemId: string, input: Partial<ServerItem>): ServerItem {
+    const item = this.getServerItemById(itemId);
+    const updated = ServerItemSchema.parse({ ...item, ...input });
+    assertServerItemRevision(item, updated);
+    return this.createServerItem(updated);
+  }
+
+  /** Lists current Server Item projections in chronological order. */
+  public listServerThreadItems(threadId: string): ServerItem[] {
+    this.getServerThread(threadId);
+    return [...this.serverItems.values()]
+      .filter((item) => item.threadId === threadId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** Publishes an existing transcript event family under a Server Turn without a Workspace selector. */
+  public emitServerTurnEvent(
+    turnId: string,
+    event: ServerTurnEventInput,
+    admission?: AlreadyDecidedPublicationAdmission
+  ): ServerTurnEventEnvelope {
+    const turn = this.getServerTurnById(turnId);
+    const stream = this.serverStreams.get(turnId)!;
+    const envelope = ServerTurnEventEnvelopeSchema.parse({
+      ...event,
+      owner: { kind: 'server' },
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: event.requestId ?? null,
+      sequence: stream.sequence + 1,
+      timestamp: now(),
+    });
+    assertServerTurnEventLineage(envelope, turn);
+    if (isSealedTurnTerminal(turn.status)) {
+      const existing = stream.events.find(
+        (candidate) =>
+          candidate.event === envelope.event &&
+          candidate.requestId === envelope.requestId &&
+          alreadyDecidedPublicationBytesEqual(candidate.data, envelope.data)
+      );
+      if (existing) return existing;
+      const terminalSnapshot =
+        envelope.data.type === 'turn-completed' &&
+        stopReasonMatchesSealedStatus(envelope.data.stopReason, turn.status) &&
+        alreadyDecidedPublicationBytesEqual(envelope.data.turn, turn);
+      const decidedItemSnapshot =
+        admission?.category === 'already-decided-publication' &&
+        (envelope.data.type === 'item-created' || envelope.data.type === 'item-completed') &&
+        alreadyDecidedPublicationBytesEqual(
+          this.serverItems.get(envelope.data.item.id),
+          envelope.data.item
+        );
+      if (!terminalSnapshot && !decidedItemSnapshot) throw terminalTurnWriteRejected(turn.id);
+    }
+    if (this.dataRoot) appendServerThreadRecord(this.dataRoot, envelope);
+    stream.sequence = envelope.sequence;
+    stream.events.push(envelope);
+    if (stream.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) stream.events.shift();
+    for (const listener of stream.listeners) listener(envelope);
+    return envelope;
+  }
+
+  /** Returns the bounded Server transcript window used for current streaming. */
+  public getServerTurnEvents(turnId: string): ServerTurnEventEnvelope[] {
+    this.getServerTurnById(turnId);
+    return this.serverStreams.get(turnId)!.events;
+  }
+
+  /** Returns the complete canonical Server transcript after current Server authority admission. */
+  public getServerTurnTranscript(turnId: string): ServerTurnEventEnvelope[] {
+    const turn = this.getServerTurnById(turnId);
+    return this.dataRoot
+      ? readServerTurnEvents(this.dataRoot, turn)
+      : this.getServerTurnEvents(turnId);
+  }
+
+  /** Subscribes to the existing in-process Server Turn stream after Server authority admission. */
+  public addServerTurnListener(
+    turnId: string,
+    listener: (event: ServerTurnEventEnvelope) => void
+  ): () => void {
+    this.getServerTurnById(turnId);
+    const listeners = this.serverStreams.get(turnId)!.listeners;
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  }
+
   public listThreads(workspaceId: string): Thread[] {
     return [...this.threads.values()].filter((thread) => thread.workspaceId === workspaceId);
   }
@@ -2726,7 +3104,7 @@ export class FsStore {
     }
   ): Thread {
     const id = threadId ?? allocateEntityId('th');
-    if (this.threads.has(id)) {
+    if (this.threads.has(id) || this.serverThreads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
     }
     if (!audience && entryPath === 'administration')
@@ -2828,7 +3206,7 @@ export class FsStore {
     const timestamp = options.startedAt ?? now();
     const turnId = options.turnId ?? allocateEntityId('tu');
 
-    if (this.turns.has(turnId)) {
+    if (this.turns.has(turnId) || this.serverTurns.has(turnId)) {
       throw new Error(`Turn already exists: ${turnId}`);
     }
 
@@ -3125,6 +3503,7 @@ export class FsStore {
    */
   public createItem(input: Item, admission?: TerminalTurnWriteAdmission): Item {
     const item = ItemSchema.parse(input);
+    if (this.serverItems.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
     const existing = this.items.get(item.id);
     const turn = this.getTurnById(item.turnId);
     if (turn.workspaceId !== item.workspaceId || turn.threadId !== item.threadId) {

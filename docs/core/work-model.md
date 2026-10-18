@@ -39,6 +39,8 @@ Core Concepts owns the canonical meanings of Workspace, Thread, Turn, Item, Arti
 
 A product projection may summarize or reorganize these records, but it must preserve their identity, order, lineage, and owning authority.
 
+Server work can use a Server-owned Thread under [Core Concepts](core-concepts.md#thread). Its narrative, Turns and Items retain the same product meaning. It does not appear as work owned by a Workspace.
+
 Product surfaces present parallel work as related execution Threads linked from the originating or Coordinator Thread. They keep worker Items in the execution narrative that produced them instead of interleaving several agents' work into one conversation, while still making status, results, evidence, and navigation understandable from the parent surface.
 
 ## Personal Workspace

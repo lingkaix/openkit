@@ -114,6 +114,8 @@ The Gateway dispatcher appends the entries in the existing Workspace transaction
 
 UsageRecord remains the unique measured-consumption authority, with `providerRef` identifying the measured member. The released attempt entry identifies the serving member descriptively; it does not override the null `providerRef` on a new multi-member call or immutable measurement attribution. Identical usage reports still collapse through the existing equivalent-measurement predicate, and every matching entry cites that one retained UsageRecord; no separate per-attempt billing is introduced. A failed attempt without a usage report has no invented measurement. Historical profile-valued call `providerRef` values and existing no-supply logical-model values without the document keep their stored meaning; absence records no route chain and never fabricates one. Export and import preserve the document as optional extension content under existing scope, audience, retention, and reference rules.
 
+General Server Thread work extends the existing CapabilityCall, UsageRecord, work-observation and EvidenceBundle families with immutable Server ownership and no Workspace identity. Core storage and `server/evidence/` are their unique homes. The same capture coverage, environment, source lineage, failure, restart and retention rules apply. Server work never enters Workspace export or a parallel ledger. Current Server administration authority admits reads; historical attribution grants no current access.
+
 ## Storage Ownership
 
 SQLite source-of-truth records:

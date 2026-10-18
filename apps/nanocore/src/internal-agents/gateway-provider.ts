@@ -4,6 +4,7 @@ import {
   type CapabilityAuditLineage,
   finishCapabilityCall,
   type GatewayCallContext,
+  type ServerGatewayCallContext,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import {
@@ -50,7 +51,7 @@ export interface InternalAgentGatewayProviderOptions {
   /** Resolves the pinned ID from the current snapshot and live availability at each Provider call. */
   readonly resolveLogicalModel: (logicalModelId: string) => ResolvedLogicalModel | null;
   /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
-  readonly callContext?: GatewayCallContext;
+  readonly callContext?: GatewayCallContext | ServerGatewayCallContext;
   /** Entry-validated command context for audit only; never a call-start request key. */
   readonly auditLineage?: CapabilityAuditLineage;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
@@ -58,7 +59,7 @@ export interface InternalAgentGatewayProviderOptions {
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly promptCacheScope: {
     readonly sessionId: string;
-    readonly workspaceId: string;
+    readonly workspaceId?: string;
   };
   readonly usageEndpoint: 'quick_chat' | 'responses';
   readonly onDispatch?: (result: {
@@ -87,14 +88,26 @@ export function createInternalAgentGatewayProvider(
     const { canonicalToAlias, aliasToCanonical, providerInput, providerTools } =
       projectInternalAgentRequest(request);
     const workspaceDb = options.capture.workspaceDb;
-    const call = options.callContext
-      ? startCapabilityCall({
-          ...options.callContext,
-          workspaceDb,
-          providerRef: null,
-          threadId: options.capture.threadId,
-          turnId: options.capture.turnId,
-        })
+    const context = options.callContext;
+    const lineage = {
+      providerRef: null,
+      threadId: options.capture.threadId,
+      turnId: options.capture.turnId,
+    };
+    // The database and attribution must have the same admitted immutable owner.
+    if (
+      context &&
+      (workspaceDb.scope === 'core'
+        ? !('owner' in context) || context.owner.kind !== 'server'
+        : 'owner' in context || context.workspaceId !== workspaceDb.workspaceId)
+    )
+      throw new ModelCaptureError();
+    const call = context
+      ? workspaceDb.scope === 'core' && 'owner' in context
+        ? startCapabilityCall({ ...context, ...lineage, workspaceDb })
+        : workspaceDb.scope === 'workspace' && !('owner' in context)
+          ? startCapabilityCall({ ...context, ...lineage, workspaceDb })
+          : undefined
       : undefined;
     let callFinished = false;
     let failurePhase: InternalGatewayFailurePhase = 'pre-transport';
@@ -300,7 +313,9 @@ export function createInternalAgentGatewayProvider(
             failureKind: internalGatewayFailureKind(error),
             ...(observedStatus === undefined ? {} : { httpStatus: observedStatus }),
             ...(call?.context.requestId ? { requestId: call.context.requestId } : {}),
-            workspaceId: workspaceDb.workspaceId,
+            ...(workspaceDb.scope === 'core'
+              ? { owner: { kind: 'server' } }
+              : { workspaceId: workspaceDb.workspaceId }),
             threadId: options.capture.threadId,
             turnId: options.capture.turnId,
             ...(call ? { capabilityCallId: call.id } : {}),

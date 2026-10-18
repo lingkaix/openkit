@@ -231,6 +231,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 | `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
 | `openkit.work-observations.v1` | active | Turn-scoped work observations, restricted content publication and exact portable reference closure. |
+| `openkit.server-threads.v1` | active | Thread, Turn and Item history has an immutable Server owner without a Workspace anchor. |
 | `openkit.thread-entry.v1` | active | Thread records preserve the immutable server-authored conversation or administration entry path. |
 | `openkit.knowledge-git-notebook.v1` | active | Notebook Git revisions own page content, exact-base publication and retained history. |
 | `openkit.knowledge-owner-scope.v1` | active | Knowledge records retain exact User, Workspace or Server ownership and source restrictions. |

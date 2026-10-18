@@ -53,3 +53,24 @@ export const ThreadSchema = z
       });
     }
   });
+
+/** Server work has one immutable owner and no Workspace placement or private User audience. */
+export const ServerThreadSchema = z
+  .object({
+    ...ThreadSchema.shape,
+    workspaceId: z.never().optional(),
+    owner: z.object({ kind: z.literal('server') }),
+    visibility: z.literal('server'),
+    privateOwnerUserId: z.never().optional(),
+  })
+  .superRefine((thread, context) => {
+    if (thread.parentThreadId === thread.id)
+      context.addIssue({
+        code: 'custom',
+        path: ['parentThreadId'],
+        message: 'A receiving Thread must differ from its parent.',
+      });
+  });
+
+/** Canonical Server-owned narrative; Workspace Thread records retain their existing shape. */
+export type ServerThread = z.infer<typeof ServerThreadSchema>;

@@ -313,6 +313,8 @@ Worker Knowledge package preparation retains bounded excerpts rather than exclud
 
 Runtime provenance outcome evidence records `policyDigest` as SHA-256 of the exact admitted AEP Policy JSON in the existing RuntimeEvidence record. A reused `snapshotId` label does not identify Policy content. The immutable AEP snapshot retains the source; historical records without a captured digest remain unknown and are not rewritten.
 
+Goal Coordinator Tools include native `knowledge.ask` and `knowledge.tell` with fixed responsible actor, Goal Workspace and Coordinator Thread/Turn. Current Goal checks precede execution and delivery. Ask can use currently admitted Server Knowledge with Workspace Knowledge; tell remains Workspace-only. User Memory, scope selection and Review approval are unavailable. The existing bounded KM service owns its separate work and usage.
+
 Worker overview delivery appends a fixed native read pointer while retaining the original request Item and request digest. Failed-start classification verifies either the exact request or that exact optional navigation projection derived from the same AgentSession. It does not treat arbitrary input changes as the admitted request.
 ## External Events From Scheduled Polls
 

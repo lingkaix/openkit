@@ -88,6 +88,7 @@ import { uuidv5 } from './generative-kernel/uuid.js';
 import {
   pinKnowledgeManagerExecution,
   runKnowledgeManagerAgent,
+  runServerKnowledgeManagerAgent,
 } from './internal-agents/knowledge-manager-agent.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { askKnowledgeAgent } from './knowledge/knowledge-agent.js';
@@ -97,6 +98,11 @@ import { scanDailyKnowledgeMaintenance } from './knowledge/knowledge-maintenance
 import { checkMemoryForgetIntent } from './knowledge/memory-forget.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import {
+  currentServerMaintenanceActor,
+  prepareServerKnowledgeMaintenance,
+  type ServerKnowledgeMaintenanceDependencies,
+} from './knowledge/server-knowledge-maintenance.js';
 import {
   runUserMemoryMaintenanceCommand,
   type UserMemoryMaintenanceDependencies,
@@ -1487,6 +1493,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     providerCredentialConfigured,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
   };
+  const serverKnowledgeMaintenance: ServerKnowledgeMaintenanceDependencies | undefined =
+    options.coreDb
+      ? {
+          store: sharedStore,
+          coreDb: options.coreDb,
+          runtimeConfigManager,
+          inflightCommands,
+          pin: (run) => {
+            pinKnowledgeManagerExecution(knowledgeDependencies, run);
+          },
+          run: (run) => runServerKnowledgeManagerAgent(knowledgeDependencies, run),
+        }
+      : undefined;
   const userMemoryDependencies = (
     userDb: import('./storage/db.js').UserDb
   ): UserMemoryMaintenanceDependencies => {
@@ -1722,6 +1741,67 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       },
       onError: () => console.warn('Knowledge maintenance requires inspection.'),
     });
+    if (serverKnowledgeMaintenance)
+      scanDailyKnowledgeMaintenance({
+        now: instant,
+        scopes: [
+          {
+            ownerScope: { kind: 'server' as const },
+            schedule: runtimeConfig().openKitConfig.knowledgeMaintenance?.schedule,
+          },
+        ],
+        listTurns: () =>
+          sharedStore
+            .listServerThreads()
+            .flatMap((thread) => sharedStore.listServerThreadTurns(thread.id))
+            .filter((turn) => turn.startedAt !== null)
+            .map((turn) => ({
+              startedAt: turn.startedAt!,
+              internalExecution: {
+                roleId: turn.agentId ?? '',
+                knowledge: turn.internalExecution?.knowledge ?? {
+                  purpose: 'maintenance' as const,
+                  ownerScope: { kind: 'server' as const },
+                  trigger:
+                    turn.triggerSource?.kind === 'automation'
+                      ? ('schedule' as const)
+                      : ('request' as const),
+                },
+              },
+            })),
+        prepare: (_scope, startedAt) => {
+          const requestActor = currentServerMaintenanceActor(
+            coreDb,
+            mode === 'local' ? localUserId : undefined
+          );
+          const prepared = prepareServerKnowledgeMaintenance(serverKnowledgeMaintenance, {
+            requestId: uuidv5(
+              JSON.stringify(['knowledge.server.maintain', startedAt.slice(0, 10)])
+            ),
+            ...(requestActor ? { requestActor } : {}),
+            actor: {
+              kind: 'system',
+              id: 'knowledge-manager',
+              responsibleUserId: requestActor?.userId ?? null,
+            },
+            startedAt,
+            trigger: 'schedule',
+            instructions:
+              'Organize explicit Server inputs and human notebook edits, preserve them, and keep the overview current. Do not learn from Workspace or User Threads.',
+            sources: [],
+            signal: new AbortController().signal,
+          });
+          return {
+            execute: async () => {
+              await prepared.execute();
+            },
+            fail: () => {
+              prepared.fail();
+            },
+          };
+        },
+        onError: () => console.warn('Server Knowledge maintenance requires inspection.'),
+      });
   });
 
   app.use('/api/worker-control/*', browserCors);
@@ -1985,6 +2065,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
   });
   const goalCoordinator = createGoalCoordinator({
+    knowledgeAgent,
     workspaceMutationAdmission,
     store: sharedStore,
     coreDb: options.coreDb,
@@ -2318,6 +2399,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerOperationJsonRoutes({
     knowledgeAgent,
+    ...(serverKnowledgeMaintenance ? { serverKnowledgeMaintenance } : {}),
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
@@ -2380,6 +2462,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerRemoteMcpRoutes({
     knowledgeAgent,
+    ...(serverKnowledgeMaintenance ? { serverKnowledgeMaintenance } : {}),
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
