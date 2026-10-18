@@ -1153,8 +1153,9 @@ function loadWorkspace(
     readJson(workspacePath),
     WorkspaceSystemRecordSchema.parse
   );
-  const workspaceConfig = WorkspaceConfigSchema.parse(
-    parseJsoncObject(readCanonicalTextFile(workspaceConfigPath), workspaceConfigPath)
+  const workspaceConfig = readRetainedV1(
+    parseJsoncObject(readCanonicalTextFile(workspaceConfigPath), workspaceConfigPath),
+    WorkspaceConfigSchema.parse
   );
 
   if (workspaceRecord.id !== workspaceId) {
@@ -1328,16 +1329,21 @@ export function writeWorkspaceMetadata(
   }
 
   if (!configExists) {
-    writeJsonAtomic(workspaceConfigPath, {
-      schemaVersion: 1,
-      workspace: {
-        name: workspace.name,
-        defaultAgentId: null,
-      },
-    });
+    writeJsonAtomic(
+      workspaceConfigPath,
+      writeRetainedV1({
+        workspace: {
+          name: workspace.name,
+          defaultAgentId: null,
+        },
+      })
+    );
   } else if (updateWorkspaceConfigName) {
     const source = readCanonicalTextFile(workspaceConfigPath);
-    const config = WorkspaceConfigSchema.parse(parseJsoncObject(source, workspaceConfigPath));
+    const config = readRetainedV1(
+      parseJsoncObject(source, workspaceConfigPath),
+      WorkspaceConfigSchema.parse
+    );
     if (config.workspace.name !== workspace.name) {
       const updated = applyEdits(
         source,
