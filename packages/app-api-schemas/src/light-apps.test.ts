@@ -16,6 +16,10 @@ const references = [
     digest
   ),
 ];
+const skill = formatReferenceUri(
+  { scopeId: `skill/workspace/${workspaceId}`, objectId: 'customer-process' },
+  digest
+);
 const definition = {
   format: 'openkit.light-app',
   schemaVersion: 1,
@@ -48,6 +52,20 @@ describe('Light App meaning references', () => {
     );
   });
 
+  it('preserves exact pinned Skill targets in authored and admitted definitions', () => {
+    expect(
+      LightAppSchemaInputSchema.parse({ ...definition, references: [skill] }).references
+    ).toEqual([skill]);
+    expect(
+      LightAppAdmittedSchemaSchema.parse({
+        ...definition,
+        references: [skill],
+        appId: '0190f4c8-0000-7000-8000-000000000001',
+        schemaRevision: 1,
+      }).references
+    ).toEqual([skill]);
+  });
+
   it('permits authored omission but requires an explicit admitted list', () => {
     expect(LightAppSchemaInputSchema.safeParse(definition).success).toBe(true);
     const admitted = {
@@ -63,6 +81,7 @@ describe('Light App meaning references', () => {
 
   it.each([
     'not-a-reference',
+    skill.replace(`@${digest}`, ''),
     formatReferenceUri(page),
     formatReferenceUri({ scopeId: `raw/server/${knowledgeBaseId}`, objectId: 'source evidence' }),
     formatReferenceUri(

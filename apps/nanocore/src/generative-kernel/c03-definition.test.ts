@@ -10,12 +10,14 @@ const page = {
   scopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
   objectId: 'entities/customer',
 };
+const skill = formatReferenceUri({ scopeId: 'skill/server', objectId: 'customer-process' }, digest);
 const references = [
   formatReferenceUri(page, digest),
   formatReferenceUri(
     { scopeId: `raw/server/${knowledgeBaseId}`, objectId: 'source evidence' },
     digest
   ),
+  skill,
 ];
 const definition = {
   format: 'openkit.light-app',
@@ -63,6 +65,7 @@ describe('C03 definition admission', () => {
 
   it.each([
     'not-a-reference',
+    skill.replace(`@${digest}`, ''),
     formatReferenceUri(page),
   ])('refuses an invalid exact target at writer admission: %s', (reference) => {
     expect(() => admitLightAppDefinition({ ...definition, references: [reference] })).toThrow(
