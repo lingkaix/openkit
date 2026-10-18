@@ -423,6 +423,30 @@ const archiveBindings = {
   },
 };
 
+/** Public capability exclusions that keep unsupported scope out of the operation catalog. */
+export const operationExclusions = [
+  {
+    source: 'app-api',
+    name: 'channel.discord.pair',
+    reason:
+      'A pairing challenge is delivered only in the authenticated Web account flow; it is not an access token or a CLI output.',
+    owner: 'docs/specs/20260930-pending_requests.md',
+  },
+  {
+    source: 'core-projection',
+    name: 'meta',
+    reason: 'Unauthenticated connection probing is a support binding, outside operation discovery.',
+    owner: 'docs/specs/20261002-operation_definition.md',
+  },
+  {
+    source: 'core-projection',
+    name: 'subscribeTurnEvents',
+    reason:
+      'The CLI has no event subscription mode; bounded durable reads and the three owned archive streams remain available.',
+    owner: 'docs/specs/20260910-agent_operator_skill.md',
+  },
+];
+
 /**
  * The single transport-neutral OpenKit operation inventory.
  *
@@ -478,7 +502,9 @@ export const operationCatalog = [
   },
   ...Object.entries(appSchemas.OPERATION_DEFINITIONS)
     .filter(
-      ([id, definition]) => definition.binding === 'json' || Object.hasOwn(archiveBindings, id)
+      ([id, definition]) =>
+        (definition.binding === 'json' || Object.hasOwn(archiveBindings, id)) &&
+        !operationExclusions.some((entry) => entry.source === 'app-api' && entry.name === id)
     )
     .map(([id, definition]) => ({
       ...STANDARD,
@@ -554,23 +580,6 @@ export const operationCatalog = [
           }
         : {}),
     })),
-];
-
-/** Public capability exclusions that keep unsupported scope out of the operation catalog. */
-export const operationExclusions = [
-  {
-    source: 'core-projection',
-    name: 'meta',
-    reason: 'Unauthenticated connection probing is a support binding, outside operation discovery.',
-    owner: 'docs/specs/20261002-operation_definition.md',
-  },
-  {
-    source: 'core-projection',
-    name: 'subscribeTurnEvents',
-    reason:
-      'The CLI has no event subscription mode; bounded durable reads and the three owned archive streams remain available.',
-    owner: 'docs/specs/20260910-agent_operator_skill.md',
-  },
 ];
 
 /**
