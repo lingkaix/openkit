@@ -1,3 +1,8 @@
+---
+type: change-plan
+status: in-progress
+date: "2026-10-18"
+---
 # Knowledge Package v1 Format
 
 ## Intent Revision 1
