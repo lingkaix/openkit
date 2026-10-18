@@ -2,7 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { formatReferenceUri } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
@@ -70,6 +72,8 @@ Release after the shared gate passes.
       changes: [{ path: 'release-rule.md', content }],
     }
   );
+  const serverScopeId = `page/server/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'server' } })}`;
+  const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
   const thread = store.createThread(
     workspace.id,
     'Knowledge answer',
@@ -102,9 +106,12 @@ Release after the shared gate passes.
         uncertainty: null,
         citations: [
           {
-            reference: `page/server/release-rule@${published.notebookRevision}`,
+            reference: formatReferenceUri(
+              { scopeId: serverScopeId, objectId: 'release-rule' },
+              contentDigest
+            ),
             revision: published.notebookRevision,
-            contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+            contentDigest,
             sourceReferences: [],
           },
         ],
@@ -124,7 +131,7 @@ Release after the shared gate passes.
     answer: 'Wait for the shared gate.',
     citations: [
       {
-        reference: { scopeId: 'page/server', objectId: 'release-rule' },
+        reference: { scopeId: serverScopeId, objectId: 'release-rule' },
         title: 'Shared release rule',
         excerpt: 'Release after the shared gate passes.',
       },

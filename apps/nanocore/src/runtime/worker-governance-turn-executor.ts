@@ -747,6 +747,7 @@ export async function prepareWorkerTurnContextPackage(
       )
         throw error;
       knowledgeExclusions.push({
+        knowledgeBaseId: page.knowledgeBaseId,
         contentDigest: page.contentDigest,
         knowledgePageId: page.knowledgePageId,
         reason: 'budget_exceeded',

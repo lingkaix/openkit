@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { KnowledgeBaseIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -39,7 +41,15 @@ describe('Server literal Source owner', () => {
       content: 'Exact shared Source.\r\nΩ\n',
     };
     const source = await registerServerKnowledgeSource(f, request);
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'server' },
+    });
+    expect(KnowledgeBaseIdSchema.safeParse(knowledgeBaseId).success).toBe(true);
     expect(await registerServerKnowledgeSource(f, request)).toEqual(source);
+    expect(readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'server' } })).toBe(
+      knowledgeBaseId
+    );
     expect(source).toMatchObject({ ownerScope: { kind: 'server' }, kind: 'document', uri: null });
     expect(readServerKnowledgeSource(f, source.id)).toEqual({ source, content: request.content });
     expect(listServerKnowledgeSources(f)).toEqual([source]);

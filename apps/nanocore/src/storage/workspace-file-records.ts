@@ -1379,7 +1379,7 @@ function loadWorkspace(
 }
 
 /** Writes the system Workspace record and the field-preserving editable Workspace config. */
-function writeWorkspaceMetadata(
+export function writeWorkspaceMetadata(
   workspaceRoot: string,
   workspace: WorkspaceRecord,
   updateWorkspaceConfigName: boolean

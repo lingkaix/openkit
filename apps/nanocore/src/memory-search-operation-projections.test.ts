@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { admitOperation } from './operation-resolvers.js';
@@ -135,7 +136,7 @@ describe('public self Memory search', () => {
         actor: { kind: 'user', id: f.userIds[0] },
         threadId: timeline.id,
       },
-      sourceScope: `page/user/${f.userIds[0]}`,
+      sourceScope: userPageScope(f, f.userIds[0]!),
       notebookRevision: baseRevision,
       retrievalParameters: { limit: 5, states: ['active'] },
     });
@@ -153,7 +154,7 @@ describe('public self Memory search', () => {
       expect(content).toBeDefined();
       expect(canonical.files[`${selected.reference.objectId}.md`]).toBe(content);
       expect(selected).toMatchObject({
-        reference: { scopeId: `page/user/${f.userIds[0]}` },
+        reference: { scopeId: userPageScope(f, f.userIds[0]!) },
         revision: baseRevision,
         contentDigest: `sha256:${createHash('sha256').update(content!).digest('hex')}`,
         sourceReferences: [],
@@ -175,7 +176,7 @@ describe('public self Memory search', () => {
     expect(trace).toMatchObject({
       traceId: result.body.retrievalTraceRef.objectId,
       queryContext: result.body.queryContext,
-      sourceScope: `page/user/${f.userIds[0]}`,
+      sourceScope: userPageScope(f, f.userIds[0]!),
       notebookRevision: baseRevision,
       requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
@@ -186,7 +187,7 @@ describe('public self Memory search', () => {
     expect(traceBytes).not.toContain(f.userIds[1]!);
     expect(JSON.stringify(result.body)).not.toContain('foreign-private-body');
 
-    const pin = { scopeId: `page/user/${f.userIds[0]}`, objectId: 'preference-5' };
+    const pin = { scopeId: userPageScope(f, f.userIds[0]!), objectId: 'preference-5' };
     const pinned = await f.call(0, 'memory.search', {
       ...request,
       limit: 1,
@@ -199,11 +200,11 @@ describe('public self Memory search', () => {
     for (const extension of [
       { userId: f.userIds[1] },
       { sourceScope: 'server' },
-      { scopeId: `page/user/${f.userIds[1]}` },
+      { scopeId: userPageScope(f, f.userIds[1]!) },
       { caller: 'task-mode' },
       { limit: 0 },
       { limit: 21 },
-      { pinnedReferences: [{ ...pin, scopeId: `page/user/${f.userIds[1]}` }] },
+      { pinnedReferences: [{ ...pin, scopeId: userPageScope(f, f.userIds[1]!) }] },
     ]) {
       const refused = await f.call(0, 'memory.search', { ...request, ...extension });
       expect([400, 403]).toContain(refused.status);
@@ -245,3 +246,8 @@ describe('public self Memory search', () => {
     expect(exported.status).toBe(200);
   });
 });
+
+/** Reads the self-owned base created by the real Memory operation. */
+function userPageScope(f: ReturnType<typeof fixture>, userId: string): string {
+  return `page/user/${userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId } })}`;
+}

@@ -202,3 +202,9 @@ User-level and workspace-level databases should be introduced only when their in
 The rebuildable Retrieval Kernel projection is the default full-text search index family. Vector search remains an optional future index family until promoted by stable core requirements.
 
 The current local and server realization uses the encrypted-file Vault through the vault boundary, not normal storage records. Concrete ciphertext, metadata, and key-file layout remain implementation-facing Vault concerns.
+
+## Independent Retained Format Markers
+
+Each OpenKit-owned retained family has an explicit format marker in its record header or its existing owning inventory. New record formats start at version 1. Writers and readers use the shared marker helper: writers emit the marker, and readers check it before decoding the family's payload. A missing or unknown version fails closed. Family-owned retained schemas are independent of release-coupled wire schemas; a wire-only change cannot change the meaning of a stored version. Existing native database journals govern scalar-only SQL storage; independently decoded JSON-bearing rows carry their own version. Original content and opaque native bytes are not rewritten to add an OpenKit header. Their versioned owning descriptors retain their exact digest and interpretation.
+
+This rc.11 cutover uses the accepted pre-stable reset boundary. It adds no converter, legacy reader or dual write. The coordinator performs the single deployment reset; this rule authorizes no host or account action.
