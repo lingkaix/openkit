@@ -788,13 +788,7 @@ describe('workspace export verifier', () => {
       record: ArtifactVersionRecordSchema.parse({
         artifact,
         version: {
-          artifactId: artifact.id,
-          workspaceId: workspace.id,
-          artifactVersion: artifact.version,
           parentVersion: null,
-          title: artifact.title,
-          summary: artifact.summary,
-          contentDigest: artifact.contentDigest,
           actor: turn.triggerActor,
           threadId: artifact.threadId,
           turnId: artifact.turnId,

@@ -139,13 +139,7 @@ function retainInitialArtifact(workspaceRoot: string, value: unknown, actor: unk
     record: ArtifactVersionRecordSchema.parse({
       artifact,
       version: {
-        artifactId: artifact.id,
-        workspaceId: artifact.workspaceId,
-        artifactVersion: 1,
         parentVersion: null,
-        title: artifact.title,
-        summary: artifact.summary,
-        contentDigest: artifact.contentDigest,
         actor: artifact.origin.kind === 'imported' ? artifact.origin.actor : actor,
         threadId: artifact.threadId,
         turnId: artifact.turnId,
