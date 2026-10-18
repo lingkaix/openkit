@@ -98,6 +98,13 @@ describe('retained Policy version-one contracts', () => {
       consumedStatements: [],
     };
     expect(PolicyDecisionV1Schema.parse(decision).kernel?.effect).toBe('deny');
+    expect(PolicyDecisionV1Schema.safeParse({ ...decision, kernel: null }).success).toBe(true);
+    expect(
+      PolicyDecisionV1Schema.safeParse({
+        ...decision,
+        consumedStatements: [{ id: binding.id, digest }],
+      }).success
+    ).toBe(false);
     expect(PolicyDecisionV1Schema.safeParse({ ...decision, kernel: undefined }).success).toBe(
       false
     );

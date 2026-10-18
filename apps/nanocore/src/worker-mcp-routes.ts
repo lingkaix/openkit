@@ -14,6 +14,7 @@ import {
 import { operationToolName } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
+import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   type ActorRef,
   allocateEntityId,
@@ -25,7 +26,12 @@ import {
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
 import type { AuthVariables } from './auth/middleware.js';
-import { currentWorkerLineageWorkspaceAuthority } from './auth/operation-authorizer.js';
+import {
+  currentWorkerLineageWorkspaceAuthority,
+  currentWorkspaceAuthority,
+  DeploymentAdminRequiredError,
+  requireCurrentDeploymentAdmin,
+} from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   recordUsage,
@@ -45,7 +51,14 @@ import {
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
+import { readAdmittedPolicyDocument } from './policy/configuration.js';
+import {
+  type DeterministicPolicyParticipant,
+  type InterceptionInput,
+  PolicyInterception,
+} from './policy/interception.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
+import { policyDigest } from './policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
@@ -127,6 +140,7 @@ interface GrantedMcpApproval {
 }
 
 interface WorkerMcpToolCallInput {
+  readonly interception: PolicyInterception;
   readonly arguments: Record<string, unknown>;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly input: RegisterWorkerMcpRoutesInput;
@@ -141,6 +155,8 @@ interface WorkerMcpToolCallInput {
 
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
+  /** Deterministic pilot participant injected by the native composition or tests. */
+  readonly policyParticipant?: DeterministicPolicyParticipant;
   readonly automationStore?: OperationInvocationDependencies['automationStore'];
   readonly turnStartServices?: OperationInvocationDependencies['turnStartServices'];
   readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
@@ -171,6 +187,7 @@ export interface RegisterWorkerMcpRoutesInput {
 
 /** Registers the private per-catalog-entry MCP Streamable HTTP endpoint. */
 export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): void {
+  const interception = new PolicyInterception(input.policyParticipant);
   const activeRequests = new Map<string, AbortController>();
   const toolCallTails = new Map<string, Promise<void>>();
   const builtinInflight = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
@@ -756,6 +773,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               applyScopedMigrations(activeWorkspaceDb);
               requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               return await callWorkerMcpTool({
+                interception,
                 arguments: request.params.arguments ?? {},
                 environmentPackage,
                 input,
@@ -1197,7 +1215,6 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   const approvalEffect = currentSnapshot
     ? mcpApprovalEffect(input, currentSnapshot.schemaSnapshotId)
     : null;
-  const grantedApproval: GrantedMcpApproval | null = null;
   const itemId = workerMcpItemId(
     input.environmentPackage,
     input.serverId,
@@ -1353,10 +1370,11 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   let cancelled = false;
   let publishTerminalItem = true;
   let observedCredentials: WorkerMcpGatewayCredentials | undefined;
+  let policyInput: InterceptionInput | undefined;
 
   try {
     if (
-      !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage) ||
+      currentMcpPolicyAuthority(input).kernel.effect !== 'allow' ||
       !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
     ) {
       recordMcpToolUseDecision(input, call, 'deny', null);
@@ -1415,6 +1433,17 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       status = 'declined';
       return pendingToolResult('pending-approval', raised.requestId);
     }
+    policyInput = mcpInterceptionInput(input, call);
+    const policyDecision = await input.interception.decide(policyInput);
+    if (policyDecision.result !== 'allow') {
+      publishTerminalItem = false;
+      // The captured human escalation join is completed before this pilot lands.
+      throw new WorkerControlGatewayError(
+        policyDecision.result === 'deny' ? 'mcp-denied' : 'mcp-policy-unavailable',
+        'MCP Policy did not allow the call.',
+        policyDecision.result === 'deny' ? 403 : 503
+      );
+    }
     const observed = await observeWorkerMcpTools({
       call,
       environmentPackage: input.environmentPackage,
@@ -1472,7 +1501,12 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
       }
     }
-    recordMcpToolUseDecision(input, call, 'allow', grantedApproval);
+    if (!policyInput.stillCurrent())
+      throw new WorkerControlGatewayError(
+        'mcp-policy-stale',
+        'MCP Policy or current authority changed before dispatch.',
+        409
+      );
     const dispatchCredentials = observedCredentials;
     const result = await input.input.workerMcpGateway.callTool({
       arguments: input.arguments,
@@ -1503,8 +1537,22 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     terminalCommitted = true;
     status = 'completed';
+    if (policyInput) {
+      // A failed completed observation must not rewrite the settled upstream call.
+      try {
+        await input.interception.observe(policyInput);
+      } catch {
+        throw new ProtocolError(
+          ProtocolErrorCode.InternalError,
+          'MCP call completed; observation evidence is unavailable.',
+          { code: 'policy_evidence_unavailable' }
+        );
+      }
+    }
     return result;
   } catch (error) {
+    // A completed Tool effect stays completed when later observation evidence fails.
+    if (terminalCommitted && status === 'completed') throw error;
     if (error instanceof WorkerMcpGatewayCallError) {
       upstreamEffect = error.upstreamEffect;
       cancelled = error.cancelled;
@@ -1610,6 +1658,117 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       } catch {}
     }
   }
+}
+
+/** Captures actual current Kernel facts through the existing Worker admission owner. */
+function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput) {
+  let evaluated: { decision: PolicyDecision; facts: unknown } | null = null;
+  currentWorkerLineageWorkspaceAuthority(
+    input.input.coreDb!,
+    { ...input.environmentPackage.scope, packageSnapshotId: input.environmentPackage.snapshotId },
+    'tool.use',
+    true,
+    {
+      dependencyFailure: 'throw',
+      onEvaluation: (event) => {
+        evaluated = event;
+      },
+    }
+  );
+  const captured = evaluated as { decision: PolicyDecision; facts: unknown } | null;
+  if (!captured) throw new Error('Current MCP authority was unavailable before Kernel evaluation.');
+  return { kernel: captured.decision, revision: policyDigest(captured) };
+}
+
+/** Human binding authority uses current native owners, never its retained historical decision. */
+function currentMcpBindingAuthor(input: WorkerMcpToolCallInput, userId: string): boolean {
+  let requestActor: import('./auth/identity.js').Actor | undefined;
+  try {
+    const administrator = requireCurrentDeploymentAdmin(input.input.coreDb!, {
+      kind: 'session',
+      userId,
+    });
+    if (administrator.tokenId)
+      requestActor = {
+        kind: 'token',
+        userId,
+        tokenId: administrator.tokenId,
+        tokenScope: 'server-admin',
+      };
+  } catch (error) {
+    if (!(error instanceof DeploymentAdminRequiredError)) throw error;
+  }
+  return Boolean(
+    currentWorkspaceAuthority(
+      input.input.coreDb!,
+      input.environmentPackage.scope.workspaceId,
+      { kind: 'user', id: userId },
+      'tool.use',
+      true,
+      requestActor,
+      { dependencyFailure: 'throw' }
+    )
+  );
+}
+
+/** Pins schema-independent Tool facts before any credentialed discovery or upstream contact. */
+function mcpInterceptionInput(
+  input: WorkerMcpToolCallInput,
+  call: StartedCapabilityCall
+): InterceptionInput {
+  const scope = input.environmentPackage.scope;
+  const responsibleHumanId = responsibleUserIdForActor(scope.triggerActor);
+  if (!responsibleHumanId) throw new Error('MCP responsible human is unavailable.');
+  const authority = currentMcpPolicyAuthority(input);
+  const document = readAdmittedPolicyDocument(
+    input.input.coreDb!,
+    input.input.runtimeConfig().openKitConfig.policy?.mediation
+  );
+  const policyRevision = policyDigest(document);
+  const proposal = {
+    operation: 'mcp.call-tool' as const,
+    workspaceId: scope.workspaceId,
+    serverId: input.serverId,
+    toolName: input.toolName,
+    argumentsDigest: policyDigest(input.arguments),
+    // This pilot's contract is schema-independent. The exact Turn schema remains
+    // a mandatory post-allow dispatch precondition under its existing owner.
+    schemaDigest: null,
+    capabilityCallId: call.id,
+    subject: {
+      principal: { kind: 'human' as const, id: responsibleHumanId },
+      onBehalfOf: null,
+      actor: {
+        kind: 'agent' as const,
+        id: input.environmentPackage.agent.agentId,
+        responsibleUserId: responsibleHumanId,
+      },
+      process: { workspaceId: scope.workspaceId, threadId: scope.threadId, turnId: scope.turnId },
+      credentialKind: 'worker-package' as const,
+      responsibleHumanId,
+    },
+  };
+  return {
+    workspaceDb: input.workspaceDb,
+    document,
+    proposal,
+    authorizationRevision: authority.revision,
+    authorCurrent: (userId) => currentMcpBindingAuthor(input, userId),
+    participantAuthorized: (binding) =>
+      binding.author.kind === 'human' && currentMcpBindingAuthor(input, binding.author.id),
+    finalKernel: () => currentMcpPolicyAuthority(input).kernel,
+    stillCurrent: () =>
+      !input.signal.aborted &&
+      hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage) &&
+      currentMcpPolicyAuthority(input).revision === authority.revision &&
+      policyDigest(
+        readAdmittedPolicyDocument(
+          input.input.coreDb!,
+          input.input.runtimeConfig().openKitConfig.policy?.mediation
+        )
+      ) === policyRevision &&
+      policyDigest(input.arguments) === proposal.argumentsDigest,
+  };
 }
 
 /** Records the one tool-call quantity after the upstream effect boundary is crossed. */

@@ -138,6 +138,8 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         actor,
         coreDb,
         files,
+        store,
+        repositoryWorkspaceDb: options.repositoryWorkspaceDb,
         loadedPolicy: options.runtimeConfig().openKitConfig.policy?.mediation,
         ...('policyProposal' in request ? { candidate: request.policyProposal } : {}),
       });
