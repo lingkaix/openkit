@@ -159,7 +159,7 @@ it.each([
   'missing-target',
 ] as const)('admits only exact Server page citations through maintenance publication: %s', async (kind) => {
   const f = fixture(kind !== 'reviewed-candidate');
-  const context = { coreDb: f.coreDb, actor: f.requestActor };
+  const context = { ...f.dependencies, actor: f.requestActor };
   const source = await registerServerKnowledgeSource(context, {
     requestId: randomUUID(),
     kind: 'document',
@@ -259,11 +259,10 @@ it.each([
   let publishedRevision = result.notebookRevision;
   if (kind === 'reviewed-candidate') {
     expect(f.notebook.publishedRevision()).toBe(baseRevision);
-    const candidateFiles = f.notebook.readRevision(result.candidateRevision!).files;
     const proposalContext = {
       ...f.dependencies,
       actor: f.requestActor,
-      revalidate: (files = candidateFiles) =>
+      revalidate: (files?: Readonly<Record<string, string>>) =>
         serverNotebookAdmission(f.dependencies, f.requestActor, files),
     };
     const saved = readServerNotebookProposal(proposalContext, result.proposalId!);
@@ -292,7 +291,7 @@ it.each([
 it('withholds historical human page bodies when their original Source is unavailable', async () => {
   const f = fixture(true);
   const source = await registerServerKnowledgeSource(
-    { coreDb: f.coreDb, actor: f.requestActor },
+    { ...f.dependencies, actor: f.requestActor },
     {
       requestId: randomUUID(),
       kind: 'document',
