@@ -144,6 +144,14 @@ import {
   readRecurringPortableFiles,
   remapRecurringPortableHistory,
 } from './recurring-portable-history.js';
+import {
+  StoredArtifactSnapshotV1Schema,
+  StoredEventPayloadV1Schema,
+  StoredTurnSnapshotV1Schema,
+  StoredWorkspaceSnapshotV1Schema,
+} from './retained-work-events-v1.js';
+import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
+import { StoredArtifactV1Schema, StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
@@ -161,7 +169,6 @@ import {
   artifactReferenceItemId,
   assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
-  CaptureCoverageBindingSchema,
   KnowledgeSourceRecordSchema,
   knowledgeEntriesEqual,
   listUnresolvedUserInputRequestItemIds,
@@ -973,7 +980,7 @@ export function readWorkspaceImportSnapshot(
       threadIds: new Set(context.threadIds.keys()),
       turns: new Map(
         readImportJsonl(context.files, 'records/turns.jsonl').map((row) => {
-          const turn = TurnSchema.parse(row);
+          const turn = readRetainedV1(row, StoredTurnSnapshotV1Schema.parse);
           return [turn.id, turn.threadId];
         })
       ),
@@ -1014,7 +1021,7 @@ export function readWorkspaceImportSnapshot(
     }
   }
   const sourceTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
-    TurnSchema.parse(record)
+    readRetainedV1(record, StoredTurnSnapshotV1Schema.parse)
   );
   const sourceNotebookPages = new Map(
     [...context.files]
@@ -1303,8 +1310,9 @@ function readCanonicalImportState(context: ImportRemintContext) {
   if (context.files.has('records/workspace.json')) {
     throw new Error('Unsupported workspace export file: records/workspace.json.');
   }
-  const exportedWorkspaceRecord = WorkspaceSystemRecordSchema.parse(
-    readImportJson(context.files, 'records/workspace-record.json')
+  const exportedWorkspaceRecord = readRetainedV1(
+    readImportJson(context.files, 'records/workspace-record.json'),
+    WorkspaceSystemRecordSchema.parse
   );
   const exportedWorkspaceConfig = readRetainedV1(
     parseJsoncObject(
@@ -1333,14 +1341,14 @@ function readCanonicalImportState(context: ImportRemintContext) {
     (record) => KnowledgeEntrySchema.parse(record)
   );
   const exportedTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
-    TurnSchema.parse(record)
+    readRetainedV1(record, StoredTurnSnapshotV1Schema.parse)
   );
   const turnIds = allocateImportedEntityIds(
     'tu',
     exportedTurns.map((turn) => turn.id)
   );
   const exportedArtifacts = readExportedArtifacts(context.files, report.manifest);
-  const exportedWorkspace = WorkspaceRecordSchema.parse({
+  const exportedWorkspace = StoredWorkspaceSnapshotV1Schema.parse({
     ...exportedWorkspaceRecord,
     name: exportedWorkspaceConfig.workspace.name,
     counts: {
@@ -1364,14 +1372,14 @@ function readCanonicalImportState(context: ImportRemintContext) {
     exportedArtifacts.map((artifact) => artifact.id)
   );
   const exportedAgentSessions = readImportJsonl(context.files, 'records/agent-sessions.jsonl').map(
-    (record) => AgentSessionRecordSchema.parse(record) as AgentSession
+    (record) => readRetainedV1(record, AgentSessionRecordSchema.parse) as AgentSession
   );
   const agentSessionIds = allocateImportedEntityIds(
     'as',
     exportedAgentSessions.map((session) => session.id)
   );
   const exportedItemRevisions = readImportJsonl(context.files, 'records/item-revisions.jsonl').map(
-    (record) => ItemSchema.parse(record)
+    (record) => readRetainedV1(record, StoredItemPayloadV1Schema.parse)
   );
   const unresolvedUserInputRequestIds =
     listUnresolvedUserInputRequestItemIds(exportedItemRevisions);
@@ -1646,7 +1654,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
       }) as AgentSession
   );
   const exportedEvents = readImportJsonl(context.files, 'records/turn-events.jsonl').map((record) =>
-    SseEventEnvelopeSchema.parse(record)
+    readRetainedV1(record, StoredEventPayloadV1Schema.parse)
   );
   const exportedTurnIds = new Set(exportedTurns.map((turn) => turn.id));
   if (exportedEvents.some((event) => !event.turnId || !exportedTurnIds.has(event.turnId))) {
@@ -4316,8 +4324,9 @@ function readRetrievalTraceImportState(
   const references = new Map<string, RetrievalTraceReference>();
   const selectedPages = new Map<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>();
   const importedSource =
-    WorkspaceSystemRecordSchema.parse(
-      readImportJson(context.files, 'records/workspace-record.json')
+    readRetainedV1(
+      readImportJson(context.files, 'records/workspace-record.json'),
+      WorkspaceSystemRecordSchema.parse
     ).importedFrom !== undefined;
 
   for (const exportPath of tracePaths) {
@@ -4825,12 +4834,15 @@ function readExportedArtifacts(
   const expectedPaths = new Set<string>();
   const artifacts = metadataPaths.map((metadataPath) => {
     const artifactId = metadataPath.split('/')[1] as string;
-    const metadata = readImportJson(files, metadataPath) as Record<string, unknown>;
+    const metadata = readRetainedV1(
+      readImportJson(files, metadataPath),
+      StoredArtifactV1Schema.parse
+    );
     const format = z
       .enum(['markdown', 'text', 'json', 'file'])
       .parse((metadata.content as { format?: unknown } | undefined)?.format);
     if (format === 'file') {
-      const artifact = ArtifactSchema.parse(metadata);
+      const artifact = StoredArtifactSnapshotV1Schema.parse(metadata);
       const payloadPath = `artifacts/${artifactId}/versions/${artifact.version}/payload`;
       const payload = manifest.contentInventory.find((entry) => entry.path === payloadPath);
       if (
@@ -4850,7 +4862,7 @@ function readExportedArtifacts(
 
     expectedPaths.add(metadataPath);
     expectedPaths.add(bodyPath);
-    const artifact = ArtifactSchema.parse({
+    const artifact = StoredArtifactSnapshotV1Schema.parse({
       ...metadata,
       content: { format, body: requiredExportFile(files, bodyPath) },
     });
@@ -5000,14 +5012,16 @@ function readWorkObservationImportState(
   const expectedPaths = new Set<string>();
   const rawTurns = readImportJsonl(context.files, 'records/turns.jsonl');
   for (const value of rawTurns) {
-    const raw = z
-      .object({
-        captureCoverage: CaptureCoverageBindingSchema.optional(),
-        requiredFeatures: z.array(z.string()).optional(),
-      })
-      .passthrough()
-      .parse(value);
-    const turn = TurnSchema.parse(value);
+    const raw = readRetainedV1(value, (record) =>
+      z
+        .object({
+          captureCoverage: StoredTurnV1Schema.shape.captureCoverage,
+          requiredFeatures: StoredTurnV1Schema.shape.requiredFeatures,
+        })
+        .passthrough()
+        .parse(record)
+    );
+    const turn = StoredTurnSnapshotV1Schema.parse(raw);
     const targetTurnId = requiredMapValue(context.turnIds, turn.id, 'turn');
     if (raw.captureCoverage) turnCaptureCoverage.set(targetTurnId, raw.captureCoverage);
     const path = `workspace-files/threads/${turn.threadId}/turns/${turn.id}/observations.jsonl`;
