@@ -59,6 +59,10 @@ export const auditEvents = sqliteTable(
     resourceRevision: integer('resource_revision'),
     /** Exact typed notebook admission facts persisted before Git content publication. */
     notebookAdmissionJson: text('notebook_admission_json'),
+    /** Typed participant invocation evidence on this existing Audit family. */
+    policyInvocationJson: text('policy_invocation_json'),
+    /** Policy candidate validation, persistence and activation evidence. */
+    policyWriteOutcomeJson: text('policy_write_outcome_json'),
     /** Event outcome. */
     outcome: text('outcome').$type<AuditEventOutcome>().notNull(),
     /** Event severity. */

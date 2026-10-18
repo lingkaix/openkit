@@ -4,6 +4,8 @@ import {
   AuditEventSchema,
   allocateEntityId,
   type KnowledgeOwnerScope,
+  PolicyInvocationV1Schema,
+  PolicyWriteOutcomeV1Schema,
   RequestIdSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
@@ -52,6 +54,10 @@ export interface RecordServerAuditEventInput {
   resourceRevision?: number | null;
   /** Exact notebook admission facts, never page bodies or a reusable permission. */
   notebookAdmission?: AuditEvent['notebookAdmission'];
+  /** Exact non-secret participant evidence. */
+  policyInvocation?: AuditEvent['policyInvocation'];
+  /** Exact Policy write persistence and activation outcome. */
+  policyWriteOutcome?: AuditEvent['policyWriteOutcome'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -108,6 +114,10 @@ export interface RecordWorkspaceAuditEventInput {
   resourceRevision?: number | null;
   /** Exact notebook admission facts, never page bodies or a reusable permission. */
   notebookAdmission?: AuditEvent['notebookAdmission'];
+  /** Exact non-secret participant evidence. */
+  policyInvocation?: AuditEvent['policyInvocation'];
+  /** Exact Policy write persistence and activation outcome. */
+  policyWriteOutcome?: AuditEvent['policyWriteOutcome'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -279,6 +289,8 @@ export function listSqliteAuditEvents(
         resource,
         resource_revision,
         notebook_admission_json,
+        policy_invocation_json,
+        policy_write_outcome_json,
         outcome,
         severity,
         summary,
@@ -339,6 +351,8 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         resource,
         resource_revision,
         notebook_admission_json,
+        policy_invocation_json,
+        policy_write_outcome_json,
         outcome,
         severity,
         summary,
@@ -413,6 +427,10 @@ function recordAuditEvent(
     resource: input.resource ?? null,
     resourceRevision: input.resourceRevision ?? null,
     ...(input.notebookAdmission ? { notebookAdmission: input.notebookAdmission } : {}),
+    ...(input.policyInvocation === undefined ? {} : { policyInvocation: input.policyInvocation }),
+    ...(input.policyWriteOutcome === undefined
+      ? {}
+      : { policyWriteOutcome: input.policyWriteOutcome }),
     outcome: input.outcome,
     severity: input.severity ?? 'info',
     summary: input.summary,
@@ -457,13 +475,15 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         resource,
         resource_revision,
         notebook_admission_json,
+        policy_invocation_json,
+        policy_write_outcome_json,
         outcome,
         severity,
         summary,
         error_code,
         created_at,
         occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.id,
@@ -486,6 +506,8 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
       event.resource,
       event.resourceRevision,
       event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
+      event.policyInvocation === undefined ? null : JSON.stringify(event.policyInvocation),
+      event.policyWriteOutcome === undefined ? null : JSON.stringify(event.policyWriteOutcome),
       event.outcome,
       event.severity,
       event.summary,
@@ -506,7 +528,11 @@ function auditEventFromRow(row: unknown): AuditEvent {
  * @param value Value to inspect recursively.
  */
 function assertNoUnsafeAuditValue(value: unknown): void {
-  if (findUnsafeAuditKey(value)) {
+  const { policyInvocation, policyWriteOutcome, ...ordinary } = value as Record<string, unknown>;
+  // The closed typed payload admits credential kind, never credential material or arbitrary bodies.
+  if (policyInvocation !== undefined) PolicyInvocationV1Schema.parse(policyInvocation);
+  if (policyWriteOutcome !== undefined) PolicyWriteOutcomeV1Schema.parse(policyWriteOutcome);
+  if (findUnsafeAuditKey(ordinary)) {
     throw new Error('Audit event values must be redacted before recording.');
   }
 }

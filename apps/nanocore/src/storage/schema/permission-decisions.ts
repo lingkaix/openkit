@@ -43,6 +43,8 @@ export const permissionDecisions = sqliteTable(
     reasonCode: text('reason_code').notNull(),
     /** Enforcement point that produced this decision. */
     enforcementPoint: text('enforcement_point').notNull(),
+    /** Exact typed mediated evaluation, absent for specialized producers. */
+    mediationJson: text('mediation_json'),
     /** Approval kind required when result is require_approval. */
     requiredApprovalKind: text('required_approval_kind'),
     /** Linked approval id when present. */

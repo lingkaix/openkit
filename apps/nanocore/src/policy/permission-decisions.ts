@@ -1,19 +1,29 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   type ActorRef,
   type AuditEvent,
   allocateEntityId,
   isEntityId,
+  type PolicyDecisionV1,
+  type PolicyInvocationV1,
+  PolicyInvocationV1Schema,
+  PolicyStatementReferenceV1Schema,
   RequestIdSchema,
   TimestampSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { z } from 'zod';
 
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { BootPolicyKernel } from '../bootstrap/policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
-import { readAuditEventRowV1, readPermissionDecisionRowV1 } from './retained-records-v1.js';
+import {
+  PermissionDecisionRetainedV1Schema,
+  readAuditEventRowV1,
+  readPermissionDecisionRowV1,
+} from './retained-records-v1.js';
 
 /** Supported storage owner scopes for the first permission decision recorder. */
 export type PermissionDecisionOwnerScope = 'server' | 'workspace' | 'user';
@@ -91,6 +101,12 @@ export interface RecordProductPermissionDecisionInput {
   reasonCode: string;
   /** Enforcement point that produced this row. */
   enforcementPoint: string;
+  /** Exact mediated evaluation, absent on specialized records. */
+  mediation?: PolicyDecisionV1;
+  /** Gate participant evidence published on this decision's existing linked Audit. */
+  policyInvocation?: PolicyInvocationV1;
+  /** Ephemeral limits consumed by this final allowing Workspace decision. */
+  uses?: readonly { statement: PolicyDecisionV1['consumedStatements'][number]; limit: number }[];
   /** Approval kind required when applicable. */
   requiredApprovalKind?: string | null;
   /** Linked approval id when present. */
@@ -129,6 +145,8 @@ export interface ExportedWorkspacePermissionDecision {
   readonly reasonCode: string;
   /** Enforcement point that produced this row. */
   readonly enforcementPoint: string;
+  /** Exact mediated evaluation when the producer supplies it. */
+  readonly mediation?: PolicyDecisionV1;
   /** Approval kind required when applicable. */
   readonly requiredApprovalKind: string | null;
   /** Linked approval id when present. */
@@ -165,6 +183,8 @@ export interface ServerPermissionDecisionRecord {
   readonly reasonCode: string;
   /** Enforcement point that produced this row. */
   readonly enforcementPoint: string;
+  /** Exact mediated evaluation when the producer supplies it. */
+  readonly mediation?: PolicyDecisionV1;
   /** Approval kind required when applicable. */
   readonly requiredApprovalKind: string | null;
   /** Linked approval id when present. */
@@ -189,6 +209,7 @@ interface PermissionDecisionRow {
   readonly result: PermissionDecisionResult;
   readonly reason_code: string;
   readonly enforcement_point: string;
+  readonly mediation_json: string | null;
   readonly required_approval_kind: string | null;
   readonly approval_id: string | null;
   readonly audit_event_id: string | null;
@@ -424,8 +445,81 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
   const sqlite = permissionDecisionDb(input);
   const auditEventId = permissionDecisionAuditEventId(input);
   const retained = writeRetainedV1(input);
+  const mediation = PermissionDecisionRetainedV1Schema.parse({
+    ...input,
+    workspaceId: input.workspaceId ?? null,
+    requiredApprovalKind: input.requiredApprovalKind ?? null,
+    approvalId: input.approvalId ?? null,
+    auditEventId,
+    createdAt,
+  }).mediation;
+  const policyInvocation =
+    input.policyInvocation === undefined
+      ? undefined
+      : PolicyInvocationV1Schema.parse(input.policyInvocation);
+  if (
+    policyInvocation &&
+    (mediation?.role !== 'gate' ||
+      policyInvocation.mode !== 'gate' ||
+      input.auditEventId ||
+      !auditEventId ||
+      policyInvocation.point !== mediation.point ||
+      policyInvocation.policyRevision !== mediation.policyRevision ||
+      policyInvocation.authorizationRevision !== mediation.authorizationRevision ||
+      policyInvocation.proposalDigest !== mediation.proposalDigest ||
+      !isDeepStrictEqual(policyInvocation.binding, mediation.binding) ||
+      !isDeepStrictEqual(policyInvocation.subject, mediation.subject) ||
+      policyInvocation.capabilityCallId !==
+        optionalStringField(input.contextSummary, 'capabilityCallId'))
+  )
+    throw new Error('Gate Policy invocation must match its decision and atomic linked Audit.');
+  const uses =
+    input.uses === undefined
+      ? []
+      : z
+          .array(
+            z
+              .object({
+                statement: PolicyStatementReferenceV1Schema,
+                limit: z.number().int().positive(),
+              })
+              .strict()
+          )
+          .min(1)
+          .parse(input.uses);
+  if (uses.length || (mediation?.consumedStatements.length ?? 0)) {
+    if (
+      input.ownerScope !== 'workspace' ||
+      !input.workspaceDb ||
+      input.workspaceId !== input.workspaceDb.workspaceId ||
+      mediation?.role !== 'final' ||
+      input.result !== 'allow' ||
+      mediation.kernel?.effect !== 'allow' ||
+      input.auditEventId ||
+      (mediation.subject.process !== null &&
+        mediation.subject.process.workspaceId !== input.workspaceId)
+    )
+      throw new Error(
+        'Finite Policy uses require a final Workspace allow and atomic linked Audit.'
+      );
+    const requested = uses
+      .map(({ statement }) => JSON.stringify([statement.id, statement.digest]))
+      .sort();
+    const consumed = mediation.consumedStatements
+      .map(({ id, digest }) => JSON.stringify([id, digest]))
+      .sort();
+    if (
+      new Set(requested).size !== requested.length ||
+      JSON.stringify(requested) !== JSON.stringify(consumed)
+    )
+      throw new Error('Consumed Policy statements must exactly match requested finite-use limits.');
+  }
 
-  sqlite.transaction(() => {
+  const publish = sqlite.transaction(() => {
+    for (const { statement, limit } of uses) {
+      if (readPolicyStatementUseCount(input.workspaceDb!, statement) >= limit)
+        throw new Error('Policy statement use limit is exhausted.');
+    }
     sqlite
       .prepare(
         `INSERT INTO permission_decisions (
@@ -442,11 +536,12 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.decisionId,
@@ -462,6 +557,7 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         input.result,
         input.reasonCode,
         input.enforcementPoint,
+        mediation === undefined ? null : JSON.stringify(mediation),
         input.requiredApprovalKind ?? null,
         input.approvalId ?? null,
         auditEventId,
@@ -480,11 +576,13 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
+        capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
         errorCode: permissionAuditErrorCode(input),
         itemId: optionalStringField(input.contextSummary, 'itemId'),
         now,
         outcome: permissionAuditOutcome(input.result),
         permissionDecisionId: input.decisionId,
+        ...(policyInvocation === undefined ? {} : { policyInvocation }),
         requestId: optionalStringField(input.contextSummary, 'requestId'),
         resource: `permission:${input.action}`,
         severity: permissionAuditSeverity(input.result),
@@ -501,12 +599,14 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
+        capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
         errorCode: permissionAuditErrorCode(input),
         itemId: optionalStringField(input.contextSummary, 'itemId'),
         coreDb: input.coreDb,
         now,
         outcome: permissionAuditOutcome(input.result),
         permissionDecisionId: input.decisionId,
+        ...(policyInvocation === undefined ? {} : { policyInvocation }),
         requestId: optionalStringField(input.contextSummary, 'requestId'),
         resource: `permission:${input.action}`,
         severity: permissionAuditSeverity(input.result),
@@ -515,7 +615,31 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         turnId: optionalStringField(input.contextSummary, 'turnId'),
       });
     }
-  })();
+  });
+  if (uses.length) publish.immediate();
+  else publish();
+}
+
+/** Counts exact statement consumption from immutable final allows in this Workspace owner. */
+export function readPolicyStatementUseCount(
+  workspaceDb: WorkspaceDb,
+  reference: PolicyDecisionV1['consumedStatements'][number]
+): number {
+  const statement = PolicyStatementReferenceV1Schema.parse(reference);
+  const rows = workspaceDb.sqlite
+    .prepare(`SELECT * FROM permission_decisions
+    WHERE owner_scope = 'workspace' AND workspace_id = ? AND result = 'allow'`)
+    .all(workspaceDb.workspaceId);
+  return rows
+    .map(readPermissionDecisionRowV1)
+    .filter(
+      ({ mediation }) =>
+        mediation?.role === 'final' &&
+        mediation.kernel?.effect === 'allow' &&
+        mediation.consumedStatements.some(
+          ({ id, digest }) => id === statement.id && digest === statement.digest
+        )
+    ).length;
 }
 
 /**
@@ -546,6 +670,7 @@ export function listExportableWorkspacePermissionDecisions(
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
@@ -582,6 +707,7 @@ export function listServerPermissionDecisions(coreDb: CoreDb): ServerPermissionD
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
@@ -604,7 +730,8 @@ export function importWorkspacePermissionDecisions(
   workspaceDb: WorkspaceDb,
   decisions: readonly ExportedWorkspacePermissionDecision[]
 ): void {
-  for (const decision of decisions) {
+  for (const source of decisions) {
+    const decision = PermissionDecisionRetainedV1Schema.parse(source);
     const retained = writeRetainedV1(decision);
     if (decision.ownerScope !== 'workspace' || !decision.workspaceId) {
       throw new Error('Workspace permission decision import record must be workspace-scoped.');
@@ -626,11 +753,12 @@ export function importWorkspacePermissionDecisions(
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         decision.decisionId,
@@ -646,6 +774,7 @@ export function importWorkspacePermissionDecisions(
         decision.result,
         decision.reasonCode,
         decision.enforcementPoint,
+        decision.mediation === undefined ? null : JSON.stringify(decision.mediation),
         decision.requiredApprovalKind,
         decision.approvalId,
         decision.auditEventId,
