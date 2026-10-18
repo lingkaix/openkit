@@ -3333,7 +3333,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             });
           }
           if (workspaceDb && !gitSource) {
-            recordWorkspaceSyncReview(workspaceDb, { item: stagedItem });
+            recordWorkspaceSyncReview(workspaceDb, {
+              item: stagedItem,
+              producer: {
+                actor: {
+                  kind: 'agent',
+                  id: environmentPackage.agent.agentId,
+                  responsibleUserId: environmentPackage.scope.userId,
+                },
+                agentId: environmentPackage.agent.agentId,
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                requestId: environmentPackage.scope.requestId,
+                threadId: environmentPackage.scope.threadId,
+                turnId: environmentPackage.scope.turnId,
+              },
+            });
           }
           if (existingArtifact) {
             if (!isDeepStrictEqual(existingArtifact, artifact)) {

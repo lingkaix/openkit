@@ -44,6 +44,11 @@ import { workspaceSnapshotAcceptedCommitIsKnown } from './workspace-snapshot-cha
 
 /** Durable workspace synchronization review persistence input. */
 export interface RecordWorkspaceSyncReviewInput {
+  /** Producing Worker actor and work lineage, captured by the runtime owner. */
+  readonly producer?: Pick<
+    AuditEvent,
+    'actor' | 'agentId' | 'agentSessionId' | 'requestId' | 'threadId' | 'turnId'
+  >;
   /** Public workspace synchronization review item. */
   readonly item: WorkspaceSyncReviewItem;
 }
@@ -284,6 +289,7 @@ export function recordWorkspaceSyncReview(
 
   recordWorkspaceAuditEvent({
     action: 'workspace.review.stage',
+    ...input.producer,
     category: 'artifact',
     now: new Date(review.createdAt),
     outcome: 'succeeded',

@@ -318,8 +318,16 @@ describe('workspace sync records', () => {
       applyScopedMigrations(workspaceDb);
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
 
-      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
-      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
+      const producer = {
+        actor: { kind: 'agent', id: 'agent_builder', responsibleUserId: null },
+        agentId: 'agent_builder',
+        agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
+        requestId: '00000000-0000-4000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7000-8000-000000000001',
+      } as const;
+      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem(), producer });
+      recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem(), producer });
 
       const audits = workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE resource = ? ORDER BY created_at')
@@ -346,6 +354,12 @@ describe('workspace sync records', () => {
       expect(audits).toEqual([
         expect.objectContaining({
           action: 'workspace.review.stage',
+          actor_json: JSON.stringify(producer.actor),
+          agent_id: producer.agentId,
+          agent_session_id: producer.agentSessionId,
+          request_id: producer.requestId,
+          thread_id: producer.threadId,
+          turn_id: producer.turnId,
           category: 'artifact',
           created_at: timestamp,
           error_code: null,
