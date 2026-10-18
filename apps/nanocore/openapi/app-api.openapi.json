@@ -57304,6 +57304,26 @@
               "server"
             ]
           },
+          "types": {
+            "description": "Match any exact governed page type; supplied selectors intersect.",
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "appliesTo": {
+            "description": "Match any exact declared tool/work-step identifier on Rule, Effect or Objective pages; no prose inference or authority grant.",
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -57510,6 +57530,24 @@
                   "server",
                   "user"
                 ]
+              },
+              "types": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "appliesTo": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
               }
             },
             "required": [
@@ -61056,6 +61094,26 @@
               ]
             }
           },
+          "types": {
+            "description": "Match any exact governed page type; supplied selectors intersect.",
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "appliesTo": {
+            "description": "Match any exact declared tool/work-step identifier on Rule, Effect or Objective pages; no prose inference or authority grant.",
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
@@ -61262,6 +61320,24 @@
                   "server",
                   "user"
                 ]
+              },
+              "types": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "appliesTo": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
               }
             },
             "required": [
@@ -123259,5 +123335,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:3abc8bc205d36460d7ccff98c91e12ef0d8876f6a994619fb3d61433350d0d66"
+  "x-openkit-source-digest": "sha256:5db4fcf22714fad5a3164fe5c2313a6f75b669387ae53a3826719de14bf37280"
 }
