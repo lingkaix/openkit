@@ -314,7 +314,9 @@ describe('governed worker image contracts', () => {
     const common = dockerCommonSection(dockerfile);
     const deployment = dockerTargetSection(dockerfile, 'worker-runtimes');
     expect(dockerfile).toContain('pnpm --filter @openkit/pi-runtime-host deploy --prod --legacy');
-    expect(deployment).toContain('COPY --chmod=0755 --from=worker-shim-builder /deploy/pi-runtime-host/');
+    expect(deployment).toContain(
+      'COPY --chmod=0755 --from=worker-shim-builder /deploy/pi-runtime-host/'
+    );
     expect(deployment).toContain(`@opencode/cli@\${OPENCODE_VERSION}`);
     expect(deployment).toContain(`@opencode/client@\${OPENCODE_VERSION}`);
     expect(deployment).toContain(`@deepseek-ai/dsh@\${DEEPSEEK_VERSION}`);
