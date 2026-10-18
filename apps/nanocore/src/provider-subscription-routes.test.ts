@@ -26,9 +26,14 @@ import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { type CreateAppOptions, createApp } from './test-support/app.js';
+import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 
 const NOW = '2026-07-24T00:00:00.000Z';
+const LOCAL_AUDIT_CONTEXT = {
+  actor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+  authentication: { credentialKind: 'local', credentialId: null },
+} as const;
 const MAX_CODEX_QUOTA_BODY_BYTES = 65_536;
 const MAX_XAI_QUOTA_BODY_BYTES = 65_536;
 const XAI_USER_TIMEOUT_MS = 10_000;
@@ -662,11 +667,10 @@ describe('provider-subscription app API', () => {
         );
         expect(createResponse.status).toBe(200);
         ProviderSubscriptionAccountSchema.parse(await createResponse.json());
-        expect(fixture.spies.createAccount).toHaveBeenLastCalledWith({
-          accountSlotId: slot,
-          displayName: 'Team',
-          subscriptionProviderId,
-        });
+        expect(fixture.spies.createAccount).toHaveBeenLastCalledWith(
+          { accountSlotId: slot, displayName: 'Team', subscriptionProviderId },
+          LOCAL_AUDIT_CONTEXT
+        );
 
         const updateResponse = await fixture.app.request(...operationRequest('provider-subscription.account-update', { subscriptionProviderId: subscriptionProviderId, accountSlotId: slot }, jsonRequest('PATCH', { displayName: 'Team Updated' }))
         );
@@ -674,7 +678,8 @@ describe('provider-subscription app API', () => {
         ProviderSubscriptionAccountSchema.parse(await updateResponse.json());
         expect(fixture.spies.updateAccount).toHaveBeenLastCalledWith(
           { accountSlotId: slot, subscriptionProviderId },
-          { displayName: 'Team Updated' }
+          { displayName: 'Team Updated' },
+          LOCAL_AUDIT_CONTEXT
         );
 
         const statusResponse = await fixture.app.request(...operationRequest('provider-subscription.account-status', { subscriptionProviderId: subscriptionProviderId, accountSlotId: slot }));
@@ -697,7 +702,8 @@ describe('provider-subscription app API', () => {
           accountSlotId: slot,
           subscriptionProviderId,
         });
-        expect(deleteCall).toHaveLength(1);
+        expect(deleteCall).toHaveLength(2);
+        expect(deleteCall?.[1]).toEqual(LOCAL_AUDIT_CONTEXT);
       } finally {
         fixture.close();
       }
@@ -726,7 +732,7 @@ describe('provider-subscription app API', () => {
       expect(response.status).toBe(204);
       expect(await response.text()).toBe('');
       expect(fixture.spies.deleteAccount.mock.calls).toEqual([
-        [{ accountSlotId: 'bound_slot', subscriptionProviderId: 'xai' }],
+        [{ accountSlotId: 'bound_slot', subscriptionProviderId: 'xai' }, LOCAL_AUDIT_CONTEXT],
       ]);
       expect(registry.get('bound')).toMatchObject(profile);
     } finally {
