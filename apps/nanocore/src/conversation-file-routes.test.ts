@@ -644,9 +644,8 @@ describe('Turn-owned conversation originals', () => {
       expect(observation.bytes).toEqual(bytes.map((part) => Buffer.from(part)));
       if (privateSource) {
         const delegation = JSON.parse(observation.turnInput);
-        expect(delegation.objective).toBe(
-          `${input.input}\n\n2 conversation file inputs are retained with the receiving Turn. Original bytes are not included in this prompt.`
-        );
+        // The exact objective stays separate from the receiving Turn's verified file inventory.
+        expect(delegation.objective).toBe(input.input);
         expect(delegation.contextRefs).toEqual([
           { kind: 'workspace', id: state.workspaceId },
           { kind: 'thread', id: accepted.turn.threadId },

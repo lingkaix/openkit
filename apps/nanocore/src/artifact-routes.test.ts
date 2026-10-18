@@ -1147,17 +1147,20 @@ describe('Core artifact routes', () => {
       });
       const checkpointDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(
-          getWorkerCheckpoint(
-            checkpointDb,
-            'ws_00000000-0000-7000-8000-000000000001',
-            thread.id,
-            followUpTurnId
-          )
-        ).toMatchObject({
-          stage: 'completed',
-          workerSessionId: expect.any(String),
-        });
+        // Turn completion can publish before the asynchronous checkpoint closeout.
+        await vi.waitFor(() =>
+          expect(
+            getWorkerCheckpoint(
+              checkpointDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              thread.id,
+              followUpTurnId
+            )
+          ).toMatchObject({
+            stage: 'completed',
+            workerSessionId: expect.any(String),
+          })
+        );
       } finally {
         checkpointDb.sqlite.close();
       }
