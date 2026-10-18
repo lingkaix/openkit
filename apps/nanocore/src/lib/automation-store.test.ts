@@ -686,25 +686,32 @@ it('seals a monthly outage with an exact immutable range and cancels the live in
 });
 
 it('orders actual fixed and monthly live frontiers before the shared 128 schedule limit', () => {
-  const { store, setTime } = fixture();
+  const { db, store, setTime } = fixture();
   setTime('2020-01-28T09:00:00.000Z');
-  for (let index = 0; index < 129; index++) {
-    const created = store.createAutomation(testEntityId('usr', 'user_creator'), monthlyDefinition);
+  // Commit fixture setup once; both scanner calls below still read committed native records.
+  const fixed = db.sqlite.transaction(() => {
+    for (let index = 0; index < 129; index++) {
+      const created = store.createAutomation(
+        testEntityId('usr', 'user_creator'),
+        monthlyDefinition
+      );
+      store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
+        expectedRevision: 1,
+        status: 'active',
+        scheduledAt: '2020-01-28T09:00:00.000Z',
+      });
+    }
+    const created = store.createAutomation(testEntityId('usr', 'user_creator'), {
+      ...definition,
+      intervalSeconds: 3600,
+    });
     store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
       expectedRevision: 1,
       status: 'active',
-      scheduledAt: '2020-01-28T09:00:00.000Z',
+      scheduledAt: '2027-01-28T08:59:59.000Z',
     });
-  }
-  const fixed = store.createAutomation(testEntityId('usr', 'user_creator'), {
-    ...definition,
-    intervalSeconds: 3600,
-  });
-  store.updateAutomation(testEntityId('usr', 'user_creator'), fixed.id, {
-    expectedRevision: 1,
-    status: 'active',
-    scheduledAt: '2027-01-28T08:59:59.000Z',
-  });
+    return created;
+  })();
   setTime('2027-01-28T09:00:00.000Z');
   const selected = store.collectScanCandidates('2027-01-28T09:00:00.000Z');
   expect(selected).toHaveLength(128);
