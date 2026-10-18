@@ -35,11 +35,11 @@ import {
   allocateEntityId,
   deriveEntityId,
   formatReferenceUri,
-  parseReferenceScope,
-  parseReferenceUri,
   ItemSchema,
   isSealedTurnTerminal,
   PROTOCOL_VERSION,
+  parseReferenceScope,
+  parseReferenceUri,
   RequestIdSchema,
   responsibleUserIdForActor,
   type ServerItem,
@@ -56,7 +56,10 @@ import {
   type TurnStatus,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
-import { initializeDefaultKnowledgeBaseId, readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from '../config/knowledge-base.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
