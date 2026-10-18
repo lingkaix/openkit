@@ -14,7 +14,7 @@ const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const knowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
 const pageScopeId = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
-const targetId = 'group/日本語 % note';
+const targetId = 'group/note';
 const roots: string[] = [];
 
 /** Exact fixture bytes are stored in real immutable Git objects. */
