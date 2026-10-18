@@ -182,11 +182,32 @@ export const PolicyPermissionV1Schema = z
     grant: PolicyGrantV1Schema,
   })
   .strict();
+/** Exact Goal delegation approved with its Plan in one existing Pending Request. */
+export const PolicyDelegationV1Schema = z
+  .object({
+    ...statementFields,
+    kind: z.literal('delegation'),
+    state: z.enum(['inactive', 'active']),
+    delegate: PolicyPrincipalV1Schema,
+    purpose: z.literal('goal-domain'),
+    source: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        goalId: z.string().min(1),
+        planVersionId: z.string().min(1),
+        planDigest: PolicyDigestV1Schema,
+        approvalRequestId: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict();
 /** Shared authored Policy collection; resolved revision is its canonical content digest. */
 export const PolicyDocumentV1Schema = z
   .object({
     schemaVersion: z.literal(1),
-    statements: z.array(z.union([PolicyBindingV1Schema, PolicyPermissionV1Schema])),
+    statements: z.array(
+      z.union([PolicyBindingV1Schema, PolicyPermissionV1Schema, PolicyDelegationV1Schema])
+    ),
   })
   .strict()
   .superRefine((document, context) => {

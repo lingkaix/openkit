@@ -3,6 +3,7 @@ import {
   POLICY_MODE_CONTRACTS_V1,
   PolicyBindingV1Schema,
   PolicyDecisionV1Schema,
+  PolicyDelegationV1Schema,
   PolicyDocumentV1Schema,
   PolicyGrantV1Schema,
   PolicyLifetimeV1Schema,
@@ -130,6 +131,37 @@ describe('retained Policy version-one contracts', () => {
     ).toBe(false);
   });
 
+  it('retains one typed Goal domain for joint Plan approval without Plan or card fields', () => {
+    const statement = {
+      id: 'goal-domain',
+      kind: 'delegation',
+      state: 'inactive',
+      author: principal,
+      authority: { kind: 'human', userId },
+      authoredAt: binding.authoredAt,
+      scope,
+      lifetime: { anchor: { owner: { kind: 'workspace', workspaceId }, kind: 'goal', id: 'goal' } },
+      delegate: { kind: 'agent', id: 'goal-coordinator' },
+      purpose: 'goal-domain',
+      source: {
+        workspaceId,
+        goalId: 'goal',
+        planVersionId: 'plan',
+        planDigest: digest,
+        approvalRequestId: 'request',
+      },
+    };
+    expect(
+      PolicyDocumentV1Schema.parse({ schemaVersion: 1, statements: [statement] }).statements
+    ).toEqual([statement]);
+    expect(PolicyDelegationV1Schema.safeParse({ ...statement, source: undefined }).success).toBe(
+      false
+    );
+    expect(
+      PolicyDelegationV1Schema.safeParse({ ...statement, purpose: 'participant-envelope' }).success
+    ).toBe(false);
+  });
+
   it('refuses deferred retained families until their activating behavior lands', () => {
     expect(
       PolicyGrantV1Schema.safeParse({
@@ -140,7 +172,7 @@ describe('retained Policy version-one contracts', () => {
         mode: 'read-only',
       }).success
     ).toBe(false);
-    for (const kind of ['agent-principal', 'delegation'])
+    for (const kind of ['agent-principal'])
       expect(
         PolicyDocumentV1Schema.safeParse({ schemaVersion: 1, statements: [{ ...binding, kind }] })
           .success
