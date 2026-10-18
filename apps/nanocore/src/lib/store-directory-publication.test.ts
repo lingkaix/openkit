@@ -145,7 +145,9 @@ function turnFilesReady(directory: string): boolean {
 function artifactFilesReady(directory: string): boolean {
   return (
     existsSync(join(directory, 'artifact.json')) &&
-    existsSync(join(directory, 'files', 'content.txt'))
+    existsSync(join(directory, 'files', 'content.txt')) &&
+    existsSync(join(directory, 'versions', '1', 'version-record.json')) &&
+    existsSync(join(directory, 'versions', '1', 'payload'))
   );
 }
 
@@ -464,3 +466,55 @@ it('loads a published Turn beside the Thread preview from before that Turn', asy
     )
   ).toBe(true);
 });
+
+for (const point of ['before-rename', 'after-rename'] as const) {
+  it(`retains real binary v1 at initial Artifact directory ${point}`, async () => {
+    const dataRoot = newDataRoot(`binary-${point}`);
+    const { FsStore } = await import('./store.js');
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Binary publication');
+    const bytes = Buffer.from([0, 255, 128, 13, 10]);
+    const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const payloadPath = join(dataRoot, 'private-original');
+    writeFileSync(payloadPath, bytes);
+    const base = importedArtifact(workspace.id);
+    const artifact = {
+      ...base,
+      content: {
+        format: 'file' as const,
+        mediaType: 'application/octet-stream',
+        byteLength: bytes.length,
+      },
+      contentDigest,
+      origin: { ...base.origin, sourceDigest: contentDigest },
+    };
+    const faults = { count: 0 };
+    const captured = await withCrashFault(point, faults, dataRoot, () => {
+      expect(() =>
+        store.createArtifact(artifact, {
+          path: payloadPath,
+          byteLength: bytes.length,
+          contentDigest,
+          remove: async () => {},
+        })
+      ).toThrow('publication-fault');
+    });
+    expect(faults.count).toBe(1);
+    const canonical = join(captured.snapshot, 'workspaces', workspace.id, 'artifacts', artifact.id);
+    const directory =
+      point === 'after-rename' ? canonical : stagedRecordDirectories(captured.snapshot)[0]!;
+    const descriptor = JSON.parse(
+      readFileSync(join(directory, 'versions', '1', 'version-record.json'), 'utf8')
+    );
+    expect(descriptor).toMatchObject({
+      formatVersion: 1,
+      version: { artifactVersion: 1, parentVersion: null, actor: localActor },
+      artifact: { contentDigest },
+    });
+    expect(readFileSync(join(directory, 'versions', '1', 'payload'))).toEqual(bytes);
+    const reopened = await reload(captured.snapshot);
+    expect(reopened.listArtifacts(workspace.id)).toEqual(
+      point === 'after-rename' ? [artifact] : []
+    );
+  });
+}

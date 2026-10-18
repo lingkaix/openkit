@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 310;
+const EXPECTED_CATALOG_SIZE = 314;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 232;
+const EXPECTED_INCLUDED_SIZE = 236;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -87,6 +87,10 @@ const WEB_OPERATION_GROUPS = {
   },
   Artifacts: {
     'artifact.import': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-list': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-read': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-commit': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.version-file-commit': { disposition: 'live', surface: 'Artifacts' },
     'artifact.download': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },

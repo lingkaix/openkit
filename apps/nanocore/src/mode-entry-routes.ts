@@ -2834,14 +2834,17 @@ export function createConversationService({
             409
           );
         }
-        if (artifact.version !== reference.artifactVersion) {
+        try {
+          artifacts.push(
+            store.getArtifactVersion(workspaceId, artifact.id, reference.artifactVersion).artifact
+          );
+        } catch {
           throw new TurnStartValidationError(
             'artifact_version_mismatch',
-            'The selected Artifact version is no longer current.',
+            'The selected Artifact version is unavailable.',
             409
           );
         }
-        artifacts.push(artifact);
       }
       if (
         chatInput.fileInputs?.length &&
@@ -2907,8 +2910,8 @@ export function createConversationService({
           const current = currentArtifacts.get(artifact.id);
           if (
             !current ||
-            current.version !== artifact.version ||
-            current.contentDigest !== artifact.contentDigest
+            store.getArtifactVersion(workspaceId, artifact.id, artifact.version).artifact
+              .contentDigest !== artifact.contentDigest
           )
             throw new TurnStartValidationError(
               'artifact_version_mismatch',

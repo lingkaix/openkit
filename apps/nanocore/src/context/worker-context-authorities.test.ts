@@ -332,6 +332,24 @@ describe('S39 exact source owner map', () => {
           source: { ...artifact.source, kind: 'artifact', artifactVersion: 2 },
         })
       ).toBeNull();
+      store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+      store.commitArtifactVersion({
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        artifactId: 'ar_00000000-0000-7000-8000-0000000003eb',
+        expectedArtifactVersion: 1,
+        actor: turn.triggerActor,
+        requestId: 'artifact_second',
+        recordedAt: timestamp,
+        title: 'Later source',
+        summary: null,
+        content: { format: 'text', body: 'Different later original' },
+      });
+      expect(reader.readSourceFile!(artifact)).toEqual({
+        originalDigest: artifactDigest,
+        byteLength: Buffer.byteLength(artifactText),
+        mediaType: 'text/markdown',
+      });
       expect(
         reader.readSourceFile!(
           sourceInventory({

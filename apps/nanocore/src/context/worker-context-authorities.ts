@@ -76,10 +76,11 @@ export function createWorkerContextPackageAuthorityReader(
         if (!scope || !('workspaceId' in scope) || scope.workspaceId !== workspaceDb.workspaceId)
           return null;
         if (source.source.kind === 'artifact') {
-          const artifact = store.getArtifact(scope.workspaceId, source.source.reference.objectId);
-          // The current Artifact owner is create-only. Never substitute a different version if this owner gains updates.
-          if (artifact.version !== source.source.artifactVersion) return null;
-          store.assertArtifactContent(artifact);
+          const { artifact } = store.getArtifactVersion(
+            scope.workspaceId,
+            source.source.reference.objectId,
+            source.source.artifactVersion
+          );
           return {
             originalDigest: artifact.contentDigest,
             byteLength:
