@@ -1606,7 +1606,7 @@ async function syncMcpServers(
       client.mcp.add({
         location,
         config: {
-          codemode: false,
+          // Keep the pin's CodeMode default so execute and search see managed tools.
           oauth: false,
           type: 'remote',
           url: `${capabilityBaseUrl.replace(/\/$/, '')}/mcp/${id}`,

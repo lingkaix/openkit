@@ -49,7 +49,10 @@ describe('storage layout report', () => {
         'core_0004_equal_workspace_members',
 
         'core_0005_channel_notifications',
-        'core_0006_audit_authentication',
+        'core_0006_external_trigger_admissions',
+        'core_0007_discord_capture_origin',
+        'core_0008_server_capability_usage',
+        'core_0009_audit_authentication',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

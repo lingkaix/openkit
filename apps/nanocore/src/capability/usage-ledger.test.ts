@@ -1030,7 +1030,9 @@ function auditRows(
   callId: string
 ): Array<Record<string, unknown>> {
   return workspaceDb.sqlite
-    .prepare('SELECT * FROM audit_events WHERE capability_call_id = ? ORDER BY created_at')
+    .prepare(
+      "SELECT * FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish' ORDER BY created_at"
+    )
     .all(callId) as Array<Record<string, unknown>>;
 }
 

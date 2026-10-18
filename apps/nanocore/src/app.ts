@@ -88,6 +88,7 @@ import { uuidv5 } from './generative-kernel/uuid.js';
 import {
   pinKnowledgeManagerExecution,
   runKnowledgeManagerAgent,
+  runServerKnowledgeManagerAgent,
 } from './internal-agents/knowledge-manager-agent.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { askKnowledgeAgent } from './knowledge/knowledge-agent.js';
@@ -97,6 +98,16 @@ import { scanDailyKnowledgeMaintenance } from './knowledge/knowledge-maintenance
 import { checkMemoryForgetIntent } from './knowledge/memory-forget.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import {
+  currentServerMaintenanceActor,
+  prepareServerKnowledgeMaintenance,
+  type ServerKnowledgeMaintenanceDependencies,
+} from './knowledge/server-knowledge-maintenance.js';
+import {
+  runUserMemoryMaintenanceCommand,
+  type UserMemoryMaintenanceDependencies,
+} from './knowledge/user-memory-agent-maintenance.js';
+import { scanUserMemoryMaintenance } from './knowledge/user-memory-schedule.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
@@ -719,8 +730,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           mode,
         })
       : null);
-  const providerCredentialResolverFallback: ProviderCredentialResolver = (secretRef) =>
-    options.providerCredentialResolver?.(secretRef) ?? resolveEnvSecretRef(secretRef);
+  const providerCredentialResolverFallback: ProviderCredentialResolver = (secretRef, context) =>
+    options.providerCredentialResolver?.(secretRef, context) ?? resolveEnvSecretRef(secretRef);
   const providerCredentialConfigured = createProviderCredentialConfigured({
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     // Managed Vault presence comes only from metadata; an injected resolver may release material.
@@ -1282,6 +1293,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   async function startModeWorkerTurn(input: {
     readonly store: FsStore;
     readonly triggerActor: ActorRef;
+    /** Native admission cause; unrelated Worker restarts and follow-ups leave it absent. */
+    readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
     readonly requestActor?: Actor;
     readonly workspaceId: string;
     readonly threadId: string;
@@ -1333,6 +1346,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       snapshot,
       store: input.store,
       triggerActor: input.triggerActor,
+      ...(input.triggerSource !== undefined ? { triggerSource: input.triggerSource } : {}),
       turnExecutor,
       workerPlacement,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -1468,8 +1482,45 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     providerCredentialConfigured,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
   };
+  const serverKnowledgeMaintenance: ServerKnowledgeMaintenanceDependencies | undefined =
+    options.coreDb
+      ? {
+          store: sharedStore,
+          coreDb: options.coreDb,
+          runtimeConfigManager,
+          inflightCommands,
+          pin: (run) => {
+            pinKnowledgeManagerExecution(knowledgeDependencies, run);
+          },
+          run: (run) => runServerKnowledgeManagerAgent(knowledgeDependencies, run),
+        }
+      : undefined;
+  const userMemoryDependencies = (
+    userDb: import('./storage/db.js').UserDb
+  ): UserMemoryMaintenanceDependencies => {
+    if (!options.coreDb) throw new Error('Memory storage is unavailable.');
+    ensureUserQuickChatWorkspace({
+      coreDb: options.coreDb,
+      store: sharedStore,
+      userId: userDb.userId,
+    });
+    return {
+      store: sharedStore,
+      coreDb: options.coreDb,
+      userDb,
+      runtimeConfigManager,
+      openWorkspace: repositoryWorkspaceDb,
+      inflightCommands,
+      pin: (run) => {
+        pinKnowledgeManagerExecution(knowledgeDependencies, run);
+      },
+      run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
+    };
+  };
   const knowledgeAgent: NonNullable<OperationInvocationDependencies['knowledgeAgent']> = {
     ask: (input) => askKnowledgeAgent(knowledgeDependencies, input),
+    maintainMemory: (input, userDb) =>
+      runUserMemoryMaintenanceCommand(userMemoryDependencies(userDb), input),
     maintain: (input) => {
       if (!options.coreDb) throw new Error('Knowledge Manager storage is unavailable.');
       return runKnowledgeMaintenanceCommand(
@@ -1492,6 +1543,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   options.onKnowledgeMaintenanceReady?.((instant) => {
     const coreDb = options.coreDb;
     if (!coreDb) return;
+    scanUserMemoryMaintenance({
+      now: instant,
+      store: sharedStore,
+      coreDb,
+      runtimeConfigManager,
+      ...(localUserId ? { localUserId } : {}),
+      dependencies: userMemoryDependencies,
+    });
     scanDailyKnowledgeMaintenance({
       now: instant,
       scopes: runtimeConfig().workspaceConfigs.map(({ workspaceId, config }) => ({
@@ -1671,6 +1730,67 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       },
       onError: () => console.warn('Knowledge maintenance requires inspection.'),
     });
+    if (serverKnowledgeMaintenance)
+      scanDailyKnowledgeMaintenance({
+        now: instant,
+        scopes: [
+          {
+            ownerScope: { kind: 'server' as const },
+            schedule: runtimeConfig().openKitConfig.knowledgeMaintenance?.schedule,
+          },
+        ],
+        listTurns: () =>
+          sharedStore
+            .listServerThreads()
+            .flatMap((thread) => sharedStore.listServerThreadTurns(thread.id))
+            .filter((turn) => turn.startedAt !== null)
+            .map((turn) => ({
+              startedAt: turn.startedAt!,
+              internalExecution: {
+                roleId: turn.agentId ?? '',
+                knowledge: turn.internalExecution?.knowledge ?? {
+                  purpose: 'maintenance' as const,
+                  ownerScope: { kind: 'server' as const },
+                  trigger:
+                    turn.triggerSource?.kind === 'automation'
+                      ? ('schedule' as const)
+                      : ('request' as const),
+                },
+              },
+            })),
+        prepare: (_scope, startedAt) => {
+          const requestActor = currentServerMaintenanceActor(
+            coreDb,
+            mode === 'local' ? localUserId : undefined
+          );
+          const prepared = prepareServerKnowledgeMaintenance(serverKnowledgeMaintenance, {
+            requestId: uuidv5(
+              JSON.stringify(['knowledge.server.maintain', startedAt.slice(0, 10)])
+            ),
+            ...(requestActor ? { requestActor } : {}),
+            actor: {
+              kind: 'system',
+              id: 'knowledge-manager',
+              responsibleUserId: requestActor?.userId ?? null,
+            },
+            startedAt,
+            trigger: 'schedule',
+            instructions:
+              'Organize explicit Server inputs and human notebook edits, preserve them, and keep the overview current. Do not learn from Workspace or User Threads.',
+            sources: [],
+            signal: new AbortController().signal,
+          });
+          return {
+            execute: async () => {
+              await prepared.execute();
+            },
+            fail: () => {
+              prepared.fail();
+            },
+          };
+        },
+        onError: () => console.warn('Server Knowledge maintenance requires inspection.'),
+      });
   });
 
   app.use('/api/worker-control/*', browserCors);
@@ -1699,6 +1819,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-capabilities/*', browserCors);
   registerWorkerMcpRoutes({
+    ...(automationStore ? { automationStore } : {}),
+    turnStartServices: {
+      ...setupProviderSupply,
+      coreDb: options.coreDb,
+      inflightCommands,
+      providerCredentialResolver,
+      runtimeConfig,
+      turnExecutor,
+      workerPlacement,
+    },
     knowledgeAgent,
     fileAdmission,
     ...(configuredWorkerRuntime?.captureArtifact
@@ -1921,6 +2051,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
   });
   const goalCoordinator = createGoalCoordinator({
+    knowledgeAgent,
     workspaceMutationAdmission,
     store: sharedStore,
     coreDb: options.coreDb,
@@ -2007,6 +2138,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     resolveGatewayProvider,
     runtimeConfig,
+    runtimeConfigManager,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
     goalServices,
@@ -2229,6 +2361,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerOperationJsonRoutes({
     knowledgeAgent,
+    ...(serverKnowledgeMaintenance ? { serverKnowledgeMaintenance } : {}),
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
@@ -2291,6 +2424,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerRemoteMcpRoutes({
     knowledgeAgent,
+    ...(serverKnowledgeMaintenance ? { serverKnowledgeMaintenance } : {}),
     fileAdmission,
     diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),

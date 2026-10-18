@@ -14,6 +14,12 @@ The clean target is scope-owned storage: server records live under server owners
 
 The important call is to stop organizing persistence by feature module. Storage should be organized by ownership, recovery boundary, backup boundary, and export boundary.
 
+## Shared Storage And Knowledge Mounts
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns content references and Knowledge mount declarations. The default local mount is physical `raw/`; additional mounts occupy declared `raw/<mount>/` subdirectories, with names reserved against physical-folder collisions. This target replaces text-only captured-material bindings and copying solely for reference retention when the Source owner activates the new format.
+
+Admitted SourceSummary pointers at Notebook `sources/<source-id>.md` replace the external `sources/registry/` authority for Knowledge, Context, evidence and Artifacts. The old sibling registry/material paths below describe only the pre-transition implementation; raw bytes stay outside Git and derivative/index metadata is rebuildable. Notebook Git authority, other product records, restricted evidence and retained working volumes keep their existing owners. Storage owns location only; Derivation owns processing and retrieval owns indexes/embeddings.
+
 ## Owns
 
 - Target physical `DATA_ROOT` ownership layout for server, user, and owner-independent workspace scopes.
@@ -163,6 +169,8 @@ DATA_ROOT/
 `knowledge/` and `sources/` are deliberately sibling record families even though the Knowledge Store conceptually governs both: physical layout follows record family, lifecycle, and backup boundary rather than module nesting, and the `sources/` evidence layer is referenced by context packages, evidence bundles, audit traces, and artifacts as well as by knowledge pages. `sources/` and `artifacts/` are symmetric: durable governed inputs and durable governed outputs.
 
 ## Source Of Truth Rules
+
+General Server Threads, Turns, Items and events use the existing canonical record families under `server/threads/<threadId>/`. Their immutable Server owner has no Workspace anchor. Workspace listing, portability and deletion do not traverse this root. Current Server administration authority governs history and effects; placement grants no permission. Only Knowledge Manager work uses this general owner in the current increment.
 
 File-backed source-of-truth records:
 
@@ -675,3 +683,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
 - `docs/specs/20260713-work_resource_interaction_model.md`
+
+## External Trigger Admission Homing
+
+ExternalTriggerAdmission is part of the existing scheduler Core transactional exception. Core retains only scheduleId, eventKey, sourceTurnId and queueEntryId, with unique (scheduleId, eventKey), in the same transaction as ordinary queue acceptance. Canonical Turn files retain the work history. The join does not authorize file reconstruction, replacement admission or Worker replay. A missing or contradictory accepted Turn requires inspection; ordinary queue cancellation remains available. Workspace deletion captures the join in the existing recurring closure before purging it with its schedule. Portable history nests the join under the existing schedule record, remaps schedule and source Turn references, and preserves queueEntryId as inert provenance without installing execution authority.

@@ -9,7 +9,7 @@ import {
   StartTaskModeResponseSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { UserConfigSchema, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -31,6 +31,7 @@ import {
 import { listLightApps } from './generative-kernel/commands.js';
 import { uuidv5 } from './generative-kernel/uuid.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
+import { readMemoryPage } from './knowledge/memory-lifecycle.js';
 import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
@@ -40,6 +41,7 @@ import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js'
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import * as privateInvocationOwners from './operation-invocation.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { closeRetrievalServices } from './retrieval-service.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -72,7 +74,7 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import * as observationOwners from './storage/work-observations.js';
 import {
@@ -80,7 +82,10 @@ import {
   readWorkObservations,
   readWorkObservationTurnBinding,
 } from './storage/work-observations.js';
-import { artifactReferenceItemId } from './storage/workspace-file-records.js';
+import {
+  artifactReferenceItemId,
+  serializeUserAuthoredKnowledgePage,
+} from './storage/workspace-file-records.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -784,6 +789,10 @@ describe('Assistant pending input', () => {
       expect(task).toMatchObject({
         visibility: 'workspace',
         parentThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      });
+      expect(store.getTurnById(lease.turnId).triggerSource).toEqual({
+        kind: 'handoff',
+        summary: 'Task Worker handoff.',
       });
       expect(JSON.parse(executor.inputs[0]!).objective).toBe(brief);
       expect(executor.startContexts).toHaveLength(1);
@@ -4095,7 +4104,8 @@ function assistantWiringFixture(
   selected = false,
   skillBytes: Buffer = Buffer.from('# Original retained entry guidance.\n'),
   memberCredential = false,
-  supportBytes?: Buffer
+  supportBytes?: Buffer,
+  memoryEnabled = false
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-entry-wiring-'));
   const coreDb = openCoreDb(dataRoot);
@@ -4200,6 +4210,16 @@ function assistantWiringFixture(
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({
       dataRoot,
+      userConfigs: [
+        {
+          userId: actorUserId,
+          path: join(dataRoot, 'users', actorUserId, 'config', 'user.jsonc'),
+          config: UserConfigSchema.parse({
+            schemaVersion: 1,
+            knowledgeMaintenance: { enabled: memoryEnabled, reviewRequiredPageIds: [] },
+          }),
+        },
+      ],
       gatewayConfig: createTestGatewayConfig(),
       providerRegistry: new ProviderRegistry([
         {
@@ -4420,6 +4440,120 @@ function skillModelObservations(
 }
 
 describe('#144 real Assistant command wiring', () => {
+  it('uses actual Assistant Memory tell and ask with User publication, citations and separate role usage', async () => {
+    const f = assistantWiringFixture(false, undefined, false, undefined, true);
+    const citation = `page/user/${f.actorUserId}/labels`;
+    const call = (name: string, value: unknown, id: string) => ({
+      id: `response-${id}`,
+      object: 'response',
+      output: [{ type: 'function_call', call_id: id, name, arguments: JSON.stringify(value) }],
+      usage: { input_tokens: 7, output_tokens: 2, total_tokens: 9 },
+    });
+    f.createResponses
+      .mockResolvedValueOnce(
+        call('memory_tell', { content: 'I prefer green labels.', sources: [] }, 'tell')
+      )
+      .mockImplementationOnce(async (_provider, request) => {
+        expect(
+          request.tools?.map((tool) => tool.name),
+          skillModelObservations(request).join('')
+        ).toContain('knowledge_notebook-workspace_update');
+        const messages = request.input as Array<{
+          role?: string;
+          content?: Array<{ text?: string }>;
+        }>;
+        const payload = JSON.parse(
+          messages.find((message) => message.role === 'user')!.content![0]!.text!
+        );
+        expect(payload.sources[0].content).toBe('I prefer green labels.');
+        const page = serializeUserAuthoredKnowledgePage(
+          {
+            id: 'labels',
+            kind: 'preference',
+            title: 'Labels',
+            content: 'I prefer green labels.',
+            sourceReferences: [payload.sources[0].reference],
+            createdAt: '2026-10-18T00:00:00.000Z',
+            updatedAt: '2026-10-18T00:00:00.000Z',
+          },
+          { kind: 'user', userId: f.actorUserId }
+        );
+        return call(
+          'knowledge_notebook-workspace_update',
+          {
+            script: `cat > labels.md <<'PAGE'\n${page}\nPAGE\nprintf '\\n[Labels](labels.md)\\n' >> index.md`,
+          },
+          'edit'
+        );
+      })
+      .mockResolvedValueOnce(
+        call('knowledge_notebook_update', { summary: 'Record personal labels.' }, 'publish')
+      )
+      .mockResolvedValueOnce(
+        call('knowledge_result', { summary: 'Recorded personal labels.' }, 'maintenance-result')
+      )
+      .mockResolvedValueOnce(call('memory_ask', { question: 'Which labels do I prefer?' }, 'ask'))
+      .mockResolvedValueOnce(call('knowledge_retrieval', { query: 'green labels' }, 'search'))
+      .mockResolvedValueOnce(call('knowledge_page_read', { pageId: citation }, 'read'))
+      .mockResolvedValueOnce(
+        call(
+          'knowledge_result',
+          { answer: 'You prefer green labels.', citationIds: [citation], uncertainty: null },
+          'answer'
+        )
+      );
+    try {
+      const response = await f.submit();
+      expect(response.status, await response.clone().text()).toBe(200);
+      const body = SubmitConversationResponseSchema.parse(await response.json());
+      expect(body.turn.status).toBe('completed');
+      const finalRequest = f.createResponses.mock.calls.findLast(([, request]) =>
+        request.tools?.some((tool) => tool.name === 'memory_ask')
+      )![1];
+      const observations = skillModelObservations(finalRequest).map((text) => JSON.parse(text));
+      expect(observations[0]).toMatchObject({ outcome: 'published' });
+      expect(observations[1]).toMatchObject({
+        answer: 'You prefer green labels.',
+        citations: [{ reference: expect.stringContaining(`${citation}@`) }],
+      });
+      const userDb = openUserDb(f.dataRoot, f.actorUserId);
+      try {
+        expect(
+          readMemoryPage(
+            { coreDb: f.coreDb, userDb, actor: { kind: 'local', userId: f.actorUserId } },
+            'labels'
+          )?.content
+        ).toContain('I prefer green labels.');
+      } finally {
+        userDb.sqlite.close();
+      }
+      const delivery = listWorkspaceCapabilityCalls(f.workspaceDb, f.thread.workspaceId).find(
+        (entry) => entry.extensions?.['openkit.knowledge/delivery']
+      );
+      expect(delivery?.extensions?.['openkit.knowledge/delivery']).toEqual({
+        answer: JSON.stringify(observations[1]),
+      });
+      const usage = listWorkspaceUsageRecords(f.workspaceDb, f.thread.workspaceId);
+      expect(
+        usage.some(
+          (entry) =>
+            entry.agentId === 'knowledge-manager' && entry.responsibleUserId === f.actorUserId
+        )
+      ).toBe(true);
+      expect(
+        usage.some(
+          (entry) => entry.agentId === 'quick-chat' && entry.responsibleUserId === f.actorUserId
+        )
+      ).toBe(true);
+      const beforeReplay = f.createResponses.mock.calls.length;
+      expect((await f.submit()).status).toBe(200);
+      expect(f.createResponses).toHaveBeenCalledTimes(beforeReplay);
+    } finally {
+      await closeRetrievalServices();
+      f.close();
+    }
+  }, 120_000);
+
   it('assembles the fixed native Generative family and binds a distinct command after an accepted Skill call', async () => {
     const f = assistantWiringFixture(true);
     const original = privateInvocationOwners.createOperationEngine;
@@ -4477,11 +4611,8 @@ describe('#144 real Assistant command wiring', () => {
         'goal_card_create',
         'goal_card_edit',
         'goal_card_cancel',
-        'memory_page_read',
-        'memory_page_create',
-        'memory_page_update',
-        'memory_page_delete',
-        'memory_page_propose',
+        'memory_ask',
+        'memory_tell',
         'skill_read',
         'kernel_apps_list',
         'kernel_apps_create',

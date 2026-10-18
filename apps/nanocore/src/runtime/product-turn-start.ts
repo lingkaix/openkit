@@ -17,6 +17,7 @@ import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
+  type SchedulerAdmissionEntryRecord,
   SchedulerAdmissionTransitionError,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
@@ -44,6 +45,8 @@ interface StartProductTurnInput
   readonly input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { input: string }>;
   /** Exact actor that triggered this scheduler admission. */
   readonly triggerActor: ActorRef;
+  /** Known native entry cause, separate from actor identity and unavailable to model input. */
+  readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
   /** Authenticating request actor when the caller still holds the HTTP credential context. */
   readonly requestActor?: Actor;
   /** Resolver used to prove provider profile credentials before worker admission. */
@@ -70,6 +73,8 @@ interface StartProductTurnInput
   readonly fileWriteAdmission?: FileStorageAdmission;
   /** Synchronous live file-input admission immediately before publication. */
   readonly assertFileInputAdmission?: () => void;
+  /** Commits source-owned lineage with the queue row; must be synchronous and Core-local. */
+  readonly onAdmissionCommitted?: (entry: SchedulerAdmissionEntryRecord) => void;
   /**
    * Optional callback once this admission's Turn and resolved setup are durable, carrying its nullable AgentSession while queued acceptance remains independent of execution.
    *
@@ -234,26 +239,31 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
   if (input.fileInputs?.length) input.assertFileInputAdmission?.();
   try {
-    createSchedulerAdmissionEntry(input.coreDb, {
-      backendId: backend.id,
-      modelId: input.input.modelId ?? null,
-      ...(input.input.reasoningEffort !== undefined
-        ? { reasoningEffort: input.input.reasoningEffort }
-        : {}),
-      profileRef: input.input.profileId ?? null,
-      queueEntryId,
-      requestId: input.input.requestId,
-      requestedAgentId,
-      threadId: input.input.threadId,
-      turnId,
-      turnInput: input.input.input,
-      ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
-      triggerActor: canonicalTriggerActor,
-      serverAdminTokenId: presentedServerAdminTokenId,
-      workspaceCwd,
-      workspaceId: input.input.workspaceId,
-      workspaceRoots,
-    });
+    const commit = () => {
+      const entry = createSchedulerAdmissionEntry(input.coreDb!, {
+        backendId: backend.id,
+        modelId: input.input.modelId ?? null,
+        ...(input.input.reasoningEffort !== undefined
+          ? { reasoningEffort: input.input.reasoningEffort }
+          : {}),
+        profileRef: input.input.profileId ?? null,
+        queueEntryId,
+        requestId: input.input.requestId,
+        requestedAgentId,
+        threadId: input.input.threadId,
+        turnId,
+        turnInput: input.input.input,
+        ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
+        triggerActor: canonicalTriggerActor,
+        serverAdminTokenId: presentedServerAdminTokenId,
+        workspaceCwd,
+        workspaceId: input.input.workspaceId,
+        workspaceRoots,
+      });
+      input.onAdmissionCommitted?.(entry);
+    };
+    if (input.onAdmissionCommitted) input.coreDb.sqlite.transaction(commit).immediate();
+    else commit();
   } catch (error) {
     if (error instanceof SchedulerAdmissionTransitionError)
       throw new TurnStartValidationError('scheduler_admission_denied', error.message, 409);
@@ -275,6 +285,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
         status: 'pending',
         agentId: requestedAgentId,
         executorKind: 'worker',
+        ...(input.triggerSource !== undefined ? { triggerSource: input.triggerSource } : {}),
         ...(input.fileInputs?.length
           ? {
               fileInputs: input.fileInputs,

@@ -9,6 +9,7 @@ updated: 2026-10-17
 ## Owns
 
 - Durable fixed-interval and bounded monthly UTC schedule definitions and occurrence history for requesting the existing worker Turn admission operation.
+- Bounded external-event admission requested by a scheduled poll Worker through the existing Worker admission boundary.
 - The closed daily Knowledge Manager maintenance trigger below, through the same scan and existing work records.
 - The one NanoCore-local five-second scan, bounded admission retry, ten-minute expiry, restart, overlap, clock, and missed-occurrence rules for those schedules.
 - The boundary between occurrence admission history and the existing scheduler, Turn, worker-runtime, permission, audit, storage, backup, and product-surface owners.
@@ -17,7 +18,7 @@ updated: 2026-10-17
 
 - Scheduler queue ordering, placement, execution attempts, dispatch, Turn execution, worker-effect recovery, or Task and Goal workflow progression.
 - A second executor, event bus, cron parser, general calendar system, general workflow engine, generic job registry, or recovery coordinator.
-- Domain events, webhooks, arbitrary operations, schedule dependencies, approval decisions, or actor substitution.
+- Push subscriptions, webhooks, arbitrary operations, schedule dependencies, approval decisions, or actor substitution.
 - Physical table DDL, retention-class vocabulary, AuditEvent schema, backup archive layout, portable import activation, or Web presentation.
 
 ## Core References
@@ -46,7 +47,7 @@ Each occurrence receives at most three committed admission-attempt outcomes: the
 
 ### Non-goals
 
-- Do not support cron expressions, zones other than literal UTC, calendar rules outside the monthly UTC variant below, one-shot schedules, or domain-event subscriptions.
+- Do not support cron expressions, zones other than literal UTC, calendar rules outside the monthly UTC variant below, one-shot schedules, or push event subscriptions.
 - Do not retry execution, answer an approval, replace a removed actor, or infer success from runtime activity.
 - Do not create occurrence-owned run states that duplicate scheduler admission or Turn status.
 - Do not promise high availability, multi-process scanning, or distributed timer ownership.
@@ -78,6 +79,26 @@ All existing responsible-user, automation actor, membership, policy, Thread audi
 Acceptance includes January 28, February 28 and March 28 at one explicit UTC time through the existing native admission service over the same retained definition and Thread, with a Core/Store reopen before February and no duplicate after repeat scans or another reopen. Exact history must show the three distinct accepted instants, immutable responsible actor and request, actual queue states and real Turn links where publication exists. January-to-February and February-to-March have different elapsed lengths. Lower-level checks cover leap years, year boundaries, invalid days and zones, resume mismatch, overflow, old-revision sealing, long-outage range counts, SQL live-frontier ordering and the inherited failure rules. This proves local monthly admission, not real host execution or completion.
 
 Recurring Goal creation remains an open follow-up only. This variant creates no Goal or Coordinator Turn, carries no Plan approval, changes no Goal wake marker, and grants no Goal progression or completion authority. The accepted ruling is [Bounded Monthly UTC Recurring Work](../decisions/20261017-monthly_utc_recurring_work.md).
+
+### External events through scheduled pull
+
+A scheduled Worker may read an already selected MCP source and request bounded Worker work for each observed event. The poll uses an ordinary fixed-interval schedule, its existing AutomationIdentity, and the existing MCP Gateway. It adds no source field, target Thread field, second scanner, MCP producer, subscription service or event queue. The poll Skill supplies an opaque stable event key. The schedule ID scopes that key; a Skill reading multiple sources includes the source name in the key.
+
+The event-admit operation accepts an event key and bounded Worker input. Its built-in Worker projection binds the schedule, Workspace, source Turn and exact actor from the authenticated poll execution. The caller cannot select or replace those identities. Only a live Worker Turn admitted by that schedule's retained accepted occurrence may request admission. Each request rechecks the active definition, responsible user, membership, source audience, current Policy and ordinary Worker admission. A paused or deleted definition permits no new event admission. Poll input and external content grant no permission or approval.
+
+Each new event receives its own Workspace-visible Worker Thread through the existing new-Task-Worker isolation path. Its parent is the poll Thread. It receives only the explicit bounded handling input, not poll history or another case's conversation. Admission uses ordinary Worker selection and fresh Task storage defaults; it copies no established poll Thread conversation, work slot or native continuation. The same configured Agent/profile/model selection may be reused, but a busy case Thread does not block another case. There is no one-event-per-poll uniqueness restriction. Goal creation, Plan approval, Goal progression and completion remain with their existing owners and are not event actions in this slice.
+
+One immutable ExternalTriggerAdmission record retains exactly scheduleId, eventKey, sourceTurnId and queueEntryId. The pair (scheduleId, eventKey) is its unique key. sourceTurnId is lineage, not a uniqueness constraint. The linked ordinary scheduler entry owns Workspace, target Thread, Turn, immutable Worker input, actor, admission time and execution outcome. The join copies none of those facts and has no payload, status, attempt count, deadline, cursor or independent identifier. Readers tolerate additive descriptive content under ordinary retained-data rules and refuse invalid required core fields.
+
+The join and ordinary scheduler queue insertion commit in the same Core transaction under the existing Workspace mutation fence. A duplicate returns the existing linked work; it does not change the accepted input, allocate a replacement execution or reopen admission. Changed source content under the same event key is still the same event. Missing or contradictory accepted work requires inspection through the existing owner, never replacement work. The original sourceTurnId remains unchanged when another poll observes the same key. Event admission history remains authoritative beyond ordinary completed-command receipt expiry.
+
+The source publication attempts the initial pending Turn once through the existing admission owner. An interrupted publication, unknown acceptance or later missing canonical Turn follows existing scheduler inspection and no-repair rules. No event operation reconstructs accepted history or retries a Worker effect. A proved pre-acceptance refusal retains no event join. A later scheduled poll may read the source again and make an ordinary admission request; no event-owned retry loop is added. Once accepted, failure, interruption, approval wait and an unknown execution outcome cannot cause another event admission. A poll read failure ends or blocks that bounded poll truthfully through its existing Turn records.
+
+The existing Gateway owns selected source reads, capability usage and captured effect approval. Sending email and issuing an offer retain current approval-required rules. Delete retains its deny rule. An external event cannot answer a pending request, bypass exact Goal Plan approval or complete a Goal.
+
+ExternalTriggerAdmission uses the existing Core storage and workspace-audit history boundary. Backup and same-deployment restore preserve it with its schedule and queue lineage. Portable export includes only inert history; import grants no schedule activation, command replay, queue restoration or Worker admission authority. No pruning, repair, source acknowledgement, delivery guarantee, new retention class or down migration is introduced.
+
+Acceptance proves one event admission after repeated source reads and a fresh Core/Store reopen, including after ordinary receipt expiry. Distinct event keys create distinct Worker Threads while an earlier case remains active. Tests prove current-authority refusal, immutable duplicate lineage and input, atomic join/queue rollback, no automatic relaunch after an accepted failure or unknown outcome, and inert portable history. The B01 probe observes a synthetic new inbound message, pinned Skill delivery, isolated handling, a draft, human App approval and the captured fake effect through existing audit and Turn records. This establishes neither real email delivery nor a general workflow engine.
 
 ### Knowledge Manager daily maintenance
 
@@ -213,7 +234,7 @@ There are no unresolved product decisions in the admitted fixed-interval and mon
 
 ## Deferred / Future Work
 
-Cron and other calendar schedules, non-UTC zones, days 29 through 31 and last-day rules, recurring Goal creation, one-shot schedules, event subscriptions, arbitrary operation families, schedule dependencies, configurable overlap policy, catch-up coalescing, user-configurable retry counts or deadlines, multi-process timer ownership, and distributed takeover remain outside this contract.
+Cron and other calendar schedules, non-UTC zones, days 29 through 31 and last-day rules, recurring Goal creation, one-shot schedules, push event subscriptions, arbitrary operation families, schedule dependencies, configurable overlap policy, catch-up coalescing, user-configurable retry counts or deadlines, multi-process timer ownership, and distributed takeover remain outside this contract.
 
 ## Links
 
@@ -222,3 +243,5 @@ Cron and other calendar schedules, non-UTC zones, days 29 through 31 and last-da
 - `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/specs/20260629-openkit_policy_model.md`
 - `docs/specs/20260529-test_strategy.md`
+
+The Server Knowledge daily scan selects the current Server notebook and general Server-owned maintenance Thread without a Workspace anchor. It reuses the same daily admission function and retained Turn accounting. A current local administrator in local mode, or a current usable Server administration Token owner in multi-user mode, supplies the scheduled system actor's responsible User; the setting grants no access after that authority is revoked. Missing authority and an active writer retain visible failed or skipped outcomes without a Provider call. A failed or interrupted run does not mark its inputs processed, and boot never replays its model or publication effects.

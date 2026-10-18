@@ -46,6 +46,7 @@ import {
   WorkerRuntimeNativeOriginIndexEntrySchema,
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestSchema,
+  workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
@@ -60,6 +61,7 @@ import {
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -81,6 +83,7 @@ import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -381,6 +384,54 @@ function createAssignedTurn(
   });
 }
 
+/** Records the named same-Agent/runtime package required by a native-continuity fixture. */
+function recordNativeResumeFixturePackage(
+  coreDb: CoreDb,
+  store: FsStore,
+  agentSessionId: string
+): void {
+  const session = store.getAgentSession(agentSessionId);
+  const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
+  const environmentPackage = resolveAgentEnvironmentPackage({
+    coreDb,
+    captureCoverage: { scope: 'server', value: 'off' },
+    agentSetup: createTestAgentSetup({ agentId: session.agentId }),
+    agentSessionId,
+    backend: { kind: 'openshell' },
+    createdAt: session.createdAt,
+    triggerActor: actor,
+    turn: {
+      id: testEntityId('tu', `native-resume:${agentSessionId}`),
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      triggerActor: actor,
+      status: 'completed',
+      startedAt: session.createdAt,
+      completedAt: session.createdAt,
+      configVersion: null,
+      durationMs: 0,
+      error: null,
+      items: [],
+    },
+    turnInput: 'Earlier native conversation',
+    workspaceCwd: null,
+    workspaceRoots: [],
+  });
+  store.updateAgentSession(agentSessionId, {
+    environmentPackageSnapshotId: environmentPackage.snapshotId,
+    updatedAt: session.updatedAt,
+  });
+  const workspaceDb = openTestWorkspaceDb(coreDb);
+  try {
+    snapshotLedger.recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      environmentPackage,
+      createdAt: session.createdAt,
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
 /**
  * Binds one running Turn and busy AgentSession to a live worker-control package.
  *
@@ -454,6 +505,8 @@ async function createWorkerContextExecutorFixture(
     readonly materialContent?: string;
     readonly maxContextTokens?: number;
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
+    /** The caller publishes its own Knowledge and binds its selected trace before launch. */
+    readonly skipInitialKnowledgeSelection?: boolean;
     readonly turnId?: string;
     readonly originatingThreadId?: string;
     readonly workerRequest?: string;
@@ -488,7 +541,7 @@ async function createWorkerContextExecutorFixture(
 
   const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000397';
   const retrievalTraceOwner = options.retrievalTraceOwner ?? 'turn';
-  if (retrievalTraceOwner === 'thread-before-turn') {
+  if (retrievalTraceOwner === 'thread-before-turn' && !options.skipInitialKnowledgeSelection) {
     await retrieveWorkspaceKnowledge({
       access: {
         actor: { kind: 'user', id: LOCAL_USER_ID },
@@ -562,7 +615,7 @@ async function createWorkerContextExecutorFixture(
         : `retrieval-trace/turn/${turn.workspaceId}/${turn.threadId}/${turn.id}`,
     objectId: retrievalTraceId,
   };
-  if (retrievalTraceOwner === 'turn') {
+  if (retrievalTraceOwner === 'turn' && !options.skipInitialKnowledgeSelection) {
     await retrieveWorkspaceKnowledge({
       access: {
         actor: turn.triggerActor,
@@ -594,7 +647,10 @@ async function createWorkerContextExecutorFixture(
     diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
       contextDigest: commandInputHash(workerRequest),
       contextRefs: [{ kind: 'item', id: contextItemId }],
-      knowledgeSelectionInput: options.workerRequest ? null : { retrievalTraceRef },
+      knowledgeSelectionInput:
+        options.workerRequest || options.skipInitialKnowledgeSelection
+          ? null
+          : { retrievalTraceRef },
       repositoryResourceId: 'repo_default',
     }),
   });
@@ -2097,7 +2153,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('reuses compatible continuity without previewing a fresh AgentSession target', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2123,10 +2180,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: turn.workspaceId,
       workspaceRoots: [],
     });
+    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6');
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'reusable' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const preview = vi.fn((agentSessionId: string) => {
       if (agentSessionId !== 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6') {
         throw new Error('Fresh target must not be previewed for compatible reuse.');
@@ -2166,7 +2224,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('previews a fresh target before closing runtime-incompatible continuity', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2188,10 +2247,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: turn.workspaceId,
       workspaceRoots: [],
     });
+    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-7cba-9aba-f054b08da113');
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'replacement-required' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     Object.assign(executor, {
       previewAgentSessionCompatibilityKey: (agentSessionId: string) => {
         if (agentSessionId === 'as_00000000-0000-79f4-a228-8748c8f8333f') {
@@ -4431,6 +4491,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       nativeHandleDigest: 'a'.repeat(64),
       retainedStorage,
     });
+    recordNativeResumeFixturePackage(coreDb, store, testEntityId('as', 'as_retained_proof'));
     store.createAgentSession({
       id: testEntityId('as', 'as_failed_unproved'),
       agentId: 'agent_codex_host',
@@ -4650,7 +4711,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'different-storage',
     'different-slot',
   ])('refuses continuation before planning or effects when attachment choice is $0', async (violation) => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const predecessor = store.createAgentSession({
       id: testEntityId('as', 'as_choice_predecessor'),
       agentId: 'agent_codex_host',
@@ -4666,14 +4728,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
       storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
       workSlotRef: 'slot-exact',
     };
+    recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
     // Isolate selection from schema evolution: the durable-record regression verifies real persistence.
     vi.spyOn(store, 'listThreadAgentSessions').mockReturnValue([
-      { ...predecessor, retainedStorage: violation === 'missing' ? null : retainedStorage },
+      {
+        ...store.getAgentSession(predecessor.id),
+        retainedStorage: violation === 'missing' ? null : retainedStorage,
+      },
     ]);
     const backend = new FakeWorkerGovernanceBackend();
     const inspect = vi.fn(async () => 'absent' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: inspect });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4775,6 +4841,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ),
       },
     });
+    recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
     let refused = false;
     const effects: string[] = [];
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
@@ -5178,7 +5245,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     for (const session of sessions) {
       store.createAgentSession({
-        agentId: 'agent_demo',
+        agentId: 'agent_codex_host',
         createdAt: session.createdAt,
         id: session.id,
         message: null,
@@ -5195,6 +5262,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         updatedAt: session.createdAt,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
+      recordNativeResumeFixturePackage(coreDb, store, session.id);
     }
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -8244,6 +8312,124 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  it.each([
+    'validation',
+    'launch',
+  ] as const)('refuses an overview revoked during awaited %s before later disclosure', async (boundary) => {
+    const fixture = await createWorkerContextExecutorFixture(`overview-revoked-${boundary}`);
+    let current = true;
+    const overview = vi.spyOn(knowledgeOverviewReader, 'prepareKnowledgeOverview').mockReturnValue({
+      text: 'Bounded overview from a source admitted at preparation.',
+      assertCurrent: () => {
+        if (!current) throw new Error('Overview source revoked.');
+      },
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const barrier =
+      boundary === 'validation'
+        ? vi.spyOn(backend, 'validatePackage').mockImplementation(async () => {
+            current = false;
+            return [];
+          })
+        : vi.spyOn(backend, 'prepareLaunch').mockImplementation(async () => {
+            current = false;
+          });
+    const submit = vi.spyOn(backend, 'submit');
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await expect(
+        executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'source_unavailable', status: 503 });
+      expect(submit).not.toHaveBeenCalled();
+      if (boundary === 'validation') expect(backend.calls).not.toContain('materialize');
+    } finally {
+      overview.mockRestore();
+      barrier.mockRestore();
+      submit.mockRestore();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('prepares the bounded scope overview and tells the Worker where to read it', async () => {
+    const fixture = await createWorkerContextExecutorFixture('knowledge-overview');
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        fixture.coreDb.dataRoot,
+        'workspaces',
+        fixture.turn.workspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const revision = notebook.publishedRevision();
+    const index = notebook.readRevision(revision).files['index.md']!;
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+        agentSessionId: fixture.agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+      const overview = readFileSync(join(fixture.packageRoot, 'knowledge-overview.md'), 'utf8');
+      const projection = JSON.parse(
+        overview.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
+      );
+      expect(projection.overviews).toEqual([
+        expect.objectContaining({
+          scope: `workspace:${fixture.turn.workspaceId}`,
+          path: 'index.md',
+          notebookRevision: revision,
+          contentDigest: turnRuntimeSha256(Buffer.from(index)),
+          truncated: false,
+          content: index,
+        }),
+      ]);
+      const trace = JSON.parse(readFileSync(fixture.tracePath, 'utf8'));
+      expect(trace.fileInventory).toContainEqual({
+        path: 'knowledge-overview.md',
+        byteLength: Buffer.byteLength(overview),
+        contentDigest: turnRuntimeSha256(Buffer.from(overview)),
+      });
+      expect(readFileSync(join(fixture.packageRoot, 'instructions.md'), 'utf8')).toBe(
+        fixture.workerRequest
+      );
+      expect(backend.lastPackage?.extensions?.openkit?.turnInput).toContain(fixture.workerRequest);
+      expect(backend.lastPackage?.extensions?.openkit?.turnInput).toContain(
+        `${workerSessionInputPaths(fixture.agentSessionId).contextRoot}/knowledge-overview.md`
+      );
+      expect(backend.lastPackage?.extensions?.openkit?.turnInput).toContain('knowledge_ask');
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('accepts the exact Artifact Review follow-up request through the S39 boundary', async () => {
     const artifactContent = 'Redo this exact Artifact.';
     const workerRequest = JSON.stringify({
@@ -8587,6 +8773,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  // The runner includes durable Material admission and publication before exact-byte checks.
   it('delivers a bounded Material excerpt and the exact admitted original without bytes-per-token guessing', async () => {
     const fixture = await createWorkerContextExecutorFixture('binding-budget', {
       materialContent: 'B'.repeat(5_000),
@@ -8695,7 +8882,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       launchSpy.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('persists the exact pre-Turn Thread retrieval reference through the S39 bridge', async () => {
     const fixture = await createWorkerContextExecutorFixture('thread-retrieval-trace', {
@@ -8762,6 +8949,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
       maxContextTokens: 240_000,
+      skipInitialKnowledgeSelection: true,
     });
     const app = createApp({
       coreDb: fixture.coreDb,
@@ -8778,37 +8966,44 @@ describe('WorkerGovernanceTurnExecutor', () => {
         'notebook.git'
       ),
     });
-    /** Publishes the exact evidence through current native authority and its fixed-base command. */
-    async function createKnowledge(id: string, title: string, content: string) {
-      const response = await app.request(
-        ...knowledgeOperationRequest(
-          'knowledge.create',
-          { workspaceId: fixture.turn.workspaceId },
-          {
-            body: JSON.stringify({
-              requestId: randomUUID(),
-              baseRevision: notebook.publishedRevision(),
-              knowledgePageId: id,
-              content,
-              kind: 'project-context',
-              title,
-            }),
-          }
-        )
-      );
-      expect(response.status, await response.clone().text()).toBe(200);
-      return (await response.json()) as { id: string };
-    }
-    const knowledge = await createKnowledge(
-      'worker-guidance',
-      'Zygomorphic worker guidance',
-      'Zygomorphic worker guidance belongs in the existing Context Package.'
+    const knowledge = {
+      id: 'worker-guidance',
+      title: 'Zygomorphic worker guidance',
+      content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
+    };
+    const oversizedKnowledge = {
+      id: 'oversized-worker-guidance',
+      title: 'Oversized zygomorphic worker guidance',
+      content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`,
+    };
+    // One native human publication preserves both pages' authority without repeating the Git/Audit setup.
+    const authoredAt = new Date().toISOString();
+    const seeded = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.notebook.update',
+        { workspaceId: fixture.turn.workspaceId },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            baseRevision: notebook.publishedRevision(),
+            changes: [knowledge, oversizedKnowledge].map((entry) => ({
+              path: `${entry.id}.md`,
+              content: serializeUserAuthoredKnowledgePage(
+                {
+                  ...entry,
+                  kind: 'project-context',
+                  createdAt: authoredAt,
+                  updatedAt: authoredAt,
+                },
+                { kind: 'workspace', workspaceId: fixture.turn.workspaceId }
+              ),
+            })),
+            summary: 'Seed human-authored Knowledge for direct Task delivery.',
+          }),
+        }
+      )
     );
-    const oversizedKnowledge = await createKnowledge(
-      'oversized-worker-guidance',
-      'Oversized zygomorphic worker guidance',
-      `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`
-    );
+    expect(seeded.status, await seeded.clone().text()).toBe(200);
     const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
     const retrievalTraceRef = {
       scopeId: `retrieval-trace/turn/${fixture.turn.workspaceId}/${fixture.turn.threadId}/${fixture.turn.id}`,
@@ -8830,7 +9025,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       traceId: retrievalTraceId,
       workspaceId: fixture.turn.workspaceId,
     });
-    const publishedPages = notebook.readRevision(notebook.publishedRevision()).files;
+    const publishedNotebook = notebook.readRevision(notebook.publishedRevision());
+    expect(publishedNotebook.metadata.producer).toEqual({ kind: 'user', id: LOCAL_USER_ID });
+    const publishedPages = publishedNotebook.files;
     const knowledgePageBytes = publishedPages[`${knowledge.id}.md`]!;
     const knowledgePageDigest = turnRuntimeSha256(Buffer.from(knowledgePageBytes, 'utf8'));
     const oversizedKnowledgePageBytes = publishedPages[`${oversizedKnowledge.id}.md`]!;
@@ -9218,7 +9415,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       launchSpy.mockRestore();
       fixture.coreDb.sqlite.close();
     }
-  });
+    // This harness covers real Kernel, Git, S39 launch and Review recovery; it is not a product latency oracle.
+  }, 60_000);
 
   it('fails closed when a direct Task checkpoint lacks its governed Knowledge selection', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge-missing');

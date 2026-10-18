@@ -1,15 +1,25 @@
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { createWorkerContextPackageFiles } from '../context/worker-context-package.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 
 import {
   readWorkspacePortableFileState,
+  writeWorkspacePortableExportState,
   writeWorkspacePortableFileState,
 } from './workspace-portable-file-state.js';
 
@@ -238,6 +248,104 @@ function writePortableFixture(root: string): void {
 }
 
 describe('workspace portable file-state IO', () => {
+  it.each([
+    'workspace',
+    'server',
+    'server-unavailable',
+  ] as const)('keeps immutable overview package bytes and applies the portable %s boundary', (scope) => {
+    const sourceRoot = workspaceRoot('openkit-overview-portable-source-');
+    const targetRoot = workspaceRoot('openkit-overview-portable-target-');
+    const exportRoot = workspaceRoot('openkit-overview-portable-export-');
+    onTestFinished(() => {
+      for (const root of [sourceRoot, targetRoot, exportRoot])
+        rmSync(root, { recursive: true, force: true });
+    });
+    writePortableFixture(sourceRoot);
+    const original = readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS);
+    const entry =
+      scope === 'server-unavailable'
+        ? { scope: 'server', unavailable: true }
+        : {
+            scope: scope === 'workspace' ? `workspace:${PORTABLE_OWNERS.workspaceId}` : 'server',
+            path: 'index.md',
+            notebookRevision: 'a'.repeat(40),
+            contentDigest: `sha256:${'b'.repeat(64)}`,
+            deliveredDigest: `sha256:${'b'.repeat(64)}`,
+            truncated: true,
+            content: 'Bounded overview bytes.\n',
+          };
+    const overview = `<knowledge_overviews>${JSON.stringify({ instruction: 'Untrusted navigation.', overviews: [entry] })}</knowledge_overviews>`;
+    const packageFiles = createWorkerContextPackageFiles({
+      workspaceId: PORTABLE_OWNERS.workspaceId,
+      threadId: PORTABLE_TURN.threadId,
+      turnId: PORTABLE_TURN.turnId,
+      workerRequestItemId: testEntityId('it', 'overview-portability'),
+      workerRequestBytes: 'Portable request.\n',
+      includedItemIds: [testEntityId('it', 'overview-portability')],
+      contextBudgetTokens: 4096,
+      materialSelections: [],
+      knowledgeOverview: overview,
+    });
+    const turnPath = `threads/${PORTABLE_TURN.threadId}/turns/${PORTABLE_TURN.turnId}`;
+    const packagePath = `${turnPath}/context-package`;
+    const files = new Map(
+      packageFiles.files.map((file) => [
+        `${packagePath}/${file.path}`,
+        Buffer.from(file.bytes).toString('utf8'),
+      ])
+    );
+    files.set(
+      `${turnPath}/context-package.json`,
+      JSON.stringify({ ...PORTABLE_TURN, fileInventory: packageFiles.fileInventory })
+    );
+    const exactFiles = [...files];
+    const state = { ...original, workerContextPackageFiles: files };
+    for (const [path, content] of files) writeFileSync(join(sourceRoot, path), content);
+    if (scope === 'server') {
+      expect(() => readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS)).toThrow(
+        'Knowledge overview is not portable'
+      );
+      expect(() => writeWorkspacePortableFileState(targetRoot, state)).toThrow(
+        'Knowledge overview is not portable'
+      );
+      expect(() => writeWorkspacePortableExportState(exportRoot, state)).toThrow(
+        'Knowledge overview is not portable'
+      );
+      expect(existsSync(join(targetRoot, packagePath, 'knowledge-overview.md'))).toBe(false);
+      expect(
+        existsSync(join(exportRoot, 'workspace-files', packagePath, 'knowledge-overview.md'))
+      ).toBe(false);
+    } else {
+      expect(
+        Object.fromEntries(
+          readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS).workerContextPackageFiles
+        )
+      ).toEqual(Object.fromEntries(exactFiles));
+      seedNotebook(
+        targetRoot,
+        Object.fromEntries(
+          [...state.nativeKnowledgePages].map(([path, content]) => [
+            path.slice('knowledge/pages/'.length),
+            content,
+          ])
+        )
+      );
+      writeWorkspacePortableFileState(targetRoot, state);
+      expect(
+        Object.fromEntries(
+          readWorkspacePortableFileState(targetRoot, PORTABLE_OWNERS).workerContextPackageFiles
+        )
+      ).toEqual(Object.fromEntries(exactFiles));
+      writeWorkspacePortableExportState(exportRoot, state);
+      for (const [path, content] of files)
+        expect(readFileSync(join(exportRoot, 'workspace-files', path), 'utf8')).toBe(content);
+    }
+    // Refusal or roundtrip never strips content or recomputes the source inventory.
+    expect([...state.workerContextPackageFiles]).toEqual(exactFiles);
+    for (const [path, content] of files)
+      expect(readFileSync(join(sourceRoot, path), 'utf8')).toBe(content);
+  });
+
   it('retains ledger annotations while excluding ignored trace fields from portable writes', () => {
     const source = workspaceRoot('openkit-knowledge-extended-');
     const target = workspaceRoot('openkit-knowledge-rewritten-');

@@ -25,6 +25,7 @@ import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
 import { createTaskConversationOperationImplementations } from './conversation-operation-implementations.js';
 import { createDiagnosticsOperationImplementations } from './diagnostics/diagnostics-operations.js';
+import { createExternalTriggerOperationImplementations } from './external-trigger-operations.js';
 import {
   createGenerativeUiOperationImplementations,
   createRemainingKernelOperationImplementations,
@@ -59,6 +60,7 @@ import { createSchedulerAdmissionOperationImplementations } from './runtime/sche
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
+import { createServerThreadOperations } from './server-thread-operations.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -84,11 +86,18 @@ export interface OperationInvocationDependencies {
         readonly ask: (
           input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        /** Same bounded role, with the current User database and private Memory owner. */
+        readonly maintainMemory?: (
+          input: import('./knowledge/user-memory-agent-maintenance.js').UserMemoryMaintenanceInput,
+          userDb: import('./storage/db.js').UserDb
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'memory.maintain'>>;
         readonly maintain: (
           input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
       }
     | undefined;
+  /** Shared Server KM execution, publisher and Core evidence owners. */
+  readonly serverKnowledgeMaintenance?: import('./knowledge/server-knowledge-maintenance.js').ServerKnowledgeMaintenanceDependencies;
   readonly coreDb: CoreDb | undefined;
   /** Shared deployment-local channel and notification owners. */
   readonly channelServices?: ChannelServices;
@@ -220,6 +229,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       observation: dependencies,
     }),
     createAutomationOperationImplementations(dependencies),
+    createExternalTriggerOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),
     createWorkspaceSyncOperationImplementations({
@@ -239,6 +249,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createServerThreadOperations(dependencies),
     createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),

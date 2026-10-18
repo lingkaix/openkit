@@ -192,7 +192,9 @@ function listColumnNames(
 }
 
 describe('database setup', () => {
-  it('adds channel storage to an existing Core journal without changing retained users', () => {
+  it.each([
+    5, 7, 8,
+  ])('extends Core before migration %s without changing retained users', (cutoff) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-channel-migration-'));
     const legacyFolder = join(dataRoot, 'legacy-core');
     const productionFolder = join(process.cwd(), 'drizzle', 'core');
@@ -200,7 +202,7 @@ describe('database setup', () => {
     const journal = JSON.parse(
       readFileSync(join(productionFolder, 'meta', '_journal.json'), 'utf8')
     );
-    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 5);
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < cutoff);
     writeFileSync(join(legacyFolder, 'meta', '_journal.json'), JSON.stringify(journal));
     for (const entry of journal.entries)
       writeFileSync(
@@ -214,12 +216,15 @@ describe('database setup', () => {
       const before = coreDb.sqlite
         .prepare('SELECT id,display_name,status FROM users ORDER BY id')
         .all();
-      expect(listTableNames(coreDb)).not.toContain('discord_account_bindings');
+      expect(listTableNames(coreDb)).not.toContain(
+        cutoff === 5 ? 'discord_account_bindings' : 'capability_calls'
+      );
       applyMigrations(coreDb);
       expect(
         coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
       ).toEqual(before);
       expect(listTableNames(coreDb)).toContain('discord_account_bindings');
+      expect(listColumnNames(coreDb, 'capability_calls')).toContain('workspace_id');
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM notification_attention').get()
       ).toEqual({ count: 0 });
@@ -252,7 +257,10 @@ describe('database setup', () => {
         '0004_equal_workspace_members.sql',
 
         '0005_channel_notifications.sql',
-        '0006_audit_authentication.sql',
+        '0006_external_trigger_admissions.sql',
+        '0007_discord_capture_origin.sql',
+        '0008_server_capability_usage.sql',
+        '0009_audit_authentication.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -267,9 +275,15 @@ describe('database setup', () => {
         'core_0004_equal_workspace_members',
 
         'core_0005_channel_notifications',
-        'core_0006_audit_authentication',
+        'core_0006_external_trigger_admissions',
+        'core_0007_discord_capture_origin',
+        'core_0008_server_capability_usage',
+        'core_0009_audit_authentication',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
+      for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
+        expect(listColumnNames(coreDb, table)).toContain('workspace_id');
+      }
       expect(listTableNames(coreDb)).toEqual(
         expect.arrayContaining([
           'notification_attention',
@@ -953,6 +967,49 @@ describe('database setup', () => {
 });
 
 describe('native Drizzle migrate', () => {
+  it('adds trusted Discord origin without attributing or changing retained receipts', () => {
+    const journal = JSON.parse(
+      readFileSync(join(process.cwd(), 'drizzle/core/meta/_journal.json'), 'utf8')
+    ) as { entries: Array<{ tag: string; when: number }> };
+    const predecessor = journal.entries.filter(
+      (entry) => entry.tag < '0007_discord_capture_origin'
+    );
+    const folder = createNativeJournalFolder(
+      predecessor.map((entry) => ({
+        ...entry,
+        sql: readFileSync(join(process.cwd(), `drizzle/core/${entry.tag}.sql`), 'utf8'),
+      }))
+    );
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+    try {
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      sqlite
+        .prepare(
+          "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at) VALUES(?,?,?,'response-unknown',?)"
+        )
+        .run('retained-event', 'retained-digest', 'retained-native-request', 1);
+      const retained = sqlite.prepare('SELECT * FROM discord_inbound_receipts').get();
+      applyNativeScopeMigrations(sqlite, 'core');
+      const migrated = sqlite.prepare('SELECT * FROM discord_inbound_receipts').get();
+      expect(migrated).toEqual({
+        ...(retained as Record<string, unknown>),
+        discord_user_id: null,
+        core_user_id: null,
+        binding_revision: null,
+        operation_id: null,
+        workspace_id: null,
+        thread_id: null,
+        pending_request_id: null,
+        turn_id: null,
+      });
+      applyNativeScopeMigrations(sqlite, 'core');
+      expect(sqlite.prepare('SELECT * FROM discord_inbound_receipts').get()).toEqual(migrated);
+      expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it('adds range and choice columns without changing retained Review decisions', () => {
     const journal = JSON.parse(
       readFileSync(join(process.cwd(), 'drizzle/workspace/meta/_journal.json'), 'utf8')

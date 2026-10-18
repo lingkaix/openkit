@@ -16,6 +16,7 @@ import {
   publishWorkspaceResourceCatalog,
   setWorkspaceSkillPin,
 } from '../catalog/resource-catalog.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from '../llm/model-capture.js';
@@ -203,6 +204,7 @@ async function fixture(selected = true, description?: string) {
     requestId,
     workspaceDb,
     gateway,
+    profileId: null,
     limits,
     signal: new AbortController().signal,
   };
@@ -352,6 +354,28 @@ describe('ordinary Assistant command assembly', () => {
 });
 
 describe('ordinary Assistant command capture and Gateway composition', () => {
+  it('delivers the scope overview to the actual Provider without changing canonical messages or Tools', async () => {
+    const f = await fixture(false);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.dataRoot, 'workspaces', f.workspaceId, 'knowledge', 'notebook.git'),
+    });
+    const revision = notebook.publishedRevision();
+    f.createResponses.mockImplementation(async (_provider, request) => {
+      const delivered = JSON.stringify(request.input);
+      expect(delivered).toContain('knowledge_overviews');
+      expect(delivered).toContain(revision);
+      expect(delivered).toContain('knowledge_ask');
+      expect(delivered).toContain('Current canonical input.');
+      return response();
+    });
+    const original = structuredClone(f.assembly.messages);
+    const result = await runAssistantCommand(f.input);
+    expect(f.createResponses).toHaveBeenCalledTimes(1);
+    expect(f.assembly.messages).toEqual(original);
+    expect(result.content).toBe('Bounded answer.');
+    expect(() => result.assertContextCurrent?.()).not.toThrow();
+  });
+
   it.each([
     true,
     false,
@@ -409,6 +433,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       content: 'Bounded answer.',
       providerId: 'provider',
       usage,
+      assertContextCurrent: expect.any(Function),
     });
     expect(result.usage).toBe(usage);
     const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
@@ -454,7 +479,10 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(f.execute).not.toHaveBeenCalled();
   });
 
-  it('accounts summary production and the answer through one captured Gateway environment and budget', async () => {
+  it.each([
+    false,
+    true,
+  ])('accounts summary production and refuses revoked overview publication=%s', async (revokeOverview) => {
     const f = await fixture(false);
     f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
     // Keep history large enough to require a summary with the local bytes/3 estimate.
@@ -490,11 +518,50 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       tools: f.tools,
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] }],
     });
+    const profileId = 'assistant-summary-profile';
+    const selectedLimits = { maxModelTurns: 8, maxToolCalls: 5, deadlineMs: 20_000 };
     let summaryCalls = 0;
     f.createResponses.mockImplementation(async (_provider, request) => {
       expect(environments(f)).toHaveLength(1);
+      expect(f.store.getTurnById(f.turn.id).internalExecution).toMatchObject({
+        profileId,
+        limits: selectedLimits,
+      });
       const summary = JSON.stringify(request.input).includes('openkit_context_summary_task');
-      if (summary) summaryCalls += 1;
+      expect(JSON.stringify(request.input).includes('knowledge_overviews')).toBe(!summary);
+      if (summary) {
+        summaryCalls += 1;
+        if (revokeOverview) {
+          const notebook = new KnowledgeNotebook({
+            repositoryPath: join(
+              f.dataRoot,
+              'workspaces',
+              f.workspaceId,
+              'knowledge',
+              'notebook.git'
+            ),
+          });
+          const baseRevision = notebook.publishedRevision();
+          const candidateRevision = notebook.prepare({
+            baseRevision,
+            changes: {
+              'index.md':
+                '---\nokf_version: "0.2"\nsensitivity: restricted\n---\n# Restricted overview\n',
+            },
+            metadata: {
+              summary: 'Restrict index during summary inference',
+              producer: { kind: 'user', id: f.actor.userId },
+              authority: { kind: 'direct', instructionReference: 'test:restrict-overview' },
+              changeRequest: {
+                requestId: '00000000-0000-4000-8000-000000000145',
+                inputDigest: `sha256:${'a'.repeat(64)}`,
+              },
+              sourceReferences: [],
+            },
+          });
+          notebook.publish({ baseRevision, candidateRevision });
+        }
+      }
       return {
         ...response(
           summary
@@ -509,7 +576,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       ...logicalModel,
       contract: { context: 14_000, output: 512, inputModalities: ['text'], reasoning: false },
     };
-    const result = await runAssistantCommand({
+    const pending = runAssistantCommand({
       ...f.input,
       assembly,
       turn: f.store.getTurnById(f.turn.id),
@@ -522,13 +589,25 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           threadId: f.threadId,
           items,
         }),
-      limits: { ...limits, maxModelTurns: 8 },
+      profileId,
+      limits: selectedLimits,
       gateway: {
         ...f.input.gateway,
         logicalModel: boundedModel,
         resolveLogicalModel: () => boundedModel,
       },
     });
+    if (revokeOverview) {
+      await expect(pending).rejects.toThrow();
+      expect(
+        f.store
+          .listThreadItems(f.workspaceId, f.threadId)
+          .filter((item) => item.type === 'context-summary')
+      ).toEqual([]);
+      expect(f.createResponses).toHaveBeenCalledTimes(1);
+      return;
+    }
+    const result = await pending;
     expect(summaryCalls).toBeGreaterThan(0);
     expect(f.createResponses).toHaveBeenCalledTimes(summaryCalls + 1);
     expect(result.content).toBe('Bounded answer.');
@@ -671,6 +750,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       content: 'After the Skill read.',
       providerId: 'provider',
       usage: secondUsage,
+      assertContextCurrent: expect.any(Function),
     });
     expect(f.createResponses).toHaveBeenCalledTimes(2);
     expect(f.execute).toHaveBeenCalledOnce();

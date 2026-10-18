@@ -6,6 +6,12 @@ date: 2026-09-09
 ---
 # Knowledge Notebook Editing And Publication
 
+## Source Pointer Extension
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) extends the published Git tree with admitted OKF SourceSummary pointers at `sources/<source-id>.md`, retaining the same fixed-base publisher, current source disclosure, history and suppression rules. This supersedes the external Source-registry authority on activation; raw bytes and backend locations remain outside Git. Original changes update one pointer through one commit; an old digest pin resolves only while matching authorized bytes remain available.
+
+The publisher also auto-admits embedded raw files and pins their digests in existing `sourceReferences` in the same commit; historical rendering uses those pins or shows unavailable. Embedded paths use RFC 3986 resolution from each page directory and must resolve inside Knowledge Base `raw/`. Raw renames/moves rewrite referrers, and admitted page relocation rewrites its embeds, under existing validation/review and page-identity constraints; no new move operation is added. The existing tree/editing paths below describe the current implementation until this extension lands. Package import validates the remapped Source/page graph before publication and cannot replace retained history merely because the current view is empty.
+
 ## Owns
 
 The single fixed-base editing and publication contract for an owner-scoped OKF notebook: retained Git content revisions, bounded Knowledge Manager file editing, final-tree validation, exact authority and conflict checks, multi-page publication, history/diff/restore, and their publication command projections. This contract replaces the former single-page generated-change restriction and mandatory per-edit human Review for ordinary explicitly delegated maintenance.
@@ -99,6 +105,10 @@ Required Proposal review reads the saved candidate through the existing Proposal
 
 Restore computes a candidate diff from selected historical paths into the current base and publishes it through the same validation and authority checks as any edit. It adds a new commit, never rewinds published history or undoes external effects. No generic cherry-pick/rebase/reset API is exposed. Missing historical bytes, revoked source access or now-invalid schema produces an explicit unavailable/conflict result, not a lossy restore.
 
+## User Memory Maintenance Join
+
+The current User's bounded Knowledge Manager run uses the same publisher with an Agent producer and the actual responsible User actor. The User setting delegates ordinary publication; a protected or destructive change retains the exact candidate in the existing User Proposal family. Human Review binds the displayed Proposal digest and base/candidate commits, preserves Agent attribution, and cannot be supplied by the model. Current self authority, source-version suppression and the fixed base are rechecked at publication and preview. No User or Workspace selector in model text can widen that authority.
+
 ## Administrator Masking (Not Implemented)
 
 An administrator may mask a page's exact content in this notebook through the existing fixed-base publisher. The operation appends a tombstone to reserved `masks.json` at the notebook tree root and publishes an ordinary commit. It does not rewrite history or erase Git objects. This mechanism covers notebook content only; Items and backups remain with external tools. The [engineer's ruling](../decisions/20261017-knowledge_manager_agent_and_compaction.md) records the scope.
@@ -155,3 +165,7 @@ The engineer ruling of 2026-10-16 removes conversion migrations, predecessor qua
 - `docs/specs/20260704-workspace_backup_export_import.md`
 
 Codex [consolidation](https://github.com/openai/codex/blob/9e868bd9dc007c05e84a98e0b1f4e31dc98c5e6a/codex-rs/memories/write/src/phase2.rs) informs bounded source-driven editing and concise retrieval context; its destructive single-commit Git baseline reset is deliberately not copied. [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) informs the jointly maintained notebook. just-bash [filesystem](https://github.com/vercel-labs/just-bash/blob/062ce005c0a7676163852fb6f0c8590cbdaa1d45/packages/just-bash/src/fs/overlay-fs/overlay-fs.ts) and execution primitives implement the fixed in-memory command profile. They provide no OS isolation guarantee. NanoCore pins the dependency and supplies no host filesystem, network or process command.
+
+## Server Maintenance Candidates
+
+Server Knowledge maintenance uses the same fixed-base notebook publisher, retained candidate refs, Proposal Markdown and human Review records. Its owner is `{kind: server}` without a Workspace identity. Pending candidates remain under `server/knowledge/proposals/` and Review decisions under `server/knowledge/reviews/`; these are the same scoped record families, not a second proposal store. Current Server administration authority is required for every candidate disclosure and decision. Review binds the Proposal digest, base and candidate; stale bases conflict, and an accepted Review does not authorize another candidate. Changed or removed pages remain governed by the existing schema, Source, required-review and exact removal rules. A delegated maintenance commit records its Agent producer, responsible human, current delegation and Source references through the existing commit metadata.

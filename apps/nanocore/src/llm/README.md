@@ -113,3 +113,7 @@ For xAI Responses, the existing tool projection flattens namespaces through a re
 Account create, update and delete pass the current native caller and allowlisted authentication summary to the account manager's existing lifecycle Audit on success and failure. The manager retains the same account and credential effect owners. Direct background activity with no command actor stays unattributed; no stored credential is borrowed and no request id is invented.
 
 `dispatchLogicalModel` supplies the admitted call actor and existing Workspace, AgentSession and capability-call correlation to Provider resolution during both member selection and execution. This consuming context contains no credential material and grants no access.
+
+`withTurnModelCapture` accepts a Server Turn with an optional borrowed `coreDb`, or the existing Workspace Turn with `workspaceDb`. Its callback supplies the exact owning handle as `capture.workspaceDb`. Server capture uses the existing `env.bound`, model observations and evidence bundle lifecycle under the Server owner tree; it has no Workspace anchor. Capture coverage remains the Turn's immutable admission, and caller-owned databases remain open.
+
+Public inference without Workspace metadata uses the existing Server capability and usage families in Core. Workspace-attributed calls keep their Workspace home. Both paths capture the admitted actor before Provider contact and record only reported consumption. Closing a call closes only a newly opened Workspace database; the App retains ownership of its borrowed Core handle.

@@ -25,6 +25,7 @@ import {
   type GatewayCallLedgerBinding,
   hasCapabilityCallRequestId,
   recordUsage,
+  type StartedCapabilityCall,
   startCapabilityCall,
   writeGatewayRouteLineage,
 } from '../capability/usage-ledger.js';
@@ -165,11 +166,7 @@ interface PublicLlmGatewayLineage {
 }
 
 /** Started durable LLM gateway call with its workspace database handle. */
-interface DurableLlmGatewayCall {
-  /** Workspace-scoped database handle. */
-  workspaceDb: WorkspaceDb;
-  /** Started capability call row. */
-  call: ReturnType<typeof startCapabilityCall>;
+interface DurableLlmGatewayCall extends GatewayCallLedgerBinding {
   /** Whether the capability call and database handle already reached a terminal boundary. */
   finished: boolean;
   /** Value-free raw-source failure retained even when public stream framing changes. */
@@ -204,43 +201,54 @@ function startPublicLlmGatewayCall(input: {
 
   const lineage = readPublicLlmGatewayLineage(input.metadata);
 
-  if (!lineage) {
-    return null;
-  }
-
-  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, lineage.workspaceId);
+  const workspaceDb = lineage
+    ? openWorkspaceDb(input.coreDb.dataRoot, lineage.workspaceId)
+    : input.coreDb;
 
   try {
-    applyScopedMigrations(workspaceDb);
+    if (workspaceDb.scope === 'workspace') applyScopedMigrations(workspaceDb);
 
     if (
-      lineage.requestId &&
+      lineage?.requestId &&
+      workspaceDb.scope === 'workspace' &&
       hasCapabilityCallRequestId(workspaceDb, lineage.workspaceId, lineage.requestId)
     ) {
       throw new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
     }
-    const call = startCapabilityCall({
-      agentId: lineage.agentId ?? null,
-      agentSessionId: lineage.agentSessionId ?? null,
+    const callInput = {
+      agentId: lineage?.agentId ?? null,
+      agentSessionId: lineage?.agentSessionId ?? null,
       authorityActor: input.authorityActor,
       capabilityId: `llm.${input.endpoint}`,
       family: 'llm',
-      itemId: lineage.itemId ?? null,
+      itemId: lineage?.itemId ?? null,
       operation: input.endpoint,
       providerRef: null,
       redactionClass: 'metadata-only',
-      requestId: lineage.requestId ?? randomUUID(),
+      requestId: lineage?.requestId ?? randomUUID(),
       serviceRef: 'llm-gateway',
-      sourceIds: lineage.sourceIds ?? [],
+      sourceIds: lineage?.sourceIds ?? [],
       summary:
-        lineage.threadId && lineage.turnId
+        lineage?.threadId && lineage?.turnId
           ? `Public ${input.endpoint} LLM gateway call.`
           : `Public ${input.endpoint} LLM gateway call. Model capture unavailable: no Turn admission.`,
-      threadId: lineage.threadId ?? null,
-      turnId: lineage.turnId ?? null,
-      workspaceDb,
-      workspaceId: lineage.workspaceId,
-    });
+      threadId: lineage?.threadId ?? null,
+      turnId: lineage?.turnId ?? null,
+    };
+    const call =
+      workspaceDb.scope === 'core'
+        ? startCapabilityCall({
+            ...callInput,
+            family: 'llm',
+            workspaceDb,
+            owner: { kind: 'server' },
+          })
+        : startCapabilityCall({
+            ...callInput,
+            family: 'llm',
+            workspaceDb,
+            workspaceId: workspaceDb.workspaceId,
+          });
     persistLlmCapabilityCallSystemPromptDigest({
       callId: call.id,
       systemPromptDigest: digestLlmSystemPrompt({
@@ -256,7 +264,7 @@ function startPublicLlmGatewayCall(input: {
       workspaceDb,
     };
   } catch (error) {
-    workspaceDb.sqlite.close();
+    if (workspaceDb.scope === 'workspace') workspaceDb.sqlite.close();
     throw error;
   }
 }
@@ -473,7 +481,7 @@ function finishDurableLlmGatewayCall(
     });
   } finally {
     try {
-      durableCall.workspaceDb.sqlite.close();
+      if (durableCall.workspaceDb.scope === 'workspace') durableCall.workspaceDb.sqlite.close();
     } finally {
       durableCall.onFinished?.();
     }
@@ -850,7 +858,7 @@ function startWorkerInferenceCall(input: {
   readonly cacheDegraded: boolean;
   /** Pre-adapter Chat Completions or Responses request. */
   readonly request: unknown;
-}): DurableLlmGatewayCall {
+}): DurableLlmGatewayCall & { workspaceDb: WorkspaceDb; call: StartedCapabilityCall } {
   if (!input.coreDb) {
     throw new WorkerInferenceRouteError(
       'worker_inference_unavailable',

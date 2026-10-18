@@ -31,6 +31,7 @@ import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import { openBoundedSourceView } from '../context/bounded-source-view.js';
+import { prepareKnowledgeOverview } from '../context/knowledge-overview.js';
 import { prepareMaterialSourceInput } from '../context/material-source-files.js';
 import {
   admitModelRequest,
@@ -55,6 +56,7 @@ import {
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
+import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -86,7 +88,10 @@ import {
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  findNamedAgentEnvironmentPackageSnapshot,
+  recordAgentEnvironmentPackageSnapshot,
+} from './aep-snapshot-ledger.js';
 import {
   type AgentEnvironmentPackagePreview,
   type PreparedWorkerContextPackage,
@@ -193,23 +198,22 @@ function workerGovernanceContinuityDisposition(
 }
 
 /**
- * Selects the resume pair a successor's new binding presents, or null to start a new native
- * conversation. The predecessor is the Thread's latest-created other AgentSession: a Thread holds
- * at most one current AgentSession, and a successor is created only after its predecessor is
- * terminal, so creation order is predecessor order. A predecessor with an accepted ready proof
- * supplies its own pair. One without proof never had a resumed open accepted, or lost only the
- * record of one, because a resumed open proves the resume pair's exact digest; either way the
- * Thread's retained conversation is the one the predecessor would have resumed, so the walk moves
- * to the next earlier AgentSession. Unproved native state is never inherited, so a Thread with no
- * accepted proof starts a new conversation.
+ * Selects the nearest accepted resume pair within the selected Agent and runtime segment.
+ * A switch starts a fresh native conversation; a failed preparation without a package or proof
+ * does not establish a runtime. Within one segment, predecessors without proof remain skippable.
+ * Creation order defines predecessor order and equal creation times fail closed.
  *
  * @param agentSessions Every AgentSession of the Thread.
- * @param successorId AgentSession the new binding belongs to, excluded from the walk.
- * @throws TurnStartValidationError when creation order or the accepted proof's storage provenance is unproved.
+ * @param successorId AgentSession excluded from the walk.
+ * @param selected Current Agent and runtime selection.
+ * @param workspaceDb Owner of the retained packages that identify predecessor runtimes.
+ * @throws TurnStartValidationError when order, runtime identity or accepted storage is unproved.
  */
 function selectThreadNativeResumeSource(
   agentSessions: readonly ReturnType<FsStore['getAgentSession']>[],
-  successorId: string
+  successorId: string,
+  selected: { readonly agentId: string; readonly runtimeKind: string; readonly adapter: string },
+  workspaceDb: WorkspaceDb | null
 ): ReturnType<FsStore['getAgentSession']> | null {
   const ordered = agentSessions
     .filter((candidate) => candidate.id !== successorId)
@@ -221,6 +225,48 @@ function selectThreadNativeResumeSource(
       throw new TurnStartValidationError(
         'recovery_required',
         'The Thread AgentSession order is ambiguous, so its resume predecessor is unproved.',
+        409
+      );
+    }
+    if (candidate.agentId !== selected.agentId) return null;
+    if (candidate.environmentPackageSnapshotId !== null) {
+      let snapshot: ReturnType<typeof findNamedAgentEnvironmentPackageSnapshot>;
+      try {
+        snapshot = workspaceDb
+          ? findNamedAgentEnvironmentPackageSnapshot(
+              workspaceDb,
+              candidate.workspaceId,
+              candidate.id,
+              candidate.environmentPackageSnapshotId
+            )
+          : null;
+      } catch {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The native resume predecessor runtime cannot be read.',
+          409
+        );
+      }
+      if (
+        !snapshot ||
+        snapshot.agentId !== candidate.agentId ||
+        snapshot.threadId !== candidate.threadId
+      ) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The native resume predecessor runtime is unproved.',
+          409
+        );
+      }
+      if (
+        snapshot.runtimeKind !== selected.runtimeKind ||
+        snapshot.snapshot.control.adapter.targetRuntime !== selected.adapter
+      )
+        return null;
+    } else if (candidate.nativeHandleDigest !== null) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The native resume predecessor runtime is unproved.',
         409
       );
     }
@@ -252,6 +298,8 @@ interface WorkerTurnBackendLifecycle {
 
 /** Prepared S39 package state retained until its accepted trace and queue handoff complete. */
 export interface PreparedWorkerTurnContext {
+  /** Transient source and audience check before backend disclosure and native submission. */
+  readonly assertCurrentKnowledgeOverview: () => void;
   /** Task diagnostic lineage, absent for an outcome-initiated Turn. */
   readonly checkpoint: WorkerCheckpointRecord | null;
   /** Exact scheduler request identity, including checkpoint-free outcome Turns. */
@@ -326,6 +374,26 @@ export async function prepareWorkerTurnContextPackage(
     : null;
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const sourceAdmission = coreDb ? findSchedulerAdmissionForTurn(coreDb, input) : null;
+  const serverKnowledgeActor =
+    sourceAdmission?.serverAdminTokenId && sourceAdmission.triggerActor.kind === 'user'
+      ? {
+          kind: 'token' as const,
+          tokenId: sourceAdmission.serverAdminTokenId,
+          tokenScope: 'server-admin' as const,
+          userId: sourceAdmission.triggerActor.id,
+        }
+      : undefined;
+  const knowledgeOverview = prepareKnowledgeOverview({
+    store,
+    coreDb,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    actor: turn.triggerActor,
+    requestActor: serverKnowledgeActor,
+    serverKnowledgeActor,
+  });
   const isTask =
     workerRequest.requestKind === 'structured-delegation' && checkpoint?.goalId === null;
   const isChatSubordinateTask =
@@ -473,7 +541,19 @@ export async function prepareWorkerTurnContextPackage(
       );
     selectedArtifacts.set(artifact.id, structuredClone(artifact));
   }
+  const assertCurrentKnowledgeOverview = () => {
+    try {
+      knowledgeOverview.assertCurrent();
+    } catch {
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Current Knowledge overview authority is unavailable.',
+        503
+      );
+    }
+  };
   const assertCurrentSources = () => {
+    assertCurrentKnowledgeOverview();
     if (!originalInputs.length && !materialSelections.length && !selectedArtifacts.size) return;
     if (!coreDb)
       throw new TurnStartValidationError(
@@ -679,6 +759,7 @@ export async function prepareWorkerTurnContextPackage(
     contextBudgetTokens,
     includedItemIds,
     knowledgeSelections,
+    knowledgeOverview: knowledgeOverview.text,
     materialSelections,
     threadId: input.threadId,
     turnId: input.turnId,
@@ -694,11 +775,13 @@ export async function prepareWorkerTurnContextPackage(
     input.turnId,
     'context-package'
   );
+  assertCurrentSources();
   await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
   assertCurrentKnowledge();
   assertCurrentSources();
   for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);
   return {
+    assertCurrentKnowledgeOverview,
     checkpoint,
     requestId: input.requestId,
     knowledgeExclusions,
@@ -1484,10 +1567,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     input: PrepareAgentSessionForTurnInput,
     choice: SchedulerWorkerStorageChoice | undefined
   ): SchedulerWorkerStorageChoice | undefined {
-    const source = selectThreadNativeResumeSource(
-      store.listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId),
-      input.freshAgentSessionId
-    );
+    const workspaceDb = this.openWorkspaceDb(input.turn.workspaceId);
+    let source: ReturnType<FsStore['getAgentSession']> | null;
+    try {
+      source = selectThreadNativeResumeSource(
+        store.listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId),
+        input.freshAgentSessionId,
+        {
+          agentId: input.agentSetup.manifest.id,
+          runtimeKind: input.agentSetup.manifest.runtime.kind,
+          adapter: input.agentSetup.manifest.runtime.adapter,
+        },
+        workspaceDb
+      );
+    } finally {
+      workspaceDb?.sqlite.close();
+    }
     if (!source) return choice;
     const retainedStorage = source.retainedStorage!;
     if (
@@ -1876,7 +1971,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
         runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
         turn,
-        turnInput: workerInput,
+        // The retained request stays exact; only native model input adds package navigation.
+        turnInput: preparedWorkerContext?.packageFiles.fileInventory.some(
+          (file) => file.path === 'knowledge-overview.md'
+        )
+          ? workerInputWithKnowledgeOverview(workerInput, resolvedAgentSessionId)
+          : workerInput,
         triggerActor: context.triggerActor,
         ...(this.vaultBackend ? { vaultBackend: this.vaultBackend } : {}),
         ...(context.workspaceDataSourceCatalog
@@ -1983,7 +2083,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       let nativeResume: WorkerGovernanceNativeResume | null;
       try {
-        const source = selectThreadNativeResumeSource(threadAgentSessions, resolvedAgentSessionId);
+        const source = selectThreadNativeResumeSource(
+          threadAgentSessions,
+          resolvedAgentSessionId,
+          {
+            agentId: manifest.id,
+            runtimeKind: manifest.runtime.kind,
+            adapter: manifest.runtime.adapter,
+          },
+          workspaceDb
+        );
         nativeResume = source ? { digest: source.nativeHandleDigest!, locator: source.id } : null;
       } catch (error) {
         agentSessionId = null;
@@ -2021,6 +2130,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const launchLifecycle = backendLifecycle;
       /** Publishes the execution binding only after the backend's final no-effect capacity guards. */
       const publishMaterialization = () => {
+        preparedWorkerContext?.assertCurrentKnowledgeOverview();
         if (materializationPublished)
           throw new Error('Worker materialization publication may occur only once.');
         materializationPublished = true;
@@ -2215,6 +2325,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       await this.backend.prepareLaunch(materialization);
+      preparedWorkerContext?.assertCurrentKnowledgeOverview();
       const submission = recordSchedulerExecutionOperation(this.coreDb!, {
         attemptId: context.attemptId!,
         operationId: commandInputHash({

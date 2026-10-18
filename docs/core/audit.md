@@ -116,6 +116,10 @@ An audit actor uses the `ActorRef` semantics from `docs/core/identity.md`. Displ
 
 Where possible, audit events should retain links back to item IDs, capability call IDs, permission decision IDs, vault reference IDs, and other related core records.
 
+Every admitted interception participant invocation MUST leave durable evidence through existing Audit, Policy and linked effect owners, including observation, advice, failure and timeout. Evidence identifies the binding/provider versions, actor/delegation, safe input/output references and actual outcome; a transformation retains safe references to both versions without storing secrets. No second transcript or interception ledger is required.
+
+Decision Trace is a derived read-only view over retained identifier edges, with current permission checks per node and explicit missing links. It MUST NOT invent provenance from text, time or model rationale, or become another record authority. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this later view and the pre-stable provenance direction; implementation is Not Started.
+
 ## Invariants
 
 - Audit records MUST NOT store secret values, raw provider payloads, sensitive sandbox internals, or unrestricted file contents.

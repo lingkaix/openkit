@@ -150,6 +150,47 @@ function fixture(missingKey = false) {
 }
 
 describe('public durable logical Gateway lineage', () => {
+  it('retains a public call without Workspace metadata in the Server ledger and keeps Core open', async () => {
+    const f = fixture();
+    try {
+      f.primary.setResponses([fauxAssistantMessage('server served')]);
+      const response = await f.app.request('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'tier', messages: [{ role: 'user', content: 'hello' }] }),
+      });
+      expect(response.status, await response.text()).toBe(200);
+      const call = f.coreDb.sqlite
+        .prepare('SELECT call_id, workspace_id, status FROM capability_calls')
+        .get() as { call_id: string };
+      expect(call).toMatchObject({ workspace_id: null, status: 'succeeded' });
+      const audits = f.coreDb.sqlite
+        .prepare(
+          'SELECT action, actor_json FROM audit_events WHERE capability_call_id = ? ORDER BY created_at'
+        )
+        .all(call.call_id);
+      expect(audits).toEqual([
+        expect.objectContaining({
+          action: 'capability.admit',
+          actor_json: JSON.stringify({
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }),
+        }),
+        expect.objectContaining({
+          action: 'capability.finish',
+          actor_json: JSON.stringify({
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }),
+        }),
+      ]);
+      expect(f.coreDb.sqlite.open).toBe(true);
+    } finally {
+      f.close();
+    }
+  });
+
   for (const endpoint of ['responses', 'chat/completions']) {
     for (const stream of [false, true]) {
       it(`${endpoint} stream=${stream}: one call releases the backup after primary rejection and carries deadline`, async () => {
@@ -464,7 +505,7 @@ describe('public durable logical Gateway lineage', () => {
       f.close();
     }
   });
-  it('unattributed public calls keep no durable row', async () => {
+  it('public calls without Workspace metadata keep Workspace history empty', async () => {
     const f = fixture();
     f.primary.setResponses([fauxAssistantMessage('blind')]);
     try {

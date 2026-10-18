@@ -28,6 +28,12 @@ The kernel does not decide whether a retrieved claim is true. It does not publis
 - [Knowledge](../core/knowledge.md)
 - [Permissions](../core/permissions.md)
 
+## Storage Content And Derivation
+
+For Storage-backed content, [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) adds the indexable-unit contract: a derivative with source locator and lineage. Separate Derivation performs extraction/conversion. Retrieval owns indexing, multimodal/text embeddings and embedding-space identity, Gateway vector calls at index/query time, fusion, scoped filtering and citable hits. Existing Phase1 lexical implementation does not claim those later modalities are active.
+
+Storage changes drive Derivation/indexing; queries use indexes, never live Storage scans. Large unprocessed mounts receive cheap metadata indexing first, with content indexing subject to demand/Policy/budget. Add `contentRef` to retained trace hits; resolve original bytes through Storage under current caller grants. Every engine route is NanoCore-mediated, with Knowledge scope, agent audience or Worker lease filtering before disclosure. Knowledge questions use the Knowledge Manager; Workers can search leased work files through their mediated tool, never directly from a sandbox to the engine.
+
 ## Summary
 
 Before v0.1.0, users need one retrieval tool over Knowledge, Workspace data, Artifacts and uploads, and past conversations. The engineer's size target applies to one upload. Its admission owner defines the maximum and byte unit; the kernel does not define upload admission.
