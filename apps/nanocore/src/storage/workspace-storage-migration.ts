@@ -17,7 +17,7 @@ import {
   redactAgentEnvironmentPackageSnapshot,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, readRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
@@ -460,11 +460,11 @@ function migrateStagedWorkspaceMetadata(workspaceRoot: string, workspaceId: stri
   const configPath = join(workspaceRoot, 'config', 'workspace.jsonc');
   const hasCurrentConfig = existsSync(configPath);
   // Current configuration already owns editable values and its fixed base; validate without rewriting it.
-  const config = WorkspaceConfigSchema.parse(
-    hasCurrentConfig
-      ? parseJsoncObject(readFileSync(configPath, 'utf8'))
-      : { schemaVersion: 1, workspace: { name, defaultAgentId } }
-  );
+  const config = hasCurrentConfig
+    ? readRetainedV1(parseJsoncObject(readFileSync(configPath, 'utf8')), (value) =>
+        WorkspaceConfigSchema.parse(value)
+      )
+    : WorkspaceConfigSchema.parse({ schemaVersion: 1, workspace: { name, defaultAgentId } });
 
   writeJsonAtomically(join(workspaceRoot, 'workspace-record.json'), record);
   if (!hasCurrentConfig) writeJsonAtomically(configPath, config);
