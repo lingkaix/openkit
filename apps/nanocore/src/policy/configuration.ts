@@ -73,12 +73,25 @@ export function preparePolicyConfiguration(input: {
     now: authoredAt,
   });
   if (prepared.classification === 'unchanged') throw new Error('Policy changes are required.');
-  for (const statement of prepared.document.statements) {
-    if (statement.kind !== 'delegation' || statement.state !== 'active') continue;
-    const previous = currentDocument.statements.find(({ id }) => id === statement.id);
-    if (!previous || policyDigest(previous) !== policyDigest(statement))
-      throw new Error('Goal-domain activation requires its jointly approved Goal request.');
-  }
+  // Goal statements are projections of one joint Plan approval. Their owner
+  // publishes and withdraws them; an unrelated Server candidate must preserve them.
+  const currentGoals = currentDocument.statements.filter(
+    (statement) => statement.kind === 'delegation'
+  );
+  const proposedGoals = prepared.document.statements.filter(
+    (statement) => statement.kind === 'delegation'
+  );
+  if (
+    currentGoals.length !== proposedGoals.length ||
+    currentGoals.some(
+      (previous) =>
+        !proposedGoals.some(
+          (statement) =>
+            statement.id === previous.id && policyDigest(statement) === policyDigest(previous)
+        )
+    )
+  )
+    throw new Error('Goal-domain changes require their jointly approved Goal owner.');
 
   const proposal = PolicyWriteProposalV1Schema.parse({
     schemaVersion: 1,
