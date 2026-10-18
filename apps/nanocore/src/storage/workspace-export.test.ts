@@ -1,9 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
-import { deriveEntityId, isEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
+import {
+  ArtifactVersionRecordSchema,
+  deriveEntityId,
+  isEntityId,
+  PROTOCOL_VERSION,
+} from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -25,6 +30,7 @@ import {
   saveWorkspaceMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { publishArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
@@ -720,7 +726,29 @@ describe('workspace export verifier', () => {
         },
       },
     };
+    const sourceWorkspaceRoot = join(dirname(root), 'source');
+    publishArtifactVersionRecord({
+      workspaceRoot: sourceWorkspaceRoot,
+      record: ArtifactVersionRecordSchema.parse({
+        artifact,
+        version: {
+          artifactId: artifact.id,
+          workspaceId: workspace.id,
+          artifactVersion: artifact.version,
+          parentVersion: null,
+          title: artifact.title,
+          summary: artifact.summary,
+          contentDigest: artifact.contentDigest,
+          actor: turn.triggerActor,
+          threadId: artifact.threadId,
+          turnId: artifact.turnId,
+          requestId: artifact.lastMutationRequestId,
+          recordedAt: artifact.updatedAt,
+        },
+      }),
+    });
     const exportInput = {
+      sourceWorkspaceRoot,
       exportRoot: root,
       exportId: 'wsexp_00000000-0000-743a-9531-8ebe42619a57',
       sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
