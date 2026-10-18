@@ -61,6 +61,7 @@ import {
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
+import { parseJsoncObject } from './jsonc.js';
 import {
   diffRuntimeConfig,
   loadRuntimeConfig,
@@ -665,6 +666,34 @@ export class RuntimeConfigFileService {
     const result = schema.safeParse(parsed);
 
     if (result.success) {
+      if (spec.kind === 'server' || spec.kind === 'user' || spec.kind === 'workspace') {
+        const retained = existsSync(spec.absolutePath)
+          ? parseJsoncObject(readCanonicalTextFile(spec.absolutePath))
+          : {};
+        const binding = (document: Record<string, unknown>): unknown => {
+          const owner = spec.kind === 'workspace' ? document.workspace : document;
+          return owner && typeof owner === 'object'
+            ? (owner as Record<string, unknown>).defaultKnowledgeBaseId
+            : undefined;
+        };
+        if (binding(retained) !== binding(parsed as Record<string, unknown>)) {
+          return [
+            {
+              fileId: spec.relativePath,
+              severity: 'error',
+              code: 'knowledge_base_identity_immutable',
+              message:
+                'Default Knowledge Base identity is assigned at creation and cannot be edited.',
+              source: spec.relativePath,
+              jsonPath:
+                spec.kind === 'workspace'
+                  ? '$.workspace.defaultKnowledgeBaseId'
+                  : '$.defaultKnowledgeBaseId',
+              range: null,
+            },
+          ];
+        }
+      }
       if (spec.kind === 'data-source') {
         try {
           parseWorkspaceDataSourceCatalog(parsed);

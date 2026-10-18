@@ -18,6 +18,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
@@ -1814,7 +1815,12 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       },
       caller: 'task-mode',
       dataRoot,
-      pinnedReferences: [{ scopeId: `page/workspace/${workspace.id}`, objectId: page.id }],
+      pinnedReferences: [
+        {
+          scopeId: `page/workspace/${workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId: workspace.id } })}`,
+          objectId: page.id,
+        },
+      ],
       query: 'Deletion recovery trace',
       traceId,
       workspaceId: workspace.id,

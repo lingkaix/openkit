@@ -60,6 +60,7 @@ import {
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
@@ -9022,7 +9023,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           contentDigest: knowledgePageDigest,
           reference: {
             objectId: knowledge.id,
-            scopeId: `page/workspace/${fixture.turn.workspaceId}`,
+            scopeId: `page/workspace/${fixture.turn.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId } })}`,
           },
           sourceReferences: [],
         }),
@@ -9030,7 +9031,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           contentDigest: oversizedKnowledgePageDigest,
           reference: {
             objectId: oversizedKnowledge.id,
-            scopeId: `page/workspace/${fixture.turn.workspaceId}`,
+            scopeId: `page/workspace/${fixture.turn.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId } })}`,
           },
           sourceReferences: [],
         }),
@@ -9076,6 +9077,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           expect.objectContaining({
             contentDigest: knowledgePageDigest,
             knowledgePageId: knowledge.id,
+            knowledgeBaseId: readDefaultKnowledgeBaseId({
+              dataRoot: fixture.coreDb.dataRoot,
+              scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId },
+            }),
             notebookRevision: notebook.publishedRevision(),
             packagePath: `knowledge/pages/${knowledge.id}.md`,
             sourceRefs: [],
@@ -9084,6 +9089,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           expect.objectContaining({
             contentDigest: oversizedKnowledgePageDigest,
             knowledgePageId: oversizedKnowledge.id,
+            knowledgeBaseId: readDefaultKnowledgeBaseId({
+              dataRoot: fixture.coreDb.dataRoot,
+              scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId },
+            }),
             notebookRevision: notebook.publishedRevision(),
             projection: expect.objectContaining({
               kind: 'excerpt',
@@ -9311,7 +9320,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(acceptedRetrieval.selected).toEqual([
         expect.objectContaining({
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            scopeId: `page/workspace/${fixture.turn.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId } })}`,
             objectId: 'direct-task-lesson',
           },
           sourceReferences,

@@ -27,6 +27,8 @@ import {
   allocateEntityId,
   deriveEntityId,
   ListKnowledgeEntriesResponseSchema,
+  parseReferenceScope,
+  parseReferenceUri,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
@@ -38,6 +40,7 @@ import {
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import {
   type NotebookEntryEdit,
@@ -709,19 +712,31 @@ export function createKnowledgeOperationImplementations(
           outputTurnId: context.queryContext?.turnId,
         };
         const citations = result.citations.map((citation) => {
-          const server = citation.reference.startsWith('page/server/');
-          const scopeId = server ? 'page/server' : `page/workspace/${input.workspaceId}`;
-          const prefix = `${scopeId}/`;
+          const parsed = parseReferenceUri(citation.reference);
+          const scope = parsed ? parseReferenceScope(parsed.reference.scopeId) : null;
           if (
-            !citation.reference.startsWith(prefix) ||
-            !citation.reference.endsWith(`@${citation.revision}`)
+            !parsed ||
+            !scope ||
+            scope.family !== 'page' ||
+            scope.kind === 'user' ||
+            (scope.kind === 'workspace' && scope.workspaceId !== input.workspaceId) ||
+            scope.knowledgeBaseId !==
+              readDefaultKnowledgeBaseId({
+                dataRoot,
+                scope:
+                  scope.kind === 'server'
+                    ? { kind: 'server' }
+                    : { kind: 'workspace', workspaceId: input.workspaceId },
+              }) ||
+            (parsed.contentDigest !== undefined && parsed.contentDigest !== citation.contentDigest)
           )
             throw new OperationError(
               'knowledge_manager_answer_failed',
               'Knowledge Manager citation is unavailable.',
               500
             );
-          const id = citation.reference.slice(prefix.length, -(citation.revision.length + 1));
+          const server = scope.kind === 'server';
+          const { scopeId, objectId: id } = parsed.reference;
           const page = (
             server ? readAuthorizedServerNotebookPages : readAuthorizedWorkspaceNotebookPages
           )({
@@ -1704,6 +1719,7 @@ export function createKnowledgeOperationImplementations(
           },
         });
         return ListKnowledgeEntriesResponseSchema.parse({
+          knowledgeBaseId: snapshot.knowledgeBaseId,
           notebookRevision: snapshot.notebookRevision,
           items: snapshot.pages.map(({ path, id, content }) => ({
             ...parseOwnedKnowledgeEntry(path, id, content),

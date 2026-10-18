@@ -8,18 +8,30 @@ import {
   ScopeQualifiedReferenceSchema,
 } from '../index.js';
 
+const knowledgeBaseId = 'kb_0190f4c8-0000-7000-8000-000000000001';
+
 const traceId = 'krt_0190f4c8-0000-7000-8000-000000000001';
 
 describe('scope-qualified reference contract', () => {
   it.each([
-    ['page/server', { family: 'page', kind: 'server' }],
+    [`page/server/${knowledgeBaseId}`, { family: 'page', kind: 'server', knowledgeBaseId }],
     [
-      'page/user/usr_00000000-0000-7ed7-bc55-952204fd7048',
-      { family: 'page', kind: 'user', userId: 'usr_00000000-0000-7ed7-bc55-952204fd7048' },
+      `page/user/usr_00000000-0000-7ed7-bc55-952204fd7048/${knowledgeBaseId}`,
+      {
+        family: 'page',
+        kind: 'user',
+        userId: 'usr_00000000-0000-7ed7-bc55-952204fd7048',
+        knowledgeBaseId,
+      },
     ],
     [
-      'page/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
-      { family: 'page', kind: 'workspace', workspaceId: 'ws_00000000-0000-7075-8a5a-74c8c6e85b6e' },
+      `page/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/${knowledgeBaseId}`,
+      {
+        family: 'page',
+        kind: 'workspace',
+        workspaceId: 'ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+        knowledgeBaseId,
+      },
     ],
     [
       'retrieval-trace/thread/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/th_00000000-0000-7d53-83f1-7e7cac9ae169',
@@ -93,7 +105,7 @@ describe('scope-qualified reference contract', () => {
 
   it('keeps page object paths separate from scope and rejects authority-bearing additions', () => {
     const reference = {
-      scopeId: 'page/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+      scopeId: `page/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/${knowledgeBaseId}`,
       objectId: 'research/topic',
     };
     expect(PageReferenceSchema.parse(reference)).toEqual(reference);
