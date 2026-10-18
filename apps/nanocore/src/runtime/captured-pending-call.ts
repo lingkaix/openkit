@@ -439,6 +439,17 @@ export async function executeCapturedPendingCall(input: {
   const { record } = input;
   if (!input.executionCall)
     return { disposition: 'outcome-unknown', reason: 'execution-admission-missing', result: null };
+  // Completed observations report evidence failure without changing a settled Tool outcome.
+  const observeOutcome = async (
+    outcome: CapturedPendingCallExecution
+  ): Promise<CapturedPendingCallExecution> => {
+    try {
+      await input.prepared?.mediation?.observe?.();
+    } catch {
+      return { ...outcome, reason: outcome.reason ?? 'policy-observation-unavailable' };
+    }
+    return outcome;
+  };
   if (!record.serverId || !record.toolName || !record.canonicalArgumentsJson || !input.catalog) {
     recordCapturedExecution(
       input.executionCall,
@@ -447,7 +458,11 @@ export async function executeCapturedPendingCall(input: {
       'binding-missing',
       false
     );
-    return { disposition: 'execution-error', reason: 'binding-missing', result: null };
+    return observeOutcome({
+      disposition: 'execution-error',
+      reason: 'binding-missing',
+      result: null,
+    });
   }
   let resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
   try {
@@ -460,7 +475,11 @@ export async function executeCapturedPendingCall(input: {
       'tool-left-supply',
       false
     );
-    return { disposition: 'execution-error', reason: 'tool-left-supply', result: null };
+    return observeOutcome({
+      disposition: 'execution-error',
+      reason: 'tool-left-supply',
+      result: null,
+    });
   }
   let args: Record<string, unknown>;
   try {
@@ -473,7 +492,11 @@ export async function executeCapturedPendingCall(input: {
         'arguments-invalid',
         false
       );
-      return { disposition: 'execution-error', reason: 'arguments-invalid', result: null };
+      return observeOutcome({
+        disposition: 'execution-error',
+        reason: 'arguments-invalid',
+        result: null,
+      });
     }
     args = parsed as Record<string, unknown>;
   } catch {
@@ -484,7 +507,11 @@ export async function executeCapturedPendingCall(input: {
       'arguments-invalid',
       false
     );
-    return { disposition: 'execution-error', reason: 'arguments-invalid', result: null };
+    return observeOutcome({
+      disposition: 'execution-error',
+      reason: 'arguments-invalid',
+      result: null,
+    });
   }
   if (
     resolved.scope === 'server' &&
@@ -509,8 +536,13 @@ export async function executeCapturedPendingCall(input: {
       'credentials-invalid',
       false
     );
-    return { disposition: 'execution-error', reason: 'credentials-invalid', result: null };
+    return observeOutcome({
+      disposition: 'execution-error',
+      reason: 'credentials-invalid',
+      result: null,
+    });
   }
+  let outcome: CapturedPendingCallExecution;
   try {
     const result = await input.workerMcpGateway.callTool({
       ...(input.prepared?.credentials ? { credentials: input.prepared.credentials } : {}),
@@ -523,7 +555,7 @@ export async function executeCapturedPendingCall(input: {
     if (input.coreDb && input.prepared?.injections)
       completeMcpVaultInjections(input.coreDb, input.executionCall, input.prepared.injections);
     recordCapturedExecution(input.executionCall, input.workspaceDb, 'succeeded', null, true);
-    return { disposition: 'approved-executed', reason: null, result };
+    outcome = { disposition: 'approved-executed', reason: null, result };
   } catch (error) {
     const known = error instanceof WorkerMcpGatewayCallError && error.upstreamEffect !== 'unknown';
     if (input.executionCall)
@@ -534,11 +566,11 @@ export async function executeCapturedPendingCall(input: {
         error instanceof WorkerMcpGatewayCallError ? error.code : 'execution-unproven',
         !(error instanceof WorkerMcpGatewayCallError && error.upstreamEffect === 'not-contacted')
       );
-    if (known) {
-      return { disposition: 'execution-error', reason: error.code, result: null };
-    }
-    return { disposition: 'outcome-unknown', reason: 'execution-unproven', result: null };
+    outcome = known
+      ? { disposition: 'execution-error', reason: error.code, result: null }
+      : { disposition: 'outcome-unknown', reason: 'execution-unproven', result: null };
   }
+  return observeOutcome(outcome);
 }
 
 /** Settles one admitted captured call and records usage only when contact is not disproved. */
