@@ -1,7 +1,7 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import {
@@ -170,11 +170,13 @@ function completeTerminalAttempt(
 }
 
 describe('scheduler records', () => {
-  it('retains only the non-secret presented administrator token id across a database reopen', () => {
+  it('retains v1 admission and only the non-secret presented administrator token id across reopen', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-token-'));
+    onTestFinished(() => rmSync(dataRoot, { force: true, recursive: true }));
     const first = openCoreDb(dataRoot);
-    applyMigrations(first);
+    let retainedRow: unknown;
     try {
+      applyMigrations(first);
       const input = {
         backendId: 'nanohost',
         queueEntryId: 'queue_admin_token',
@@ -185,8 +187,43 @@ describe('scheduler records', () => {
         turnId: testEntityId('tu', 'turn_1'),
         turnInput: 'Run task',
         requestedAgentId: 'assistant',
+        workspaceRoots: [
+          {
+            id: 'repo',
+            sourceKind: 'host-dir' as const,
+            sourcePath: '/host/project',
+            workerPath: '/workspace/project',
+            access: 'read-write' as const,
+          },
+        ],
       };
       createSchedulerAdmissionEntry(first, input);
+      expect(
+        first.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM scheduler_admission_entries')
+          .get()
+      ).toEqual({ schemaVersion: 1 });
+      first.sqlite
+        .prepare(`UPDATE scheduler_admission_entries
+        SET trigger_actor_json = ?, workspace_roots_json = ? WHERE queue_entry_id = ?`)
+        .run(
+          JSON.stringify({ ...input.triggerActor, description: 'Retained actor annotation.' }),
+          JSON.stringify(
+            input.workspaceRoots.map((root) => ({
+              ...root,
+              description: 'Retained root annotation.',
+            }))
+          ),
+          input.queueEntryId
+        );
+      retainedRow = first.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,
+        trigger_actor_json, workspace_roots_json FROM scheduler_admission_entries`)
+        .get();
+      expect(createSchedulerAdmissionEntry(first, input)).toMatchObject({
+        triggerActor: input.triggerActor,
+        workspaceRoots: input.workspaceRoots,
+      });
       expect(() =>
         createSchedulerAdmissionEntry(first, {
           ...input,
@@ -201,7 +238,28 @@ describe('scheduler records', () => {
       expect(listQueuedSchedulerAdmissionEntries(reopened)[0]).toMatchObject({
         serverAdminTokenId: 'token_admin_1',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
+        workspaceRoots: [
+          {
+            id: 'repo',
+            sourceKind: 'host-dir',
+            sourcePath: '/host/project',
+            workerPath: '/workspace/project',
+            access: 'read-write',
+          },
+        ],
       });
+      expect(listQueuedSchedulerAdmissionEntries(reopened)[0]?.triggerActor).not.toHaveProperty(
+        'description'
+      );
+      expect(
+        listQueuedSchedulerAdmissionEntries(reopened)[0]?.workspaceRoots[0]
+      ).not.toHaveProperty('description');
+      expect(
+        reopened.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion,
+        trigger_actor_json, workspace_roots_json FROM scheduler_admission_entries`)
+          .get()
+      ).toEqual(retainedRow);
       expect(
         reopened.sqlite
           .prepare('SELECT server_admin_token_id FROM scheduler_admission_entries')
@@ -209,6 +267,63 @@ describe('scheduler records', () => {
       ).toEqual({ server_admin_token_id: 'token_admin_1' });
     } finally {
       reopened.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown admission version before JSON decode, replay or status changes', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-version-'));
+    onTestFinished(() => rmSync(dataRoot, { force: true, recursive: true }));
+    const coreDb = openCoreDb(dataRoot);
+    const input = {
+      backendId: 'nanohost',
+      queueEntryId: 'queue_unknown_version',
+      triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: testEntityId('th', 'thread_unknown_version'),
+      turnId: testEntityId('tu', 'turn_unknown_version'),
+      turnInput: 'Keep retained admission unchanged',
+      requestedAgentId: 'assistant',
+    };
+    try {
+      applyMigrations(coreDb);
+      createSchedulerAdmissionEntry(coreDb, input);
+      coreDb.sqlite
+        .prepare(`UPDATE scheduler_admission_entries
+        SET schema_version = 2, trigger_actor_json = '{', workspace_roots_json = '{'
+        WHERE queue_entry_id = ?`)
+        .run(input.queueEntryId);
+
+      expect(() => requireSchedulerAdmissionEntry(coreDb, input.queueEntryId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => listQueuedSchedulerAdmissionEntries(coreDb)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        createSchedulerAdmissionEntry(coreDb, { ...input, turnInput: 'Changed input' })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        denySchedulerAdmissionEntry(coreDb, {
+          queueEntryId: input.queueEntryId,
+          denialReason: 'invalid-request',
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() => cancelSchedulerAdmissionEntry(coreDb, input)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion, status,
+        trigger_actor_json, workspace_roots_json FROM scheduler_admission_entries`)
+          .get()
+      ).toEqual({
+        schemaVersion: 2,
+        status: 'queued',
+        trigger_actor_json: '{',
+        workspace_roots_json: '{',
+      });
+    } finally {
+      coreDb.sqlite.close();
     }
   });
 
