@@ -197,7 +197,7 @@ test('grouped coverage prepares once and writes a distinct original-owner execut
       details.executions.map((item) => item.name),
       expected
     );
-    assert.equal(new Set(executions.map((item) => item.options.reportFile)).size, 7);
+    assert.equal(new Set(executions.map((item) => item.options.reportFile)).size, expected.length);
     for (const { owner, options } of executions) {
       assert.equal(
         options.reportFile,
