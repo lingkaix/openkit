@@ -23,6 +23,32 @@ export const KNOWLEDGE_PACKAGE_FEATURES = [
 ] as const;
 
 const families = new Set(['pages', 'sources', 'schema', 'raw', 'derived', 'indexes']);
+type JsonValue = z.infer<ReturnType<typeof z.json>>;
+const jsonPrimitive = z.json();
+
+/** Validates every own JSON setting without Zod's record decoder dropping prototype-named keys. */
+function isJsonValue(value: unknown): value is JsonValue {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      if (!isJsonValue(value[index])) return false;
+    }
+    return true;
+  }
+  if (value !== null && typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value);
+    return (
+      (prototype === Object.prototype || prototype === null) &&
+      Object.values(value).every(isJsonValue)
+    );
+  }
+  return jsonPrimitive.safeParse(value).success;
+}
+
+const recipeParameters = z.custom<Record<string, JsonValue>>(
+  (value) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) && isJsonValue(value),
+  'Recipe parameters must be a JSON object.'
+);
 
 function hasControlCharacter(value: string): boolean {
   return [...value].some((character) => {
@@ -96,7 +122,7 @@ export const KnowledgePackageRepresentationSchema = z.object({
   recipe: z.object({
     id: z.string().min(1),
     version: z.string().min(1),
-    parameters: z.record(z.string(), z.json()),
+    parameters: recipeParameters,
   }),
   provider: z.string().min(1).nullable(),
   model: z.string().min(1).nullable(),
@@ -230,18 +256,26 @@ export function createKnowledgePackageManifest(
 
 /** Sorts JSON object keys without rewriting any included authored content bytes. */
 export function serializeKnowledgePackageManifest(manifest: KnowledgePackageManifest): string {
-  const keys = new Set<string>();
-  const collect = (value: unknown): void => {
+  const indentation = (depth: number) => '  '.repeat(depth);
+  const render = (value: unknown, depth: number): string => {
     if (Array.isArray(value)) {
-      for (const entry of value) collect(entry);
-    } else if (value !== null && typeof value === 'object') {
-      for (const [key, entry] of Object.entries(value)) {
-        keys.add(key);
-        collect(entry);
-      }
+      if (value.length === 0) return '[]';
+      const entries = value.map((entry) => `${indentation(depth + 1)}${render(entry, depth + 1)}`);
+      return `[\n${entries.join(',\n')}\n${indentation(depth)}]`;
     }
+    if (value !== null && typeof value === 'object') {
+      const entries = Object.entries(value).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0
+      );
+      if (entries.length === 0) return '{}';
+      const fields = entries.map(
+        ([key, entry]) =>
+          `${indentation(depth + 1)}${JSON.stringify(key)}: ${render(entry, depth + 1)}`
+      );
+      return `{\n${fields.join(',\n')}\n${indentation(depth)}}`;
+    }
+    return JSON.stringify(value)!;
   };
-  collect(manifest);
-  // A PropertyList preserves string order even for integer-like recipe parameter keys.
-  return `${JSON.stringify(manifest, [...keys].sort(), 2)}\n`;
+  // Render own keys directly: integer-like and prototype-named settings retain exact meaning.
+  return `${render(manifest, 0)}\n`;
 }
