@@ -297,6 +297,10 @@ describe('canonical Notebook Workspace portability', () => {
         visibility: 'workspace',
       }
     );
+    const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'workspace', workspaceId: f.workspace.id },
+    });
     const selected = await retrieveWorkspaceKnowledge({
       dataRoot: f.dataRoot,
       workspaceId: f.workspace.id,
@@ -305,7 +309,7 @@ describe('canonical Notebook Workspace portability', () => {
       limit: 1,
       pinnedReferences: [
         {
-          scopeId: `page/workspace/${f.workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspace.id } })}`,
+          scopeId: `page/workspace/${f.workspace.id}/${sourceKnowledgeBaseId}`,
           objectId: 'notes/portable',
         },
       ],
@@ -354,6 +358,10 @@ describe('canonical Notebook Workspace portability', () => {
     });
     const revision = notebook.publishedRevision();
     const page = notebook.readRevision(revision).files['notes/portable.md']!;
+    const targetKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: target.dataRoot,
+      scope: { kind: 'workspace', workspaceId: imported.workspace.id },
+    });
     const trace = readRetrievalTrace(targetRoot, {
       scopeId: `retrieval-trace/thread/${imported.workspace.id}/${importedThread!.id}`,
       objectId: selected.retrievalTraceRef!.objectId,
@@ -363,7 +371,7 @@ describe('canonical Notebook Workspace portability', () => {
       selected: [
         {
           reference: {
-            scopeId: `page/workspace/${imported.workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot: target.dataRoot, scope: { kind: 'workspace', workspaceId: imported.workspace.id } })}`,
+            scopeId: `page/workspace/${imported.workspace.id}/${targetKnowledgeBaseId}`,
             objectId: 'notes/portable',
           },
           revision,
