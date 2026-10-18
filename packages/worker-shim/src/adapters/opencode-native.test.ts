@@ -87,10 +87,11 @@ function snapshot(path: string): Record<string, string> {
 async function fixture(
   adapter = opencodeAdapter,
   resumeReference: Uint8Array | null = null,
-  reply: Parameters<typeof startSyntheticInference>[0] = () => ({ text: 'native-ok' })
+  reply: Parameters<typeof startSyntheticInference>[0] = () => ({ text: 'native-ok' }),
+  tools?: Parameters<typeof startSyntheticCapability>[0]
 ) {
   const inference = await startSyntheticInference(reply);
-  const capability = await startSyntheticCapability();
+  const capability = await startSyntheticCapability(tools);
   closers.push(
     () => inference.close(),
     () => capability.close()
@@ -555,6 +556,52 @@ it('refuses a regular-file image source root before spawn without publishing a h
   expect(readFileSync(source, 'utf8')).toBe('invalid-directory-source');
   expect(readdirSync(control)).toEqual([]);
 });
+
+it('exposes a selected parameterless MCP tool in the native CodeMode catalog and invokes it', async () => {
+  let called = false;
+  const serverId = 'p22-probe-5bd14416';
+  const f = await fixture(
+    opencodeAdapter,
+    null,
+    (request) => {
+      const path = requestTexts(request)
+        .join(' ')
+        .match(/\b(tools\.[A-Za-z_]\w*\.sis_schema)\(\)/)?.[1];
+      if (
+        !called &&
+        path &&
+        request.body.tools?.some((tool) => tool.function?.name === 'execute') &&
+        requestTexts(request).join(' ').includes('native-user')
+      ) {
+        called = true;
+        return {
+          toolCall: {
+            name: 'execute',
+            arguments: { code: `return await ${path}({});` },
+          },
+        };
+      }
+      return { text: 'mcp-completed' };
+    },
+    [{ name: 'sis.schema', inputSchema: { type: 'object' } }]
+  );
+  const result = await (await f.session.startTurn(f.turn([], [serverId]))).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(called).toBe(true);
+  expect(f.capability.hits.filter((hit) => hit.method === 'tools/call')).toEqual([
+    {
+      authorization: 'Bearer synthetic-capability-credential',
+      method: 'tools/call',
+      params: expect.objectContaining({ name: 'sis.schema', arguments: {} }),
+      serverId,
+    },
+  ]);
+  expect(
+    f.inference.requests.some((request) =>
+      request.body.messages.some((message) => message.role === 'tool' && message.content === 'echo')
+    )
+  ).toBe(true);
+}, 60000);
 
 it.each([
   'shell',
