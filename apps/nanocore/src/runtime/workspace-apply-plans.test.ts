@@ -1,8 +1,8 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListWorkspaceApplyPlansResponseSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -105,3 +105,44 @@ function workspaceApplyPlan(): Parameters<typeof recordWorkspaceApplyPlan>[1] {
     createdAt: '2026-07-05T00:00:00.000Z',
   };
 }
+
+/** Creates and cleans one native retained Plan fixture. */
+function retainedApplyPlanFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-retained-apply-plan-'));
+  const plan = workspaceApplyPlan();
+  const db = openWorkspaceDb(root, plan.workspaceId);
+  onTestFinished(() => {
+    db.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  applyScopedMigrations(db);
+  recordWorkspaceApplyPlan(db, plan);
+  return { db, plan };
+}
+
+describe('retained Workspace Apply Plan SQL format', () => {
+  it('writes v1 and reads descriptive additions without replacing retained payloads', () => {
+    const { db, plan } = retainedApplyPlanFixture();
+    db.sqlite
+      .prepare('UPDATE workspace_apply_plans SET payload_json=?')
+      .run(JSON.stringify({ ...plan, annotation: 'Retained plan description' }));
+    const before = db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get();
+    expect(before).toMatchObject({ schema_version: 1 });
+    expect(listWorkspaceApplyPlans(db, plan.workspaceId)).toEqual([plan]);
+    expect(recordWorkspaceApplyPlan(db, plan)).toEqual(plan);
+    expect(db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get()).toEqual(before);
+  });
+
+  it('refuses an unknown version before malformed JSON decoding or replay replacement', () => {
+    const { db, plan } = retainedApplyPlanFixture();
+    db.sqlite
+      .prepare("UPDATE workspace_apply_plans SET schema_version=2, payload_json='{invalid'")
+      .run();
+    const before = db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get();
+    expect(() => listWorkspaceApplyPlans(db, plan.workspaceId)).toThrow(
+      'Unsupported retained record format'
+    );
+    expect(() => recordWorkspaceApplyPlan(db, plan)).toThrow('Unsupported retained record format');
+    expect(db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get()).toEqual(before);
+  });
+});
