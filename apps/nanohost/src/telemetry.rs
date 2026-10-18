@@ -321,6 +321,7 @@ mod tests {
             request_id: "a".repeat(64),
             input: serde_json::json!({"storageRef": "storage-one", "attachmentGeneration": 1}),
             file_data: None,
+            admission_failure: None,
             trace_context: Context::new(),
         };
         let mut before =

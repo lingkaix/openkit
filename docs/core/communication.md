@@ -100,6 +100,18 @@ Discord is the first external team channel under the [2026-10-15 ruling](../deci
 
 Direct decisions are limited to Pending Request kinds explicitly admitted by the common channel contract, with current responsible-user, source/audience, exact-request, and stale/duplicate checks. An unlisted kind links back to its authorized App decision surface. Email initially sends attention/digest links. Slack, Signal, and broader Email interaction remain separately admitted later work; success on Discord cannot close those outcomes. The channel owner must retain definite failure versus delivery-unknown and current-authority behavior across retry, restart, and account revocation. No message is sent by accepting this scope.
 
+## Notification Boundary
+
+An attention event identifies a current Core request and its responsible recipient. It carries no new approval, answer, grant, or execution authority. The request owner remains authoritative after notification delivery, failure, retry, or loss.
+
+A delivery attempt records an external transport observation. A definite rejection before sending differs from an unknown send result. An unknown result MUST NOT imply a Core outcome or permit an automatic duplicate send. Restart preserves uncertainty when an attempt lacks a definite result. An explicit retry after a proved no-send failure requires current account binding, actor authority, source access, and destination audience checks.
+
+Channel binding proves control of the external account and associates it with one current Core actor. Binding does not retain the actor's credential privileges. Revocation prevents later responses and sends. A channel MUST authenticate its external input before using account identity or event identity.
+
+The existing inbound receipt owns trusted capture origin. External actor identity comes only from authenticated channel input. A native response records the current admitted Core actor and exact source references before dispatch. That responder remains distinct from the requester, responsible user and trigger actor. Origin retention failure prevents dispatch. Duplicate input, restart and rebinding preserve recorded origin; missing historical facts stay unknown. Origin facts confer no authority and prove no decision or execution outcome.
+
+The common channel response boundary admits only exact typed Pending Request responses. A direct approval requires complete effect disclosure and exact disclosure identity. A non-secret answer requires the exact current question identity. Unknown, stale, unauthorized, or unsupported responses MUST leave the request's existing outcome truthful. Channel receipt, delivery, or acknowledgement never proves a request decision.
+
 ## Turn Communication Flow
 
 A turn is the active execution unit inside a thread. Stable turn semantics and lifecycle states are defined in `docs/core/protocol.md`.

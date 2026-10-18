@@ -90,7 +90,7 @@ class StandIn(DRIVER.Boundary):
             return {"Id": self.image_id(name, key), "RepoDigests": ["example.invalid/image@" + self.input[name][key]],
                     "Config": {"Env": ["BAKED=" + name], "Labels": {
                 "org.opencontainers.image.revision": self.input[name]["commit"],
-                "org.opencontainers.image.version": "0.1.0-rc.9",
+                "org.opencontainers.image.version": "0.1.0-rc.8",
             }}}
         if path.endswith("/json"):
             return {"Id": self.id, "Name": "/lrt-p14-upgrade", "State": {"Running": self.running},
@@ -230,7 +230,7 @@ class LifecycleTests(unittest.TestCase):
         installed.write_bytes(previous.read_bytes())
         sha = lambda path: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         self.input = {
-            "previous": {"tag": "v0.1.0-rc.9", "commit": "1" * 40, "appImage": "sha256:" + "1" * 64,
+            "previous": {"tag": "v0.1.0-rc.8", "commit": "1" * 40, "appImage": "sha256:" + "1" * 64,
                          "workerImage": "sha256:" + "2" * 64, "nanoHost": sha(previous)},
             "candidate": {"commit": "2" * 40, "appImage": "sha256:" + "3" * 64,
                           "workerImage": "sha256:" + "4" * 64, "nanoHost": sha(candidate)},

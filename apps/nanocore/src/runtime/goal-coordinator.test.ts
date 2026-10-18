@@ -160,7 +160,8 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
         'agent_list',
         'artifact_read',
         'turn_read',
-        'evidence_runtime_list',
+        'evidence_runtime-list',
+        'goal_task_dispatch',
       ])
     );
     expect(store.listThreadAgentSessions(workspace.id, created.goal.threadId)).toEqual([]);

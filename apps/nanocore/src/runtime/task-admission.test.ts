@@ -324,11 +324,22 @@ it.each([
       services
     );
     const connections: ReturnType<typeof openWorkspaceDb>[] = [];
+    const connectionClosures: Promise<void>[] = [];
     const taskTool = createCoordinatorTaskTool({
       store,
       coreDb,
       openWorkspace: (id) => {
         const connection = openWorkspaceDb(root, id);
+        connectionClosures.push(
+          new Promise<void>((resolve) => {
+            const close = connection.sqlite.close.bind(connection.sqlite);
+            vi.spyOn(connection.sqlite, 'close').mockImplementation(() => {
+              const result = close();
+              resolve();
+              return result;
+            });
+          })
+        );
         connections.push(connection);
         return connection;
       },
@@ -338,6 +349,7 @@ it.each([
       coordinatorTurnId: coordinator.id,
       startWorker,
     });
+    expect(taskTool.name).toBe('goal.task.dispatch');
     const request = createStructuredWorkerDelegationRequest({
       objective: 'Review the schema',
       acceptanceCriteria: ['A review exists'],
@@ -419,9 +431,9 @@ it.each([
         )
       ).toBe(false);
     }
-    await vi.waitFor(() =>
-      expect(connections.every((connection) => !connection.sqlite.open)).toBe(true)
-    );
+    // Admission returns before detached Worker closeout; join its real connection release.
+    await Promise.all(connectionClosures);
+    expect(connections.every((connection) => !connection.sqlite.open)).toBe(true);
     linked = readGoalView(store, db, goal.goalId);
     if (
       outcome === 'refused' ||
@@ -489,6 +501,10 @@ it.each([
     }
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
     expect(startWorker).toHaveBeenCalledOnce();
+    expect(startWorker.mock.calls[0]![0].triggerSource).toEqual({
+      kind: 'handoff',
+      summary: 'Task Worker handoff.',
+    });
     expect(linked.tasks).toMatchObject([
       { cardId: card.cardId, cardRevision: 0, planVersionId: plan.planVersionId, missing: false },
     ]);

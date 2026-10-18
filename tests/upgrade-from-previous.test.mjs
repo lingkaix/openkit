@@ -64,9 +64,9 @@ test('SQL authority compares selected reader values without requiring an immutab
   );
 });
 
-test('artifact admission distinguishes the P14 reset from a continuity upgrade', () => {
+test('artifact admission accepts the selected previous RC and requires exact identities', () => {
   const previous = {
-    tag: 'v0.1.0-rc.9',
+    tag: 'v0.1.0-rc.8',
     commit: 'a'.repeat(40),
     appImage: digest,
     nanoHost: digest,
@@ -81,7 +81,10 @@ test('artifact admission distinguishes the P14 reset from a continuity upgrade',
     workerPlatformImage: digest,
   };
   admitPair(previous, candidate);
-  assert.throws(() => admitPair({ ...previous, tag: 'v0.1.0-rc.8' }, candidate), /reset/);
+  assert.throws(
+    () => admitPair({ ...previous, tag: 'latest' }, candidate),
+    /Previous release tag is invalid/
+  );
   assert.throws(
     () => admitPair(previous, { ...candidate, nanoHost: 'unpublished-latest' }),
     /exact nanoHost digest/
@@ -276,7 +279,7 @@ test('revision-local corpus helpers join every current retained family before co
   }
   const input = {
     previous: {
-      tag: 'v0.1.0-rc.9',
+      tag: 'v0.1.0-rc.8',
       commit: 'a'.repeat(40),
       appImage: digest,
       nanoHost: digest,

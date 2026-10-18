@@ -19,11 +19,13 @@ import {
   prepareCatalogSkillDecision,
 } from './catalog/catalog-operations.js';
 import { retainedWorkspaceSkillReferences } from './catalog/skill-retention.js';
+import { type ChannelServices, createChannelOperationImplementations } from './channel-services.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
 import { createTaskConversationOperationImplementations } from './conversation-operation-implementations.js';
 import { createDiagnosticsOperationImplementations } from './diagnostics/diagnostics-operations.js';
+import { createExternalTriggerOperationImplementations } from './external-trigger-operations.js';
 import {
   createGenerativeUiOperationImplementations,
   createRemainingKernelOperationImplementations,
@@ -83,12 +85,19 @@ export interface OperationInvocationDependencies {
         readonly ask: (
           input: import('./knowledge/knowledge-agent.js').KnowledgeAgentQuestion
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.ask'>>;
+        /** Same bounded role, with the current User database and private Memory owner. */
+        readonly maintainMemory?: (
+          input: import('./knowledge/user-memory-agent-maintenance.js').UserMemoryMaintenanceInput,
+          userDb: import('./storage/db.js').UserDb
+        ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'memory.maintain'>>;
         readonly maintain: (
           input: import('./knowledge/knowledge-agent-maintenance.js').KnowledgeMaintenanceInput
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
       }
     | undefined;
   readonly coreDb: CoreDb | undefined;
+  /** Shared deployment-local channel and notification owners. */
+  readonly channelServices?: ChannelServices;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
   /** Existing deployment configuration family services. */
@@ -169,6 +178,7 @@ export interface OperationInvocationDependencies {
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
     createCallerOperationImplementations(dependencies),
+    createChannelOperationImplementations(dependencies.channelServices),
     createMaterialOperationImplementations({
       coreDb: dependencies.coreDb,
       store: dependencies.store!,
@@ -216,6 +226,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       observation: dependencies,
     }),
     createAutomationOperationImplementations(dependencies),
+    createExternalTriggerOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),
     createWorkspaceSyncOperationImplementations({

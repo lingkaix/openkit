@@ -183,13 +183,9 @@ export function compareFamilies(baseline, current, required) {
   return observed;
 }
 
-/** Checks actual artifact identities, keeping rc.8's authorized reset out of continuity evidence. */
+/** Checks the selected published RC and exact artifact identities; readback proves continuity. */
 export function admitPair(previous, candidate) {
   assert(/^v?0\.1\.0-rc\.[1-9][0-9]*$/.test(previous.tag), 'Previous release tag is invalid.');
-  assert(
-    Number(previous.tag.split('.').at(-1)) >= 9,
-    'rc.8 to rc.9 is a reset, not a continuity upgrade.'
-  );
   for (const [name, component] of Object.entries({ previous, candidate })) {
     assert(/^[a-f0-9]{40}$/.test(component.commit), `${name}: full source commit is required.`);
     for (const key of ['appImage', 'nanoHost', 'workerImage', 'workerPlatformImage']) {

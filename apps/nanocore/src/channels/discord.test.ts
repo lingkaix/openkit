@@ -1,0 +1,617 @@
+import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Actor } from '../auth/identity.js';
+import { OperationError } from '../operation-error.js';
+import { applyNativeScopeMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import {
+  createDiscordChannel,
+  type DiscordChannelOptions,
+  type DiscordPendingView,
+  type DiscordReply,
+  verifyDiscordInteraction,
+} from './discord.js';
+
+const applicationId = '123456789012345678';
+const discordUserId = '223456789012345678';
+const actor: Actor = { userId: testEntityId('usr', 'discord'), kind: 'session' };
+const workspaceId = testEntityId('ws', 'discord');
+const threadId = testEntityId('th', 'discord');
+const turnId = testEntityId('tu', 'discord');
+const requestLink = `https://openkit.invalid/tasks/${workspaceId}/${threadId}?requestId=ap_discord`;
+const keys = generateKeyPairSync('ed25519');
+const publicKey = keys.publicKey
+  .export({ type: 'spki', format: 'der' })
+  .subarray(-32)
+  .toString('hex');
+const databases: Database.Database[] = [];
+
+/** Applies the production Core journal in an isolated real SQLite fixture. */
+function database() {
+  const sqlite = new Database(':memory:');
+  databases.push(sqlite);
+  applyNativeScopeMigrations(sqlite, 'core');
+  return sqlite;
+}
+
+/** Extracts only response text, keeping the protocol assertion explicit. */
+function content(reply: DiscordReply) {
+  expect(reply.type).toBe(4);
+  return reply.type === 4 ? reply.data.content : '';
+}
+
+/** Builds signed Discord commands without any real account or transport. */
+function fixture() {
+  const sqlite = database();
+  let now = Date.parse('2026-10-16T10:00:00Z');
+  let currentActor: Actor | null = actor;
+  let view: DiscordPendingView = {
+    status: 'available',
+    kind: 'approval',
+    workspaceId,
+    threadId,
+    pendingRequestId: 'ap_discord',
+    turnId,
+    content: 'Exact effect: publish the approved page.',
+    responseAllowed: true,
+  };
+  const inspectPending = vi.fn(() => view);
+  const invoke = vi.fn<DiscordChannelOptions['invoke']>(async () => ({ status: 'resolved' }));
+  const options = {
+    sqlite,
+    applicationId,
+    publicKey,
+    appBaseUrl: 'https://openkit.invalid',
+    requestLink: () => requestLink,
+    now: () => now,
+    newRequestId: randomUUID,
+    resolveActor: () => currentActor,
+    inspectPending,
+    invoke,
+  };
+  let channel = createDiscordChannel(options);
+  let event = 100000000000000000n;
+  const envelope = (command: string, values: Record<string, string> = {}, extra = {}) => ({
+    id: String(++event),
+    application_id: applicationId,
+    type: 2,
+    version: 1,
+    context: 1,
+    channel: { id: '323456789012345678', type: 1 },
+    user: { id: discordUserId },
+    data: {
+      id: '423456789012345678',
+      type: 1,
+      name: 'openkit',
+      options: [
+        {
+          name: command,
+          type: 1,
+          options: Object.entries(values).map(([name, value]) => ({ name, value, type: 3 })),
+        },
+      ],
+    },
+    ...extra,
+  });
+  const signed = (value: unknown, timestamp = String(Math.floor(now / 1000))) => {
+    const body = Buffer.from(JSON.stringify(value));
+    return {
+      body,
+      timestamp,
+      signature: sign(
+        null,
+        Buffer.concat([Buffer.from(timestamp), body]),
+        keys.privateKey
+      ).toString('hex'),
+    };
+  };
+  const send = (command: string, values: Record<string, string> = {}, extra = {}) =>
+    channel.handleSignedInteraction(signed(envelope(command, values, extra)));
+  const pair = async () => {
+    const challenge = channel.beginPairing(actor);
+    expect(content(await send('pair', { challenge: challenge.challenge }))).toContain('paired');
+    return challenge;
+  };
+  const target = { workspace: workspaceId, thread: threadId, request: 'ap_discord' };
+  const disclose = async () => {
+    const text = content(await send('inspect', target));
+    const token = text.match(/Disclosure: ([A-Za-z0-9_-]+)/)?.[1];
+    expect(token).toBeTruthy();
+    return token!;
+  };
+  return {
+    sqlite,
+    signed,
+    envelope,
+    send,
+    pair,
+    disclose,
+    target,
+    inspectPending,
+    invoke,
+    get channel() {
+      return channel;
+    },
+    restart() {
+      channel = createDiscordChannel(options);
+    },
+    advance(ms: number) {
+      now += ms;
+    },
+    actor(value: Actor | null) {
+      currentActor = value;
+    },
+    view(value: Partial<Extract<DiscordPendingView, { status: 'available' }>>) {
+      view = { ...view, ...value } as DiscordPendingView;
+    },
+    unavailable() {
+      view = { status: 'unavailable', code: 'request_not_pending' };
+    },
+  };
+}
+
+afterEach(() => {
+  for (const sqlite of databases.splice(0)) sqlite.close();
+});
+
+describe('Discord signed transport and account binding', () => {
+  it('verifies exact raw bytes and timestamp, rejects forged, stale and future requests', () => {
+    const f = fixture();
+    const input = f.signed(f.envelope('inspect', f.target));
+    const verify = (value = input) =>
+      verifyDiscordInteraction({
+        ...value,
+        publicKey,
+        applicationId,
+        now: Date.parse('2026-10-16T10:00:00Z'),
+      });
+    expect(verify()).toBeTruthy();
+    expect(() => verify({ ...input, body: Buffer.from('{}') })).toThrow();
+    expect(() => verify({ ...input, signature: '00'.repeat(64) })).toThrow();
+    expect(() => verify(f.signed(f.envelope('inspect', f.target), '1'))).toThrow();
+    expect(() =>
+      verify(
+        f.signed(f.envelope('inspect', f.target), String(Date.parse('2026-10-16T11:00:00Z') / 1000))
+      )
+    ).toThrow();
+    expect(() =>
+      verify(f.signed({ ...f.envelope('inspect', f.target), application_id: '999999999999999999' }))
+    ).toThrow();
+  });
+
+  it('acknowledges only authenticated application pings and rejects forged verified objects', async () => {
+    const f = fixture();
+    expect(
+      await f.channel.handleSignedInteraction(
+        f.signed({ id: '100000000000000001', application_id: applicationId, type: 1, version: 1 })
+      )
+    ).toEqual({ type: 1 });
+    await expect(
+      f.channel.handleVerified({ body: '{}', payloadDigest: 'forged', applicationId, publicKey })
+    ).rejects.toThrow();
+    const otherKeys = generateKeyPairSync('ed25519');
+    const otherPublicKey = otherKeys.publicKey
+      .export({ type: 'spki', format: 'der' })
+      .subarray(-32)
+      .toString('hex');
+    const input = f.signed(f.envelope('inspect', f.target));
+    const verified = verifyDiscordInteraction({
+      ...input,
+      signature: sign(
+        null,
+        Buffer.concat([Buffer.from(input.timestamp), input.body]),
+        otherKeys.privateKey
+      ).toString('hex'),
+      publicKey: otherPublicKey,
+      applicationId,
+      now: Date.parse('2026-10-16T10:00:00Z'),
+    });
+    await expect(f.channel.handleVerified(verified)).rejects.toThrow();
+    expect(
+      f.sqlite.prepare('SELECT count(*) AS count FROM discord_inbound_receipts').get()
+    ).toEqual({ count: 0 });
+  });
+
+  it('consumes digest-only challenges once, preserves bindings after restart, and revokes them', async () => {
+    const f = fixture();
+    const challenge = await f.pair();
+    expect(
+      JSON.stringify(f.sqlite.prepare('SELECT * FROM discord_pairing_challenges').all())
+    ).not.toContain(challenge.challenge);
+    expect(content(await f.send('pair', { challenge: challenge.challenge }))).toContain(
+      'unavailable'
+    );
+    f.restart();
+    expect(f.channel.binding(actor)?.discordUserId).toBe(discordUserId);
+    f.channel.revoke(actor);
+    expect(f.channel.binding(actor)).toBeNull();
+    expect(content(await f.send('inspect', f.target))).toContain('binding');
+    expect(f.inspectPending).not.toHaveBeenCalled();
+  });
+
+  it('rejects expired or superseded challenges and user-supplied Core identity', async () => {
+    const f = fixture();
+    const first = f.channel.beginPairing(actor);
+    f.channel.beginPairing(actor);
+    expect(content(await f.send('pair', { challenge: first.challenge }))).toContain('unavailable');
+    const expired = f.channel.beginPairing(actor);
+    f.advance(301_000);
+    expect(content(await f.send('pair', { challenge: expired.challenge }))).toContain(
+      'unavailable'
+    );
+    expect(content(await f.send('pair', { actorId: actor.userId }))).toContain('unsupported');
+    expect(f.channel.binding(actor)).toBeNull();
+  });
+
+  it('cannot replace another active user binding and revocation also ends open challenges', async () => {
+    const f = fixture();
+    await f.pair();
+    const other: Actor = { kind: 'session', userId: testEntityId('usr', 'discord-other') };
+    f.actor(other);
+    const challenge = f.channel.beginPairing(other);
+    expect(content(await f.send('pair', { challenge: challenge.challenge }))).toContain(
+      'active binding'
+    );
+    expect(f.channel.binding(actor)?.userId).toBe(actor.userId);
+    f.channel.revoke(other);
+    expect(content(await f.send('pair', { challenge: challenge.challenge }))).toContain(
+      'unavailable'
+    );
+  });
+
+  it('rejects shared, group and ambiguous channels before any protected read', async () => {
+    const f = fixture();
+    await f.pair();
+    for (const extra of [
+      { guild_id: '523456789012345678' },
+      { context: 2 },
+      { channel: { type: 3 } },
+      { member: { user: { id: discordUserId } } },
+      { channel: undefined },
+    ]) {
+      expect(content(await f.send('inspect', f.target, extra))).toContain('private');
+    }
+    expect(f.inspectPending).not.toHaveBeenCalled();
+  });
+});
+
+describe('Discord exact Pending Request projection', () => {
+  it('returns grant requests to the App without reading protected content or dispatching an operation', async () => {
+    const f = fixture();
+    await f.pair();
+    expect(content(await f.send('approve', f.target))).toContain(requestLink);
+    expect(f.inspectPending).not.toHaveBeenCalled();
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it('requires current exact disclosure and invokes only existing approval operation with durable request identity', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    const body = f.signed(f.envelope('deny', { ...f.target, disclosure }));
+    const result = await f.channel.handleSignedInteraction(body);
+    expect(content(result)).toContain('accepted');
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+    expect(f.invoke).toHaveBeenCalledWith(
+      'approval.respond',
+      expect.objectContaining({
+        workspaceId,
+        threadId,
+        turnId,
+        approvalRequestId: 'ap_discord',
+        decision: 'denied',
+        requestId: expect.any(String),
+      }),
+      actor
+    );
+    f.restart();
+    await f.channel.handleSignedInteraction(body);
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+    const changed = JSON.parse(body.body.toString());
+    changed.data.options[0].name = 'approve';
+    expect(content(await f.channel.handleSignedInteraction(f.signed(changed)))).toContain(
+      'conflict'
+    );
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses changed effect, ended request, revoked authority, and revoked disclosure binding', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    f.view({ content: 'Changed exact effect.' });
+    expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain('changed');
+    f.unavailable();
+    expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain(
+      'request_not_pending'
+    );
+    f.actor(null);
+    expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain('authority');
+    f.actor(actor);
+    f.channel.revoke(actor);
+    await f.pair();
+    expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain('disclosure');
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it('answers only an admitted non-secret question and preserves native stale failures', async () => {
+    const f = fixture();
+    await f.pair();
+    f.view({ kind: 'user-input', content: 'Which color? red or blue.' });
+    const disclosure = await f.disclose();
+    await f.send('answer', {
+      ...f.target,
+      disclosure,
+      answers: JSON.stringify({ color: ['blue'] }),
+    });
+    expect(f.invoke).toHaveBeenCalledWith(
+      'question.answer',
+      expect.objectContaining({ userInputRequestId: 'ap_discord', answers: { color: ['blue'] } }),
+      actor
+    );
+    f.invoke.mockRejectedValueOnce(
+      new OperationError('request_not_pending', 'Private error detail.', 409)
+    );
+    expect(
+      content(
+        await f.send('answer', {
+          ...f.target,
+          disclosure,
+          answers: JSON.stringify({ color: ['red'] }),
+        })
+      )
+    ).toContain('request_not_pending');
+    f.view({ responseAllowed: false, content: 'Protected secret prompt.' });
+    expect(content(await f.send('inspect', f.target))).not.toContain('Protected secret');
+    expect(content(await f.send('answer', { ...f.target, disclosure, answers: '{}' }))).toContain(
+      'OpenKit'
+    );
+  });
+
+  it('drops selected administrator credentials and refuses changed scope or expired disclosure', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    expect(
+      content(
+        await f.send('deny', {
+          ...f.target,
+          thread: testEntityId('th', 'discord-other'),
+          disclosure,
+        })
+      )
+    ).toContain('disclosure');
+    f.actor({
+      userId: actor.userId,
+      kind: 'token',
+      tokenId: testEntityId('tok', 'discord-admin'),
+      tokenScope: 'server-admin',
+    });
+    await f.send('deny', { ...f.target, disclosure });
+    expect(f.invoke.mock.calls[0]?.[2]).toEqual({ userId: actor.userId, kind: 'session' });
+    f.advance(301_000);
+    expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain('disclosure');
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps interrupted dispatch unknown after restart and never dispatches a duplicate', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    let resolve!: (value: { status: string }) => void;
+    f.invoke.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        })
+    );
+    const input = f.signed(f.envelope('deny', { ...f.target, disclosure }));
+    const first = f.channel.handleSignedInteraction(input);
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+    expect(
+      f.sqlite
+        .prepare('SELECT state FROM discord_inbound_receipts WHERE event_id = ?')
+        .get(JSON.parse(input.body.toString()).id)
+    ).toEqual({ state: 'dispatching' });
+    f.restart();
+    expect(content(await f.channel.handleSignedInteraction(input))).toContain('unknown');
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+    resolve({ status: 'resolved' });
+    await first;
+  });
+
+  it('keeps unknown native failure unknown, drops raw disclosure content from receipts and refuses oversized content', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    f.invoke.mockRejectedValueOnce(new Error('Transport lost after native dispatch.'));
+    expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain('unknown');
+    expect(
+      JSON.stringify(f.sqlite.prepare('SELECT * FROM discord_inbound_receipts').all())
+    ).not.toContain('publish the approved page');
+    f.view({ content: 'x'.repeat(2_001) });
+    expect(content(await f.send('inspect', f.target))).toContain('OpenKit');
+  });
+});
+
+describe('Discord trusted capture origin', () => {
+  it('retains the signed external actor without claiming unbound or rejected native authority', async () => {
+    const f = fixture();
+    const input = f.envelope(
+      'deny',
+      { ...f.target, disclosure: 'untrusted' },
+      {
+        core_user_id: actor.userId,
+      }
+    );
+    await f.channel.handleSignedInteraction(f.signed(input));
+    expect(
+      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
+    ).toMatchObject({
+      discord_user_id: discordUserId,
+      core_user_id: null,
+      binding_revision: null,
+      operation_id: null,
+      workspace_id: null,
+      thread_id: null,
+      pending_request_id: null,
+      turn_id: null,
+    });
+    expect(f.invoke).not.toHaveBeenCalled();
+    expect(() =>
+      f.channel.handleSignedInteraction({ ...f.signed(input), signature: '00'.repeat(64) })
+    ).toThrow('Discord authentication failed.');
+    expect(
+      f.sqlite.prepare('SELECT count(*) AS count FROM discord_inbound_receipts').get()
+    ).toEqual({ count: 1 });
+  });
+
+  it.each([
+    'approval',
+    'user-input',
+  ] as const)('stamps exact admitted %s origin before native dispatch', async (kind) => {
+    const f = fixture();
+    await f.pair();
+    f.view({ kind });
+    const disclosure = await f.disclose();
+    const binding = f.channel.binding(actor)!;
+    const input = f.envelope(
+      kind === 'approval' ? 'deny' : 'answer',
+      {
+        ...f.target,
+        disclosure,
+        ...(kind === 'user-input' ? { answers: '{"color":["blue"]}' } : {}),
+      },
+      { user: { id: discordUserId, core_user_id: 'forged-core-user' } }
+    );
+    let retained: Record<string, unknown> | undefined;
+    f.invoke.mockImplementationOnce(async (_operation, command, responder) => {
+      retained = f.sqlite
+        .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+        .get(input.id) as Record<string, unknown>;
+      expect(retained).toMatchObject({
+        event_id: input.id,
+        request_id: (command as { requestId: string }).requestId,
+        state: 'dispatching',
+        discord_user_id: discordUserId,
+        core_user_id: responder.userId,
+        binding_revision: binding.revision,
+        operation_id: kind === 'approval' ? 'approval.respond' : 'question.answer',
+        workspace_id: workspaceId,
+        thread_id: threadId,
+        pending_request_id: 'ap_discord',
+        turn_id: turnId,
+      });
+      return { status: 'resolved' };
+    });
+    expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain('accepted');
+    expect(retained).toBeDefined();
+    expect(JSON.stringify(retained)).not.toContain(disclosure);
+    expect(JSON.stringify(retained)).not.toContain('blue');
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+    const settled = f.sqlite
+      .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+      .get(input.id);
+    f.restart();
+    expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain(
+      'already handled'
+    );
+    expect(
+      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
+    ).toEqual(settled);
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves admitted origin after unknown dispatch, restart, revocation and re-pairing', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    const input = f.signed(f.envelope('deny', { ...f.target, disclosure }));
+    const eventId = JSON.parse(input.body.toString()).id;
+    f.invoke.mockRejectedValueOnce(new Error('uncertain native response'));
+    expect(content(await f.channel.handleSignedInteraction(input))).toContain('unknown');
+    const retained = f.sqlite
+      .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+      .get(eventId);
+    expect(retained).toMatchObject({
+      core_user_id: actor.userId,
+      operation_id: 'approval.respond',
+    });
+    f.channel.revoke(actor);
+    const other: Actor = { kind: 'session', userId: testEntityId('usr', 'later-discord-owner') };
+    f.actor(other);
+    const challenge = f.channel.beginPairing(other);
+    await f.send('pair', { challenge: challenge.challenge });
+    expect(f.channel.binding(other)?.userId).toBe(other.userId);
+    f.restart();
+    expect(content(await f.channel.handleSignedInteraction(input))).toContain('unknown');
+    expect(
+      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(eventId)
+    ).toEqual(retained);
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reinterpret historical receipts from a current binding or duplicate input', async () => {
+    const f = fixture();
+    await f.pair();
+    const input = f.signed(f.envelope('inspect', f.target));
+    const eventId = JSON.parse(input.body.toString()).id;
+    const verified = verifyDiscordInteraction({
+      ...input,
+      publicKey,
+      applicationId,
+      now: Date.parse('2026-10-16T10:00:00Z'),
+    });
+    f.sqlite
+      .prepare(
+        "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at) VALUES(?,?,?,'settled',?)"
+      )
+      .run(eventId, verified.payloadDigest, randomUUID(), 1);
+    f.restart();
+    expect(content(await f.channel.handleSignedInteraction(input))).toContain('already handled');
+    expect(
+      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(eventId)
+    ).toMatchObject({ discord_user_id: null, core_user_id: null, operation_id: null });
+    expect(f.inspectPending).not.toHaveBeenCalled();
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it('refuses native dispatch when the origin update retains no row', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    f.sqlite.exec(`CREATE TRIGGER discard_origin BEFORE UPDATE OF core_user_id ON discord_inbound_receipts
+      BEGIN SELECT RAISE(IGNORE); END`);
+    expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain(
+      'channel_origin_unavailable'
+    );
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it('refuses native dispatch when required origin persistence fails', async () => {
+    const f = fixture();
+    await f.pair();
+    const disclosure = await f.disclose();
+    const prepare = f.sqlite.prepare.bind(f.sqlite);
+    const failure = vi.spyOn(f.sqlite, 'prepare');
+    // Fail only the origin write; the existing receipt fence and settlement remain writable.
+    failure.mockImplementation((sql: string) => {
+      if (/UPDATE discord_inbound_receipts SET core_user_id/.test(sql))
+        throw new Error('origin write unavailable');
+      return prepare(sql);
+    });
+    const input = f.envelope('deny', { ...f.target, disclosure });
+    expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain('refused');
+    expect(f.invoke).not.toHaveBeenCalled();
+    expect(
+      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
+    ).toMatchObject({
+      discord_user_id: discordUserId,
+      core_user_id: null,
+      operation_id: null,
+      state: 'settled',
+    });
+    failure.mockRestore();
+  });
+});

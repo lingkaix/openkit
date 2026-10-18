@@ -538,7 +538,7 @@ it.each([
                 jsonrpc: '2.0',
                 id: 1,
                 method: 'tools/call',
-                params: { name: 'call', arguments: { operation: 'turn.interrupt', input } },
+                params: { name: 'openkit_call', arguments: { operation: 'turn.interrupt', input } },
               }
         ),
       }

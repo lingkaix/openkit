@@ -172,6 +172,10 @@ export interface AepSnapshotDetailRow {
   snapshotId: string;
   packageId: string;
   runtimeKind: string;
+  workspaceId: string;
+  threadId: string;
+  turnId: string;
+  skills: { id: string; digest: string; selectionSource: string | null }[] | null;
 }
 
 /** Whitelisted capability-call metadata exposed to Usage & audit. */
@@ -352,15 +356,33 @@ export function projectAepSnapshots(
  * whitelist of schema fields. The nested snapshot blob is never copied into the projection.
  *
  * @param record Exact AEP snapshot read response.
- * @returns Snapshot id, package id, and runtime kind only.
+ * @returns Package and Turn identities plus the recorded Skill selection whitelist.
  */
 export function projectAepSnapshotDetail(
   record: Awaited<ReturnType<CoreClient['operations']['environment.snapshot-read']>>
 ): AepSnapshotDetailRow {
+  const entries: unknown = record.snapshot.supply?.skills;
+  const skills: AepSnapshotDetailRow['skills'] =
+    Array.isArray(entries) &&
+    entries.every(
+      (skill) => typeof skill?.id === 'string' && typeof skill?.integrity?.sha256 === 'string'
+    )
+      ? entries.map((skill) => ({
+          id: projectSafeValue(skill.id) as string,
+          digest: projectSafeValue(skill.integrity.sha256) as string,
+          selectionSource: ['pin', 'setup', 'run', 'current'].includes(skill.selectionSource)
+            ? skill.selectionSource
+            : null,
+        }))
+      : null;
   return {
     snapshotId: projectSafeValue(record.snapshotId) as string,
     packageId: projectSafeValue(record.packageId) as string,
     runtimeKind: projectSafeValue(record.runtimeKind) as string,
+    workspaceId: projectSafeValue(record.workspaceId) as string,
+    threadId: projectSafeValue(record.threadId) as string,
+    turnId: projectSafeValue(record.turnId) as string,
+    skills,
   };
 }
 

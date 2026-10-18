@@ -1,6 +1,6 @@
 # Intake and source interpretation
 
-Use this reference while reading the organisation's supplied materials. Its output is an evidence summary for the four proposals, not a policy database or a new record type.
+Use this reference while reading the organisation's supplied materials. Its output is an evidence summary for the proposals, not a policy database or a new record type.
 
 ## Establish the source set
 
@@ -26,7 +26,7 @@ When the KM reports insufficient evidence, a failed run or unavailable grounding
 
 ## Extract only what the work needs
 
-Describe the normal case as current inputs, decision points, required evidence, safe preparation, human decision and observable outcome. Identify tracked entities and state, authoritative external identifiers, allowed reads, draft writes and sensitive effects. Explain how missing, stale, conflicting or failed inputs change the permitted next action.
+Describe the normal case as current inputs, decision points, required evidence, safe preparation, human decision and observable outcome. Identify authoritative external records, cross-system identity links, work progress, allowed reads, drafts and sensitive effects. Separate concept, role and relationship definitions from instance data. Propose a Light App only for glue instance data that no external system owns. Explain how missing, stale, conflicting or failed inputs change the permitted next action.
 
 Use historical cases to identify concrete mistakes the new domain Skill must avoid. Ask the human for missing constraints rather than constructing an assumed correct answer. Record unresolved questions beside the affected proposal, so unrelated safe work can continue.
 

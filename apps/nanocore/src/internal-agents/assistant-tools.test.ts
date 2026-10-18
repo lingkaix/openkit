@@ -41,7 +41,7 @@ function fixture(privateEntry = true) {
   };
 }
 const names = [
-  'workspace.state.read',
+  'workspace.dashboard',
   'thread.history.read',
   'knowledge.ask',
   'knowledge.tell',
@@ -52,11 +52,8 @@ const names = [
   'goal.card.create',
   'goal.card.edit',
   'goal.card.cancel',
-  'memory.page.read',
-  'memory.page.create',
-  'memory.page.update',
-  'memory.page.delete',
-  'memory.page.propose',
+  'memory.ask',
+  'memory.tell',
   'skill.read',
   'kernel.apps.list',
   'kernel.apps.create',
@@ -76,14 +73,40 @@ describe('ordinary Assistant fixed Tools', () => {
     for (const privateEntry of [true, false]) {
       const run = fixture(privateEntry);
       expect(run.tools.map((tool) => tool.name)).toEqual(names);
-      for (const name of names.filter((name) => name.startsWith('memory.'))) {
-        const result = await run.tools.find((tool) => tool.name === name)!.execute({}, execution());
-        expect(result.isError).toBe(true);
-        expect(JSON.stringify(result)).toContain(
-          privateEntry ? 'memory_unavailable' : 'private_entry_required'
-        );
+      if (!privateEntry) {
+        for (const [name, value] of [
+          ['memory.ask', { question: 'My preference?' }],
+          ['memory.tell', { content: 'Keep answers short.', sources: [] }],
+        ] as const) {
+          const result = await run.tools
+            .find((tool) => tool.name === name)!
+            .execute(value, execution());
+          expect(result.isError).toBe(true);
+          expect(JSON.stringify(result)).toContain('private_entry_required');
+        }
       }
       expect(run.invoke).not.toHaveBeenCalled();
+    }
+  });
+
+  it('binds private Memory ask and tell to the native owner without model-selected identity', async () => {
+    const run = fixture();
+    for (const [name, value] of [
+      ['memory.ask', { question: 'My preference?' }],
+      ['memory.tell', { content: 'Keep answers short.', sources: [] }],
+    ] as const) {
+      const tool = run.tools.find((tool) => tool.name === name)!;
+      expect(tool.inputSchema.properties).not.toHaveProperty('workspaceId');
+      expect(await tool.execute({ ...value, userId: actorUserId }, execution())).toMatchObject({
+        isError: true,
+      });
+      expect(run.invoke).not.toHaveBeenCalledWith(name, expect.anything(), expect.anything());
+      expect(await tool.execute(value, execution())).toMatchObject({ isError: false });
+      expect(run.invoke).toHaveBeenCalledWith(
+        name,
+        expect.objectContaining({ ...value, workspaceId }),
+        expect.any(AbortSignal)
+      );
     }
   });
 

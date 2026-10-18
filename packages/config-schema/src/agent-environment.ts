@@ -660,9 +660,9 @@ export const AgentEnvironmentCapabilitiesSchema = z.discriminatedUnion('mode', [
       protocol: z.literal('openkit-worker-capability-v1'),
       mode: z.literal('enabled'),
       routes: z.tuple([
-        z.literal('mcp.list_servers'),
-        z.literal('mcp.list_tools'),
-        z.literal('mcp.call_tool'),
+        z.literal('mcp.list-servers'),
+        z.literal('mcp.list-tools'),
+        z.literal('mcp.call-tool'),
       ]),
     })
     .strict(),

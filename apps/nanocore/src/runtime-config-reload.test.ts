@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { getNanoHostTransportSessionAuthority } from './app.js';
+import transportRevision from './auth/nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -144,13 +145,14 @@ describe('NanoHost restart-required reload fencing', () => {
               headers: {
                 authorization: `Bearer ${token.secret}`,
                 'content-type': 'application/json',
+                'x-openkit-nanohost-transport-revision': String(transportRevision),
               },
               body: Buffer.concat(chunks),
             }),
             { incoming: request }
           );
           response
-            .writeHead(result.status, { 'content-type': 'application/json' })
+            .writeHead(result.status, Object.fromEntries(result.headers))
             .end(await result.text());
         });
         server.on('session', (session) => sessions.push(session));

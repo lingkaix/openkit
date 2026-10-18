@@ -242,7 +242,7 @@ def validate(input):
                 "worker_archive_outside_prepared_guest")
     require(input["previous"]["commit"] != input["candidate"]["commit"], "source_pair_identical")
     tag = re.fullmatch(r"v?0\.1\.0-rc\.([0-9]+)", input["previous"]["tag"])
-    require(tag and int(tag[1]) >= 9, "previous_reset_not_upgrade")
+    require(tag and int(tag[1]) >= 1, "previous_release_tag_invalid")
     input["origin"] = local_origin(input["origin"])
     require(input.get("liveDevOrigin") and input.get("liveDevAppContainer") == "openkit-app",
             "live_observation_boundary_required")

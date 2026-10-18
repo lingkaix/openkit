@@ -28,6 +28,8 @@ import { runWorkerTurnLoop } from './worker-turn-loop.js';
 export type TaskWorkerStarter = (input: {
   store: FsStore;
   triggerActor: { kind: 'user'; id: string };
+  /** Native Task handoff cause supplied independently of the responsible actor. */
+  triggerSource?: ReturnType<FsStore['createTurn']>['triggerSource'];
   requestActor: Actor;
   workspaceId: string;
   threadId: string;
@@ -68,7 +70,7 @@ export function createCoordinatorTaskTool(options: {
     unknown
   >;
   return {
-    name: 'task_start',
+    name: 'goal.task.dispatch',
     description:
       'Admit an ordinary bounded Task on current intent and the active Plan. Supply your explicit permitted-adjustment judgment and the exact intent/card revisions read. Return after ordinary Task Turn admission; do not wait for completion. A retained Plan/card citation alone is an unadmitted reservation with null admittedAt. On recovery_required inspect the existing Thread, checkpoint and scheduler owners; never automatically retry uncertain work.',
     inputSchema,
@@ -175,6 +177,7 @@ export function createCoordinatorTaskTool(options: {
               startWorker: async ({ onAdmitted }) => {
                 const ended = await options.startWorker({
                   store: options.store,
+                  triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                   triggerActor: { kind: 'user', id: actor.userId },
                   requestActor: actor,
                   workspaceId: goal.workspaceId,

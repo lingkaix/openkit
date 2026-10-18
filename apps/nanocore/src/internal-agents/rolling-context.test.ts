@@ -495,7 +495,7 @@ describe('source-bound internal rolling context', () => {
     const f = fixture();
     const execute = vi.fn(async () => ({ content: [] }));
     const tool: AgentTool = {
-      name: 'effect',
+      name: 'test.effect',
       description: 'A supplied Tool.',
       inputSchema: { type: 'object' },
       execute,
@@ -521,7 +521,7 @@ describe('source-bound internal rolling context', () => {
                   {
                     type: 'toolCall' as const,
                     callId: 'effect-call',
-                    name: 'effect',
+                    name: 'test.effect',
                     arguments: {},
                   },
                 ],

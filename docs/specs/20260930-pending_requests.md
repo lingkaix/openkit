@@ -1,9 +1,9 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: concept
 date: "2026-09-30"
-updated: "2026-10-15"
+updated: "2026-10-16"
 ---
 # Pending Requests
 
@@ -15,6 +15,7 @@ updated: "2026-10-15"
 - The per-Thread bound on outstanding requests, the invalidating events, and the mapping of outcomes onto Approval status.
 - The semantics of the answer and withdraw commands, and the pending-request semantics of the existing approval response command.
 - The canonical-load validation of the record against its Items and receipts.
+- External attention references, delivery attempts, and the exact channel response projection for these requests.
 
 ## Does Not Own
 
@@ -88,7 +89,7 @@ A pending request is the durable record of one approval request or one user-inpu
 ### Definition And Exclusions
 
 A pending request has one kind, `approval` or `user-input`, and one requester:
-- **A worker agent**, which raises it through a governed MCP call: an approval-required external tool or the built-in `work_request_input` tool.
+- **A worker agent**, which raises it through a governed MCP call: an approval-required external tool or the built-in `work_input_request` tool.
 - **The internal Assistant**, which raises a clarification question in Chat Mode, and later an approval-required MCP call when its internal branch is implemented.
 - **The Coordinator**, an internal agent bound to one Goal. It is its own requester and is not a person. A rule for the Coordinator applies to that requester without treating the Coordinator as a person. Propose Plan raises an approval whose exact intent is one exact Plan version. The Coordinator's call to accept completion has no authority to accept, so that call becomes an approval whose exact intent is the captured call, in the same pattern as an approval-required tool call. After a person or a currently usable administrator grants it, the captured call executes when the Goal owner consumes the grant, and that execution records the granting actor as the decider. The grant does not by itself execute the call. It is not an MCP binding, it is not a new request kind, and it adds no operation. The decision is recorded in [Goal Contract Gap Rulings](../decisions/20261002-goal_contract_gap_rulings.md).
 - **A person**, whose own governed command requires another decision. A grant for a person's request executes nothing by itself; the person or external coordinator performs the governed command afterward through its owner. Command-intent approvals use the command-intent grant and consumption rules whether the requester is a person or the Coordinator; requester identity selects the delivery executor, not whether the approval governs a captured call. The Coordinator's Turn is the delivery opportunity for a Plan activation or completion grant, and delivery is not itself proof of consumption. The Goal owner consumes that grant through the same synchronous re-evaluation-and-claim boundary after its own checks; invalidation that wins before the claim prevents the effect. Consumption of a Plan grant activates the exact Plan version. Consumption of a completion grant executes the captured accept-completion call, records the granting actor as the decider, and writes the completion disposition. The resolve command records the grant and executes no worker work. A granted but unconsumed Plan approval or completion grant of a cancelled Goal is refused with a conflict when consumption is attempted, and that attempt does not execute. The decision is recorded in [Goal Contract Gap Rulings](../decisions/20261002-goal_contract_gap_rulings.md). A note that changes the commitment is a new Plan version and a new request, not a grant of the open one. An effect-specific approval stays with its effect owner.
@@ -138,10 +139,10 @@ Grant requires available exact detail. The response command checks this before i
 
 Raising runs inside the governed call or command, in this order:
 1. The caller's current authorization is evaluated, and the Thread must not be archived. A call that is not requestable fails as `capability_denied` and records nothing.
-2. **Deduplication.** A repeated call matches a `pending` request on the same Thread when it has the same qualified binding: server id, catalog revision, schema snapshot, tool, canonical arguments, Agent, and responsible user. A repeated `work_request_input` matches when it has the same Agent and the same canonical question payload. A repeated command-intent approval matches a `pending` request on the same Thread when it has the same requester and the same exact intent, whether the requester is a person or the Coordinator. A match returns the existing request's pending result and records nothing new. It never substitutes an earlier effect for a different one, and it does not decide whether two calls after a terminal outcome are the same occurrence.
+2. **Deduplication.** A repeated call matches a `pending` request on the same Thread when it has the same qualified binding: server id, catalog revision, schema snapshot, tool, canonical arguments, Agent, and responsible user. A repeated `work_input_request` matches when it has the same Agent and the same canonical question payload. A repeated command-intent approval matches a `pending` request on the same Thread when it has the same requester and the same exact intent, whether the requester is a person or the Coordinator. A match returns the existing request's pending result and records nothing new. It never substitutes an earlier effect for a different one, and it does not decide whether two calls after a terminal outcome are the same occurrence.
 3. **Bound.** A Thread holds at most 16 `pending` requests. A raise over the bound fails as `request_limit_reached` before any write.
-4. **Recording.** The request, the ApprovalRequest projection for an approval, and the request Item on the raising Turn are written together. The raising `CapabilityCall` is recorded as `denied` with no upstream contact for an approval, and as `succeeded` for `work_request_input`, whose function is to record the question.
-5. **Pending result.** The call returns at once with the same pending fields in its structured and text content: `status` (`pending-approval` or `pending-input`), the request id, and a next-step sentence telling the agent that the outcome will arrive on a later Turn and that it must not call again to claim it. An approval's result is `isError: true`, because the tool has not executed. A `work_request_input` result is `isError: false`, because recording the question is the tool's function.
+4. **Recording.** The request, the ApprovalRequest projection for an approval, and the request Item on the raising Turn are written together. The raising `CapabilityCall` is recorded as `denied` with no upstream contact for an approval, and as `succeeded` for `work_input_request`, whose function is to record the question.
+5. **Pending result.** The call returns at once with the same pending fields in its structured and text content: `status` (`pending-approval` or `pending-input`), the request id, and a next-step sentence telling the agent that the outcome will arrive on a later Turn and that it must not call again to claim it. An approval's result is `isError: true`, because the tool has not executed. A `work_input_request` result is `isError: false`, because recording the question is the tool's function.
 
 A call that policy allows without approval is not a pending request. A policy grant is never presented as a human decision and is not an agent approver.
 
@@ -278,7 +279,55 @@ A record that fails a predicate, such as missing request lineage, conflicting It
 
 This version starts from a new data root and reads no data that an earlier version wrote, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md). There is no upgrade migration of retained requests, gates, Turn fields, AgentSessions, or scheduler and checkpoint rows. The reload-time derivation of approval state from Items and the denial authored by `nanocore-boot-reconciliation` are deleted.
 
+## External Attention And Discord Responses
+
+### Authority And Scope
+
+External attention is a delivery projection of an approval request or user-input request. Core retains one source reference per exact request and responsible recipient. Delivery records own only transport state. They never copy the request lifecycle or decide an outcome. Server control storage owns account bindings, inbound deduplication, attention references, and delivery attempts. Portable Workspace import does not import these deployment-local account or transport authorities.
+
+Discord is the first adapter. Its first direct-response allowlist is approval denials and answers to non-secret user-input requests. Approval grants return to the App, which owns their additional confirmation and irreversible-effect disclosure. All other interactions link to the App. A configured adapter requires a trusted public HTTPS App origin. Approval grant responses include an exact request link only when current source access permits it; otherwise they include the App home link. Email carries only digest or attention links. No adapter's implementation proves acceptance of another adapter.
+
+All first-release Discord interactions occur in a private direct message to the bound account. Shared channels cannot receive request content or submit decisions. Current source access and destination audience admission precede every disclosure and send. Attention messages contain an App link, with no request arguments or protected summary. A link still requires App authentication and current source access.
+
+### Account Binding
+
+A currently authenticated Core user starts a one-use, expiring pairing challenge. Only the authenticated Web pairing flow receives its plaintext. The CLI excludes pairing with this owning reason; its access-token sink must not store a channel challenge. MCP also excludes this one-time-secret result. Core stores only its digest. A verified Discord interaction consumes that challenge and binds the proven Discord account to that user. A challenge cannot replace another user's active binding. Revoke ends the binding and pending pairing challenges, including when the deployment removes Discord configuration. Rebinding never restores prior response authority or replays prior input.
+
+The channel resolves a currently active ordinary Core actor for each input. It never inherits an administrator credential from pairing. The existing response owner checks responsible user, Workspace membership, Thread audience, exact request lineage, and current execution authority at response time.
+
+### Delivery Lifecycle
+
+An attention reference starts queued. A delivery attempt is recorded as sending before transport contact. A positive transport acknowledgement records sent, which proves neither reading nor a Core decision. A definite no-send refusal records failed-no-send. An ambiguous exception, lost acknowledgement, or interrupted sending attempt records delivery-unknown. An unsupported core value or contradictory record fails closed.
+
+The first attempt fixes its channel. An unknown or sent delivery cannot be sent again through another channel or an automatic retry. A user may explicitly retry failed-no-send through the same channel after fresh authority and audience checks. A transport dependency failure before contact remains a definite no-send failure. Missing source, ended request, disabled actor, revoked binding, or lost access refuses sending. Notification creation and failure never block the request's Core lifecycle.
+
+### Exact Responses And Recovery
+
+Core verifies the Discord request signature, application identity, timestamp freshness, and private destination before reading account authority. It records the authenticated inbound event identity and exact input digest before dispatch. An identical duplicate returns a bounded acknowledgement of its retained state without dispatch. Duplicate inspection requires a fresh inspection before disclosure; receipts retain no effect or question text. A changed payload under that identity conflicts. An unfinished dispatch remains response-unknown after restart and is never automatically dispatched again. The Core request owner is the inspection authority when the channel result is unknown.
+
+The inbound receipt retains the external actor from the signed envelope. Before native response invocation, it also retains the current admitted Core actor, binding revision, operation and exact Workspace, Thread, Pending Request and raising Turn references. Its existing native request identity joins that response; no second receipt family is created. These facts identify the actual responder, independently of the requester, responsible user or trigger actor. Required origin retention must succeed before invocation. Input rejected before native invocation claims no native acceptance. These origin facts prove neither native acceptance nor a Pending Request outcome. Duplicate input and restart do not rewrite origin or infer missing historical attribution from current bindings.
+
+A private inspection discloses the complete exact approval effect and its digest before direct denial admission. Core binds the disclosure to the account, binding, and exact request. If the complete effect cannot be disclosed within the adapter limit, the user must respond in the App. A later response acknowledges that exact disclosure and rechecks current effect identity. A stale disclosure cannot retarget another request or effect. Secret questions, unavailable detail, unsupported kinds, and changed or terminal requests return a link or typed refusal without guessing a decision.
+
+The channel invokes the existing approval or answer command with one stable command identity for the authenticated event. It preserves the actual actor and owner's result. Its acknowledgement says accepted only when that owner returns acceptance. A missing result stays unknown even when transport response publication fails. The existing Pending Request owner alone determines whether an effect was claimed, executed, denied, or unknown.
+
+### Observable Acceptance
+
+- A pairing challenge cannot bind twice, bind after expiry, or transfer another user's account.
+- After an account transition, Web shows only the current actor's binding and delivery history, including cached data and pending query results.
+- When Discord is configured and the user is paired, current notification cards show the exact private inspection command. Rendering the command makes no send or response call.
+- Invalid signatures, shared-channel input, disabled actors, revoked bindings, changed duplicate input, and stale disclosures cause no command dispatch.
+- Duplicate input and restart after incomplete dispatch cause no second dispatch or inferred decision.
+- A response retains signed external identity and admitted native origin before dispatch; origin retention failure causes no dispatch.
+- Duplicate input, restart, revocation and rebinding preserve response origin. Historical receipts keep unknown attribution.
+- A response after membership or audience revocation fails under the current owner, even if pairing and disclosure succeeded earlier.
+- Sending records the attempt before contact. A missing acknowledgement remains unknown after restart and cannot trigger automatic resend.
+- An explicit retry after definite no-send failure repeats current source, recipient, and binding checks.
+- Notification failures leave the exact Pending Request and any recorded Core outcome unchanged.
+
 ## Current Implementation Projection
+
+The first channel slice composes private Discord signatures, account pairing and revocation, exact denial and non-secret answer responses, inbound deduplication, and shared attention delivery. Native settings, generated OpenAPI and CLI, Web settings, and the operator manuals project the same definitions. Pairing is an explicit Web-only one-time-secret operation. Fake-backed regressions establish the adapter and Core boundaries; they do not prove a real Discord send. Approval grants retain the App confirmation path. Email has the shared link-only payload contract, with no SMTP adapter or real-send claim.
 
 The `approval.respond`, `question.answer` and `pending-request.withdraw` definitions project to JSON, OpenAPI, `client.operations` and the bundled CLI. `apps/nanocore/src/pending-request-operations.ts` joins them to the existing captured-call, command receipt and later-Turn delivery owners; their former routes and client mappings are absent. Approval opaque-child admission reads only canonical or Approval-map lineage after selected-Workspace authorization; answers and withdrawals use body-Workspace and addressed-Thread admission, leaving canonical-record and decision outcomes to the Pending Request owner.
 
@@ -343,7 +392,7 @@ L3 NanoCore black-box checks through the App API and the Gateway with a stub MCP
 - A delivering Turn refused before native submission releases its outcomes, and no second delivering Turn is admitted by that Turn's own barrier.
 - Reload with a pending request on a terminal Turn keeps it pending and decidable.
 
-For each of the four worker runtimes, the code-level acceptance in the change record exercises `work_request_input` and an approval-required call through the real runtime distribution against synthetic providers, including waking an idle AgentSession and a successor that resumes.
+For each of the four worker runtimes, the code-level acceptance in the change record exercises `work_input_request` and an approval-required call through the real runtime distribution against synthetic providers, including waking an idle AgentSession and a successor that resumes.
 
 ## Risks & Mitigations
 

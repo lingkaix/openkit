@@ -486,6 +486,7 @@ describe('generic turn routes', () => {
       );
       expect(response.status).toBe(202);
       const turn = TurnSchema.parse(await response.json());
+      expect(turn.triggerSource).toEqual({ kind: 'user-input', summary: 'Direct Worker input.' });
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
       await vi.waitFor(() =>
         expect(
@@ -1483,7 +1484,7 @@ describe('Core Turn durable admission response', () => {
               id: 1,
               method: 'tools/call',
               params: {
-                name: 'call',
+                name: 'openkit_call',
                 arguments: { operation: 'turn.start', input: { ...input, input: text } },
               },
             }),

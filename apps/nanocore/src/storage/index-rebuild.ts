@@ -924,12 +924,11 @@ async function retrieveNotebookSelection(
         reviewState !== 'user-authored' &&
         !(
           reviewState === 'delegated' &&
-          !memory &&
           knowledgePageDelegated(
             pinnedInput,
             candidate.knowledgePageId,
             content,
-            server ? 'server' : 'workspace'
+            memory ? 'user' : server ? 'server' : 'workspace'
           )
         )) ||
       ((reviewState === 'accepted' || reviewState === 'delegated') && !referenceProof)
@@ -1370,13 +1369,17 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         sha256Digest(content) !== selected.contentDigest ||
         !sameStrings(sourceRefs, selected.sourceReferences) ||
         stringFrontmatterField(document, 'openkit_status') !== 'active' ||
-        (server &&
-          !['accepted', 'user-authored'].includes(
-            stringFrontmatterField(document, 'review_state') ?? ''
-          ) &&
+        (!['accepted', 'user-authored'].includes(
+          stringFrontmatterField(document, 'review_state') ?? ''
+        ) &&
           !(
             stringFrontmatterField(document, 'review_state') === 'delegated' &&
-            knowledgePageDelegated(pinnedInput, selected.reference.objectId, content, 'server')
+            knowledgePageDelegated(
+              pinnedInput,
+              selected.reference.objectId,
+              content,
+              server ? 'server' : 'user'
+            )
           )) ||
         ['stale', 'expired'].includes(stringFrontmatterField(document, 'freshness') ?? '')
       )
