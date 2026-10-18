@@ -2572,6 +2572,35 @@ describe('workspace auxiliary lineage reminting', () => {
     });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-current-notebook-s39-target-'));
     onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
+    // Import finalizes S39 only after its real target Notebook commit exists.
+    // The dependency baseline reproduced the missing trace when this fixture omitted that owner step.
+    const targetNotebook = new KnowledgeNotebook({
+      repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
+    });
+    const targetNotebookFiles = Object.fromEntries(
+      [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
+        path.slice('knowledge/pages/'.length),
+        content,
+      ])
+    );
+    const targetRevision = targetNotebook.initialize({
+      files: targetNotebookFiles,
+      metadata: {
+        summary: 'Pinned import Notebook fixture',
+        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        authority: { kind: 'direct', instructionReference: 'test:import-notebook-s39' },
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(targetNotebookFiles)).digest('hex')}`,
+        },
+        sourceReferences: [],
+      },
+    });
+    expect(imported.finalizeNotebookKnowledge).toBeTypeOf('function');
+    imported.finalizeNotebookKnowledge!({
+      notebookRevision: targetRevision,
+      nativeKnowledgePages: imported.portableFileState.nativeKnowledgePages,
+    });
     writeWorkspacePortableFileState(targetRoot, imported.portableFileState);
     expect(() => verifyImportedWorkerContextPackageSnapshot(imported, targetRoot)).not.toThrow();
     const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
@@ -2606,6 +2635,7 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(trace.knowledgeSelections).toEqual([
       expect.objectContaining({
         knowledgeBaseId: imported.defaultKnowledgeBaseId,
+        notebookRevision: targetRevision,
         knowledgePageId: 'knowledge_portable_source',
         contentDigest: `sha256:${createHash('sha256').update(targetPage).digest('hex')}`,
       }),
