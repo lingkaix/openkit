@@ -93,7 +93,7 @@ function serverOperation<const I extends z.ZodObject, const O extends z.ZodType>
     successStatus: 200,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },
-    target: { kind: 'server' },
+    target: { kind: 'server', family: 'mcp' },
     policyOperation: 'api.call',
     ...(sensitive ? { inputSensitivity: 'secret stdin' as const } : {}),
   } as const satisfies OperationDefinition;

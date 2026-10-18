@@ -266,6 +266,7 @@ export async function askKnowledgeAgent(
       const { $schema: _schema, ...result } = z.toJSONSchema(value, { io: 'input' });
       return result;
     };
+    let retrievalCalls = 0;
     const tools: AgentTool[] = [
       {
         name: 'knowledge.retrieval',
@@ -275,6 +276,7 @@ export async function askKnowledgeAgent(
         execute: async (value: unknown) => {
           assertCurrent();
           const args = searchSchema.parse(value);
+          retrievalCalls += 1;
           const workspace = await retrieveWorkspaceKnowledge({
             ...bound,
             caller: retrievalCaller,
@@ -506,6 +508,8 @@ export async function askKnowledgeAgent(
         validateResult: (text) => {
           assertCurrent();
           const answer = answerSchema.parse(JSON.parse(text));
+          if (!answer.citationIds.length && retrievalCalls === 0)
+            return 'The overview is not a complete notebook inventory. Call knowledge.retrieval with the question, read relevant selected pages, then submit knowledge.result. Report missing evidence only after search.';
           if (
             answer.citationIds.some((id) => !read.has(id)) ||
             ((!answer.citationIds.length || serverUnavailable) && !answer.uncertainty)
