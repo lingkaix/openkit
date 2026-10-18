@@ -7,6 +7,11 @@ export function auditAuthenticationFromActor(
 ): NonNullable<AuditEvent['authentication']> {
   return {
     credentialKind: actor.kind,
-    credentialId: actor.kind === 'token' ? (actor.tokenId ?? null) : (actor.adminTokenId ?? null),
+    credentialId:
+      actor.kind === 'token'
+        ? (actor.tokenId ?? null)
+        : actor.kind === 'session'
+          ? (actor.sessionId ?? actor.adminTokenId ?? null)
+          : null,
   };
 }
