@@ -68,3 +68,12 @@ export type EvidenceBundleRecord = z.infer<typeof EvidenceBundleRecordSchema>;
 export type ListWorkspaceEvidenceBundlesResponse = z.infer<
   typeof ListWorkspaceEvidenceBundlesResponseSchema
 >;
+
+/** Server-owned evidence in the existing bundle family, with no Workspace anchor. */
+export const ServerEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.extend({
+  workspaceId: z.never().optional(),
+  owner: z.object({ kind: z.literal('server') }).strict(),
+});
+
+/** Server-owned evidence bundle read model. */
+export type ServerEvidenceBundleRecord = z.infer<typeof ServerEvidenceBundleRecordSchema>;

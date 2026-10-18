@@ -234,7 +234,7 @@ The shared foundation owns:
 ### Storage and boot behavior
 
 - Workspace-attributed capability calls and usage rows home in `workspace.sqlite` per the audit/usage and storage layout specs.
-- Server-scope provider health checks and bootstrap probes home in `core.sqlite` and are not in this first implementation slice unless needed by the LLM gateway.
+- General Server Thread calls and their measurements use the existing capability-call and usage-record families in `core.sqlite`, with `owner: {kind: server}` and no Workspace identity. Capture, Provider routing, call completion, usage and current responsible actor retain their existing lifecycle. Only Server Knowledge Manager work executes in this increment. Server-scope provider health checks and bootstrap probes remain separate producers.
 - Boot recovery MUST tolerate calls that are `running` at crash time: startup marks them terminal with a recovery error code and never leaves them active forever.
 - Derived diagnostics MAY aggregate usage rows, but aggregates are rebuildable and never the source of truth.
 
