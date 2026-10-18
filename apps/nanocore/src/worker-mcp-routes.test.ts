@@ -180,12 +180,9 @@ function recordMcpWorkerLineage(
 
 describe('worker MCP routes', () => {
   it('mediates seeded I16 calls through admitted Policy before credentials and upstream effects', async () => {
-    const profileStart = performance.now();
-    const profile = (phase: string) => console.info('I16_TIMING_PROBE', { row: 'new', phase, elapsedMs: Math.round(performance.now() - profileStart) });
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-i16-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    profile('core-migrated');
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -244,7 +241,6 @@ describe('worker MCP routes', () => {
       vaultReferenceId: referenceId,
       workspaceId,
     });
-    profile('vault-and-store-ready');
     const catalog = {
       schemaVersion: 1 as const,
       servers: [
@@ -290,11 +286,6 @@ describe('worker MCP routes', () => {
     recordMcpWorkerLineage(coreDb, environmentPackage, token.tokenId);
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb);
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-      environmentPackage,
-      createdAt: new Date().toISOString(),
-    });
-    profile('lineage-and-aep-ready');
     const tools = [
       {
         name: 'echo',
@@ -412,7 +403,6 @@ describe('worker MCP routes', () => {
       expect(readAdmittedPolicyDocument(coreDb, document)).toEqual(document);
     };
     admit();
-    profile('policy-admitted');
     const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
     const app = new Hono();
     registerWorkerMcpRoutes({
@@ -556,7 +546,6 @@ describe('worker MCP routes', () => {
     try {
       await client.connect(transport('echo'));
       await approvalClient.connect(transport('echo-approval'));
-      profile('clients-connected');
       await client.listTools();
       await approvalClient.listTools();
       const seeded = workspaceDb.sqlite
@@ -571,27 +560,23 @@ describe('worker MCP routes', () => {
         )
         .get(turn.id, environmentPackage.snapshotId) as { schema_snapshot_id: string };
       expect(approvalSchema.schema_snapshot_id).toEqual(expect.any(String));
-      profile('schemas-seeded');
       expect(invoke).not.toHaveBeenCalled();
       expect(await call()).toMatchObject({ content: [{ text: 'completed' }] });
       assertRecords(0, 'allow', 'completed');
       expect(gateway.callTool).toHaveBeenCalledTimes(1);
       expect(credentialRead).toHaveBeenCalled();
-      profile('allow-complete');
       const allowedBoundary = boundaryCounts();
       gate = 'deny';
       let start = decisions().length;
       await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
       assertRecords(start, 'deny', 'completed');
       expect(boundaryCounts()).toEqual(allowedBoundary);
-      profile('deny-complete');
       const absentVersion = `sha256:${'2'.repeat(64)}`;
       admit(absentVersion, 'error');
       start = decisions().length;
       await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-policy-unavailable' } });
       const unavailable = assertRecords(start, 'error', 'unavailable');
       expect(boundaryCounts()).toEqual(allowedBoundary);
-      profile('unavailable-error-complete');
       admit(absentVersion);
       start = decisions().length;
       const pendingResult = await call();
@@ -623,7 +608,6 @@ describe('worker MCP routes', () => {
       admit();
       gate = 'allow';
       start = decisions().length;
-      profile('escalation-complete');
       const invokedBeforeEvidenceFailure = invoke.mock.calls.length;
       workspaceDb.sqlite.exec(
         "CREATE TRIGGER fail_i16_evidence BEFORE INSERT ON audit_events WHEN NEW.policy_invocation_json IS NOT NULL BEGIN SELECT RAISE(ABORT, 'I16 required Audit unavailable'); END"
@@ -636,7 +620,6 @@ describe('worker MCP routes', () => {
       expect(invoke).toHaveBeenCalledTimes(invokedBeforeEvidenceFailure + 1);
       expect(decisions()).toHaveLength(start);
       expect(boundaryCounts()).toEqual(allowedBoundary);
-      profile('audit-failure-complete');
       gate = 'deny';
       start = decisions().length;
       await expect(approvalCall()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
@@ -671,7 +654,6 @@ describe('worker MCP routes', () => {
         packageDigest: environmentPackage.snapshotId,
       });
       expect(boundaryCounts()).toEqual(allowedBoundary);
-      profile('catalog-approval-complete');
       let release!: () => void;
       hold = new Promise<void>((resolve) => {
         release = resolve;
@@ -684,13 +666,10 @@ describe('worker MCP routes', () => {
       const refused = expect(held).rejects.toMatchObject({
         data: { code: 'mcp-policy-unavailable' },
       });
-      profile('held-submitted');
       await participantEntered;
-      profile('participant-entered');
       revokeOpenKitAccessTokenRecord(coreDb, token.tokenId);
       release();
       await refused;
-      profile('revocation-complete');
       assertRecords(start, 'error', 'error', { kernel: null, gateResult: 'require_escalation' });
       expect(boundaryCounts()).toEqual(allowedBoundary);
       expect(JSON.stringify(invoke.mock.calls)).not.toContain(canary);
@@ -701,7 +680,6 @@ describe('worker MCP routes', () => {
         JSON.stringify(coreDb.sqlite.prepare('SELECT * FROM audit_events').all())
       ).not.toContain(canary);
     } finally {
-      profile('before-teardown');
       credentialRead.mockRestore();
       await client.close();
       await approvalClient.close();
@@ -710,7 +688,6 @@ describe('worker MCP routes', () => {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
-      profile('after-teardown');
     }
   });
 
@@ -2448,12 +2425,9 @@ describe('worker MCP routes', () => {
     'credential-before-claim',
     'credential-after-claim',
   ] as const)('re-evaluates current authority before granting a captured MCP call: %s', async (change) => {
-    const profileStart = performance.now();
-    const profile = (phase: string) => console.info('I16_TIMING_PROBE', { row: change, phase, elapsedMs: Math.round(performance.now() - profileStart) });
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-mcp-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    profile('core-migrated');
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
@@ -2613,7 +2587,6 @@ describe('worker MCP routes', () => {
       vaultUnlockState,
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
-    profile('setup-ready');
     const client = new Client({ name: 'pending-echo', version: '1' });
     try {
       await client.connect(
@@ -2625,9 +2598,7 @@ describe('worker MCP routes', () => {
           }
         )
       );
-      profile('connected');
       await client.listTools();
-      profile('schema-seeded');
       const pending = await client.callTool({
         name: 'echo',
         arguments: { message: 'captured effect' },
@@ -2635,7 +2606,6 @@ describe('worker MCP routes', () => {
       expect(pending.isError).toBe(true);
       expect(pending.structuredContent).toMatchObject({ status: 'pending-approval' });
       expect(upstream).not.toHaveBeenCalled();
-      profile('pending-raised');
       if (change === 'unchanged') {
         const boundDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         const countCalls = () =>
@@ -2711,7 +2681,6 @@ describe('worker MCP routes', () => {
         .find((item) => item.type === 'approval-request');
       if (!approvalItem || approvalItem.type !== 'approval-request')
         throw new Error('Missing approval request.');
-      profile('before-turn-completion');
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
       if (change === 'revoke') revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
       if (change === 'schema-drift') {
@@ -2739,7 +2708,6 @@ describe('worker MCP routes', () => {
                 change === 'tool-removed' ? { ...manifest, mcp: [] } : manifest
               ),
       };
-      profile('before-app');
       const app = createApp({
         coreDb,
         store,
@@ -2819,7 +2787,6 @@ describe('worker MCP routes', () => {
           }
         )
       );
-      profile('response-returned');
       resolved.mockRestore();
       expect(response.status, await response.clone().text()).toBe(200);
       expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
@@ -3037,11 +3004,9 @@ describe('worker MCP routes', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
-      profile('before-teardown');
       await client.close().catch(() => undefined);
       await workerMcpGateway.close();
       coreDb.sqlite.close();
-      profile('after-teardown');
     }
   });
 
