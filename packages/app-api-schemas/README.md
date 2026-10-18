@@ -214,5 +214,7 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 
 `light-apps.ts` exposes the actual kernel format, admitted definition digest, and nullable explicit catalog source separately. It also declares snapshot inventory and exact-revision rollback payloads. Snapshots identify consistent recovery copies with original format, definition and app/schema revisions, time, cause and content digest. Restoring an older kernel format produces an unavailable app until explicit format upgrade; the response keeps the actual restored marker and revision instead of inferring current compatibility.
 
+Server operation targets carry an optional explicit `family` of administration, MCP or Knowledge. Existing omitted targets mean administration; Server MCP definitions select MCP. NanoCore maps current administrator eligibility to that family in the shared Kernel before handler execution, without a persistent assignment or another evaluator.
+
 
 `src/resource-policy-operations.ts` declares the Workspace named-resource request and confirmed application contracts. Request creation captures the existing configuration revision without resolving the proposed protected target. Apply selects `approvalRequestId`, independently of command correlation, and requires the exact human confirmation. Its result distinguishes saved revision from runtime reload status. The public catalog composes these definitions with their native handlers; the shared schema adds no assignment store or approval workflow.
