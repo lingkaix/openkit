@@ -60,7 +60,6 @@ it('joins exact human annotations and corrections to ordinary transactional comm
   });
   const target = {
     kind: 'material-range',
-    offsetUnit: 'utf-16',
     materialId,
     revisionId,
     contentDigest,

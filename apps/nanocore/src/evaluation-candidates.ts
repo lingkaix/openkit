@@ -328,6 +328,7 @@ export async function selectCandidateSet(
     input: { actor, choice: input.choice, note: input.note ?? null },
     responseKind: 'evaluation_candidate_set',
     responseId: (record) => record.candidateSetId,
+    // Set membership owns this choice; do not also append a version-owned Review choice.
     execute: () =>
       appendCandidateSetJudgement(access, { ...input, kind: 'select', note: input.note ?? null }),
     replay: (receipt) => {

@@ -164,7 +164,13 @@ describe('Workspace candidate set authority', () => {
         choice: { ...state.candidates[0]!, artifactVersion: 9 },
       })
     ).rejects.toMatchObject({ code: 'invalid_request' });
+    const reviewsBeforeChoice = state.workspaceDb.sqlite
+      .prepare('SELECT * FROM artifact_reviews ORDER BY review_id')
+      .all();
     const first = await selectCandidateSet(state.access, firstInput);
+    expect(
+      state.workspaceDb.sqlite.prepare('SELECT * FROM artifact_reviews ORDER BY review_id').all()
+    ).toEqual(reviewsBeforeChoice);
     const bobAccess = { ...state.access, actor: { kind: 'session' as const, userId: state.bob } };
     const second = await selectCandidateSet(bobAccess, {
       ...firstInput,

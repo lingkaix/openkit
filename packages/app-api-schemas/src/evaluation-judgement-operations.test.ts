@@ -37,7 +37,6 @@ it('keeps caller assessment separate from trusted attribution and applied revisi
       materialId: 'mat_00000000-0000-7000-8000-000000000001',
       revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
       contentDigest: input.judgement.target.contentDigest,
-      offsetUnit: 'utf-16',
       start: 1,
       end: 3,
       originalText: '😀',

@@ -48,7 +48,6 @@ it('retains exact correction attribution and reports apply, reject, stale and co
   });
   const target = {
     kind: 'material-range',
-    offsetUnit: 'utf-16',
     materialId,
     revisionId,
     contentDigest: digest(content),

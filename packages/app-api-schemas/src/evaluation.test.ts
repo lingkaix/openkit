@@ -61,7 +61,6 @@ describe('evaluation retained shapes', () => {
     ).toBe(false);
     const range = {
       kind: 'material-range',
-      offsetUnit: 'utf-16',
       materialId: 'mat_00000000-0000-7000-8000-000000000001',
       revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
       contentDigest: candidate.contentDigest,
@@ -152,7 +151,6 @@ describe('evaluation retained shapes', () => {
         materialId: 'mat_00000000-0000-7000-8000-000000000001',
         revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
         contentDigest: candidate.contentDigest,
-        offsetUnit: 'utf-16',
         start: 1,
         end: 3,
         originalText: '😀',
@@ -163,6 +161,7 @@ describe('evaluation retained shapes', () => {
       JudgementRecordSchema.safeParse({ ...correction, target: judgement.target }).success
     ).toBe(false);
     expect(JudgementRecordSchema.parse(correction)).toEqual(correction);
+    expect(JudgementRecordSchema.parse(correction).target).not.toHaveProperty('offsetUnit');
     expect(
       JudgementRecordSchema.safeParse({
         ...correction,

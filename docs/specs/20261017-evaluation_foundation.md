@@ -38,7 +38,7 @@ The target has exactly one of these closed forms:
 | Material range | Workspace, Material identity, revision identity, content digest, range start, range end and original text |
 | Candidate set | Workspace and immutable candidate-set identity |
 
-Material range offsets use UTF-16 code units, with an inclusive start and exclusive end. The original text and digest remain in the record. Range validation and correction effects follow the Material owner; this record does not define another locator or patch format.
+Material range offsets use UTF-16 code units, with an inclusive start and exclusive end. This version defines one unit, so the record has no offset-unit field. The original text and digest remain in the record. Range validation and correction effects follow the Material owner; this record does not define another locator or patch format.
 
 An `accept` or `reject` choice is empty. A `correct` choice identifies the proposed replacement and, when applied, the resulting exact Material revision. A `select` choice identifies one candidate in the target set. A `rate` choice contains the numeric value and the explicit lower and upper bounds of its scale. The value must lie within those bounds. Ratings from different scales have no implied equivalence.
 
@@ -48,9 +48,11 @@ Artifact judgements extend the existing version-keyed Review rather than creatin
 
 ## Candidate Set And Selection
 
-A candidate set retains an ordered collection of at least two distinct exact Artifact-version references from one Workspace. Each reference includes its content digest. The set also retains its creator, creation time and request identity. Its identity and membership are immutable. A different membership creates a different set.
+A candidate set retains an ordered collection of at least two distinct exact Artifact-version references from one Workspace. Each reference includes its content digest. The set also retains its creator and creation time. The accepted creation request is the scoped set identity; no second creation request field is retained. Its identity and membership are immutable. A different membership creates a different set.
 
 Candidates can come from repeated runs of one configuration or from different existing Skill versions, models or prompts. Producing work and strategy references use existing outcome lineage. An AEP snapshot, Skill version or model reference is descriptive provenance; it creates neither a strategy record nor present authority.
+
+`ArtifactReview.candidateSelections` records the existing independent choice of one exact Artifact version for a later input; it does not assert membership in a comparison set. A candidate-set selection records a choice among that set's immutable members only in its `select` judgement history. The candidate-set command does not append a Review candidate selection, and the Review command does not append a candidate-set judgement. One human choice is never written to both owners.
 
 A human selects one member through an attributable `select` judgement. The selected reference must be a member of the retained set. A later explicit selection appends a judgement; the most recently committed selection is the current projection. Earlier selections remain inspectable. A set without a selection has no selected candidate.
 

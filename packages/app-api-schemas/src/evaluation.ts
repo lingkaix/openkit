@@ -17,10 +17,9 @@ export const EvaluationCandidateSchema = ConversationArtifactReferenceSchema.ext
   contentDigest: digest,
 });
 
-/** Exact original Material range uses the existing Review offsets and states their retained unit. */
+/** Exact original Material range uses the existing Review UTF-16 offsets. */
 export const MaterialJudgementTargetSchema = ArtifactReviewRangeFeedbackSchema.safeExtend({
   kind: z.literal('material-range'),
-  offsetUnit: z.literal('utf-16'),
 });
 
 /** Candidate-set identity stays scoped to its owning Workspace and accepted creation request. */

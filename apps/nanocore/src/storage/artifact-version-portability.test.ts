@@ -498,7 +498,6 @@ it('round trips target-owned judgements, exact range results and candidate choic
         requestId: 'portable-correction',
         target: {
           kind: 'material-range',
-          offsetUnit: 'utf-16',
           materialId,
           revisionId: originalRevisionId,
           contentDigest,
@@ -719,7 +718,6 @@ it('round trips target-owned judgements, exact range results and candidate choic
         materialId: material.materialId,
         revisionId: original.revisionId,
         originalText: '😀',
-        offsetUnit: 'utf-16',
       },
       choice: {
         outcome: 'apply',
