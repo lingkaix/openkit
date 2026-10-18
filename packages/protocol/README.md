@@ -60,3 +60,5 @@ A retained Task-to-Goal status Item keeps its immutable `goalId` separately from
 `Turn.internalExecution` pins the internal role, logical model, context strategy and threshold. Knowledge Manager inputs also retain notebook owner/base, trigger, instructions and the processed Item ranges. The existing Status Item may retain a native Knowledge maintenance outcome; model prose cannot replace that outcome. `CapabilityCall.extensions` admits `openkit.knowledge/delivery` for the exact delivered answer string. These additions create no execution or delivery store.
 
 Knowledge list items project the exact canonical page contentDigest at the response notebookRevision. This read field supports explicit confirmed removal without adding a second digest or revision authority to durable KnowledgeEntry records.
+
+`src/common/retained-format.ts` supplies the single retained marker helper: `writeRetainedV1` emits `schemaVersion: 1`, and `readRetainedV1` checks that exact marker before its family decoder runs. Stored schemas remain with their persistence owners; wire schemas, content versions and digests do not select a retained decoder.
