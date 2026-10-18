@@ -4,7 +4,6 @@ import {
   GoalRecordSchema,
   OPERATION_DEFINITIONS,
   operationModelInput,
-  operationToolName,
 } from '@openkit/app-api-schemas';
 import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { z } from 'zod';
@@ -139,7 +138,7 @@ export function createGoalTools(input: {
           .strict()
       ) as Record<string, unknown>;
       return {
-        name: operationToolName(key),
+        name: key,
         description: definition.description,
         inputSchema: schema,
         execute: async (args) => {
@@ -176,7 +175,7 @@ export function createGoalTools(input: {
     const modelInput = operationModelInput(definition.inputSchema, ['workspaceId']);
     const { $schema: _schema, ...schema } = z.toJSONSchema(modelInput);
     return {
-      name: operationToolName(id),
+      name: id,
       description: `${definition.description} Only this Goal's linked Task Threads and their referenced Artifacts are available.`,
       inputSchema: schema,
       execute: async (value) => {
@@ -289,7 +288,7 @@ export function createGoalTools(input: {
     operationModelInput(OPERATION_DEFINITIONS['agent.list'].inputSchema, [])
   );
   const discovery: AgentTool = {
-    name: operationToolName('agent.list'),
+    name: 'agent.list',
     description:
       'Discover current Worker candidates for this Goal Workspace. Discovery starts no work; Task admission rechecks the exact selection.',
     inputSchema: discoveryInput,

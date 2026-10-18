@@ -118,13 +118,13 @@ const ADMIN_ROUTE_CASES = [
   },
   {
     code: 'deployment_admin_required',
-    path: '/api/app/operations/provider-subscription.account-login-start',
+    path: '/api/app/operations/provider-subscription.login-start',
     method: 'POST',
     body: { subscriptionProviderId: 'xai', accountSlotId: 'default', mode: 'device_code' },
   },
   {
     code: 'deployment_admin_required',
-    path: '/api/app/operations/provider-subscription.account-login-cancel',
+    path: '/api/app/operations/provider-subscription.login-cancel',
     method: 'POST',
     body: { subscriptionProviderId: 'xai', accountSlotId: 'default', interactionId: 'interaction' },
   },

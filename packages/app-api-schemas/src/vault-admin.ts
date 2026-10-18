@@ -209,7 +209,7 @@ const WorkspaceVaultGrantTargets = {
   targetAgentSessionId: AgentSessionIdSchema.superRefine((value, ctx) =>
     addRawSecretIssues(value, ctx, [])
   ).optional(),
-  targetCapabilityId: z.enum(['mcp.list_tools', 'mcp.call_tool']).optional(),
+  targetCapabilityId: z.enum(['mcp.list-tools', 'mcp.call-tool']).optional(),
 };
 
 /** Create a Workspace-lifetime grant for a supported sink with optional exact restrictions. */

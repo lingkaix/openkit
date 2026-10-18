@@ -369,7 +369,7 @@ function fixture(
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: 'call', arguments: { operation: id, input } },
+        params: { name: 'openkit_call', arguments: { operation: id, input } },
       }),
     });
     expect(response.status).toBe(200);
@@ -946,7 +946,7 @@ describe('Workspace synchronization native projections', () => {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'call', arguments: { operation: id, input } },
+          params: { name: 'openkit_call', arguments: { operation: id, input } },
         }),
       });
       expect(revokedMcp.status).toBe(401);

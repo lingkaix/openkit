@@ -164,9 +164,33 @@ export type OperationOutput<K extends OperationId> = z.infer<
 export function operationHttpPath<K extends string>(id: K): `/api/app/operations/${K}` {
   return `/api/app/operations/${id}`;
 }
-/** Derives the provider/MCP spelling; assemblers check collisions across supplied Tools. */
+/** Derives the provider/MCP spelling by replacing dots only; assemblers check supplied Tool collisions. */
 export function operationToolName(id: string): string {
-  return id.replaceAll('.', '_').replaceAll('-', '_');
+  return id.replaceAll('.', '_');
+}
+/**
+ * Checks current logical operation and Tool names before their model projection.
+ *
+ * Reused contracts may repeat the same id. Distinct ids must remain distinct after wrappers also fold hyphens to underscores.
+ *
+ * @param ids Canonical ids from the actual composed declarations or supplied Tools.
+ * @throws When an id has invalid grammar, exceeds the model limit, or collides.
+ */
+export function assertOperationNames(ids: Iterable<string>): void {
+  const projected = new Map<string, string>();
+  for (const id of ids) {
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+$/.test(id)) {
+      throw new Error(`Invalid operation name: ${id}`);
+    }
+    const name = operationToolName(id);
+    if (name.length > 40) throw new Error(`Operation Tool name exceeds 40 characters: ${id}`);
+    const folded = name.replaceAll('-', '_');
+    const previous = projected.get(folded);
+    if (previous !== undefined && previous !== id) {
+      throw new Error(`Operation Tool name collision: ${previous} and ${id}`);
+    }
+    projected.set(folded, id);
+  }
 }
 /** Mechanically omits context-bound fields while preserving the remaining schema objects. */
 export function operationModelInput(

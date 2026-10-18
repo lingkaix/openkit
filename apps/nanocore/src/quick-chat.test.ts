@@ -41,7 +41,7 @@ const EXPECTED_QUICK_CHAT_SYSTEM_PROMPT = BUILT_IN_SYSTEM_PROMPTS['quick-chat'];
 
 // Accepted order: Chat Mode Assistant's Core set followed by Resource Integration's native set.
 const EXPECTED_ASSISTANT_TOOL_NAMES = [
-  'workspace.state.read',
+  'workspace.dashboard',
   'thread.history.read',
   'knowledge.ask',
   'knowledge.tell',

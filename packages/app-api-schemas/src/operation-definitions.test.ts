@@ -6,14 +6,54 @@ import {
 } from './generative-operations.js';
 import {
   ARTIFACT_OPERATION_DEFINITIONS,
+  assertOperationNames,
   composeOperationTables,
   KERNEL_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
   operationHttpPath,
   operationModelInput,
   operationToolName,
   PRODUCT_OPERATION_DEFINITIONS,
 } from './operation-definitions.js';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
+
+it('preserves hyphens when projecting canonical operation names', () => {
+  expect(operationToolName('knowledge.health-check')).toBe('knowledge_health-check');
+});
+
+describe('canonical operation names', () => {
+  it('checks the actual complete operation composition', () => {
+    assertOperationNames(Object.keys(OPERATION_DEFINITIONS));
+  });
+
+  it('accepts canonical segments, the exact model limit, and reused contracts', () => {
+    expect(() =>
+      assertOperationNames(['work.read-item', 'work.read-item', `a.${'b'.repeat(38)}`])
+    ).not.toThrow();
+  });
+
+  it.each([
+    'read',
+    'work_read',
+    'Work.read',
+    'work..read',
+    'work.-read',
+    'work.read_1',
+    'work.read-',
+  ])('refuses invalid canonical grammar: %s', (id) => {
+    expect(() => assertOperationNames([id])).toThrow('Invalid operation name');
+  });
+
+  it('refuses model names beyond the limit', () => {
+    expect(() => assertOperationNames([`a.${'b'.repeat(39)}`])).toThrow('exceeds 40 characters');
+  });
+
+  it('refuses distinct names that collide after provider hyphen folding', () => {
+    expect(() => assertOperationNames(['work.read-item', 'work.read.item'])).toThrow(
+      'Operation Tool name collision: work.read-item and work.read.item'
+    );
+  });
+});
 
 it('rejects duplicate operation ids instead of silently overwriting an included family', () => {
   expect(() =>
@@ -25,7 +65,7 @@ describe('operation definitions', () => {
   it('derives model views from complete schemas without bound identities', () => {
     for (const [id, definition] of Object.entries(KERNEL_OPERATION_DEFINITIONS)) {
       expect(operationHttpPath(id)).toBe(`/api/app/operations/${id}`);
-      expect(operationToolName(id)).toBe(id.replaceAll('.', '_').replaceAll('-', '_'));
+      expect(operationToolName(id)).toBe(id.replaceAll('.', '_'));
       expect(definition.inputSchema.safeParse({}).success).toBe(false);
       const model = operationModelInput(definition.inputSchema, ['workspaceId', 'requestId']);
       expect(model.shape).not.toHaveProperty('workspaceId');

@@ -1430,7 +1430,7 @@ describe('agent environment package schema', () => {
     const enabled = {
       mode: 'enabled',
       protocol: 'openkit-worker-capability-v1',
-      routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+      routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
     };
 
     expect(
@@ -1438,8 +1438,9 @@ describe('agent environment package schema', () => {
     ).toEqual(enabled);
     for (const routes of [
       [],
-      ['mcp.list_servers', 'mcp.call_tool'],
-      ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool', 'knowledge.read'],
+      ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+      ['mcp.list-servers', 'mcp.call-tool'],
+      ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool', 'knowledge.read'],
     ]) {
       expect(() =>
         AgentEnvironmentPackageSchema.parse({

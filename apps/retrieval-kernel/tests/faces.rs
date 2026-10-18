@@ -89,14 +89,17 @@ fn mcp_stdio_smoke_and_startup_root_confinement() {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"mode":"exact","query":"marker","limit":20}}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search","arguments":{"mode":"exact","query":"SECRET_OUTSIDE","limit":20,"path":outside.path()}}}),
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search","arguments":{"mode":"regex","query":"SECRET_OUTSIDE","limit":20}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"retrieval_search","arguments":{"mode":"exact","query":"marker","limit":20}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"retrieval_search","arguments":{"mode":"exact","query":"SECRET_OUTSIDE","limit":20,"path":outside.path()}}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"retrieval_search","arguments":{"mode":"regex","query":"SECRET_OUTSIDE","limit":20}}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"search","arguments":{"mode":"exact","query":"marker","limit":20}}}),
     ];
     let replies = execute(root.path(), &["mcp"], &frames);
-    assert_eq!(replies.len(), 5);
+    assert_eq!(replies.len(), 6);
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(replies[1]["result"]["tools"][0]["name"], "retrieval_search");
+    assert_eq!(replies[5]["error"]["code"], -32602);
     let found: Value =
         serde_json::from_str(replies[2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(found, cli);
