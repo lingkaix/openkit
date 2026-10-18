@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -290,7 +290,7 @@ describe('work observation portable closure', () => {
           ts: turn.startedAt!,
           obs: 'core',
           ret: 'turn-evidence',
-          payload: environment,
+          payload: { ...environment, workspaceId: demo.workspace.id },
         },
         bodies: [],
       });
@@ -309,6 +309,25 @@ describe('work observation portable closure', () => {
         },
         bodies: [],
       });
+      if (foreignOwner !== null) {
+        // Retained malformed archive input must not require the native writer to admit a foreign owner.
+        const path = join(
+          dataRoot,
+          'workspaces',
+          demo.workspace.id,
+          'threads',
+          demo.thread.id,
+          'turns',
+          turn.id,
+          'observations.jsonl'
+        );
+        const lines = readFileSync(path, 'utf8').split('\n');
+        const retained = JSON.parse(lines[0]!);
+        expect(retained.type).toBe('env.bound');
+        retained.payload.workspaceId = foreignOwner;
+        lines[0] = JSON.stringify(retained);
+        writeFileSync(path, lines.join('\n'));
+      }
       const exported = createVerifiedWorkspaceExport({
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',

@@ -48,6 +48,7 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
   return new Function(
     'openCoreDbWithIntegrityCheck',
     'applyMigrations',
+    'recoverRunningCapabilityCalls',
     'verifyAndMigrateExistingScopedDatabases',
     'rebuildInvalidExistingWorkspaceDerivedIndexes',
     'recordBootStartAudit',
@@ -57,6 +58,7 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     `let coreDb; const dataRoot = '/fixture'; const dataRootLock = {}; const freshCoreInitialization = false;\n${javascript}\nreturn phase;`
   )(
     vi.fn(() => ({})),
+    vi.fn(),
     vi.fn(),
     vi.fn(),
     rebuild,
@@ -101,14 +103,14 @@ describe('entrypoint index-rebuild classification', () => {
   });
 
   it('keeps a thrown rebuild blocking rather than classifying it as completed', async () => {
+    const rebuild = vi.fn(() => {
+      throw new Error('Rebuild failed.');
+    });
     const result = await runBootPhases({
       bootId: 'boot_failed_index_rebuild',
-      phases: [
-        entrypointMigrationPhase(() => {
-          throw new Error('Rebuild failed.');
-        }),
-      ],
+      phases: [entrypointMigrationPhase(rebuild)],
     });
+    expect(rebuild).toHaveBeenCalledWith('/fixture');
     expect(result.readiness).toMatchObject({
       overall: 'failed',
       acceptingProductWork: false,

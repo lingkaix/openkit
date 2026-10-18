@@ -1,6 +1,6 @@
 # @openkit/app-api-schemas
 
-`src/knowledge-agent.ts` defines `knowledge.ask`, `knowledge.tell` and `knowledge.maintain`. Inputs select the current Workspace and carry no actor, source-scope or model override. Ask returns its separate KM Thread/Turn, scope-qualified citations and uncertainty. Tell and maintenance return the existing Turn/native notebook outcome. NanoCore owns current authority, Provider execution, capability delivery, fixed-base publication and required Review. User Memory and Server maintenance execution are separate joins.
+`src/knowledge-agent.ts` defines `knowledge.ask`, `knowledge.tell` and `knowledge.maintain`. Inputs select the current Workspace and carry no actor, source-scope or model override. Ask returns its separate KM Thread/Turn, scope-qualified citations and uncertainty. Tell and maintenance return the existing Turn/native notebook outcome. NanoCore owns current authority, Provider execution, capability delivery, fixed-base publication and required Review. User Memory execution remains a separate join.
 
 `knowledge.proposal.read` reads the saved candidate inventory or one bounded exact before/after part. Every response repeats the Proposal digest and base/candidate tuple. Its zero-based offset counts Unicode code points in both versions; `nextOffset: null` completes the selected path. A null version is absent, while an empty string is past that version's end. Current native authority and full Source disclosure checks precede every inventory and chunk.
 
@@ -23,6 +23,8 @@ Thread dashboard schemas include the nullable authenticated viewer id and a narr
 Dashboard work-status and active-work schemas carry recorded activity and output summaries without product mode or routing fields. Their descriptive readers discard unknown additive fields; conversation, Task and Goal results retain their own mode and handoff contracts.
 
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
+
+The Skill row returned by `catalog.read` optionally exposes `pinAuditRef`, the recorded winning pin command's Audit identity. An absent field means that attribution was not retained; a digest alone does not identify the actor who last pinned it.
 
 `AuthGetSessionResultSchema` validates the existing Better Auth session read as an active user envelope or null, allowing the Web membership switcher to identify the caller without changing `AuthorizedWorkspaceSummary`.
 
@@ -214,6 +216,8 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 `assertOperationNames` checks current composed operation and supplied Tool ids for canonical grammar, the 40-character model limit and collisions after additional hyphen folding. Repeated use of the same canonical id is allowed. `operationToolName` replaces dots with underscores and preserves hyphens.
 
 `light-apps.ts` exposes the actual kernel format, admitted definition digest, and nullable explicit catalog source separately. It also declares snapshot inventory and exact-revision rollback payloads. Snapshots identify consistent recovery copies with original format, definition and app/schema revisions, time, cause and content digest. Restoring an older kernel format produces an unavailable app until explicit format upgrade; the response keeps the actual restored marker and revision instead of inferring current compatibility.
+
+`src/server-threads.ts` supplies seven registered Server operations for explicit tell/maintenance, general history, Turn Stop and exact Proposal read/decide. These records omit Workspace identity and require current Server administration authority in NanoCore. Only the Knowledge Manager executes Server work in this increment.
 
 `memory.ask` and `memory.tell` project bounded User Knowledge Manager query and maintenance. Their strict schemas accept no User selector. `memory.maintain`, `memory.proposal.read` and `memory.proposal.decide` reuse the fixed-base notebook and human Review contracts. NanoCore binds the actual private Timeline, rejects shared delivery, and keeps required human Review unavailable to model callers.
 

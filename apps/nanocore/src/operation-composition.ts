@@ -60,6 +60,7 @@ import { createSchedulerAdmissionOperationImplementations } from './runtime/sche
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
+import { createServerThreadOperations } from './server-thread-operations.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -95,6 +96,8 @@ export interface OperationInvocationDependencies {
         ) => Promise<import('@openkit/app-api-schemas').OperationOutput<'knowledge.maintain'>>;
       }
     | undefined;
+  /** Shared Server KM execution, publisher and Core evidence owners. */
+  readonly serverKnowledgeMaintenance?: import('./knowledge/server-knowledge-maintenance.js').ServerKnowledgeMaintenanceDependencies;
   readonly coreDb: CoreDb | undefined;
   /** Shared deployment-local channel and notification owners. */
   readonly channelServices?: ChannelServices;
@@ -246,6 +249,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createThreadOperationImplementations(dependencies),
     createTurnOperationImplementations(dependencies),
     createKnowledgeOperationImplementations(dependencies),
+    createServerThreadOperations(dependencies),
     createKnowledgeProposalPreviewOperationImplementations(dependencies),
     createMemoryOperationImplementations(dependencies),
     createArtifactOperationImplementations(dependencies),

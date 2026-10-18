@@ -26,7 +26,7 @@ use opentelemetry::{Context, KeyValue};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
 use crate::epoch_evidence::{
     EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, REBUILD_FENCE_STARTED_PATH,
@@ -59,7 +59,7 @@ const GATEWAY_PORT: &str = "17670";
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("NanoHost supports only linux/amd64 and linux/arm64 Supervisor images");
 
-/// Maximum time allowed for each dependency readiness proof.
+/// Maximum wait for each local socket, namespace or process prerequisite.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Fresh roots through complete readiness share the transport specification's hard bound.
@@ -1802,6 +1802,16 @@ impl InventoryMonitorFixture {
     }
 }
 
+/// Bounds Gateway initialization and health without changing its failure category.
+async fn await_gateway_health(
+    startup_deadline: tokio::time::Instant,
+    health: impl std::future::Future<Output = Result<(), EpochFault>>,
+) -> Result<(), EpochFault> {
+    tokio::time::timeout_at(startup_deadline, health)
+        .await
+        .unwrap_or(Err(EpochFault::PartialStart))
+}
+
 impl EpochCoordinator {
     /// Creates restrictive fresh directories and starts every member in order.
     ///
@@ -1816,6 +1826,7 @@ impl EpochCoordinator {
         image_store: &mut Option<ImageStore>,
         image_backend: &mut Option<DockerImageBackend>,
         persistent_volumes: &mut Option<PersistentVolumeStore>,
+        startup_deadline: tokio::time::Instant,
     ) -> Result<Self, EpochFault> {
         let mut startup = crate::telemetry::Observation::start(
             "nanohost.epoch.start",
@@ -1975,7 +1986,7 @@ impl EpochCoordinator {
 
             let health = tokio::task::block_in_place(|| {
                 runtime.block_on(async {
-                    timeout(STARTUP_TIMEOUT, async {
+                    await_gateway_health(startup_deadline, async {
                         loop {
                             let readiness = match client.connect().await {
                                 Ok(()) => client.health().await,
@@ -1999,11 +2010,8 @@ impl EpochCoordinator {
             let members_running = children
                 .iter_mut()
                 .all(|child| matches!(child.try_wait(), Ok(None)));
-            if !matches!(health, Ok(Ok(()))) || !members_running {
-                let fault = match health {
-                    Ok(Err(fault)) => fault,
-                    Err(_) | Ok(Ok(())) => EpochFault::PartialStart,
-                };
+            if health.is_err() || !members_running {
+                let fault = health.err().unwrap_or(EpochFault::PartialStart);
                 fence_failed_startup(fault.clone(), &mut children);
                 return Err(fault);
             }
@@ -5585,6 +5593,33 @@ mod tests {
         assert!(gateway_auth_failure.contains("return Err(EpochFault::PartialStart);"));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn cold_gateway_health_uses_only_the_remaining_startup_budget() {
+        let began = tokio::time::Instant::now();
+        let deadline = began + super::STARTUP_READINESS_HARD_LIMIT;
+        let cold_health = async {
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            Ok::<(), EpochFault>(())
+        };
+        assert_eq!(
+            super::await_gateway_health(deadline, cold_health).await,
+            Ok(())
+        );
+        assert!(tokio::time::Instant::now() - began > Duration::from_secs(10));
+
+        // Earlier preparation consumes the same budget; health must not restart it.
+        tokio::time::advance(Duration::from_secs(108)).await;
+        let still_cold = async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok::<(), EpochFault>(())
+        };
+        assert_eq!(
+            super::await_gateway_health(deadline, still_cold).await,
+            Err(EpochFault::PartialStart)
+        );
+        assert_eq!(tokio::time::Instant::now(), deadline);
+    }
+
     #[test]
     fn wp3a_u3a1_enters_the_runtime_before_constructing_startup_timeout() {
         let production = include_str!("epoch_coordinator.rs")
@@ -5602,7 +5637,7 @@ mod tests {
             .split("block_on(async")
             .nth(1)
             .expect("startup future entered through the Tokio runtime");
-        assert!(runtime_future.contains("timeout("));
+        assert!(runtime_future.contains("await_gateway_health(startup_deadline,"));
         assert!(runtime_future.contains(".await"));
     }
 
@@ -5680,7 +5715,7 @@ mod tests {
             .find("plan.members()[3]")
             .expect("Gateway spawn path");
         let bounded_readiness = startup
-            .find("timeout(STARTUP_TIMEOUT")
+            .find("await_gateway_health(startup_deadline,")
             .expect("bounded Gateway readiness path");
         assert!(gateway_spawn < bounded_readiness);
 

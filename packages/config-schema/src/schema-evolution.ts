@@ -68,6 +68,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Thread records preserve the immutable server-authored conversation or administration entry path.',
   },
+  'openkit.server-threads.v1': {
+    id: 'openkit.server-threads.v1',
+    status: 'active',
+    description:
+      'Thread, Turn and Item history has an immutable Server owner without a Workspace anchor.',
+  },
   'openkit.work-observations.v1': {
     id: 'openkit.work-observations.v1',
     status: 'active',

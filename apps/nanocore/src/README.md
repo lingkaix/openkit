@@ -40,6 +40,8 @@ The private administration entry provisions a current administrator bearer's own
 
 ## Supporting Directories
 
+Native Light App mutations preserve actual executing Worker, Coordinator or trusted Assistant Thread/Turn identity in the existing app-local Audit fields. Direct human calls leave execution unknown; a presentation Item links the viewed content and does not identify the executor of a later click. The Kernel command assembler reads only trusted invocation lineage and checks the retained Workspace/Thread/Turn before mutation; caller payloads cannot supply this evidence.
+
 - `capability/` owns capability-call and usage-ledger operations.
 - `context/` owns LLM context projection and its projection policy.
 - `diagnostics/` owns product-safe setup and runtime diagnostic projections.
@@ -135,6 +137,8 @@ Internal model roles share source-bound rolling assembly under `internal-agents/
 `generative-kernel/schema.ts` admits reusable declarative Light App definitions without app identity, assigns collection and field IDs once, and wraps that same definition for each app instance. Explicit native create/update source selections retain catalog provenance separately from the admitted app digest. Catalog-backed command receipts bind the original requested entry/digest selector, so replay cannot follow a changed pin or default; direct commands retain their schema/source input hash. Supported definition changes add collections and optional fields, rename logical names, or remove fields and their dependent indexes; surviving constraints, indexes, relations, and data remain intact. Every definition migration has a consistent SQLite snapshot before DDL. Snapshot listing, explicit restore, and native format upgrade share the existing app command and migration owners; [storage](storage/README.md) describes their recovery boundary and format-upgrade interruption behavior.
 
 Light App catalog operation composition lives in light-app-definition-operations.ts. It joins the existing Resource Catalog and native app commands, including raw-selector receipt replay before mutable pin/default resolution. The existing openkit-generative MCP supply includes these declarative operations through the same canonical table and admission engine; catalog import supplies no executable code or credential authority.
+
+General Server Thread operations use immutable Server ownership and current administrator admission. They expose history and Stop without a Workspace anchor. Only Server Knowledge maintenance executes work now; publication and Review use their existing owners. Goal Coordinator ask/tell uses native Knowledge operations and the current shared Goal audience.
 
 Assistant native invocation receives the existing runtime configuration manager for both command and pending-outcome Turns. Private `memory.ask` and `memory.tell` resolve current User Memory through that owner, with the actual Timeline and authenticated actor bound by conversation admission. Shared entries retain the Tools and refuse private access.
 

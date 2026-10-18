@@ -2,7 +2,7 @@ import {
   McpHttpEndpointSchema,
   WorkspaceMcpCredentialBindingSchema,
 } from '@openkit/config-schema/mcp-credentials';
-import { RequestIdSchema, ResourceCandidateIdSchema } from '@openkit/protocol';
+import { AuditEventIdSchema, RequestIdSchema, ResourceCandidateIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 const CATALOG_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -50,6 +50,8 @@ export const SkillCatalogEntrySchema = z
 /** Skill row on the Workspace catalog summary, including pin and version history. */
 export const WorkspaceCatalogSkillSummarySchema = SkillCatalogEntrySchema.extend({
   pinDigest: z.string().regex(SHA256).nullable(),
+  /** Winning native pin command, when this historical fact was retained. */
+  pinAuditRef: AuditEventIdSchema.optional(),
   versions: z.array(
     z
       .object({

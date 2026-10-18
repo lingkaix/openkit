@@ -1,6 +1,6 @@
 # Capability Usage Ledger
 
-This directory owns the shared workspace-scoped capability-call and usage-record lifecycle.
+This directory owns the shared capability-call and usage-record lifecycle for Workspace and Server owners.
 
 ## Boundaries
 
@@ -19,3 +19,5 @@ The optional CapabilityCall extensions document is stored in nullable `extension
 Canonical rewrites and the existing Workspace archive path preserve other stored extension namespaces using storage-only validation. The recognized Gateway namespace still rejects unknown core values. Live protocol and audit projections continue to ignore and omit unknown namespaces; the canonical reader is not the public projection.
 
 `CapabilityAuditLineage` supplies a trusted command request ID through `FinishCapabilityCallInput.auditLineage` and `RecordUsageInput.auditLineage`. When the stored call request is null, finish validates that command ID and writes it only to the existing AuditEvent request field; a stored call request takes precedence. Usage-recording failure forwards the same lineage to its existing finish path. The input is transient and does not change start keys, call or usage request fields, or usage equivalence. A null per-invocation request gives no request-key replay protection; the command owner must prevent duplicate or uncertain execution before invocation, as required by [Capability Usage Gateway Foundation](../../../../docs/specs/20260704-capability_usage_gateway_foundation.md#capabilitycall-lifecycle).
+
+Server calls use the same recorder and SQL record families in Core, with a null SQL Workspace field and explicit `owner: { kind: 'server' }` protocol attribution. Workspace inputs and returned types stay unchanged. Server callers pass a Core database as `workspaceDb` and supply `ServerGatewayCallContext`; current Server authority remains the producer's responsibility. Terminal audit uses the existing Server audit writer. Boot calls `recoverRunningCapabilityCalls({ workspaceDb: coreDb })` after Core migrations and never replays abandoned calls.
