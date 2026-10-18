@@ -93430,6 +93430,43 @@
                     }
                   ]
                 },
+                "authentication": {
+                  "type": "object",
+                  "properties": {
+                    "credentialKind": {
+                      "type": "string",
+                      "enum": [
+                        "local",
+                        "session",
+                        "token"
+                      ]
+                    },
+                    "credentialId": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^tok_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^auth_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "credentialKind",
+                    "credentialId"
+                  ],
+                  "additionalProperties": false
+                },
                 "subject": {
                   "default": null,
                   "anyOf": [
@@ -94128,6 +94165,43 @@
                       "type": "null"
                     }
                   ]
+                },
+                "authentication": {
+                  "type": "object",
+                  "properties": {
+                    "credentialKind": {
+                      "type": "string",
+                      "enum": [
+                        "local",
+                        "session",
+                        "token"
+                      ]
+                    },
+                    "credentialId": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^tok_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^auth_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "credentialKind",
+                    "credentialId"
+                  ],
+                  "additionalProperties": false
                 },
                 "subject": {
                   "default": null,
@@ -116426,5 +116500,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:14e9d99d0feeeb935f02e3f774a0cd04164cf45221d7d51ff3aecff85319483b"
+  "x-openkit-source-digest": "sha256:6fb6fa0d78d259cb9918124fceeb484e32302c1b73faed152a93c3a5025734e2"
 }

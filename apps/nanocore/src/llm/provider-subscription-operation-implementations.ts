@@ -8,7 +8,8 @@ import {
   type SubscriptionProviderId,
   SubscriptionProviderIdSchema,
 } from '@openkit/config-schema/provider-subscription';
-import type { FamilyImplementations } from '../operation-contract.js';
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
+import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { readCodexQuota } from './codex-quota.js';
 import {
@@ -84,25 +85,41 @@ export function createProviderSubscriptionOperationImplementations(
           project
         ),
       })),
-    'provider-subscription.account-create': (input) =>
+    'provider-subscription.account-create': (input, context) =>
       runAccountOperation(async () =>
         project(
-          await manager().createAccount({
-            accountSlotId: input.accountSlotId,
-            ...(input.displayName ? { displayName: input.displayName } : {}),
-            subscriptionProviderId: requireProvider(input.subscriptionProviderId),
-          })
+          await manager().createAccount(
+            {
+              accountSlotId: input.accountSlotId,
+              ...(input.displayName ? { displayName: input.displayName } : {}),
+              subscriptionProviderId: requireProvider(input.subscriptionProviderId),
+            },
+            {
+              actor: context.actorRef,
+              authentication: auditAuthenticationFromActor(publicOperationActor(context)),
+            }
+          )
         )
       ),
-    'provider-subscription.account-update': (input) =>
+    'provider-subscription.account-update': (input, context) =>
       runAccountOperation(async () =>
         project(
-          await manager().updateAccount(requirePair(input), { displayName: input.displayName })
+          await manager().updateAccount(
+            requirePair(input),
+            { displayName: input.displayName },
+            {
+              actor: context.actorRef,
+              authentication: auditAuthenticationFromActor(publicOperationActor(context)),
+            }
+          )
         )
       ),
-    'provider-subscription.account-delete': (input) =>
+    'provider-subscription.account-delete': (input, context) =>
       runAccountOperation(async () => {
-        await manager().deleteAccount(requirePair(input));
+        await manager().deleteAccount(requirePair(input), {
+          actor: context.actorRef,
+          authentication: auditAuthenticationFromActor(publicOperationActor(context)),
+        });
         return null;
       }),
     'provider-subscription.account-status': (input) =>

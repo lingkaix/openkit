@@ -3287,6 +3287,48 @@ describe('ProviderSubscriptionAccountManager', () => {
     ]);
   });
 
+  it('keeps the admitted account caller and credential on lifecycle success and failure', async () => {
+    const fixture = createFixture();
+    try {
+      const user = ensureLocalUser(fixture.coreDb);
+      const app = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.dataRoot,
+        providerSubscriptionAccountManager: fixture.manager,
+      });
+      const pair = accountPair('attributed');
+      const invoke = () =>
+        app.request(...operationRequest('provider-subscription.account-create', pair));
+      expect((await invoke()).status).toBe(200);
+      expect((await invoke()).status).toBe(409);
+      const rows = fixture.coreDb.sqlite
+        .prepare(
+          "SELECT actor_json, authentication_json, outcome FROM audit_events WHERE action = 'provider_subscription.account.create' ORDER BY rowid"
+        )
+        .all() as { actor_json: string; authentication_json: string; outcome: string }[];
+      expect(
+        rows.map((row) => ({
+          actor: JSON.parse(row.actor_json),
+          authentication: JSON.parse(row.authentication_json),
+          outcome: row.outcome,
+        }))
+      ).toEqual([
+        {
+          actor: { kind: 'user', id: user },
+          authentication: { credentialKind: 'local', credentialId: null },
+          outcome: 'succeeded',
+        },
+        {
+          actor: { kind: 'user', id: user },
+          authentication: { credentialKind: 'local', credentialId: null },
+          outcome: 'failed',
+        },
+      ]);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('emits exact lifecycle success and failure evidence while plaintext canaries stay encrypted', async () => {
     const fixture = createFixture();
     const pair = accountPair('audit_lifecycle');
