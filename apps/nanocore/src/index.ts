@@ -35,6 +35,7 @@ import { loadBootPolicyKernel } from './bootstrap/policy.js';
 import { createBootId, createShutdownReadinessSnapshot } from './bootstrap/readiness.js';
 import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
+import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
 import { BootConfigError, resolveMode } from './config/mode.js';
@@ -46,6 +47,7 @@ import {
 } from './config/runtime-config.js';
 import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
+import { recoverServerKnowledgeManagerTurns } from './knowledge/server-knowledge-maintenance.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
@@ -248,6 +250,7 @@ const bootResult = await runBootPhases({
           freshInitialization: freshCoreInitialization,
         });
         applyMigrations(coreDb);
+        recoverRunningCapabilityCalls({ workspaceDb: coreDb });
         verifyAndMigrateExistingScopedDatabases(dataRoot);
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
         recordBootStartAudit({
@@ -340,6 +343,7 @@ const bootResult = await runBootPhases({
         // A later read-only Store construction must not remove another live request's bytes.
         discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
+        recoverServerKnowledgeManagerTurns(sharedStore);
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,

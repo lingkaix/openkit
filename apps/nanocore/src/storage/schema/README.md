@@ -29,4 +29,6 @@ Core `0004_equal_workspace_members.sql` carries retained membership and invitati
 
 Vault grants require the closed `issuance` discriminator with no default. The Core baseline and Drizzle projection enforce `target` or `imported-history`; the importer cannot choose target issuance. This identifier cutover uses the accepted pre-stable clean-scope procedure and supplies no legacy provenance inference or data conversion.
 
+Core `0008_server_capability_usage.sql` creates the same capability-call, usage and evidence-bundle record families for Server work. Its null Workspace constraints prevent a Server row from acquiring a Workspace anchor. The physical Core database is the unique Server owner; no redundant owner column or second ledger is added. Workspace journals retain their current non-null Workspace constraints.
+
 `external-trigger-admissions.ts` projects the immutable four-field scheduled-pull join. Core `0006_external_trigger_admissions` enforces the schedule/event key and schedule/queue foreign keys. Queue insertion and join acceptance share the existing Core transaction; source Turn publication remains file-owned. The join carries no execution state or retry lifecycle. Run `storage/external-trigger-admissions.test.ts`, `storage/recurring-portable-history.test.ts` and the native migration suite for this boundary.
