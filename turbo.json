@@ -26,8 +26,21 @@
     },
     "@openkit/nanohost#build": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "Cargo.toml", "Cargo.lock"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "Cargo.toml",
+        "Cargo.lock",
+        "$TURBO_ROOT$/apps/nanocore/src/auth/nanohost-transport-revision.json"
+      ],
       "outputs": ["target/debug/nanohost", "target/debug/nanohost.d"]
+    },
+    "@openkit/nanohost#lint": {
+      "dependsOn": [],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/nanocore/src/auth/nanohost-transport-revision.json"
+      ],
+      "outputs": []
     },
     "test": {
       "dependsOn": ["^build", "^test"],
