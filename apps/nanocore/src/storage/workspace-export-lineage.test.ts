@@ -41,7 +41,10 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { bindImportedWorkspaceNotebookTraces } from '../knowledge/notebook-workspace-portability.js';
+import {
+  bindImportedWorkspaceNotebookTraces,
+  readPortableWorkspaceNotebookPages,
+} from '../knowledge/notebook-workspace-portability.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from '../knowledge/okf.js';
 import {
   importAgentEnvironmentPackageSnapshots,
@@ -2523,7 +2526,8 @@ describe('workspace auxiliary lineage reminting', () => {
   });
 
   it('imports an S39 selection pinned to the current Notebook commit and remaps its Workspace overview', () => {
-    const input = createWorkResourceLineageExportInput(undefined, undefined, false, false, true);
+    // Current Knowledge selections carry the projection that binds their reminted Notebook commit.
+    const input = createWorkResourceLineageExportInput(undefined, undefined, false, true, true);
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
     });
@@ -2573,7 +2577,6 @@ describe('workspace auxiliary lineage reminting', () => {
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-current-notebook-s39-target-'));
     onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
     // Import finalizes S39 only after its real target Notebook commit exists.
-    // The dependency baseline reproduced the missing trace when this fixture omitted that owner step.
     const targetNotebook = new KnowledgeNotebook({
       repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
     });
@@ -2597,10 +2600,9 @@ describe('workspace auxiliary lineage reminting', () => {
       },
     });
     expect(imported.finalizeNotebookKnowledge).toBeTypeOf('function');
-    imported.finalizeNotebookKnowledge!({
-      notebookRevision: targetRevision,
-      nativeKnowledgePages: imported.portableFileState.nativeKnowledgePages,
-    });
+    const targetNotebookBinding = readPortableWorkspaceNotebookPages(targetRoot);
+    expect(targetNotebookBinding.notebookRevision).toBe(targetRevision);
+    imported.finalizeNotebookKnowledge!(targetNotebookBinding);
     writeWorkspacePortableFileState(targetRoot, imported.portableFileState);
     expect(() => verifyImportedWorkerContextPackageSnapshot(imported, targetRoot)).not.toThrow();
     const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
@@ -2619,6 +2621,7 @@ describe('workspace auxiliary lineage reminting', () => {
         scope: `workspace:${targetWorkspaceId}`,
         knowledgeBaseId: imported.defaultKnowledgeBaseId,
         path: 'index.md',
+        notebookRevision: targetRevision,
       }),
     ]);
     expect(targetOverviewText).not.toContain(source.knowledgeBaseId);
@@ -2630,6 +2633,9 @@ describe('workspace auxiliary lineage reminting', () => {
     const targetPage = imported.portableFileState.nativeKnowledgePages.get(
       'knowledge/pages/knowledge_portable_source.md'
     )!;
+    expect(
+      targetNotebookBinding.nativeKnowledgePages.get('knowledge/pages/knowledge_portable_source.md')
+    ).toBe(targetPage);
     expect(trace.workspaceId).toBe(targetWorkspaceId);
     expect(trace.requestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
     expect(trace.knowledgeSelections).toEqual([
