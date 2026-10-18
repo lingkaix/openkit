@@ -55,6 +55,11 @@ export default defineConfig({
     },
   },
   server: {
+    // Isolated e2e must not open a Vite HMR websocket: Chromium reports
+    // ERR_NETWORK_CHANGED for in-flight modules when that socket connects.
+    ...(process.env.OPENKIT_WEB_E2E === '1'
+      ? { hmr: false as const, warmup: { clientFiles: ['./src/main.tsx'] } }
+      : {}),
     proxy: {
       '/api': {
         target:
