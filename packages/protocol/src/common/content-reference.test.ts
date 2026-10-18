@@ -11,12 +11,14 @@ const contentRef = {
 
 describe('shared content references', () => {
   it('retains unavailable identity and captured location while ignoring descriptive additions', () => {
-    expect(ContentReferenceSchema.parse({
-      ...contentRef,
-      availability: 'unavailable',
-      description: 'The original was removed.',
-      locator: { ...contentRef.locator, description: 'Captured location' },
-    })).toEqual({ ...contentRef, availability: 'unavailable' });
+    expect(
+      ContentReferenceSchema.parse({
+        ...contentRef,
+        availability: 'unavailable',
+        description: 'The original was removed.',
+        locator: { ...contentRef.locator, description: 'Captured location' },
+      })
+    ).toEqual({ ...contentRef, availability: 'unavailable' });
   });
 
   it.each([
@@ -44,12 +46,21 @@ describe('shared content references', () => {
 
   it('refuses unsafe locator paths and invalid identity without substituting another object', () => {
     for (const path of ['', '/annual.pdf', '../annual.pdf', 'reports/../annual.pdf', 'a\\b']) {
-      expect(ContentReferenceSchema.safeParse({
-        ...contentRef, locator: { ...contentRef.locator, path },
-      }).success).toBe(false);
+      expect(
+        ContentReferenceSchema.safeParse({
+          ...contentRef,
+          locator: { ...contentRef.locator, path },
+        }).success
+      ).toBe(false);
     }
-    expect(ContentReferenceSchema.safeParse({ ...contentRef, knowledgeBaseId: 'kb_old' }).success).toBe(false);
-    expect(ContentReferenceSchema.safeParse({ ...contentRef, contentDigest: 'git-object-id' }).success).toBe(false);
-    expect(ContentReferenceSchema.safeParse({ ...contentRef, availability: 'assumed' }).success).toBe(false);
+    expect(
+      ContentReferenceSchema.safeParse({ ...contentRef, knowledgeBaseId: 'kb_old' }).success
+    ).toBe(false);
+    expect(
+      ContentReferenceSchema.safeParse({ ...contentRef, contentDigest: 'git-object-id' }).success
+    ).toBe(false);
+    expect(
+      ContentReferenceSchema.safeParse({ ...contentRef, availability: 'assumed' }).success
+    ).toBe(false);
   });
 });
