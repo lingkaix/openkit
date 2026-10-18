@@ -31,6 +31,7 @@ import type { Actor } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
   findWorkspaceConfig,
+  type RuntimeConfigManager,
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
@@ -2377,6 +2378,7 @@ export function createConversationService({
   repositoryWorkspaceDb,
   resolveGatewayProvider,
   runtimeConfig,
+  runtimeConfigManager,
   startModeWorkerTurn,
   workerCoordinatorCandidates,
   goalServices,
@@ -2395,6 +2397,7 @@ export function createConversationService({
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
+  readonly runtimeConfigManager: RuntimeConfigManager;
   readonly startModeWorkerTurn: (input: {
     readonly triggerActor: ActorRef;
     /** Known native Task admission cause, separate from actor identity. */
@@ -3648,6 +3651,7 @@ export function createConversationService({
                 repositoryWorkspaceDb,
                 workspaceMutationAdmission,
                 knowledgeAgent,
+                runtimeConfigManager,
                 ...(goalServices ? { goalServices: goalServices() } : {}),
               })(id, value, {
                 kind: 'public',
@@ -4455,6 +4459,7 @@ export function createConversationService({
               repositoryWorkspaceDb,
               workspaceMutationAdmission,
               knowledgeAgent,
+              runtimeConfigManager,
               ...(goalServices ? { goalServices: goalServices() } : {}),
             })(id, value, {
               kind: 'public',

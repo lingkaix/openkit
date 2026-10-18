@@ -69,7 +69,7 @@ function pathFor(pageId: string): string {
   return path;
 }
 
-/** Filters page structure by supported sensitivity, User authorship and literal Source grammar; actual Source authority is separate. */
+/** Filters published Memory states and literal Source grammar; current scope, Source and suppression checks remain separate. */
 export function memoryPageFacts(path: string, content: string) {
   const parsed = parseOkfDocument({ path, content });
   if (!parsed.ok) throw new NotebookError('recovery_required');
@@ -77,7 +77,12 @@ export function memoryPageFacts(path: string, content: string) {
   const sensitivity = stringFrontmatterField(parsed.document, 'sensitivity');
   if (!sensitivity || !['public', 'normal', 'internal', 'confidential'].includes(sensitivity))
     return null;
-  if (stringFrontmatterField(parsed.document, 'review_state') !== 'user-authored') return null;
+  if (
+    !['user-authored', 'delegated', 'accepted'].includes(
+      stringFrontmatterField(parsed.document, 'review_state') ?? ''
+    )
+  )
+    return null;
   const sources = stringListFrontmatterField(parsed.document, 'source_refs');
   if (
     !sources ||
