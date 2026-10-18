@@ -17,8 +17,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-// These payloads fix retained v1 meaning. Current wire objects project from admitted records;
-// they do not select stored fields or vocabularies. Native I/O checks the marker before decoding.
+// These payloads fix retained v1 meaning. Current wire objects project from admitted records; they do not select stored fields or vocabularies. Native I/O checks the marker before decoding.
 const Sha256DigestV1Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const CanonicalTimestampV1Schema = z.string().datetime();
 const StoredCaptureCoverageV1Schema = z

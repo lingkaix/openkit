@@ -143,9 +143,7 @@ const CommandExecutionItemSchema = BaseItemSchema.extend({
   /**
    * Canonical accumulated command output.
    *
-   * `item-delta` events with `deltaKind: 'output-delta'` append their string
-   * `delta` value to this snapshot while the command is running. At
-   * `item-completed` time, this full snapshot is the source of truth.
+   * `item-delta` events with `deltaKind: 'output-delta'` append their string `delta` value to this snapshot while the command is running. At `item-completed` time, this full snapshot is the source of truth.
    */
   output: z.string(),
   exitCode: z.number().int().nullable(),
@@ -232,8 +230,7 @@ const AssistantHandoffSchema = z.discriminatedUnion('kind', [
 /**
  * Product-visible agent question request item.
  *
- * Separate request/response item types keep question handling explicit instead of overloading
- * approvals. The request does not pause the raising Turn.
+ * Separate request/response item types keep question handling explicit instead of overloading approvals. The request does not pause the raising Turn.
  */
 const UserInputRequestItemSchema = BaseItemSchema.extend({
   type: z.literal('user-input-request'),
