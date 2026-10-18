@@ -2540,6 +2540,14 @@ export function publishArtifactFileRecord(input: {
  * @param artifact Artifact record to write.
  */
 function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void {
+  // Both formats preserve additions from the same physical header, which omits inline bodies.
+  const headerReader = z.object({
+    ...ArtifactReaderSchema.shape,
+    content: z.union([
+      ArtifactInlineContentSchema.omit({ body: true }),
+      ArtifactFileContentSchema,
+    ]),
+  });
   if (artifact.content.format === 'file') {
     ensureCanonicalDirectory(artifactRoot);
     const payload = join(artifactRoot, 'versions', String(artifact.version), 'payload');
@@ -2547,7 +2555,7 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
     if (lstatSync(payload).size !== artifact.content.byteLength) {
       throw new Error('The Artifact file payload length is inconsistent.');
     }
-    writeOwnedDescriptiveJson(join(artifactRoot, 'artifact.json'), artifact, ArtifactReaderSchema);
+    writeOwnedDescriptiveJson(join(artifactRoot, 'artifact.json'), artifact, headerReader);
     return;
   }
   const filesRoot = join(artifactRoot, 'files');
@@ -2566,13 +2574,7 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
       ...artifact,
       content: { format: artifact.content.format },
     },
-    z.object({
-      ...ArtifactReaderSchema.shape,
-      content: z.union([
-        ArtifactInlineContentSchema.omit({ body: true }),
-        ArtifactFileContentSchema,
-      ]),
-    })
+    headerReader
   );
   writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
 }
