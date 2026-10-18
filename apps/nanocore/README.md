@@ -271,6 +271,8 @@ Set `OPENKIT_DATA_ROOT` to persist canonical Workspace records under `temp/nanoc
 
 ## Remote Git Sources And Goal Mode
 
+Goal Plan proposals capture typed Policy bounds beside the exact immutable Plan in one Pending Request. The complete preview contains both; native capture fixes the Coordinator and Plan source. Plan and card records carry no new authority fields. Policy publication and current admitted readback remain separate from the committed Plan outcome; see the [runtime guide](src/runtime/README.md).
+
 Configuration file creation and update refuse unsupported work-slot source selections before storage with `workspace_data_source_blocked`; authored non-Git configuration remains loadable, unselected catalog registration remains available, and work without a source input still runs.
 
 NanoCore host repository resources, host Git publication, host inspection, and the Repositories screen are removed. Remote Git sources use catalog URL/commit pins and Sandbox-reported baselines; hosted writes use selected vendor MCP through the Gateway.
