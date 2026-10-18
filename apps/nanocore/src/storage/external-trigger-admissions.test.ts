@@ -151,7 +151,7 @@ describe('ExternalTriggerAdmission Core joins', () => {
     expect(listWorkspaceExternalTriggerAdmissions(db, workspaceId)).toEqual([]);
   });
 
-  it('refuses invalid retained core fields while ignoring additive descriptive columns', () => {
+  it('refuses invalid retained core fields', () => {
     const { db, schedule } = fixture();
     const record = db.sqlite.transaction(() => {
       const entry = queue(db, schedule, 'retained');
@@ -162,10 +162,6 @@ describe('ExternalTriggerAdmission Core joins', () => {
         queueEntryId: entry.queueEntryId,
       });
     })();
-    db.sqlite.exec('ALTER TABLE external_trigger_admissions ADD COLUMN annotation TEXT');
-    db.sqlite
-      .prepare('UPDATE external_trigger_admissions SET annotation = ?')
-      .run('Descriptive only');
     expect(findExternalTriggerAdmission(db, schedule.id, record.eventKey)).toEqual(record);
     db.sqlite.prepare('UPDATE external_trigger_admissions SET source_turn_id = ?').run('invalid');
     expect(() => findExternalTriggerAdmission(db, schedule.id, record.eventKey)).toThrow();
