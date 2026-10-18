@@ -666,6 +666,7 @@ describe('database setup', () => {
         'user_0000_setup',
         'user_0001_thread_read_receipts',
         'user_0002_notebook_admission',
+        'user_0003_audit_authentication',
       ]);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
@@ -678,6 +679,7 @@ describe('database setup', () => {
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
+        'workspace_0004_audit_authentication',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1052,6 +1054,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
+        'workspace_0004_audit_authentication',
       ]);
     } finally {
       db.sqlite.close();

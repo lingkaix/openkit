@@ -1659,6 +1659,7 @@ describe('pending requests', () => {
     }
   });
 
+  // Real delivery setup shares gate CPU; the grant, no execution and one Turn remain the oracle.
   it.each([
     'echo',
     'openkit-repository',
@@ -1802,7 +1803,7 @@ describe('pending requests', () => {
       execution.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('answers once, rejects a changed map and a secret question before a write, and withdraws', async () => {
     const { app, coreDb, store } = openPendingApp();

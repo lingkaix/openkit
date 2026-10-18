@@ -2124,7 +2124,7 @@ describe('nanocore server', () => {
         )
         .all() as Array<Record<string, unknown>>;
 
-      expect(auditRows).toHaveLength(7);
+      expect(auditRows).toHaveLength(8);
       expect(auditRows).toEqual(
         expect.arrayContaining([
           {
@@ -2139,6 +2139,12 @@ describe('nanocore server', () => {
             request_id: '00000000-0000-4000-8000-00000000d722',
             action: 'workspace.import',
             resource: `workspace:${body.importedWorkspaceId}`,
+          }),
+          expect.objectContaining({
+            workspace_id: body.importedWorkspaceId,
+            request_id: '00000000-0000-4000-8000-00000000d722',
+            action: 'capability.admit',
+            resource: 'capability:storage.workspace_import',
           }),
           expect.objectContaining({
             workspace_id: body.importedWorkspaceId,

@@ -393,8 +393,9 @@ describe('Light App migration recovery', () => {
     const app = await createLightApp(ctx, schema);
     const path = lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId);
     const db = new Database(path);
+    // Rewind a complete native journal prefix, including the Audit shape before format migration.
     db.exec(
-      'ALTER TABLE app_metadata DROP COLUMN definition_source_json; ALTER TABLE app_metadata DROP COLUMN kernel_format_version; DELETE FROM __drizzle_migrations WHERE created_at = 1792227600000'
+      'ALTER TABLE app_metadata DROP COLUMN definition_source_json; ALTER TABLE app_metadata DROP COLUMN kernel_format_version; ALTER TABLE audit_events DROP COLUMN authentication_json; DELETE FROM __drizzle_migrations WHERE created_at >= 1792227600000'
     );
     db.close();
     expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).lifecycle).toBe('unavailable');

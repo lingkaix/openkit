@@ -439,65 +439,44 @@ function recordAuditEvent(
  * @param event Protocol audit event to insert.
  */
 function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
+  // Omit unknown optional authentication so snapshot rollback keeps its captured native format.
+  const values = {
+    audit_event_id: event.id,
+    workspace_id: event.workspaceId,
+    protocol_version: event.protocolVersion ?? null,
+    thread_id: event.threadId,
+    turn_id: event.turnId,
+    item_id: event.itemId,
+    capability_call_id: event.capabilityCallId,
+    permission_decision_id: event.permissionDecisionId,
+    vault_grant_id: event.vaultGrantId,
+    request_id: event.requestId,
+    actor_json: event.actor === null ? null : JSON.stringify(event.actor),
+    ...(event.authentication === undefined
+      ? {}
+      : { authentication_json: JSON.stringify(event.authentication) }),
+    subject_json: event.subject === null ? null : JSON.stringify(event.subject),
+    agent_id: event.agentId,
+    agent_session_id: event.agentSessionId,
+    category: event.category,
+    action: event.action,
+    resource: event.resource,
+    resource_revision: event.resourceRevision,
+    notebook_admission_json:
+      event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
+    outcome: event.outcome,
+    severity: event.severity,
+    summary: event.summary,
+    error_code: event.errorCode,
+    created_at: event.createdAt,
+    occurred_at: event.occurredAt,
+  };
+  const columns = Object.keys(values);
   sqlite
     .prepare(
-      `INSERT INTO audit_events (
-        audit_event_id,
-        workspace_id,
-        protocol_version,
-        thread_id,
-        turn_id,
-        item_id,
-        capability_call_id,
-        permission_decision_id,
-        vault_grant_id,
-        request_id,
-        actor_json,
-        authentication_json,
-        subject_json,
-        agent_id,
-        agent_session_id,
-        category,
-        action,
-        resource,
-        resource_revision,
-        notebook_admission_json,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        created_at,
-        occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO audit_events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
     )
-    .run(
-      event.id,
-      event.workspaceId,
-      event.protocolVersion ?? null,
-      event.threadId,
-      event.turnId,
-      event.itemId,
-      event.capabilityCallId,
-      event.permissionDecisionId,
-      event.vaultGrantId,
-      event.requestId,
-      event.actor === null ? null : JSON.stringify(event.actor),
-      event.authentication === undefined ? null : JSON.stringify(event.authentication),
-      event.subject === null ? null : JSON.stringify(event.subject),
-      event.agentId,
-      event.agentSessionId,
-      event.category,
-      event.action,
-      event.resource,
-      event.resourceRevision,
-      event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
-      event.outcome,
-      event.severity,
-      event.summary,
-      event.errorCode,
-      event.createdAt,
-      event.occurredAt
-    );
+    .run(...Object.values(values));
 }
 
 /** Normalizes retained descriptive attribution before projecting one protocol-valid SQLite audit event. */

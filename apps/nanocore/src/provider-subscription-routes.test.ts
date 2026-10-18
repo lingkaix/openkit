@@ -26,7 +26,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { type CreateAppOptions, createApp } from './test-support/app.js';
-import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 
 const NOW = '2026-07-24T00:00:00.000Z';
@@ -429,6 +429,7 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
   const coreDb = openCoreDb(dataRoot);
   fixtureDatabases.push(coreDb);
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
   const vaultBackendAccess = vi.fn(() => {
     throw new Error('Vault backend access was not expected.');
   });
