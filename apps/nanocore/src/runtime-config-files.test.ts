@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -106,23 +107,41 @@ function writeServerConfig(dataRoot: string): void {
 describe('runtime config file API', () => {
   it('refuses Policy edits through the generic config endpoint before file replacement', async () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const app = createApp({ dataRoot, store });
-    const before = readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8');
-    const readResponse = await app.request(...operationRequest('runtime.file-read', { id: 'server.jsonc' }));
-    expect(readResponse.status).toBe(200);
-    const read = await readResponse.json() as { file: { revision: string } };
-    const response = await app.request(...operationRequest('runtime.file-update', {}, {
-      method: 'PUT', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: 'server.jsonc', kind: 'server', expectedRevision: read.file.revision,
-        content: JSON.stringify({ schemaVersion: 1, policy: { mediation: { schemaVersion: 1, statements: [] } } }),
-      }),
-    }));
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: 'policy_write_required' });
-    expect(readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8')).toBe(before);
+    try {
+      writeServerConfig(dataRoot);
+      const store = createDemoStore({ dataRoot });
+      const app = createApp({ dataRoot, store });
+      const before = readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8');
+      const readResponse = await app.request(
+        ...operationRequest('runtime.file-read', { id: 'server.jsonc' })
+      );
+      expect(readResponse.status).toBe(200);
+      const read = (await readResponse.json()) as { file: { revision: string } };
+      const response = await app.request(
+        ...operationRequest(
+          'runtime.file-update',
+          {},
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              id: 'server.jsonc',
+              kind: 'server',
+              expectedRevision: read.file.revision,
+              content: JSON.stringify({
+                schemaVersion: 1,
+                policy: { mediation: { schemaVersion: 1, statements: [] } },
+              }),
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: 'policy_write_required' });
+      expect(readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8')).toBe(before);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('lists and reads allowed runtime config files with stable revisions', async () => {

@@ -37,6 +37,7 @@ import {
   DeploymentAdminRequiredError,
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
+import { isThreadVisible } from './auth/thread-visibility.js';
 import {
   finishCapabilityCall,
   recordUsage,
@@ -1867,7 +1868,11 @@ export async function reviewCapturedMcpPolicy(input: {
     },
   });
   if (decision.result !== 'allow') return null;
-  return { decisionId: decision.decisionId, current: proposalInput.stillCurrent };
+  return {
+    decisionId: decision.decisionId,
+    current: proposalInput.stillCurrent,
+    observe: () => input.interception.observe(proposalInput),
+  };
 }
 
 /** Captures actual current Kernel facts through the existing Worker admission owner. */
@@ -1891,7 +1896,11 @@ function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput) {
 }
 
 /** Human binding authority uses current native owners, never its retained historical decision. */
-function currentMcpBindingAuthor(input: WorkerMcpToolCallInput, userId: string): boolean {
+function currentMcpBindingAuthor(
+  input: WorkerMcpToolCallInput,
+  userId: string,
+  discloseInput = false
+): boolean {
   let requestActor: import('./auth/identity.js').Actor | undefined;
   try {
     const administrator = requireCurrentDeploymentAdmin(input.input.coreDb!, {
@@ -1908,16 +1917,27 @@ function currentMcpBindingAuthor(input: WorkerMcpToolCallInput, userId: string):
   } catch (error) {
     if (!(error instanceof DeploymentAdminRequiredError)) throw error;
   }
-  return Boolean(
-    currentWorkspaceAuthority(
-      input.input.coreDb!,
-      input.environmentPackage.scope.workspaceId,
-      { kind: 'user', id: userId },
-      'tool.use',
-      true,
-      requestActor,
-      { dependencyFailure: 'throw' }
-    )
+  const authority = currentWorkspaceAuthority(
+    input.input.coreDb!,
+    input.environmentPackage.scope.workspaceId,
+    { kind: 'user', id: userId },
+    'tool.use',
+    true,
+    requestActor,
+    { dependencyFailure: 'throw' }
+  );
+  return (
+    Boolean(authority) &&
+    (!discloseInput ||
+      isThreadVisible(
+        input.input.store,
+        input.input.store.getThread(
+          input.environmentPackage.scope.workspaceId,
+          input.environmentPackage.scope.threadId
+        ),
+        userId,
+        authority === 'administrator'
+      ))
   );
 }
 
@@ -1995,7 +2015,7 @@ function mcpInterceptionInput(
     authorCurrent,
     anchorCurrent,
     participantAuthorized: (binding) =>
-      binding.author.kind === 'human' && currentMcpBindingAuthor(input, binding.author.id),
+      binding.author.kind === 'human' && currentMcpBindingAuthor(input, binding.author.id, true),
     finalKernel: () => currentMcpPolicyAuthority(input).kernel,
     stillCurrent: () =>
       !input.signal.aborted &&

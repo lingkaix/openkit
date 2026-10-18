@@ -92,6 +92,60 @@ describe('native Policy statement owner', () => {
     expect(prepared.classification).toBe('widening');
   });
 
+  it('retains an inactive delegation reference through the native candidate writer and checks its exact envelope', () => {
+    const envelope = {
+      id: 'domain',
+      kind: 'delegation' as const,
+      state: 'inactive' as const,
+      author: principal,
+      authority: { kind: 'human' as const, userId },
+      authoredAt: binding.authoredAt,
+      scope,
+      lifetime: binding.lifetime,
+      delegate: principal,
+      purpose: 'participant-envelope' as const,
+    };
+    const current = preparePolicyDocument({
+      current: { schemaVersion: 1, statements: [] },
+      proposed: { schemaVersion: 1, statements: [envelope] },
+      userId,
+      now: binding.authoredAt,
+    }).document;
+    const authority = {
+      kind: 'delegation' as const,
+      statement: { id: 'domain', digest: policyDigest(current.statements[0]) },
+    };
+    const prepared = preparePolicyDocument({
+      current,
+      proposed: {
+        schemaVersion: 1,
+        statements: [
+          ...current.statements,
+          { ...binding, id: 'proposed-review', state: 'inactive', authority },
+        ],
+      },
+      userId,
+      now: '2026-10-18T01:00:00Z',
+    });
+    expect(prepared.document.statements[1]?.authority).toEqual(authority);
+    expect(() =>
+      validatePolicyDocument({
+        schemaVersion: 1,
+        statements: [
+          current.statements[0],
+          {
+            ...binding,
+            state: 'inactive',
+            authority: {
+              ...authority,
+              statement: { ...authority.statement, digest: policyDigest('wrong') },
+            },
+          },
+        ],
+      })
+    ).toThrow(/exact enclosing statement/);
+  });
+
   it('uses exact current subject, target, process, expiry and author facts for selection', () => {
     const select = (currentProposal = proposal, authorCurrent = true, currentDocument = document) =>
       selectPolicyBindings({

@@ -77,7 +77,7 @@ function binding(id: string, mode: PolicyBindingV1['mode'] = 'gate'): PolicyBind
   };
 }
 /** Uses the real pure Kernel for both allow and deny oracles. */
-function kernel(allow = true) {
+function kernel(allow = true, operation = 'tool.use') {
   const policy: PolicyState = {
     elements: [
       { id: 'u', kind: 'user' },
@@ -97,7 +97,7 @@ function kernel(allow = true) {
       ? [{ id: 'grant', userAttribute: 'ua', targetAttribute: 'oa', accessRights: ['tool-use'] }]
       : [],
   };
-  return evaluateAccess(policy, { user: 'u', operation: 'tool.use', target: 'o' });
+  return evaluateAccess(policy, { user: 'u', operation, target: 'o' });
 }
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -238,6 +238,51 @@ describe('bounded native Policy pipeline', () => {
         (row) => row.decisionId === result.decisionId
       )
     ).toMatchObject({ result: 'error', mediation: { kernel: null, consumedStatements: [] } });
+  });
+
+  it('keeps a real Kernel configuration error distinct from a substantive denial', async () => {
+    const input = fixture([]);
+    const pipeline = new PolicyInterception();
+    const result = await pipeline.decide({
+      ...input,
+      finalKernel: () => kernel(true, 'missing-operation'),
+    });
+    expect(result.result).toBe('error');
+    expect(
+      listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
+        (row) => row.decisionId === result.decisionId
+      )
+    ).toMatchObject({
+      result: 'error',
+      reasonCode: 'evaluation_error',
+      mediation: { kernel: { effect: 'deny', reason: 'missing-operation' } },
+    });
+  });
+
+  it('retains shadow denials and failed observations without changing the Kernel allow', async () => {
+    const input = fixture([
+      { ...binding('shadow'), state: 'shadow' },
+      { ...binding('completed', 'observe'), failure: 'continue' },
+    ]);
+    const pipeline = new PolicyInterception({
+      id: 'test',
+      version: participantVersion,
+      invoke: async ({ binding: current }) => {
+        if (current.mode === 'observe') throw new Error('Observer unavailable.');
+        return { decision: 'deny' };
+      },
+    });
+    const result = await pipeline.decide(input);
+    expect(result.result).toBe('allow');
+    await pipeline.observe(input);
+    const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+    expect(rows.find((row) => row.mediation?.role === 'gate')?.result).toBe('deny');
+    expect(rows.find((row) => row.decisionId === result.decisionId)?.result).toBe('allow');
+    expect(
+      audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId).find(
+        (event) => event.policyInvocation?.mode === 'observe'
+      )
+    ).toMatchObject({ outcome: 'failed', policyInvocation: { outcome: 'error' } });
   });
 
   it('does not release participant output when required Audit evidence cannot be written', async () => {

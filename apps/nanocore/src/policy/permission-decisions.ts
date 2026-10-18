@@ -146,7 +146,7 @@ export interface ExportedWorkspacePermissionDecision {
   /** Enforcement point that produced this row. */
   readonly enforcementPoint: string;
   /** Exact mediated evaluation when the producer supplies it. */
-  readonly mediation?: PolicyDecisionV1;
+  readonly mediation?: PolicyDecisionV1 | undefined;
   /** Approval kind required when applicable. */
   readonly requiredApprovalKind: string | null;
   /** Linked approval id when present. */
@@ -184,7 +184,7 @@ export interface ServerPermissionDecisionRecord {
   /** Enforcement point that produced this row. */
   readonly enforcementPoint: string;
   /** Exact mediated evaluation when the producer supplies it. */
-  readonly mediation?: PolicyDecisionV1;
+  readonly mediation?: PolicyDecisionV1 | undefined;
   /** Approval kind required when applicable. */
   readonly requiredApprovalKind: string | null;
   /** Linked approval id when present. */

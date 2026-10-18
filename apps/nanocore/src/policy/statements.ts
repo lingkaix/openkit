@@ -104,6 +104,20 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       throw new Error('Active binding order must be explicit and unique.');
     positions.add(position);
   }
+  const byId = new Map(document.statements.map((statement) => [statement.id, statement]));
+  for (const statement of document.statements) {
+    if (statement.authority.kind !== 'delegation') continue;
+    const reference = statement.authority.statement;
+    const envelope = byId.get(reference.id);
+    if (
+      envelope?.kind !== 'delegation' ||
+      policyDigest(envelope) !== reference.digest ||
+      !scopeContains(envelope.scope, statement.scope)
+    )
+      throw new Error(
+        'Delegated declaration requires its exact enclosing statement and bounded scope.'
+      );
+  }
   for (const statement of principals.values()) {
     const visited = new Set<string>();
     let responsible = statement.responsiblePrincipal;
@@ -148,7 +162,10 @@ export function preparePolicyDocument(input: {
     return {
       ...statement,
       author: { kind: 'human' as const, id: input.userId },
-      authority: { kind: 'human' as const, userId: input.userId },
+      authority:
+        statement.state === 'inactive' && statement.authority.kind === 'delegation'
+          ? statement.authority
+          : { kind: 'human' as const, userId: input.userId },
       authoredAt: input.now,
       ...(statement.kind === 'agent-principal'
         ? {

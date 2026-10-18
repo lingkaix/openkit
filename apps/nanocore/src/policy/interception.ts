@@ -132,7 +132,13 @@ export class PolicyInterception {
     let kernel: PolicyDecision | null = null;
     try {
       kernel = input.finalKernel({ proposal: input.proposal, advice });
-      results.push(kernel.effect);
+      results.push(
+        kernel.reasons.some(({ code }) =>
+          ['invalid-policy', 'invalid-request', 'missing-operation'].includes(code)
+        )
+          ? 'error'
+          : kernel.effect
+      );
     } catch {
       results.push('error');
     }
@@ -146,7 +152,7 @@ export class PolicyInterception {
       result,
       reasonCode:
         result === 'deny'
-          ? kernel?.reasons.some(({ code }) => code === 'restriction')
+          ? kernel?.effect === 'allow' || kernel?.reasons.some(({ code }) => code === 'restriction')
             ? 'prohibited'
             : 'not_granted'
           : result === 'require_escalation'
@@ -367,8 +373,12 @@ export class PolicyInterception {
       category: 'system',
       action: 'policy.participant',
       capabilityCallId: input.proposal.capabilityCallId,
-      threadId: input.proposal.subject.process?.threadId,
-      turnId: input.proposal.subject.process?.turnId,
+      ...(input.proposal.subject.process
+        ? {
+            threadId: input.proposal.subject.process.threadId,
+            turnId: input.proposal.subject.process.turnId,
+          }
+        : {}),
       policyInvocation: invocation,
       outcome: outcome === 'completed' ? 'succeeded' : 'failed',
       summary: `Policy participant ${binding.id}: ${outcome}.`,
