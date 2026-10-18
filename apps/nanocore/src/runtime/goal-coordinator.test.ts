@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { formatReferenceUri } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import { FsStore } from '../lib/store.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
@@ -39,6 +41,22 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
       requestId: randomUUID(),
       instructionReference: 'Initialize Goal Knowledge test.',
     },
+  });
+  const workspaceKnowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: workspace.id },
+  });
+  const serverKnowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'server' },
+  });
+  const workspaceIndexReference = formatReferenceUri({
+    scopeId: `page/workspace/${workspace.id}/${workspaceKnowledgeBaseId}`,
+    objectId: 'index',
+  });
+  const serverIndexReference = formatReferenceUri({
+    scopeId: `page/server/${serverKnowledgeBaseId}`,
+    objectId: 'index',
   });
   const gatewayConfig = createTestGatewayConfig();
   gatewayConfig.logicalModels[0]!.contextManagement = [
@@ -93,11 +111,11 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
       queryInputs.push(JSON.stringify(request.input));
       if (++queryCalls <= 2)
         return call('knowledge_page_read', {
-          pageId: queryCalls === 1 ? `page/workspace/${workspace.id}/index` : 'page/server/index',
+          pageId: queryCalls === 1 ? workspaceIndexReference : serverIndexReference,
         });
       return call('knowledge_result', {
         answer: 'Goal knowledge answer',
-        citationIds: [`page/workspace/${workspace.id}/index`, 'page/server/index'],
+        citationIds: [workspaceIndexReference, serverIndexReference],
         uncertainty: null,
       });
     }
@@ -139,7 +157,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
     expect(coordinatorInputs[1]).toContain('Goal knowledge answer');
     expect(coordinatorInputs[2]).toContain('no-change');
     expect(coordinatorInputs[3]).toContain('The Tool arguments do not match the required schema.');
-    expect(queryInputs[0]).toContain('page/server/index');
+    expect(queryInputs[0]).toContain(serverIndexReference);
     expect(queryCalls).toBe(3);
     const turn = store.listThreadTurns(workspace.id, created.goal.threadId)[0]!;
     const calls = listWorkspaceCapabilityCalls(db, workspace.id);
