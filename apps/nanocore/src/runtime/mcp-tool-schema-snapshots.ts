@@ -218,6 +218,14 @@ export function recordMcpToolSchemaSnapshot(input: {
       }
 
       if (server.schemaPolicy === 'tracking') {
+        const retainedCalls = input.workspaceDb.sqlite
+          .prepare(
+            'SELECT schema_version FROM capability_calls WHERE schema_snapshot_id IS NOT NULL'
+          )
+          .all() as { schema_version: number }[];
+        for (const call of retainedCalls) {
+          readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
+        }
         input.workspaceDb.sqlite
           .prepare(
             `DELETE FROM mcp_tool_schema_snapshots

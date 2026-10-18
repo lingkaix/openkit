@@ -20,6 +20,7 @@ import {
   CapabilityCallStatusSchema,
   deriveEntityId,
   ItemSchema,
+  readRetainedV1,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
@@ -986,6 +987,7 @@ function isAddressableSnapshotLineage(agentSessionId: string, snapshotId: string
 
 /** Ledger fields that own the product-safe terminal MCP Item publication. */
 interface DecidedMcpPublicationRow {
+  readonly schema_version: number;
   agent_id: string | null;
   agent_session_id: string | null;
   call_id: string;
@@ -1066,6 +1068,7 @@ export function isAlreadyDecidedWorkerMcpItem(
        AND service_ref LIKE 'mcp-tool:%' AND completed_at IS NOT NULL`
     )
     .get(item.causationId) as DecidedMcpPublicationRow | undefined;
+  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   const scope = environmentPackage.scope;
   if (
     !row ||
@@ -1104,6 +1107,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
       const rows = workspaceDb.sqlite
         .prepare(
           `SELECT
+             schema_version,
              agent_id,
              agent_session_id,
              call_id,
@@ -1134,6 +1138,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
         .all() as DecidedMcpPublicationRow[];
       const storedItems = new Map(store.listAllItems().map((item) => [item.id, item]));
       for (const row of rows) {
+        readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
         const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
         const parentItemId = decidedParent.kind === 'decided' ? decidedParent.parentItemId : null;
         const parsed = decidedMcpPublicationItem(workspaceId, row, parentItemId);
@@ -1281,13 +1286,14 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     const replay = input.workspaceDb.sqlite
       .prepare(
         `SELECT
-           workspace_id, thread_id, turn_id, item_id, agent_id, agent_session_id,
+           schema_version, workspace_id, thread_id, turn_id, item_id, agent_id, agent_session_id,
            package_snapshot_id, capability_id, family, operation, provider_ref, service_ref, status
          FROM capability_calls
          WHERE call_id = ?`
       )
       .get(requestCallId) as
       | {
+          schema_version: number;
           agent_id: string;
           agent_session_id: string;
           capability_id: string;
@@ -1304,9 +1310,11 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         }
       | undefined;
     if (replay) {
+      readRetainedV1({ schemaVersion: replay.schema_version }, () => undefined);
       if (
         (replay.item_id !== itemId && !(replay.item_id === null && replay.status === 'denied')) ||
         !isDeepStrictEqual(replay, {
+          schema_version: 1,
           agent_id: input.environmentPackage.agent.agentId,
           agent_session_id: input.environmentPackage.scope.agentSessionId,
           capability_id: 'mcp.call-tool',
@@ -1553,6 +1561,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
             : 'failed';
     try {
       if (!publishTerminalItem) {
+        const retainedCall = input.workspaceDb.sqlite
+          .prepare(
+            "SELECT schema_version FROM capability_calls WHERE call_id = ? AND status = 'running'"
+          )
+          .get(call.id) as { schema_version: number } | undefined;
+        if (retainedCall)
+          readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
         input.workspaceDb.sqlite
           .prepare(
             `UPDATE capability_calls
@@ -2243,8 +2258,13 @@ function publishWorkerMcpItem(input: {
   readonly workspaceDb: WorkspaceDb;
 }): void {
   const ledger = input.workspaceDb.sqlite
-    .prepare(`SELECT started_at, completed_at FROM capability_calls WHERE call_id = ?`)
-    .get(input.call.id) as { completed_at: string | null; started_at: string | null } | undefined;
+    .prepare(
+      `SELECT schema_version, started_at, completed_at FROM capability_calls WHERE call_id = ?`
+    )
+    .get(input.call.id) as
+    | { schema_version: number; completed_at: string | null; started_at: string | null }
+    | undefined;
+  if (ledger) readRetainedV1({ schemaVersion: ledger.schema_version }, () => undefined);
   const completedAt = ledger?.completed_at ?? new Date().toISOString();
   const durationMs = ledger?.started_at
     ? Math.max(0, Date.parse(completedAt) - Date.parse(ledger.started_at))

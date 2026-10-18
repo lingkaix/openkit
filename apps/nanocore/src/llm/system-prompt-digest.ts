@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { SystemPromptDigestSchema } from '@openkit/protocol';
+import { readRetainedV1, SystemPromptDigestSchema } from '@openkit/protocol';
 
 import type { WorkspaceDb } from '../storage/db.js';
 
@@ -132,6 +132,12 @@ export function persistLlmCapabilityCallSystemPromptDigest(input: {
   readonly systemPromptDigest: string;
 }): void {
   const systemPromptDigest = SystemPromptDigestSchema.parse(input.systemPromptDigest);
+  const retainedCall = input.workspaceDb.sqlite
+    .prepare(`SELECT schema_version FROM capability_calls
+      WHERE call_id = ? AND family = 'llm'
+        AND capability_id IN ('llm.chat_completions', 'llm.responses')`)
+    .get(input.callId) as { schema_version: number } | undefined;
+  if (retainedCall) readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
   const result = input.workspaceDb.sqlite
     .prepare(
       `UPDATE capability_calls
