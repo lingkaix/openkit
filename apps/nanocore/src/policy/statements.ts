@@ -16,6 +16,8 @@ export interface PolicyProposal {
   readonly serverId: string;
   readonly toolName: string;
   readonly argumentsDigest: string;
+  readonly catalogRevision: string;
+  readonly packageDigest: string;
   /** Null means no exact Turn schema was observed; it does not mean an empty schema. */
   readonly schemaDigest: string | null;
   readonly capabilityCallId: string;
@@ -25,6 +27,12 @@ export interface PolicyProposal {
 /** Uses the existing canonical JSON primitive without allocating another identity family. */
 export function policyDigest(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalIdentifierName(value)).digest('hex')}`;
+}
+
+/** Logical approval identity excludes the execution attempt's existing call identifier. */
+export function policyProposalDigest(proposal: PolicyProposal): string {
+  const { capabilityCallId: _attempt, ...logical } = proposal;
+  return policyDigest(logical);
 }
 
 /** Empty Policy still has an exact revision and cannot supply a participant grant. */
@@ -162,12 +170,33 @@ export function preparePolicyDocument(input: {
   return { document, diff, classification };
 }
 
+/** Matches the exact subject and Tool target of the closed schema-independent pilot input. */
+export function policyScopeIncludesProposal(
+  scope: PolicyBindingV1['scope'],
+  proposal: PolicyProposal
+): boolean {
+  return (
+    scope.subjects.some(
+      (principal) => policyDigest(principal) === policyDigest(proposal.subject.principal)
+    ) &&
+    scope.actions.includes('tool.use') &&
+    scope.resources.some(
+      (resource) =>
+        resource.kind === 'mcp-tool' &&
+        resource.workspaceId === proposal.workspaceId &&
+        resource.serverId === proposal.serverId &&
+        resource.toolName === proposal.toolName
+    )
+  );
+}
+
 /** Selects only exact-scope bindings; history or a responsible human supplies no grant. */
 export function selectPolicyBindings(input: {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
   readonly now: number;
   readonly authorCurrent: (authorId: string) => boolean;
+  readonly anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
 }): PolicyBindingV1[] {
   const { proposal } = input;
   return input.document.statements
@@ -187,22 +216,11 @@ export function selectPolicyBindings(input: {
         (anchor.kind === 'workspace' && anchor.id !== proposal.workspaceId)
       )
         return false;
+      if (!input.anchorCurrent(anchor)) return false;
       if (lifetime.notAfter && Date.parse(lifetime.notAfter) <= input.now) return false;
       if (statement.author.kind !== 'human' || !input.authorCurrent(statement.author.id))
         return false;
-      return (
-        statement.scope.subjects.some(
-          (principal) => policyDigest(principal) === policyDigest(proposal.subject.principal)
-        ) &&
-        statement.scope.actions.includes('tool.use') &&
-        statement.scope.resources.some(
-          (resource) =>
-            resource.kind === 'mcp-tool' &&
-            resource.workspaceId === proposal.workspaceId &&
-            resource.serverId === proposal.serverId &&
-            resource.toolName === proposal.toolName
-        )
-      );
+      return policyScopeIncludesProposal(statement.scope, proposal);
     })
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 }

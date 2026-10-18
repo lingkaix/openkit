@@ -1,6 +1,7 @@
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   allocateEntityId,
+  type PolicyApprovalBindingV1Schema,
   type PolicyBindingV1,
   type PolicyDecisionV1,
   type PolicyDocumentV1,
@@ -14,7 +15,13 @@ import {
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
-import { type PolicyProposal, policyDigest, selectPolicyBindings } from './statements.js';
+import {
+  type PolicyProposal,
+  policyDigest,
+  policyProposalDigest,
+  policyScopeIncludesProposal,
+  selectPolicyBindings,
+} from './statements.js';
 
 const GateOutput = z.object({ decision: z.enum(['allow', 'deny', 'escalate']) }).strict();
 const AdviceOutput = z.object({ attributes: z.record(z.string(), z.json()) }).strict();
@@ -39,7 +46,15 @@ export interface InterceptionInput {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
   readonly authorizationRevision: string;
+  /** Exact human response context supplied only by the existing captured approval owner. */
+  readonly humanApproval?: {
+    readonly requestId: string;
+    readonly sourceDecisionId: string;
+    readonly deciderId: string;
+    readonly binding: z.infer<typeof PolicyApprovalBindingV1Schema>;
+  };
   readonly authorCurrent: (userId: string) => boolean;
+  readonly anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
   /** Kernel-only participant admission: no bindings or investigative recursion. */
   readonly participantAuthorized: (binding: PolicyBindingV1) => boolean;
   /** A changed Policy, input, current authority or binding invalidates this attempt. */
@@ -72,7 +87,7 @@ export class PolicyInterception {
   /** Runs the supported pilot modes and retains evidence before releasing a result. */
   async decide(input: InterceptionInput): Promise<InterceptionDecision> {
     const policyRevision = policyDigest(input.document);
-    const proposalDigest = policyDigest(input.proposal);
+    const proposalDigest = policyProposalDigest(input.proposal);
     const bindings = selectPolicyBindings({ ...input, now: Date.now() });
     const invocations: InvocationReference[] = [];
     const advice: unknown[] = [];
@@ -92,7 +107,14 @@ export class PolicyInterception {
         invocations.push(evaluated.reference);
         if (binding.state === 'shadow') continue;
         used.push(binding);
-        results.push(evaluated.result);
+        const humanApproved =
+          input.humanApproval &&
+          input.humanApproval.binding.proposalDigest === proposalDigest &&
+          input.humanApproval.binding.policyRevision === policyRevision &&
+          input.humanApproval.binding.authorizationRevision === input.authorizationRevision;
+        results.push(
+          evaluated.result === 'require_escalation' && humanApproved ? 'allow' : evaluated.result
+        );
         if (evaluated.advice)
           advice.push({
             binding: { id: binding.id, digest: policyDigest(binding) },
@@ -177,7 +199,7 @@ export class PolicyInterception {
         binding,
         [],
         policyDigest(input.document),
-        policyDigest(input.proposal)
+        policyProposalDigest(input.proposal)
       );
   }
 
@@ -210,7 +232,10 @@ export class PolicyInterception {
     let authorityError = false;
     try {
       current = input.stillCurrent();
-      if (current) participantAuthorized = input.participantAuthorized(binding);
+      if (current)
+        participantAuthorized =
+          policyScopeIncludesProposal(binding.inputDisclosure, input.proposal) &&
+          input.participantAuthorized(binding);
     } catch {
       authorityError = true;
     }
@@ -394,9 +419,20 @@ function decisionInput(input: InterceptionInput, policyRevision: string) {
     resourceSummary: { serverId: input.proposal.serverId, toolName: input.proposal.toolName },
     contextSummary: {
       capabilityCallId: input.proposal.capabilityCallId,
+      packageSnapshotId: input.proposal.packageDigest,
+      catalogRevision: input.proposal.catalogRevision,
       threadId: input.proposal.subject.process?.threadId,
       turnId: input.proposal.subject.process?.turnId,
+      ...(input.humanApproval
+        ? {
+            humanApprovalRequestId: input.humanApproval.requestId,
+            approvalSourceDecisionId: input.humanApproval.sourceDecisionId,
+            humanApprovalDeciderId: input.humanApproval.deciderId,
+          }
+        : {}),
     },
-    auditActor: input.proposal.subject.actor,
+    auditActor: input.humanApproval
+      ? { kind: 'user' as const, id: input.humanApproval.deciderId }
+      : input.proposal.subject.actor,
   };
 }

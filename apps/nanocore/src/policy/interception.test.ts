@@ -22,6 +22,8 @@ const scope = {
 };
 const proposal: PolicyProposal = {
   operation: 'mcp.call-tool',
+  catalogRevision: 'catalog-fixture',
+  packageDigest: 'package-fixture',
   workspaceId,
   serverId: 'issues',
   toolName: 'read',
@@ -117,6 +119,7 @@ function fixture(bindings: PolicyBindingV1[]) {
     proposal,
     authorizationRevision: policyDigest({ member: userId }),
     authorCurrent: () => true,
+    anchorCurrent: () => true,
     participantAuthorized: () => true,
     stillCurrent: () => true,
     finalKernel: () => kernel(),
@@ -169,6 +172,22 @@ describe('bounded native Policy pipeline', () => {
     const events = audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId);
     expect(events.filter((event) => event.policyInvocation?.mode === 'gate')).toHaveLength(2);
     expect(events.filter((event) => event.policyInvocation?.mode === 'advise')).toHaveLength(1);
+  });
+
+  it('does not disclose a selected proposal outside the binding input scope', async () => {
+    const guarded = binding('private-review');
+    const other = { kind: 'human' as const, id: 'usr_00000000-0000-7000-8000-000000000002' };
+    const input = fixture([
+      {
+        ...guarded,
+        scope: { ...scope, subjects: [principal, other] },
+        inputDisclosure: { ...scope, subjects: [other] },
+      },
+    ]);
+    const invoke = vi.fn(async () => ({ decision: 'allow' }));
+    const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+    expect((await pipeline.decide(input)).result).toBe('require_escalation');
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('records timeout and open circuit as human escalation while preserving the actual Kernel allow', async () => {

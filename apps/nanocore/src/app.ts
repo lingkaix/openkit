@@ -119,6 +119,7 @@ import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { type DeterministicPolicyParticipant, PolicyInterception } from './policy/interception.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
@@ -232,7 +233,11 @@ import {
 } from './worker-environments/worker-environment-activation.js';
 import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
 import { createWorkerEnvironmentPreparation } from './worker-environments/worker-environment-preparation.js';
-import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
+import {
+  type RegisterWorkerMcpRoutesInput,
+  registerWorkerMcpRoutes,
+  reviewCapturedMcpPolicy,
+} from './worker-mcp-routes.js';
 import {
   isTerminalWorkspaceDeletionRequest,
   listAllWorkspaceDeletionRequests,
@@ -405,6 +410,8 @@ function workerCoordinatorCandidates(
  * Construction options for the Hono app.
  */
 export interface CreateAppOptions {
+  /** One deterministic mediation participant; production has no vendor adapter. */
+  policyParticipant?: DeterministicPolicyParticipant;
   /** Optional private Discord send boundary; deterministic tests supply a fake. */
   discordAttentionTransport?: DiscordAttentionTransport;
   /** Boot joins this finite preparation callback to the existing recurring scanner. */
@@ -1738,7 +1745,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   app.use('/api/worker-capabilities/*', browserCors);
-  registerWorkerMcpRoutes({
+  const policyInterception = new PolicyInterception(options.policyParticipant);
+  const workerMcpRouteInput: RegisterWorkerMcpRoutesInput = {
+    interception: policyInterception,
     ...(automationStore ? { automationStore } : {}),
     turnStartServices: {
       ...setupProviderSupply,
@@ -1763,7 +1772,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workerControlGateway,
     workerMcpGateway,
     workspaceMutationAdmission,
-  });
+  };
+  registerWorkerMcpRoutes(workerMcpRouteInput);
 
   registerNanoHostSessionSemanticRoutes({
     app,
@@ -2180,6 +2190,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         actor,
         record,
         workspaceDb,
+        reviewPolicy: async (captured, reviewer) => {
+          const facts = pendingRequestServices.evaluateCapturedCall?.(captured, workspaceDb.sqlite);
+          if (!facts?.agentAuthority || !facts.toolInSupply || !facts.schemaCurrent) return null;
+          return reviewCapturedMcpPolicy({
+            record: captured,
+            actor: reviewer,
+            workspaceDb,
+            routes: workerMcpRouteInput,
+            catalog: capturedMcpCatalog(captured.workspaceId),
+            interception: policyInterception,
+          });
+        },
         coreDb: options.coreDb,
         catalog: capturedMcpCatalog(record.workspaceId),
         vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,

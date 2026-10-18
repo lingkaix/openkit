@@ -191,6 +191,7 @@ export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
       kind: z.literal('storage-lease'),
       knowledgeBaseId: z.string().min(1),
       mount: z.string().min(1),
+      /** Empty selects the mount root; other values are normalized relative prefixes. */
       pathPrefix: z
         .string()
         .refine(
@@ -205,6 +206,7 @@ export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
         ),
       mode: z.enum(['read-only', 'staged-write']),
       audience: PolicyPrincipalV1Schema,
+      /** The earliest of lease expiry, statement lifetime and current issuer authority applies. */
       expiresAt: z.iso.datetime({ offset: true }),
     })
     .strict(),
