@@ -68,6 +68,7 @@ import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js'
 import { createArtifactReview } from './artifact-reviews.js';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from './audit-events.js';
 import type { AuthVariables } from './auth/middleware.js';
+import transportRevision from './auth/nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import {
@@ -11603,6 +11604,7 @@ describe('nanocore server', () => {
       const request = client.request({
         ':method': 'POST',
         ':path': '/api/nanohost/transport/session/admit',
+        'x-openkit-nanohost-transport-revision': String(transportRevision),
         authorization: `Bearer ${issued.secret}`,
         'content-type': 'application/json',
       });
