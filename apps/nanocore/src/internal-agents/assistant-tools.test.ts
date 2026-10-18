@@ -41,7 +41,7 @@ function fixture(privateEntry = true) {
   };
 }
 const names = [
-  'workspace.state.read',
+  'workspace.dashboard',
   'thread.history.read',
   'knowledge.ask',
   'knowledge.tell',

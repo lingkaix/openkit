@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import {
+  assertOperationNames,
   KNOWLEDGE_OPERATION_DEFINITIONS,
   KnowledgeAskRequestSchema,
   KnowledgeTellRequestSchema,
@@ -185,10 +186,10 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
   return projection;
 }
 
-/** Fixed built-in work tools; their schemas ignore inert additive input members. */
-export const OPENKIT_WORK_TOOLS = [
+/** Canonical built-in Work contracts; their schemas ignore inert additive input members. */
+export const OPENKIT_WORK_TOOL_DEFINITIONS = [
   ...(['knowledge.ask', 'knowledge.tell'] as const).map((id) => ({
-    name: operationToolName(id),
+    name: id,
     description: KNOWLEDGE_OPERATION_DEFINITIONS[id].description,
     inputSchema: mcpInputSchema(
       id === 'knowledge.ask'
@@ -197,48 +198,60 @@ export const OPENKIT_WORK_TOOLS = [
     ),
   })),
   {
-    name: 'work_request_input',
+    name: 'work.input.request',
     description:
       'Ask the responsible user one or more non-secret questions. The answer arrives on a later Turn. Recording the question is the result of this call.',
     inputSchema: mcpInputSchema(WorkRequestInputArgsSchema),
   },
   {
-    name: 'work_list_peers',
+    name: 'work.peer.list',
     description:
       'List other AgentSessions currently in your Sandbox through opaque handles valid only within this Turn. Thread metadata requires current read access.',
     inputSchema: mcpInputSchema(WorkListPeersArgsSchema),
   },
   {
-    name: 'work_read_peer',
+    name: 'work.peer.read',
     description:
       'Read recent product Turns and Items for one current peer. Results are newest first; use nextCursor for older records. This does not control or change the peer.',
     inputSchema: mcpInputSchema(WorkReadPeerArgsSchema),
   },
   {
-    name: 'work_read_source',
+    name: 'work.source.read',
     description:
       'Preview or read one selected source or Knowledge page from this Turn Context Package. Use its exact sourceFiles or knowledgeSelections packagePath as path. Knowledge reads stay pinned to the selected Notebook commit and current source access. Preview is at most 2048 UTF-8 bytes or 50 lines; read is at most 51200 bytes or 2000 lines, also bounded by the complete result envelope. Continue with mode read and the returned cursor. EOF describes the named representation only; PDF coverage may be incomplete. No host path or unselected source is accepted.',
     inputSchema: mcpInputSchema(WorkReadSourceArgsSchema),
   },
   {
-    name: 'work_search_source',
+    name: 'work.source.search',
     description:
       'Search one retained PDF text representation selected by its exact source inventory packagePath. Use lexical, exact or line-bounded regex mode. At most 20 bounded snippets return original identity, representation digest, processor and page coordinates. Partial text-layer coverage cannot prove absence in images or unprocessed pages. No unselected source or host path is accepted.',
     inputSchema: mcpInputSchema(WorkSearchSourceArgsSchema),
   },
   {
-    name: 'work_view_source',
+    name: 'work.source.view',
     description:
       'View one selected PNG/JPEG image or one explicitly selected PDF page as a bounded JPEG. Use the exact source inventory packagePath. PDF requires a one-based page; image inputs must omit page. Optional crop uses integer original-image pixels or rotated selected-page raster pixels at 72 dpi. Result text identifies the original, page, crop, processor and delivered JPEG digest; the image is a standard MCP image block. Current access is checked again before disclosure. No host path, URL or unselected source is accepted.',
     inputSchema: mcpInputSchema(WorkViewSourceArgsSchema),
   },
   {
-    name: 'work_submit_artifact',
+    name: 'work.artifact.submit',
     description:
       'Submit one finished file from an eligible output root. Finish writing first. Success returns the durable Artifact id; correction or a new file version uses a new requestId. Read the eligible roots in this package guidance. Any file media type and exact binary bytes are admitted up to 1,000,000,000 bytes per file. Material proposals separately require their supported UTF-8 text format.',
     inputSchema: mcpInputSchema(WorkSubmitArtifactArgsSchema),
   },
 ] as const;
+
+assertOperationNames(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name));
+
+/** MCP names are one mechanical projection of the canonical Work contracts. */
+export const OPENKIT_WORK_TOOLS = OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => ({
+  ...tool,
+  name: operationToolName(tool.name),
+}));
+
+const workToolIdsByName = new Map(
+  OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => [operationToolName(tool.name), tool.name])
+);
 
 /** Digest binds selected supply to the exact built-in tool schema. */
 export const OPENKIT_WORK_CATALOG_DIGEST = `sha256:${createHash('sha256').update(JSON.stringify(OPENKIT_WORK_TOOLS)).digest('hex')}`;
@@ -294,6 +307,10 @@ export async function dispatchOpenkitWorkTool(
   toolName: string,
   args: Record<string, unknown>
 ) {
+  const toolId = workToolIdsByName.get(toolName);
+  if (!toolId) {
+    throw new WorkerControlGatewayError('capability_denied', 'Work Tool is unavailable.', 403);
+  }
   const { scope } = input.environmentPackage;
   const responsibleUserId = responsibleUserIdForActor(scope.triggerActor);
   const turn = input.store.getTurnById(scope.turnId);
@@ -305,13 +322,10 @@ export async function dispatchOpenkitWorkTool(
   ) {
     throw new WorkerControlGatewayError('turn_not_active', 'The Turn is not running.', 409);
   }
-  if (toolName === 'work_read_source') return readSource(input, args);
-  if (toolName === 'work_search_source') return searchSource(input, args);
-  if (toolName === 'work_view_source') return viewSource(input, args);
-  if (
-    toolName === operationToolName('knowledge.ask') ||
-    toolName === operationToolName('knowledge.tell')
-  ) {
+  if (toolId === 'work.source.read') return readSource(input, args);
+  if (toolId === 'work.source.search') return searchSource(input, args);
+  if (toolId === 'work.source.view') return viewSource(input, args);
+  if (toolId === 'knowledge.ask' || toolId === 'knowledge.tell') {
     input.requireAdmission?.();
     if (!input.knowledgeAgent || !input.knowledgeCallId)
       throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
@@ -334,7 +348,7 @@ export async function dispatchOpenkitWorkTool(
         : undefined;
     const signal = input.signal ?? new AbortController().signal;
     const result =
-      toolName === operationToolName('knowledge.ask')
+      toolId === 'knowledge.ask'
         ? await input.knowledgeAgent.ask({
             ...KnowledgeAskRequestSchema.omit({ workspaceId: true }).parse(args),
             workspaceId: scope.workspaceId,
@@ -380,7 +394,7 @@ export async function dispatchOpenkitWorkTool(
       isError: false,
     };
   }
-  if (toolName === 'work_submit_artifact') {
+  if (toolId === 'work.artifact.submit') {
     try {
       return await submitArtifact(input, args);
     } catch (error) {
@@ -389,7 +403,7 @@ export async function dispatchOpenkitWorkTool(
       throw error;
     }
   }
-  if (toolName === 'work_list_peers' || toolName === 'work_read_peer') {
+  if (toolId === 'work.peer.list' || toolId === 'work.peer.read') {
     const peers = input.coreDb.sqlite
       .prepare(`
       SELECT peer.agent_session_runtime_binding_id AS bindingId,
@@ -438,7 +452,7 @@ export async function dispatchOpenkitWorkTool(
           )
       );
     let projection: Record<string, unknown>;
-    if (toolName === 'work_list_peers') {
+    if (toolId === 'work.peer.list') {
       projection = {
         peers: peers.map((peer) => ({
           handle: handleFor(peer.bindingId),

@@ -314,7 +314,7 @@ The shim now validates the recorded Turn effort and each route's optional levels
 
 The current version 4 `llm` section does not project the logical model's resolved context-management policy. Worker-wide central threshold control is therefore not implemented, and a Worker Harness's native compaction defaults remain runtime-local behavior until the next coordinated AEP version and the selected adapter satisfy `docs/specs/20260902-agent_runtime_context_compaction.md`.
 
-Current packages with no selected MCP server project worker capabilities as disabled with no routes. A package with selected MCP server supply enables only `mcp.list_servers`, `mcp.list_tools`, and `mcp.call_tool` through the separately authenticated NanoCore Gateway route; it grants no direct MCP connection, arbitrary capability, or alternate control plane.
+Current packages with no selected MCP server project worker capabilities as disabled with no routes. A package with selected MCP server supply enables only `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool` through the separately authenticated NanoCore Gateway route; it grants no direct MCP connection, arbitrary capability, or alternate control plane.
 
 Persistent Skill/MCP versions, Plugin membership expansion, the declared `worker-supply` inventory, and verified native resource materialization are accepted targets but are not implemented by the current static supply shape. Their schema, resolver, fixed-file admission, and adapter changes must ship together; existing package-config and Context imports are not proof of this additional resource delivery.
 

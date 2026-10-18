@@ -74,7 +74,7 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
     invoke,
     workerCandidates: resolver,
   });
-  const tool = tools.find((entry) => entry.name === 'agent_list')!;
+  const tool = tools.find((entry) => entry.name === 'agent.list')!;
   return {
     root,
     coreDb,
@@ -125,6 +125,10 @@ it.each([
     expect(f.store.listThreadAgentSessions(f.workspace.id, f.goal.threadId)).toEqual([]);
     expect(f.db.sqlite.prepare('SELECT * FROM goal_card_tasks').all()).toEqual([]);
     const names = f.tools.map((tool) => tool.name);
+    expect(names).toEqual(
+      expect.arrayContaining(['agent.list', 'goal.read', 'evidence.runtime-list'])
+    );
+    expect(names).not.toContain('agent_list');
     f.setCandidates([]);
     expect(JSON.parse((await f.tool.execute({})).content[0]!.text!)).toEqual({ items: [] });
     expect(f.tools.map((tool) => tool.name)).toEqual(names);

@@ -29,7 +29,7 @@ describe('supported secret-use request schema', () => {
       { ...terms, lifetime: 'turn' },
       { ...terms, lifetime: 'server' },
       { ...terms, ownerScope: 'server', lifetime: 'server', injectionPath: 'runtime-env' },
-      { ...terms, injectionPath: 'runtime-env', targetCapabilityId: 'mcp.call_tool' },
+      { ...terms, injectionPath: 'runtime-env', targetCapabilityId: 'mcp.call-tool' },
       { ...terms, injectionPath: 'backend-provider' },
       { ...terms, targetCapabilityId: 'mcp' },
     ])

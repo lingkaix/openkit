@@ -93,7 +93,7 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
           id: 1,
           method: 'tools/call',
           params: {
-            name: 'call',
+            name: 'openkit_call',
             arguments: { operation: 'workspace.export', input: { workspaceId: workspace.id } },
           },
         }),

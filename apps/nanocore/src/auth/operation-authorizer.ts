@@ -496,22 +496,22 @@ async function authorizeOperation(
   return authorizeWorkspaceOperation(context, actor, { ...route, access: route.access }, input);
 }
 
-/** Intersects current canonical-user eligibility with its primary Policy decision, without Workspace membership. */
+/** Intersects current canonical-user eligibility with its primary Policy decision; unexpected eligibility-read errors propagate to the caller. */
 export function isCanonicalUserOperationAuthorized(
   coreDb: CoreDb,
   actor: Actor,
   operation: string = 'api.call'
 ): boolean {
-  try {
-    if (
-      !isCanonicalUserActive(coreDb, actor.userId) ||
-      !(
-        actor.kind === 'local' ||
-        actor.kind === 'session' ||
-        isCurrentDeploymentAdministrator(coreDb, actor)
-      )
+  if (
+    !isCanonicalUserActive(coreDb, actor.userId) ||
+    !(
+      actor.kind === 'local' ||
+      actor.kind === 'session' ||
+      isCurrentDeploymentAdministrator(coreDb, actor)
     )
-      return false;
+  )
+    return false;
+  try {
     return evaluateUserAccess({ userId: actor.userId, operation }).effect === 'allow';
   } catch {
     return false;
