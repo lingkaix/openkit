@@ -40,6 +40,12 @@ kind: mechanism
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 
+## Shared Source References
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns the shared raw namespace, mounts and interchange contract. Existing scope roots retain a fixed default Knowledge Base ID; references bind it explicitly. Existing Source IDs remain; Notebook SourceSummary pointers replace the external registry as Source authority. Version 0.1.0 import targets a new or empty Workspace Knowledge Base; additional Knowledge Bases per scope are later additive work. On activation, Sources can bind binary originals through Storage instead of requiring captured UTF-8 `content.txt`; the older text-material paths below are the current implementation projection.
+
+The default mount's physical `raw/` directory belongs to the Knowledge Base; additional mounts travel as references. Packages preserve the published `sources/<source-id>.md` pointers without creating another registry. The existing Notebook publisher owns pages and Source pointers; old sibling registry/material rules below remain implementation projections until cutover. Derivation performs conversions, retrieval owns indexes/embeddings, and the Knowledge Manager chooses recipes through a media-handling Skill.
+
 ## Summary
 
 This spec turns the accepted Knowledge Store governance rules into an implementable contract. It pins the portable envelope to OKF v0.2 via a repository snapshot, defines the scoped notebook layout and record encodings, specifies validation before authoritative page writes, defines one deterministic governed retrieval owner for current knowledge-reading surfaces, projects the fixed-base Git notebook publisher through existing command owners, names the product operation families, defines the store-side effects consumed by Knowledge Manager and S39, and specifies the direct migration from the current minimal knowledge slice.

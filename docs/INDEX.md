@@ -151,6 +151,7 @@ and are not listed here.
 - `docs/specs/20261012-product_integrity_check.md` — Accepted, Not Started — This specification owns one read-only Workspace integrity check.
 - `docs/specs/20261014-retrieval_kernel.md` — Accepted, Partial — The Document, derived Markdown sidecar, source key, scope, chunk, provenance, index generation, query, and result contracts.
 - `docs/specs/20261017-retained_format_register.md` — Accepted, Implemented — The register owns the family inventory, authority classification, current marker evidence, reader boundary, fixture pointers and identified gaps.
+- `docs/specs/20261018-file_storage_and_knowledge_packages.md` — Accepted, Not Started — Ablation: shared file contracts must not create competing product authorities.
 - `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` — Accepted, Not Started — Needed for the approved unified mediation and information-consolidation decisions.
 
 ## Terminal Specifications
