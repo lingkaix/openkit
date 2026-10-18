@@ -23,7 +23,7 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { isThreadVisible } from '../auth/thread-visibility.js';
+import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ArtifactAuthorityError, FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
@@ -1372,7 +1372,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               input.environmentPackage,
               input.workerStorageChoice,
               responsibleUserId,
-              currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
+              currentWorkerStorageAudienceAuthorizer(
+                this.coreDb,
+                input.environmentPackage,
+                this.readRuntimeConfig
+              )
             )
           );
           if (released && input.workerStorageChoice?.kind === 'selected')
@@ -1437,7 +1441,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           input.environmentPackage,
           input.workerStorageChoice,
           responsibleUserId,
-          currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
+          currentWorkerStorageAudienceAuthorizer(
+            this.coreDb,
+            input.environmentPackage,
+            this.readRuntimeConfig
+          )
         )
       );
       return releasedBinding && input.workerStorageChoice?.kind === 'selected'
@@ -1481,7 +1489,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           environmentPackage,
           input.workerStorageChoice,
           responsibleUserId,
-          currentWorkerStorageAudienceAuthorizer(this.coreDb, environmentPackage)
+          currentWorkerStorageAudienceAuthorizer(
+            this.coreDb,
+            environmentPackage,
+            this.readRuntimeConfig
+          )
         )!
       );
     }
@@ -2733,7 +2745,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const choice = context.workerStorageChoice;
     const authorizeContributor = currentWorkerStorageAudienceAuthorizer(
       this.coreDb,
-      environmentPackage
+      environmentPackage,
+      this.readRuntimeConfig
     );
     const replacementSelection = this.workerStorageReplacementSelection(
       environmentPackage,
@@ -5330,7 +5343,8 @@ function requireAttachedWorkerStorageBinding(
 /** Rechecks exact live Worker authority and every retained contributor's current Thread audience. */
 function currentWorkerStorageAudienceAuthorizer(
   coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackagePreview
+  environmentPackage: AgentEnvironmentPackagePreview,
+  readRuntimeConfig: (() => PublicNetworkConfiguration) | undefined
 ): (contributor: WorkerStorageContributor) => boolean {
   const { scope } = environmentPackage;
   const requesterUserId = responsibleUserIdForActor(scope.triggerActor);
@@ -5384,11 +5398,29 @@ function currentWorkerStorageAudienceAuthorizer(
       (records) => records.workspace.id === scope.workspaceId
     );
     const thread = records?.threads.find((thread) => thread.id === contributor.threadId);
+    if (!records || !thread || thread.workspaceId !== scope.workspaceId) return false;
+    const audienceOwner = {
+      getWorkspace: () => records.workspace,
+      getWorkspaceResourceAccess: (workspaceId: string) => {
+        if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');
+        return (
+          readRuntimeConfig().workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)
+            ?.config.workspace.policy?.resourceAccess ?? []
+        );
+      },
+    };
     return (
-      !!records &&
-      !!thread &&
-      thread.workspaceId === scope.workspaceId &&
-      isThreadVisible({ getWorkspace: () => records.workspace }, thread, requesterUserId)
+      isThreadVisible(audienceOwner, thread, requesterUserId, false, 'thread.read', {
+        kind: 'agent',
+        userId: requesterUserId,
+        agentId: environmentPackage.agent.agentId,
+        processId: scope.agentSessionId,
+      }) &&
+      canDiscloseThreadToAudience(
+        audienceOwner,
+        thread,
+        records.threads.find((candidate) => candidate.id === scope.threadId) ?? null
+      )
     );
   };
 }

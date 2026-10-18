@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
@@ -23,6 +23,7 @@ import {
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema, type WorkspaceResourceAccessEntry } from '@openkit/config-schema';
 import type {
   ActorRef,
   KnowledgeEntrySchema,
@@ -59,6 +60,7 @@ import {
   TurnSchema,
   type TurnStatus,
 } from '@openkit/protocol';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { resolveDataRoot } from '../config/data-root.js';
 import {
   initializeDefaultKnowledgeBaseId,
@@ -1263,6 +1265,9 @@ function emptyWorkspaceFileRecords(workspace: WorkspaceRecord): WorkspaceFileRec
 export class FsStore {
   private workspaces = new Map<string, WorkspaceRecord>();
   private workspaceResources = new Map<string, WorkspaceResources>();
+  private workspaceResourcePolicyProjection:
+    | ((workspaceId: string) => readonly WorkspaceResourceAccessEntry[] | null)
+    | null = null;
   private workspaceAgentCatalogProjection: (() => RuntimeAgent[]) | null = null;
   private serverThreads = new Map<string, ServerThread>();
   private serverTurns = new Map<string, ServerTurn>();
@@ -2711,6 +2716,29 @@ export class FsStore {
    */
   public setWorkspaceAgentCatalogProjection(projection: () => RuntimeAgent[]): void {
     this.workspaceAgentCatalogProjection = projection;
+  }
+
+  /** Binds current loaded Workspace Policy without copying its durable authority into the store. */
+  public setWorkspaceResourcePolicyProjection(
+    projection: (workspaceId: string) => readonly WorkspaceResourceAccessEntry[] | null
+  ): void {
+    this.workspaceResourcePolicyProjection = projection;
+  }
+
+  /** Reads current effective restrictions; an unpublished configuration cannot activate or remove them. */
+  public getWorkspaceResourceAccess(workspaceId: string): readonly WorkspaceResourceAccessEntry[] {
+    const effective = this.workspaceResourcePolicyProjection?.(workspaceId);
+    if (effective !== undefined && effective !== null) return effective;
+    if (!this.dataRoot) return [];
+    const path = join(this.dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
+    if (!existsSync(path)) return [];
+    const authored =
+      WorkspaceConfigSchema.parse(parseJsonc(readFileSync(path, 'utf8'))).workspace.policy
+        ?.resourceAccess ?? [];
+    // New imports stay closed until their validated configuration joins the runtime snapshot.
+    if (this.workspaceResourcePolicyProjection && authored.length)
+      throw new Error('Workspace resource Policy is not loaded.');
+    return authored;
   }
 
   /**

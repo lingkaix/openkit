@@ -44,6 +44,7 @@ describe('runtime evidence', () => {
         phase: 'transcript-collection',
         summary: input.summary,
         transcriptSummary: input.summary,
+        policyDigest: input.policyDigest,
         outcome: 'succeeded',
         evidenceBundleIds: input.evidenceBundleIds,
         contentDigests: input.contentDigests,
@@ -59,6 +60,7 @@ describe('runtime evidence', () => {
       ).toEqual([first]);
 
       for (const divergent of [
+        { ...input, policyDigest: `sha256:${'b'.repeat(64)}` },
         { ...input, contentDigests: ['sha256:divergent'] },
         { ...input, summary: 'Divergent worker runtime provenance summary.' },
       ]) {
@@ -138,6 +140,7 @@ describe('runtime evidence', () => {
 function runtimeProvenanceInput(packageSnapshotId: string) {
   return {
     packageSnapshotId,
+    policyDigest: `sha256:${'a'.repeat(64)}`,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',

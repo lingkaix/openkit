@@ -128,6 +128,12 @@ import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { createGoalDomainPolicyService } from './policy/goal-domains.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from './policy/interception.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
+
+import {
+  checkResourcePolicyCommandIntent,
+  isResourcePolicyRequest,
+  isResourcePolicyRequesterCurrent,
+} from './policy/resource-policy-requests.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
@@ -884,6 +890,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
+  sharedStore.setWorkspaceResourcePolicyProjection((workspaceId) => {
+    const loaded = runtimeConfigManager
+      .current()
+      .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId);
+    return loaded ? (loaded.config.workspace.policy?.resourceAccess ?? []) : null;
+  });
   const automationStore =
     options.automationStore ??
     (options.coreDb ? new AutomationStore(options.coreDb, workspaceMutationAdmission) : undefined);
@@ -1960,6 +1972,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   registerWorkspaceTransferRoutes({
+    reloadConfiguration: () => {
+      runtimeConfigManager.reload({ dryRun: false, mode: 'safe' });
+    },
     app,
     fileAdmission,
     coreDb: options.coreDb,
@@ -2129,9 +2144,21 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         coordinatorTurnId,
       }),
   });
-  const goalRequesterAuthority = (
+  const currentRequesterAuthority = (
     record: import('./runtime/pending-requests.js').PendingRequestRecord
   ): boolean | undefined => {
+    if (isResourcePolicyRequest(record))
+      return Boolean(
+        options.coreDb &&
+          isResourcePolicyRequesterCurrent(
+            {
+              coreDb: options.coreDb,
+              store: sharedStore,
+              manager: runtimeConfigManager,
+            },
+            record
+          )
+      );
     if (record.requesterKind !== 'coordinator') return undefined;
     const db = repositoryWorkspaceDb(record.workspaceId);
     try {
@@ -2158,7 +2185,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     record,
     actor
   ) => {
-    if (record.governedIntent?.operation === 'memory.forget')
+    if (isResourcePolicyRequest(record))
+      checkResourcePolicyCommandIntent(
+        {
+          coreDb: options.coreDb!,
+          store: sharedStore,
+          workspaceDb: { sqlite },
+          manager: runtimeConfigManager,
+          files: runtimeConfigFileService({ get: () => actor }),
+        },
+        record,
+        actor
+      );
+    else if (record.governedIntent?.operation === 'memory.forget')
       checkMemoryForgetIntent(sqlite, record, actor, options.coreDb!, sharedStore);
     else checkGoalCommandIntent(sqlite, record);
   };
@@ -2253,7 +2292,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       assistantDelivery: pendingAssistantDelivery,
       coordinatorDelivery: goalCoordinator,
       ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
-      requesterAuthority: goalRequesterAuthority,
+      requesterAuthority: currentRequesterAuthority,
       checkCommandIntent,
       requestCommitted: goalRequestCommitted,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -2286,7 +2325,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     assistantDelivery: pendingAssistantDelivery,
     coordinatorDelivery: goalCoordinator,
     ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
-    requesterAuthority: goalRequesterAuthority,
+    requesterAuthority: currentRequesterAuthority,
     checkCommandIntent,
     requestCommitted: goalRequestCommitted,
     agentAuthority: (record) =>

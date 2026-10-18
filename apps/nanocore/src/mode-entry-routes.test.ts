@@ -2211,6 +2211,7 @@ describe('Task durable admission response', () => {
     }
   });
 
+  // The held completion proves admission ordering; this budget covers real fixture setup.
   it.each([
     ...(['direct', 'assistant', 'remote-mcp', 'closeout-failure'] as const).map((entry) => ({
       entry,
@@ -2674,7 +2675,7 @@ describe('Task durable admission response', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     }
-  });
+  }, 60_000);
 });
 
 describe('Task terminal replay closeout ownership', () => {

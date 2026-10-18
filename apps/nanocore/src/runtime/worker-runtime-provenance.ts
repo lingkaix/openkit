@@ -36,6 +36,7 @@ import {
   syncCanonicalDirectoryAsync,
   syncCanonicalTreeAsync,
 } from '../storage/workspace-file-records.js';
+import { snapshotDigest } from './aep-snapshot-ledger.js';
 import { recordWorkerRuntimeProvenanceEvidence } from './runtime-evidence.js';
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -374,6 +375,7 @@ export async function importWorkerRuntimeProvenance(
       evidenceBundleIds: [rawBundle.id, ...(indexBundle ? [indexBundle.id] : [])],
       outcome: complete ? 'succeeded' : 'failed',
       packageSnapshotId: lineage.packageSnapshotId,
+      policyDigest: `sha256:${snapshotDigest(input.environmentPackage.policy)}`,
       placement: input.backend.placement,
       summary,
       threadId: lineage.threadId,

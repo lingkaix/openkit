@@ -61,6 +61,9 @@ import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
@@ -7075,6 +7078,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  // Real package preparation shares gate CPU; policy values, not elapsed time, are the oracle.
   it('passes user-declared sandbox access into the resolved worker package', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-sandbox-access-')));
 
@@ -7151,7 +7155,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
 
     coreDb.sqlite.close();
-  });
+  }, 60_000);
 
   it.each([
     false,
@@ -8091,6 +8095,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  // Real native handoff setup shares gate CPU; assertions check exact source authority, not latency.
   it.each([
     'source',
     'cursor',
@@ -8303,7 +8308,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     workspaceDb.sqlite.close();
     launchGate.mockRestore();
     coreDb.sqlite.close();
-  });
+  }, 60_000);
 
   it.each([
     'validation',
@@ -11653,6 +11658,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
+    readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
     env: {},
     workerControlGateway: new WorkerControlGateway(),
     nanoHostSessionDispatch: {

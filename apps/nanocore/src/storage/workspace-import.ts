@@ -40,6 +40,7 @@ import {
   WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
   type WorkspaceExportManifest,
+  type WorkspacePolicySubject,
 } from '@openkit/config-schema';
 import {
   AgentSessionIdSchema,
@@ -120,6 +121,8 @@ import {
   PermissionDecisionRetainedV1Schema,
   projectPermissionDecision,
 } from '../policy/retained-records-v1.js';
+
+import { remintResourcePolicyConfig } from '../policy/resource-policy-portability.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import {
   StoredGoalCardTaskV1Schema,
@@ -551,6 +554,8 @@ export interface ReadWorkspaceImportSnapshotInput {
   targetWorkspaceId: string;
   /** Current target Server identity used for reminted trusted query context. */
   targetServerId?: string;
+  /** Current target authority validates source principals; absence rejects every assignment. */
+  resourcePolicySubjectEligible?: (subject: WorkspacePolicySubject) => boolean;
 }
 
 /** Importable record snapshot extracted from one workspace export. */
@@ -801,6 +806,8 @@ interface ImportRemintContext {
   targetKnowledgeBaseId: string;
   /** Current target Server identity, required when the export contains retrieval traces. */
   targetServerId?: string;
+  /** Current target authority validates source principals; absence rejects every assignment. */
+  resourcePolicySubjectEligible?: (subject: WorkspacePolicySubject) => boolean;
   /** Parsed source Material owners. */
   sourceWorkspaceMaterials: ImportedWorkspaceMaterial[];
   /** Parsed source Material revisions. */
@@ -928,6 +935,9 @@ export function readWorkspaceImportSnapshot(
     ),
     targetKnowledgeBaseId: allocateEntityId('kb'),
     ...(input.targetServerId ? { targetServerId: input.targetServerId } : {}),
+    ...(input.resourcePolicySubjectEligible
+      ? { resourcePolicySubjectEligible: input.resourcePolicySubjectEligible }
+      : {}),
     sourceWorkspaceMaterials,
     sourceWorkspaceMaterialRevisions,
     sourceThreadMaterialBindings,
@@ -4700,9 +4710,18 @@ function readPortableFileStateFromExport(
     const workspacePath = exportPath.slice('workspace-files/'.length);
     assertPortableWorkspaceFilePath(workspacePath);
     if (workspacePath === 'config/workspace.jsonc') {
-      workspaceConfig = applyEdits(
+      const remintedConfig = remintResourcePolicyConfig({
         content,
-        modify(content, ['workspace', 'defaultKnowledgeBaseId'], context.targetKnowledgeBaseId, {
+        threadIds: context.threadIds,
+        threads: readWorkspaceExportThreads(files),
+        manifestFeatures: context.report.manifest.requiredFeatures,
+        ...(context.resourcePolicySubjectEligible
+          ? { subjectEligible: context.resourcePolicySubjectEligible }
+          : {}),
+      });
+      workspaceConfig = applyEdits(
+        remintedConfig,
+        modify(remintedConfig, ['workspace', 'defaultKnowledgeBaseId'], context.targetKnowledgeBaseId, {
           formattingOptions: { insertSpaces: true, tabSize: 2 },
         })
       );

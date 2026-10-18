@@ -223,6 +223,11 @@ The Thread operation family defines `thread.read-state` and `thread.mark-read`. 
 
 Light App authoring accepts an optional `references` list; native admission writes an explicit list in immutable reusable and live definitions. Retained admitted schemas require it. Entries use the shared Protocol canonical reference URI contract for pinned Knowledge pages, raw content or Skill versions. This validates target identity and preserves list order, without resolving current access or treating purpose and descriptions as reusable meaning authority.
 
+Server operation targets carry an optional explicit `family` of administration, MCP or Knowledge. Existing omitted targets mean administration; Server MCP definitions select MCP. NanoCore maps current administrator eligibility to that family in the shared Kernel before handler execution, without a persistent assignment or another evaluator.
+
+
+`src/resource-policy-operations.ts` declares the Workspace named-resource request and confirmed application contracts. Request creation captures the existing configuration revision without resolving the proposed protected target. Apply selects `approvalRequestId`, independently of command correlation, and requires the exact human confirmation. Its result distinguishes saved revision from runtime reload status. The public catalog composes these definitions with their native handlers; the shared schema adds no assignment store or approval workflow. Its `@openkit/config-schema/workspace-resource-policy` dependency is a browser-safe schema-only subpath over protocol identities and Zod, with no server configuration loader.
+
 `src/server-threads.ts` supplies seven registered Server operations for explicit tell/maintenance, general history, Turn Stop and exact Proposal read/decide. These records omit Workspace identity and require current Server administration authority in NanoCore. Only the Knowledge Manager executes Server work in this increment.
 
 `memory.ask` and `memory.tell` project bounded User Knowledge Manager query and maintenance. Their strict schemas accept no User selector. `memory.maintain`, `memory.proposal.read` and `memory.proposal.decide` reuse the fixed-base notebook and human Review contracts. NanoCore binds the actual private Timeline, rejects shared delivery, and keeps required human Review unavailable to model callers.

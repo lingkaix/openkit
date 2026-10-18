@@ -18,7 +18,7 @@ import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
-import { isThreadVisible } from './auth/thread-visibility.js';
+import { canDiscloseThreadToAudience, isThreadVisible } from './auth/thread-visibility.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { admitMemoryContext, memoryPageFacts } from './knowledge/memory-lifecycle.js';
@@ -50,6 +50,7 @@ import {
 } from './knowledge-source-authority.js';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
+import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
 import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
 import { type CoreDb, openWorkspaceDb, type UserDb } from './storage/db.js';
 import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
@@ -67,6 +68,8 @@ export interface KnowledgeRetrievalAccess {
   outputThreadId?: string | undefined;
   /** Existing querying Turn, supplied only by trusted execution assembly. */
   outputTurnId?: string | undefined;
+  /** Exact admitted Worker subject supplied only by trusted native context preparation. */
+  resourcePolicyActor?: ResourcePolicyActor | undefined;
   /** Existing authenticated-self database, supplied by native Memory assembly when available. */
   userDb?: UserDb | undefined;
 }
@@ -559,15 +562,17 @@ export function threadReadable(
         access.store,
         thread,
         responsibleUserIdForActor(access.actor) ?? undefined,
-        administrator
+        administrator,
+        'thread.read',
+        access.resourcePolicyActor
       )
     )
       return false;
-    if (!access.outputThreadId || thread.visibility === 'workspace') return true;
-    const destination = access.store.getThread(workspaceId, access.outputThreadId);
-    return (
-      destination.visibility === 'private' &&
-      destination.privateOwnerUserId === thread.privateOwnerUserId
+    if (!access.outputThreadId) return true;
+    return canDiscloseThreadToAudience(
+      access.store,
+      thread,
+      access.store.getThread(workspaceId, access.outputThreadId)
     );
   } catch {
     return false;

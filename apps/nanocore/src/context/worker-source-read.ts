@@ -8,6 +8,7 @@ import {
 } from '@openkit/protocol';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
+  canDiscloseThreadToAudience,
   isArtifactVisible,
   isThreadIdVisible,
   isThreadVisible,
@@ -100,8 +101,25 @@ export async function resolveCurrentWorkerSource(
       throw new Error('Current source read admission is unavailable.');
     const userId = responsibleUserIdForActor(admission.triggerActor) ?? undefined;
     const administrator = admission.serverAdminTokenId !== null;
+    if (!userId) throw new Error('Current Worker responsibility is unavailable.');
+    const resourcePolicyActor = {
+      kind: 'agent' as const,
+      userId,
+      agentId: input.environmentPackage.agent.agentId,
+      processId: scope.agentSessionId,
+    };
+
     const destination = input.store.getThread(scope.workspaceId, scope.threadId);
-    if (!isThreadVisible(input.store, destination, userId, administrator))
+    if (
+      !isThreadVisible(
+        input.store,
+        destination,
+        userId,
+        administrator,
+        'thread.read',
+        resourcePolicyActor
+      )
+    )
       throw new Error('Current source read audience is unavailable.');
     if (!source) return admission;
     const referenceScope = parseReferenceScope(source.source.reference.scopeId);
@@ -113,11 +131,13 @@ export async function resolveCurrentWorkerSource(
       throw new Error('Current source scope is unavailable.');
     let sourceThreadId: string | null = null;
     if (source.source.kind === 'artifact') {
-      const artifact = input.store.getArtifact(scope.workspaceId, source.source.reference.objectId);
+      const artifact = input.store.getArtifactVersion(
+        scope.workspaceId, source.source.reference.objectId, source.source.artifactVersion
+      ).artifact;
       if (
         artifact.version !== source.source.artifactVersion ||
         artifact.contentDigest !== source.originalDigest ||
-        !isArtifactVisible(input.store, artifact, userId, administrator)
+        !isArtifactVisible(input.store, artifact, userId, administrator, resourcePolicyActor)
       )
         throw new Error('Current source is unavailable.');
       sourceThreadId = artifact.origin.kind === 'turn-output' ? artifact.origin.threadId : null;
@@ -146,7 +166,9 @@ export async function resolveCurrentWorkerSource(
           scope.workspaceId,
           referenceScope.threadId,
           userId,
-          administrator
+          administrator,
+          'thread.read',
+          resourcePolicyActor
         )
       )
         throw new Error('Current source is unavailable.');
@@ -167,11 +189,7 @@ export async function resolveCurrentWorkerSource(
     }
     if (sourceThreadId) {
       const sourceThread = input.store.getThread(scope.workspaceId, sourceThreadId);
-      if (
-        sourceThread.visibility === 'private' &&
-        (destination.visibility !== 'private' ||
-          destination.privateOwnerUserId !== sourceThread.privateOwnerUserId)
-      )
+      if (!canDiscloseThreadToAudience(input.store, sourceThread, destination))
         throw new Error('Current source destination is unavailable.');
     }
     return admission;

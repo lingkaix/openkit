@@ -15,13 +15,14 @@ import { open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { createZstdCompress } from 'node:zlib';
 import {
   WorkspaceExportResponseSchema,
   WorkspaceImportDryRunResponseSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
-import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
+import { parseWorkspaceDataSourceCatalog, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   type ActorRef,
   allocateEntityId,
@@ -49,6 +50,8 @@ import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from '../auth/operation-authorizer.js';
+import { isThreadVisible } from '../auth/thread-visibility.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
   finishCapabilityCall,
   importWorkspaceCapabilityUsageLedger,
@@ -955,7 +958,9 @@ export function importVerifiedWorkspace({
   requestId,
   store,
   verified,
+  reloadConfiguration,
 }: {
+  readonly reloadConfiguration?: () => void;
   readonly authorityUserId: string;
   /** Trusted tombstone owner for deleted-resource recovery; ordinary imports use the invoking actor. */
   readonly recoveryOwnerUserId?: string;
@@ -976,6 +981,22 @@ export function importVerifiedWorkspace({
     verified,
     targetWorkspaceId: importedWorkspaceId,
     targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
+    resourcePolicySubjectEligible: (subject) => {
+      // An exact deployment identity establishes the source namespace. A bare User id from another Server never does.
+      if (
+        verified.manifest.sourceDeploymentId !== readDataRootLayoutMarker(dataRoot).deploymentId ||
+        subject.userId !== (recoveryOwnerUserId ?? authorityUserId) ||
+        !coreDb ||
+        !isCanonicalUserActive(coreDb, subject.userId)
+      )
+        return false;
+      return (
+        subject.kind === 'user' ||
+        store
+          .getWorkspaceResources(verified.manifest.workspaceId)
+          .agents.some((agent) => agent.id === subject.agentId)
+      );
+    },
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
     snapshot.finalizeNotebookKnowledge?.(readPortableWorkspaceNotebookPages(workspaceRoot));
@@ -1101,6 +1122,7 @@ export function importVerifiedWorkspace({
     }
   );
 
+  reloadConfiguration?.();
   return WorkspaceImportResponseSchema.parse({
     ...report,
     mode: 'imported',
@@ -1316,6 +1338,20 @@ export function createVerifiedWorkspaceExport({
     threads: threads.map(({ id }) => ({ threadId: id })),
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
+  const authoredPolicy = retainedPortableState.workspaceConfig
+    ? (WorkspaceConfigSchema.parse(
+        parseJsoncObject(retainedPortableState.workspaceConfig, 'config/workspace.jsonc')
+      ).workspace.policy?.resourceAccess ?? [])
+    : [];
+  if (!isDeepStrictEqual(authoredPolicy, store.getWorkspaceResourceAccess(workspaceId)))
+    throw new Error('Workspace export requires matching saved and effective resource Policy.');
+  if (
+    !deletionRecoveryAuthorized &&
+    threads.some(
+      (thread) => !isThreadVisible(store, thread, authorityUserId, administratorEligible)
+    )
+  )
+    throw new Error('Workspace export source audience is unavailable.');
   const portableFileState = retainedPortableState;
   if (!deletionRecoveryAuthorized) {
     if (!requestActor || !portableFileState.notebookRevision)
@@ -1605,7 +1641,9 @@ export function registerWorkspaceTransferRoutes({
   dataRoot,
   fileAdmission,
   requestStore,
+  reloadConfiguration,
 }: {
+  readonly reloadConfiguration?: () => void;
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
@@ -1740,6 +1778,7 @@ export function registerWorkspaceTransferRoutes({
       return c.json(
         withCanonicalFileWriteAdmission(fileAdmission, () =>
           importVerifiedWorkspace({
+            ...(reloadConfiguration ? { reloadConfiguration } : {}),
             authorityUserId: c.get('actor').userId,
             coreDb,
             dataRoot,

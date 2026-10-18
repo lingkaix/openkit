@@ -53,6 +53,8 @@ interface RuntimeEvidenceRow {
 export interface RecordWorkerRuntimeProvenanceEvidenceInput {
   /** Agent Environment Package snapshot that owns the capture. */
   packageSnapshotId: string;
+  /** SHA-256 of the exact admitted AEP Policy content, independent of its human-readable label. */
+  policyDigest: string;
   /** Workspace that owns the outer turn. */
   workspaceId: string;
   /** Outer OpenKit thread id. */
@@ -133,7 +135,7 @@ export function recordWorkerRuntimeProvenanceEvidence(
     placement: input.placement,
     phase: 'transcript-collection',
     summary: input.summary,
-    policyDigest: null,
+    policyDigest: input.policyDigest,
     workerImage: null,
     sandboxSummary: null,
     capabilitySummary: 'worker runtime provenance',

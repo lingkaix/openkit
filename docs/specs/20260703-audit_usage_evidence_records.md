@@ -589,3 +589,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
+
+## Policy Content In Worker Outcome Lineage
+
+Worker runtime provenance outcomes retain the SHA-256 digest of the exact admitted AEP `policy` JSON in the existing RuntimeEvidence `policyDigest` field. The label `policy.snapshotId` alone is not content identity. The producer hashes the parsed Policy JSON using the same JSON serialization as the immutable AEP snapshot owner; it does not read later live configuration. Identical labels with changed Policy content must yield different digests. Import preserves historical evidence without recomputation; a missing historical digest remains unknown. This adds no snapshot store, authority or decision workflow.

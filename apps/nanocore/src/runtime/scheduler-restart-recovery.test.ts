@@ -5455,6 +5455,7 @@ describe('minimal scheduler reconnect contract', () => {
       const initialRuntime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         store,
+        readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
         workerControlGateway: new WorkerControlGateway(),
@@ -5563,6 +5564,7 @@ describe('minimal scheduler reconnect contract', () => {
       const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         store,
+        readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
         workerControlGateway: new WorkerControlGateway(),

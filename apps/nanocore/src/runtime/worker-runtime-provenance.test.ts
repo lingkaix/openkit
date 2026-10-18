@@ -421,6 +421,7 @@ describe('worker runtime provenance import', () => {
           backendVersion: '0.0.80',
           placement: 'local',
           phase: 'transcript-collection',
+          policyDigest: sha256(Buffer.from(JSON.stringify(fixture.environmentPackage.policy))),
           outcome: 'succeeded',
           evidenceBundleIds: [first.rawBundleId, first.indexBundleId],
           contentDigests: expect.arrayContaining([...expectedRawDigests, sha256(normalizedBytes)]),
@@ -451,6 +452,25 @@ describe('worker runtime provenance import', () => {
       });
 
       expect(replay).toEqual(first);
+      // A stable Policy label cannot hide different admitted content in one outcome.
+      await expect(
+        importWorkerRuntimeProvenance({
+          backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
+          capture: {
+            nativeOriginIndexPath: capture.nativeOriginIndexPath,
+            rawStreamsRoot: capture.rawStreamsRoot,
+            streamManifestPath: capture.streamManifestPath,
+          },
+          collectedAt: '2026-07-13T00:00:02.000Z',
+          environmentPackage: {
+            ...fixture.environmentPackage,
+            policy: { ...fixture.environmentPackage.policy, resources: { changedPolicy: true } },
+          },
+          workspaceDb: fixture.workspaceDb,
+          workspaceRoot: fixture.workspaceRoot,
+        })
+      ).rejects.toThrow(/runtime evidence replay conflict/i);
+
       expect(
         listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toHaveLength(2);

@@ -811,8 +811,17 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     artifactVersion?: number;
     text?: string;
   }> = [];
-  // Acceptance precedes asynchronous source snapshot preparation and Worker request publication.
+  // 202 admits the Turn. The Worker request Item is published with the Context Package snapshot.
   await expect(async () => {
+    const snapshot = await getJson<{ contextPackageDigest: string | null }>(
+      '/api/app/operations/turn.read',
+      {
+        workspaceId: nextTurn.receivingWorkspaceId,
+        threadId: nextTurn.receivingThreadId,
+        turnId: nextTurn.turn.id,
+      }
+    );
+    expect(snapshot.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
     nextItems = (
       await getJson<{ items: typeof nextItems }>('/api/app/operations/thread.items', {
         workspaceId: nextTurn.receivingWorkspaceId,
