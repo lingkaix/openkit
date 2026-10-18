@@ -54,7 +54,8 @@ const notebookAdmissionV1 = z.object({
   ]),
   sourceReferences: z.array(z.string().min(1)),
 });
-const auditV1 = z.object({
+/** Frozen version-one Audit core for native and portable retained readers. */
+export const AuditEventRetainedV1Schema = z.object({
   id: AuditEventIdSchema,
   workspaceId: WorkspaceIdSchema.nullable(),
   protocolVersion: z.string().min(1).optional(),
@@ -81,7 +82,8 @@ const auditV1 = z.object({
   createdAt: TimestampSchema,
   occurredAt: TimestampSchema,
 });
-const permissionDecisionV1 = z
+/** Frozen version-one PermissionDecision core for native and portable retained readers. */
+export const PermissionDecisionRetainedV1Schema = z
   .object({
     decisionId: PermissionDecisionIdSchema,
     ownerScope: z.enum(['server', 'workspace', 'user']),
@@ -118,10 +120,10 @@ const permissionDecisionV1 = z
   });
 
 /** Validates an Audit SQLite row's version before decoding its frozen version-one core. */
-export function readAuditEventRowV1(input: unknown): z.infer<typeof auditV1> {
+export function readAuditEventRowV1(input: unknown): z.infer<typeof AuditEventRetainedV1Schema> {
   const row = input as Record<string, unknown>;
   return readRetainedV1({ schemaVersion: row?.schema_version }, () => {
-    return auditV1.parse({
+    return AuditEventRetainedV1Schema.parse({
       id: row.audit_event_id,
       workspaceId: row.workspace_id,
       protocolVersion: row.protocol_version ?? undefined,
@@ -154,10 +156,12 @@ export function readAuditEventRowV1(input: unknown): z.infer<typeof auditV1> {
 }
 
 /** Validates a PermissionDecision SQLite row's version before decoding its frozen version-one core. */
-export function readPermissionDecisionRowV1(input: unknown): z.infer<typeof permissionDecisionV1> {
+export function readPermissionDecisionRowV1(
+  input: unknown
+): z.infer<typeof PermissionDecisionRetainedV1Schema> {
   const row = input as Record<string, unknown>;
   return readRetainedV1({ schemaVersion: row?.schema_version }, () => {
-    return permissionDecisionV1.parse({
+    return PermissionDecisionRetainedV1Schema.parse({
       decisionId: row.decision_id,
       ownerScope: row.owner_scope,
       workspaceId: row.workspace_id,
