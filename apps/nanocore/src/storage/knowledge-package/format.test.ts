@@ -5,7 +5,6 @@ import { cp, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { testEntityId } from '../../test-support/entity-ids.js';
 import { verifyKnowledgePackageFormat, writeKnowledgePackageFormat } from './format.js';
@@ -40,7 +39,7 @@ async function expectedManifestBytes(): Promise<string> {
 /** Supplies frozen byte identities to the real format writer in deliberately unsorted order. */
 async function packageInput(directory: string) {
   const manifest: KnowledgePackageManifest = JSON.parse(await expectedManifestBytes());
-  const { contentInventory, schemaVersion, format, formatVersion, ...metadata } = manifest;
+  const { contentInventory, schemaVersion, format, ...metadata } = manifest;
   return {
     directory,
     metadata,
@@ -123,7 +122,7 @@ describe('Knowledge package v1 format', () => {
     );
     for (const patch of [
       { format: 'other.package' },
-      { formatVersion: 2 },
+      { knowledgeBaseId: 'kb_unknown' },
       { requiredFeatures: ['unknown.required-semantics.v1'] },
       { ownerScope: { kind: 'unknown' } },
     ]) {
@@ -240,7 +239,7 @@ describe('Knowledge package v1 format', () => {
     const input = await packageInput(join(await temporaryRoot(), 'package'));
     const mounts = [
       ...input.metadata.mounts,
-      { name: 'reference', backend: 'local', root: externalRoot, default: false, knowledgeBaseId },
+      { name: 'reference', backend: 'local', root: externalRoot, default: false },
     ];
     const directory = await writeFixture({ mounts });
     expect((await verifyKnowledgePackageFormat({ directory, limits })).mounts).toEqual(mounts);
@@ -287,96 +286,25 @@ describe('Knowledge package v1 format', () => {
     await expect(verifyKnowledgePackageFormat({ directory, limits })).resolves.toBeDefined();
   });
 
-  it('retains unavailable derivative lineage and checks included output identity separately from the source', async () => {
+  it('refuses derivative payloads until derivative export supplies its required semantics', async () => {
     const input = await packageInput(join(await temporaryRoot(), 'package'));
-    const original = input.files.find((entry) => entry.path === 'raw/original.bin')!;
-    const output = input.files.find((entry) => entry.path === 'pages/guide.md')!;
-    const representation = {
-      id: 'text-layer:1',
-      path: null,
-      sourceContentDigest: original.contentDigest,
-      sourceReference: formatReferenceUri(
-        { scopeId: `raw/server/${knowledgeBaseId}`, objectId: 'original.bin' },
-        original.contentDigest
-      ),
-      sourceLocator: { kind: 'bytes' as const, start: 0, end: 12 },
-      recipe: {
-        id: 'fixture-text',
-        version: '1',
-        parameters: {
-          // JSON parsing creates an own data key instead of changing the object prototype.
-          ...JSON.parse('{"__proto__":{"mode":"kept"}}'),
-          preserveWhitespace: true,
-          '2': 'two',
-          '10': { '2': 'nested-two', '10': 'nested-ten' },
+    const derivative = { ...input.files[0]!, path: 'derived/text.md' };
+    await expect(writeKnowledgePackageFormat({ ...input, files: [derivative] })).rejects.toThrow();
+    expect(existsSync(input.directory)).toBe(false);
+    const directory = await writeFixture();
+    await mkdir(join(directory, 'derived'));
+    await cp(derivative.sourcePath, join(directory, derivative.path));
+    await rewriteManifest(directory, (manifest) => ({
+      ...manifest,
+      contentInventory: [
+        ...manifest.contentInventory,
+        {
+          path: derivative.path,
+          contentDigest: derivative.contentDigest,
+          byteLength: derivative.byteLength,
         },
-      },
-      provider: null,
-      model: null,
-      embeddingSpace: null,
-      contentRef: {
-        knowledgeBaseId,
-        contentDigest: output.contentDigest,
-        locator: {
-          ownerScope: { kind: 'server' as const },
-          mount: 'local',
-          path: 'derived/text.md',
-        },
-        range: null,
-        availability: 'unavailable' as const,
-      },
-      byteLength: output.byteLength,
-      mediaType: 'text/markdown',
-      coverage: 'incomplete' as const,
-    };
-    const omitted = await writeFixture({ representations: [representation] });
-    expect(
-      (await verifyKnowledgePackageFormat({ directory: omitted, limits })).representations
-    ).toEqual([representation]);
-    const included = {
-      ...representation,
-      path: 'derived/text.md',
-      contentRef: { ...representation.contentRef, availability: 'available' as const },
-    };
-    await writeKnowledgePackageFormat({
-      ...input,
-      metadata: { ...input.metadata, representations: [included] },
-      files: [...input.files, { ...output, path: included.path }],
-    });
-    const serialized = await readFile(join(input.directory, 'manifest.json'), 'utf8');
-    expect(serialized).toContain(`        "parameters": {
-          "10": {
-            "10": "nested-ten",
-            "2": "nested-two"
-          },
-          "2": "two",
-          "__proto__": {
-            "mode": "kept"
-          },
-          "preserveWhitespace": true
-        }`);
-    expect(serialized.match(/"__proto__":/g)).toHaveLength(1);
-    const verified = await verifyKnowledgePackageFormat({ directory: input.directory, limits });
-    expect(verified.representations).toEqual([included]);
-    expect(Object.hasOwn(verified.representations[0]!.recipe.parameters, '__proto__')).toBe(true);
-    expect(
-      Object.getOwnPropertyDescriptor(verified.representations[0]!.recipe.parameters, '__proto__')
-        ?.value
-    ).toEqual({ mode: 'kept' });
-    for (const changed of [
-      { ...representation, contentRef: included.contentRef },
-      { ...included, byteLength: output.byteLength + 1 },
-      { ...included, sourceContentDigest: output.contentDigest },
-      { ...included, coverage: 'assumed' },
-      { ...included, sourceLocator: { kind: 'bytes', start: 12, end: 0 } },
-    ]) {
-      await rewriteManifest(input.directory, (manifest) => ({
-        ...manifest,
-        representations: [changed],
-      }));
-      await expect(
-        verifyKnowledgePackageFormat({ directory: input.directory, limits })
-      ).rejects.toThrow();
-    }
+      ],
+    }));
+    await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow();
   });
 });

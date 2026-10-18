@@ -17,13 +17,11 @@
     }
   ],
   "format": "openkit.knowledge-package",
-  "formatVersion": 1,
   "knowledgeBaseId": "@KNOWLEDGE_BASE_ID@",
   "mounts": [
     {
       "backend": "local",
       "default": true,
-      "knowledgeBaseId": "@KNOWLEDGE_BASE_ID@",
       "name": "local",
       "root": "raw/"
     }
@@ -32,7 +30,6 @@
   "ownerScope": {
     "kind": "server"
   },
-  "representations": [],
   "requiredFeatures": [],
   "schemaVersion": 1
 }

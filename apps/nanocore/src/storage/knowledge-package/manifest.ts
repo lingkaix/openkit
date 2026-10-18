@@ -1,18 +1,14 @@
 import {
-  ContentReferenceRangeSchema,
-  ContentReferenceSchema,
   KnowledgeBaseIdSchema,
   KnowledgeContentDigestSchema,
   KnowledgeOwnerScopeSchema,
-  parseReferenceUri,
   RETAINED_FORMAT_VERSION,
-  ReferenceUriSchema,
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** The package owns interchange versioning, independently of retained-record versioning. */
+/** Identifies the interchange family; the shared retained marker owns its format version. */
 export const KNOWLEDGE_PACKAGE_FORMAT = 'openkit.knowledge-package' as const;
 /** Bound manifest parsing independently of potentially large original files. */
 export const MAX_KNOWLEDGE_PACKAGE_MANIFEST_BYTES = 1_048_576;
@@ -22,34 +18,7 @@ export const KNOWLEDGE_PACKAGE_FEATURES = [
   'openkit.knowledge-owner-scope.v1',
 ] as const;
 
-const families = new Set(['pages', 'sources', 'schema', 'raw', 'derived', 'indexes']);
-type JsonValue = z.infer<ReturnType<typeof z.json>>;
-const jsonPrimitive = z.json();
-
-/** Validates every own JSON setting without Zod's record decoder dropping prototype-named keys. */
-function isJsonValue(value: unknown): value is JsonValue {
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
-      if (!isJsonValue(value[index])) return false;
-    }
-    return true;
-  }
-  if (value !== null && typeof value === 'object') {
-    const prototype = Object.getPrototypeOf(value);
-    return (
-      (prototype === Object.prototype || prototype === null) &&
-      Object.values(value).every(isJsonValue)
-    );
-  }
-  return jsonPrimitive.safeParse(value).success;
-}
-
-const recipeParameters = z.custom<Record<string, JsonValue>>(
-  (value) =>
-    value !== null && typeof value === 'object' && !Array.isArray(value) && isJsonValue(value),
-  'Recipe parameters must be a JSON object.'
-);
-
+const families = new Set(['pages', 'sources', 'schema', 'raw', 'indexes']);
 function hasControlCharacter(value: string): boolean {
   return [...value].some((character) => {
     const code = character.charCodeAt(0);
@@ -108,41 +77,17 @@ const mountSchema = z.object({
       }
     }, 'A mount root must contain only a location.'),
   default: z.boolean(),
-  knowledgeBaseId: KnowledgeBaseIdSchema,
-});
-
-/** Package projection of admitted derivative lineage; it is not a second representation authority. */
-export const KnowledgePackageRepresentationSchema = z.object({
-  id: z.string().min(1).max(1024),
-  path: z.string().refine(isKnowledgePackagePath).nullable(),
-  sourceContentDigest: KnowledgeContentDigestSchema,
-  sourceReference: ReferenceUriSchema,
-  sourceLocator: ContentReferenceRangeSchema.nullable(),
-  recipe: z.object({
-    id: z.string().min(1),
-    version: z.string().min(1),
-    parameters: recipeParameters,
-  }),
-  provider: z.string().min(1).nullable(),
-  model: z.string().min(1).nullable(),
-  embeddingSpace: z.string().min(1).nullable(),
-  contentRef: ContentReferenceSchema,
-  byteLength: z.number().int().nonnegative().safe(),
-  mediaType: z.string().min(1).max(256),
-  coverage: z.enum(['complete', 'incomplete']),
 });
 
 const manifestSchema = z.object({
   schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
   format: z.literal(KNOWLEDGE_PACKAGE_FORMAT),
-  formatVersion: z.literal(1),
   ownerScope: KnowledgeOwnerScopeSchema,
   knowledgeBaseId: KnowledgeBaseIdSchema,
   requiredFeatures: z.array(z.string()),
   notebookRevision: z.string().min(1).max(256),
   contentInventory: z.array(KnowledgePackageInventoryEntrySchema),
   mounts: z.array(mountSchema).min(1),
-  representations: z.array(KnowledgePackageRepresentationSchema),
 });
 
 /** Parsed package metadata grants no current scope, mount, publication or filesystem authority. */
@@ -150,7 +95,7 @@ export type KnowledgePackageManifest = z.infer<typeof manifestSchema>;
 /** Captured native provenance; content inventory is measured separately by the writer. */
 export type KnowledgePackageMetadata = Omit<
   KnowledgePackageManifest,
-  'schemaVersion' | 'format' | 'formatVersion' | 'contentInventory'
+  'schemaVersion' | 'format' | 'contentInventory'
 >;
 /** Exact declared byte identity for one included file. */
 export type KnowledgePackageInventoryEntry = z.infer<typeof KnowledgePackageInventoryEntrySchema>;
@@ -166,17 +111,11 @@ export function parseKnowledgePackageManifest(input: unknown): KnowledgePackageM
         !KNOWLEDGE_PACKAGE_FEATURES.includes(feature as (typeof KNOWLEDGE_PACKAGE_FEATURES)[number])
     ) ||
     !unique(manifest.contentInventory.map((file) => file.path)) ||
-    !unique(manifest.mounts.map((mount) => mount.name)) ||
-    !unique(manifest.representations.map((representation) => representation.id))
+    !unique(manifest.mounts.map((mount) => mount.name))
   )
     throw new Error('Unsupported semantics or duplicate Knowledge package member.');
   const defaults = manifest.mounts.filter((mount) => mount.default);
-  if (
-    defaults.length !== 1 ||
-    defaults[0]!.backend !== 'local' ||
-    defaults[0]!.root !== 'raw/' ||
-    manifest.mounts.some((mount) => mount.knowledgeBaseId !== manifest.knowledgeBaseId)
-  )
+  if (defaults.length !== 1 || defaults[0]!.backend !== 'local' || defaults[0]!.root !== 'raw/')
     throw new Error('Invalid Knowledge package mount binding.');
   const reservedMounts = new Set(
     manifest.mounts.filter((mount) => !mount.default).map((mount) => mount.name)
@@ -185,47 +124,10 @@ export function parseKnowledgePackageManifest(input: unknown): KnowledgePackageM
     if (file.path.startsWith('raw/') && reservedMounts.has(file.path.split('/')[1]!))
       throw new Error('Additional mount bytes cannot travel in a Knowledge package.');
   }
-  const inventory = new Map(manifest.contentInventory.map((file) => [file.path, file]));
   // A trailing slash sorts each parent directly before its descendants without rebuilding prefixes.
   const directoryKeys = manifest.contentInventory.map((file) => `${file.path}/`).sort();
   if (directoryKeys.some((key, index) => index > 0 && key.startsWith(directoryKeys[index - 1]!)))
     throw new Error('Knowledge package file and directory paths collide.');
-  const outputs = new Set<string>();
-  for (const representation of manifest.representations) {
-    const source = parseReferenceUri(representation.sourceReference)!;
-    if (
-      source.contentDigest !== representation.sourceContentDigest ||
-      representation.contentRef.knowledgeBaseId !== manifest.knowledgeBaseId ||
-      !manifest.mounts.some((mount) => mount.name === representation.contentRef.locator.mount) ||
-      JSON.stringify(representation.contentRef.locator.ownerScope) !==
-        JSON.stringify(manifest.ownerScope) ||
-      representation.contentRef.range !== null ||
-      (representation.provider === null) !== (representation.model === null)
-    )
-      throw new Error('Invalid Knowledge package derivative lineage.');
-    if (representation.path === null) {
-      if (representation.contentRef.availability !== 'unavailable')
-        throw new Error('Omitted derivative bytes are unavailable for package replay.');
-      continue;
-    }
-    const file = inventory.get(representation.path);
-    if (
-      !representation.path.startsWith('derived/') ||
-      outputs.has(representation.path) ||
-      representation.contentRef.availability !== 'available' ||
-      !file ||
-      file.contentDigest !== representation.contentRef.contentDigest ||
-      file.byteLength !== representation.byteLength
-    )
-      throw new Error('Included derivative bytes contradict their declared output.');
-    outputs.add(representation.path);
-  }
-  if (
-    manifest.contentInventory.some(
-      (file) => file.path.startsWith('derived/') && !outputs.has(file.path)
-    )
-  )
-    throw new Error('A Knowledge package derivative lacks lineage.');
   return manifest;
 }
 
@@ -237,7 +139,6 @@ export function createKnowledgePackageManifest(
   const manifest = parseKnowledgePackageManifest(
     writeRetainedV1({
       format: KNOWLEDGE_PACKAGE_FORMAT,
-      formatVersion: 1,
       ...metadata,
       contentInventory: [...inventory],
     })
@@ -246,7 +147,6 @@ export function createKnowledgePackageManifest(
   manifest.requiredFeatures.sort(compare);
   manifest.contentInventory.sort((left, right) => compare(left.path, right.path));
   manifest.mounts.sort((left, right) => compare(left.name, right.name));
-  manifest.representations.sort((left, right) => compare(left.id, right.id));
   return manifest;
 }
 
@@ -272,6 +172,5 @@ export function serializeKnowledgePackageManifest(manifest: KnowledgePackageMani
     }
     return JSON.stringify(value)!;
   };
-  // Render own keys directly: integer-like and prototype-named settings retain exact meaning.
   return `${render(manifest, 0)}\n`;
 }
