@@ -313,7 +313,7 @@ export function importMcpToolSchemaSnapshots(
       )
       .get(snapshot.schemaSnapshotId);
     if (existing) readRetainedV1(existing, () => undefined);
-    const tools = z.array(WorkerCapabilityMcpToolSchema).parse(snapshot.tools);
+    const tools = z.array(StoredMcpToolV1Schema).parse(snapshot.tools);
     if (mcpToolSchemaContentDigest(tools) !== snapshot.contentDigest) {
       throw new Error(`MCP schema snapshot digest mismatch: ${snapshot.schemaSnapshotId}`);
     }
