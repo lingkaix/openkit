@@ -1182,6 +1182,8 @@ export function createKnowledgeOperationImplementations(
             query: commandInput.query,
             limit: commandInput.limit,
             pinnedReferences: commandInput.pinnedReferences,
+            types: commandInput.types,
+            appliesTo: commandInput.appliesTo,
             sourceScope: commandInput.sourceScope,
             states: commandInput.states,
             access: {

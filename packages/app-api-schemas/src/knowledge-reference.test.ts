@@ -187,3 +187,26 @@ describe('Knowledge Proposal page proof references', () => {
     ).toBe(false);
   });
 });
+
+it('admits narrowing type/applicability lists and retains them in existing trace parameters only when supplied', () => {
+  const filters = {
+    types: ['Rule', 'Effect'],
+    appliesTo: ['tool:invoice.check', 'step:invoice-review'],
+  };
+  expect(RetrieveKnowledgeRequestSchema.parse({ query: 'invoice', ...filters })).toMatchObject(
+    filters
+  );
+  const filteredTrace = {
+    ...trace,
+    retrievalParameters: { ...trace.retrievalParameters, ...filters },
+  };
+  expect(KnowledgeRetrievalTraceSchema.parse(filteredTrace)).toEqual(filteredTrace);
+  expect(KnowledgeRetrievalTraceReaderSchema.parse(filteredTrace)).toEqual(filteredTrace);
+  expect(RetrieveKnowledgeRequestSchema.parse({ query: 'invoice' })).not.toHaveProperty('types');
+  expect(KnowledgeRetrievalTraceSchema.parse(trace)).toEqual(trace);
+  for (const invalid of [{ types: [] }, { appliesTo: [] }, { types: [''] }, { appliesTo: [1] }]) {
+    expect(RetrieveKnowledgeRequestSchema.safeParse({ query: 'invoice', ...invalid }).success).toBe(
+      false
+    );
+  }
+});
