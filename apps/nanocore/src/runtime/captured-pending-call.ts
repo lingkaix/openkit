@@ -49,7 +49,12 @@ export interface PreparedCapturedPendingCall {
   readonly failed: boolean;
   readonly injections?: readonly PendingMcpVaultInjection[];
   /** Independent current pipeline evaluation; the claim keeps its existing derived decision. */
-  readonly mediation?: { readonly decisionId: string; readonly current: () => boolean };
+  readonly mediation?: {
+    readonly decisionId: string;
+    readonly current: () => boolean;
+    /** Optional post-outcome observation owned by response composition. */
+    readonly observe?: () => Promise<void>;
+  };
 }
 
 /** Resolves credential material through the existing audited MCP Vault owner before a claim. */
