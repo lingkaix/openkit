@@ -3,15 +3,17 @@ import { describe, it } from 'node:test';
 import {
   GOAL_OPERATION_DEFINITIONS,
   KERNEL_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
   SYNC_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 315;
+const EXPECTED_CATALOG_SIZE = 316;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 237;
+const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -386,11 +388,32 @@ const WEB_OPERATION_GROUPS = {
  */
 
 /**
+ * True when the catalog operation admits only the Worker package credential.
+ *
+ * @param {string} operationKey Catalog operation key.
+ * @returns {boolean} Whether the operation is Worker-only.
+ */
+function isWorkerOnlyOperation(operationKey) {
+  const definition = OPERATION_DEFINITIONS[operationKey];
+  return (
+    definition !== undefined &&
+    definition.credentials.length === 1 &&
+    definition.credentials[0] === 'worker-package'
+  );
+}
+
+/**
  * Partitions the runtime public-operation catalog by Web inclusion.
  *
  * @param {Readonly<Record<string, { authentication?: string, scope: string }>>} catalog
  * Runtime `PUBLIC_OPERATION_ACCESS` value.
- * @returns {{ gateway: string[], included: string[], server: string[], total: number }}
+ * @returns {{
+ *   gateway: string[],
+ *   included: string[],
+ *   server: string[],
+ *   worker: string[],
+ *   total: number
+ * }}
  * Sorted operation-key partitions.
  */
 function partitionCatalog(catalog) {
@@ -398,6 +421,7 @@ function partitionCatalog(catalog) {
   const gateway = [];
   const included = [];
   const server = [];
+  const worker = [];
 
   for (const [operationKey, access] of entries) {
     if (access.scope === 'server') {
@@ -408,6 +432,10 @@ function partitionCatalog(catalog) {
       gateway.push(operationKey);
       continue;
     }
+    if (isWorkerOnlyOperation(operationKey)) {
+      worker.push(operationKey);
+      continue;
+    }
     if (access.scope === 'user' || access.scope === 'workspace') {
       included.push(operationKey);
     }
@@ -416,7 +444,8 @@ function partitionCatalog(catalog) {
   gateway.sort();
   included.sort();
   server.sort();
-  return { gateway, included, server, total: entries.length };
+  worker.sort();
+  return { gateway, included, server, worker, total: entries.length };
 }
 
 /**
@@ -499,7 +528,7 @@ describe('Web user operation surface contract', () => {
     }
   });
 
-  it('accounts for every included catalog operation and excludes server and Gateway-actor operations', () => {
+  it('accounts for every included catalog operation and excludes server, Gateway-actor, and Worker-only operations', () => {
     const catalog = partitionCatalog(PUBLIC_OPERATION_ACCESS);
     const inventory = flattenInventory(WEB_OPERATION_GROUPS);
     const inventoried = [...inventory.operations.keys()].sort();
@@ -508,6 +537,7 @@ describe('Web user operation surface contract', () => {
     assert.equal(catalog.server.length, EXPECTED_SERVER_SIZE);
     assert.equal(catalog.gateway.length, EXPECTED_GATEWAY_SIZE);
     assert.equal(catalog.included.length, EXPECTED_INCLUDED_SIZE);
+    assert.deepEqual(catalog.worker, EXPECTED_WORKER_ONLY);
     assert.ok(catalog.server.includes('app-update.preflight'));
     assert.ok(catalog.server.includes('administration.cleanup-read'));
     assert.ok(catalog.included.includes('caller.read'));
@@ -519,6 +549,10 @@ describe('Web user operation surface contract', () => {
     );
     assert.deepEqual(
       inventoried.filter((operationKey) => catalog.gateway.includes(operationKey)),
+      []
+    );
+    assert.deepEqual(
+      inventoried.filter((operationKey) => catalog.worker.includes(operationKey)),
       []
     );
     assert.deepEqual(

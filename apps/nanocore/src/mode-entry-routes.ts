@@ -4465,6 +4465,15 @@ export function createConversationService({
           (capture) =>
             runAssistantModel({
               systemPrompt,
+              knowledge: {
+                store,
+                coreDb,
+                workspaceId: turn.workspaceId,
+                threadId: turn.threadId,
+                turnId: turn.id,
+                actor: turn.triggerActor,
+                requestActor: outcomeActor,
+              },
               messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
               context: {
                 store,
