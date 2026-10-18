@@ -1643,7 +1643,10 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const originalTransaction = coreDb.sqlite.transaction.bind(coreDb.sqlite);
       coreDb.sqlite.transaction = ((fn: () => unknown) =>
         originalTransaction(() => {
-          writeFileSync(join(slotRoot, 'A.meta'), foreignCompanion, { mode: 0o600 });
+          // Startup can transact before enrollment delivers the token.
+          if (existsSync(join(slotRoot, 'A.token'))) {
+            writeFileSync(join(slotRoot, 'A.meta'), foreignCompanion, { mode: 0o600 });
+          }
           return fn();
         })) as typeof coreDb.sqlite.transaction;
 

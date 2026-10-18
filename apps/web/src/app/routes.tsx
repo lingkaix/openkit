@@ -5,7 +5,6 @@ import { AccountBoundary, AccountScreen } from '../screens/account';
 import { ArtifactsScreen } from '../screens/artifacts';
 import { AutomationsScreen } from '../screens/automations';
 import { ChatStarter, ThreadScreen } from '../screens/chat';
-import { ChannelsScreen } from '../screens/demos';
 import { GenerativeScreen } from '../screens/generative';
 import { ArtifactReviewScreen, GoalScreen } from '../screens/goal';
 import { MaterialScreen } from '../screens/material';
@@ -16,6 +15,7 @@ import {
   AdministrationScreen,
   AiInterfaceScreen,
   AppUpdateScreen,
+  ChannelsScreen,
   ConfigurationScreen,
   DataRootBackupScreen,
   DebugScreen,

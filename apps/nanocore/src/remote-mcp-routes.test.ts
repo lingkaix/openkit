@@ -990,6 +990,7 @@ describe('remote MCP App endpoint', () => {
         'artifact.download',
         'artifact.import',
         'bootstrap.consume',
+        'channel.discord.pair',
         'token.create',
         'token.rotate',
         'workspace.archive-download',
