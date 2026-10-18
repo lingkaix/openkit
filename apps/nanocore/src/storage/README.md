@@ -157,3 +157,5 @@ SQL rows that independently decode retained JSON carry `schema_version: 1`; scal
 Artifact Review native SQL reads check the retained row marker before decoding range feedback or candidate choices. The fixed v1 tuple in `../artifact-review-v1.ts` owns that retained meaning; current API request schemas still admit new commands. Descriptive choice annotations survive later appends without changing closed decision values or Material-base checks.
 
 MCP Tool schema snapshots use the same SQL marker before retained and current reads, export, identity collision inspection or replacement. Their v1 native Tool decoder freezes captured name and input-schema meaning; new catalog admission remains separate. Nested input-schema annotations remain exact for the existing digest and captured approval checks.
+
+Goal and Task export rows come from the existing Goal owner through `listExportableGoalState`, which checks each SQL marker before its fixed v1 decoder. Transfer replay publishes explicit columns and v1 markers. An unsupported row cannot pass through an archive and return as current v1 authority.

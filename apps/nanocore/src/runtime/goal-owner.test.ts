@@ -11,6 +11,7 @@ import {
   advanceGoalRevision,
   checkGoalCommandIntent,
   executeGoalOperation,
+  listExportableGoalState,
   readGoalView,
 } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
@@ -278,6 +279,7 @@ describe('Proposed Plan eligibility', () => {
       .prepare(`SELECT schema_version AS schemaVersion, payload_json FROM ${table} WHERE goal_id=?`)
       .get(f.scope.goalId) as { schemaVersion: number; payload_json: string };
     expect(row.schemaVersion).toBe(1);
+    expect(listExportableGoalState(f.db).goals).toHaveLength(1);
     const payload = JSON.parse(row.payload_json);
     payload.futureNote = 'retained';
     if (table === 'goals') payload.intentHistory[0].futureNote = 'retained history';
@@ -342,6 +344,7 @@ describe('Proposed Plan eligibility', () => {
     expect(() => readGoalView(f.store, f.db, f.scope.goalId)).toThrow(
       'Unsupported retained record format.'
     );
+    expect(() => listExportableGoalState(f.db)).toThrow('Unsupported retained record format.');
     if (table === 'goals') {
       expect(() => advanceGoalRevision(f.db, f.scope.goalId)).toThrow(
         'Unsupported retained record format.'

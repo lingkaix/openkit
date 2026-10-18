@@ -37,6 +37,7 @@ import {
   StoredGoalCompletionCandidateV1Schema,
   StoredGoalPlanVersionV1Schema,
   StoredGoalV1Schema,
+  StoredTaskTerminalFactV1Schema,
 } from './goal-retained-v1.js';
 import {
   commandInputHash,
@@ -246,6 +247,26 @@ export function listGoalsForThread(db: WorkspaceDb, threadId: string): GoalRecor
     }[]
   ).map((row) => readRetainedV1(row, () => StoredGoalV1Schema.parse(JSON.parse(row.payload_json))));
 }
+/** Captures native Goal and Task history for export; an unsupported SQL format never becomes current import input. */
+export function listExportableGoalState(db: WorkspaceDb) {
+  const readFamily = <T>(table: string, schema: z.ZodType<T>): T[] =>
+    (
+      db.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,payload_json FROM ${table}`)
+        .all() as {
+        schemaVersion: unknown;
+        payload_json: string;
+      }[]
+    ).map((row) => readRetainedV1(row, () => schema.parse(JSON.parse(row.payload_json))));
+  return {
+    goals: readFamily('goals', StoredGoalV1Schema),
+    cards: readFamily('goal_cards', StoredGoalCardV1Schema),
+    versions: readFamily('goal_plan_versions', StoredGoalPlanVersionV1Schema),
+    tasks: readFamily('goal_card_tasks', StoredGoalCardTaskV1Schema),
+    terminalFacts: readFamily('task_turn_terminal_facts', StoredTaskTerminalFactV1Schema),
+  };
+}
+
 /** Derives admission and state from ordinary Task Turns; retained citations alone prove neither. */
 export function readGoalView(store: FsStore, db: WorkspaceDb, goalId: string): GoalView {
   const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);

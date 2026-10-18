@@ -88,6 +88,7 @@ import {
   importAgentEnvironmentPackageSnapshots,
   listExportableAgentEnvironmentPackageSnapshots,
 } from '../runtime/aep-snapshot-ledger.js';
+import { listExportableGoalState } from '../runtime/goal-owner.js';
 import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
@@ -633,13 +634,7 @@ function collectWorkspaceExportRows(
         runtimeEvidence: listWorkspaceRuntimeEvidence(workspaceDb, workspaceId),
         usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
         vaultUseRecords: listExportableWorkspaceVaultUseRecords(workspaceDb, workspaceId),
-        goalState: {
-          goals: readGoalPayloads(workspaceDb, 'goals'),
-          cards: readGoalPayloads(workspaceDb, 'goal_cards'),
-          versions: readGoalPayloads(workspaceDb, 'goal_plan_versions'),
-          tasks: readGoalPayloads(workspaceDb, 'goal_card_tasks'),
-          terminalFacts: readGoalPayloads(workspaceDb, 'task_turn_terminal_facts'),
-        },
+        goalState: listExportableGoalState(workspaceDb),
         workerCheckpoints: listExportableWorkerCheckpoints(workspaceDb, workspaceId),
         workspaceApplyPlans: listExportableWorkspaceApplyPlans(workspaceDb, workspaceId),
         workspaceApplyResults: listExportableWorkspaceApplyResults(workspaceDb, workspaceId),
@@ -1752,11 +1747,4 @@ export function registerWorkspaceTransferRoutes({
       staged?.remove();
     }
   });
-}
-
-/** Captures current Goal-family bytes on the export transaction, without interpreting retired data. */
-function readGoalPayloads(db: WorkspaceDb, table: string): unknown[] {
-  return (
-    db.sqlite.prepare(`SELECT payload_json FROM ${table}`).all() as { payload_json: string }[]
-  ).map((row) => JSON.parse(row.payload_json) as unknown);
 }

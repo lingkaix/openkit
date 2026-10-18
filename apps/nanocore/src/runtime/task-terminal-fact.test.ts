@@ -5,7 +5,7 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { executeGoalOperation, readGoalView } from './goal-owner.js';
+import { executeGoalOperation, listExportableGoalState, readGoalView } from './goal-owner.js';
 import { recordTaskTerminalFact, recoverTaskTerminalFacts } from './task-terminal-fact.js';
 
 /** The retained association supplies terminal wake lineage; this fixture admits no Worker. */
@@ -67,6 +67,7 @@ describe('retained Task terminal fact format', () => {
       .prepare('SELECT schema_version AS schemaVersion, payload_json FROM task_turn_terminal_facts')
       .get() as { schemaVersion: number; payload_json: string };
     expect(row.schemaVersion).toBe(1);
+    expect(listExportableGoalState(f.db).terminalFacts).toHaveLength(1);
     const annotatedBytes = JSON.stringify({
       ...JSON.parse(row.payload_json),
       futureNote: 'retained',
@@ -97,6 +98,7 @@ describe('retained Task terminal fact format', () => {
     expect(() => recoverTaskTerminalFacts(f.store, f.db)).toThrow(
       'Unsupported retained record format.'
     );
+    expect(() => listExportableGoalState(f.db)).toThrow('Unsupported retained record format.');
     expect(() => recordTaskTerminalFact(f.db, f.terminal)).toThrow(
       'Unsupported retained record format.'
     );
