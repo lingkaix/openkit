@@ -418,6 +418,7 @@ function recordNativeResumeFixturePackage(
   });
   store.updateAgentSession(agentSessionId, {
     environmentPackageSnapshotId: environmentPackage.snapshotId,
+    updatedAt: session.updatedAt,
   });
   const workspaceDb = openTestWorkspaceDb(coreDb);
   try {
@@ -2148,7 +2149,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('reuses compatible continuity without previewing a fresh AgentSession target', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2174,10 +2176,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: turn.workspaceId,
       workspaceRoots: [],
     });
+    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6');
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'reusable' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const preview = vi.fn((agentSessionId: string) => {
       if (agentSessionId !== 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6') {
         throw new Error('Fresh target must not be previewed for compatible reuse.');
@@ -2217,7 +2220,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('previews a fresh target before closing runtime-incompatible continuity', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2239,10 +2243,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: turn.workspaceId,
       workspaceRoots: [],
     });
+    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-7cba-9aba-f054b08da113');
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'replacement-required' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     Object.assign(executor, {
       previewAgentSessionCompatibilityKey: (agentSessionId: string) => {
         if (agentSessionId === 'as_00000000-0000-79f4-a228-8748c8f8333f') {
