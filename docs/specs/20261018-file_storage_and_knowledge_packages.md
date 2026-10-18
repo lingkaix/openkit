@@ -16,8 +16,12 @@ This specification owns shared content references, the Storage boundary, Knowled
 
 Ablation: existing owners supply scope, permission, communication and retained-data constraints.
 
-- [Storage](../core/storage.md), [Knowledge](../core/knowledge.md), and [Communication](../core/communication.md).
-- [Permissions](../core/permissions.md), [Contract Evolution](../core/contract-evolution.md), and [Vault](../core/vault.md).
+- [Storage](../core/storage.md), [Knowledge](../core/knowledge.md), [Communication](../core/communication.md), [Permissions](../core/permissions.md), [Contract Evolution](../core/contract-evolution.md), and [Vault](../core/vault.md).
+
+## Related Docs
+
+Ablation: reuse peer record, publication and format owners rather than duplicate their contracts.
+
 - [Storage Layout](20260703-storage_layout_record_ownership.md), [Schema Evolution](20260703-schema_evolution_record_envelope.md), [Policy Enforcement](20260703-policy_enforcement_mapping.md).
 - [Knowledge Store](20260703-knowledge_store_implementation.md), [Notebook](20260909-knowledge_notebook_editing.md), [Context](20260703-worker_context_package.md), [Session Materialization](20260704-session_static_workspace_materialization.md).
 - [Retrieval Kernel](20261014-retrieval_kernel.md), [Backup/Export](20260704-workspace_backup_export_import.md), [Work Data Retention](20260921-work_data_retention_format.md).
@@ -48,23 +52,19 @@ The shared citable `contentRef` carries `knowledgeBaseId`, `contentDigest`, `loc
 | Page | `{kind: page, page}`; positive integer page number. |
 | Time range | `{kind: time, startSeconds, endSeconds}`; finite nonnegative seconds, end not before start. |
 | Frame | `{kind: frame, frame, numbering, coordinateSpace}`; integer frame, explicit zero/one-based numbering and source space. |
-| `availability` | `available` or `unavailable`, observed rather than guaranteed. |
+| `availability` | `available` or `unavailable`; observed, not permission or a future guarantee. Preserve descriptive metadata, digest and captured locator. |
 
 Tagged values and coordinate-space names are strings; frame values respect their declared numbering. Ranges cannot silently change coordinate systems. Storage range reads accept byte coordinates, not an implicit media conversion.
 
 Reuse existing qualified Source ID/digest and versioned Artifact references as attachment identities; allocate no parallel attachment ID. Source pointers bind logical mount paths only; backend locations belong to mount declarations. Other owners may retain verified `locations`. Reuse capture/publication timestamps. Digests and locators are citable facts, not authority.
 
-References use `availability: available | unavailable` without removing descriptive metadata, digest or captured locator. Availability is an observation, not a permission or future guarantee. Missing, changed, inaccessible and unsupported sources have bounded explicit outcomes. Public errors do not expose denied metadata.
-
 ## Reference Lifecycle
 
 Ablation: references may miss without silently substituting different content or forcing retention copies.
 
-Verify resolved bytes against the captured digest and size before claiming exact content. A changed file at the same locator is unavailable for that reference. Another location is usable only when currently authorized and verified against the same identity. A new capture uses the existing owner's publication lifecycle. Never guess a replacement from a name or title.
+Verify resolved bytes against the captured digest and size before claiming exact content. A changed file at the same locator is unavailable for that reference. Another location is usable only when currently authorized and verified against the same identity. A new capture uses the existing owner's publication lifecycle. Never guess a replacement from a name or title. Missing, changed, inaccessible and unsupported sources have bounded explicit outcomes. Public errors do not expose denied metadata.
 
-For reference-only sources, reading or processing creates no retention promise. Do not copy originals or derivative excerpts solely for later replay. Explicitly imported managed files are originals, not additional retention copies. Rebuildable derivatives may support current processing/indexing without guaranteeing future retrieval.
-
-Deletion follows existing owner/hold rules. Metadata can survive deliberate deletion of bulky source bytes; no new tombstone family is required. Restart resolves current availability, never reconstructs from today's changed source. Retry repeats current admission. Existing independently governed work records retain their lifecycles. Complete retention remains a later user-enabled option under the [reference decision](../decisions/20260921-references_may_miss_never_mislead.md).
+For reference-only sources, reading or processing creates no retention promise. Do not copy originals or derivative excerpts solely for later replay. Explicitly imported managed files are originals, not additional retention copies. Rebuildable derivatives may support current processing/indexing without guaranteeing future retrieval. Deletion follows existing owner/hold rules. Metadata can survive deliberate deletion of bulky source bytes; no new tombstone family is required. Restart resolves current availability, never reconstructs from today's changed source. Retry repeats current admission. Existing independently governed work records retain their lifecycles. Complete retention remains a later user-enabled option under the [reference decision](../decisions/20260921-references_may_miss_never_mislead.md).
 
 ## Storage Package And Policy Leases
 
