@@ -121,7 +121,7 @@ describe('native Skill management command evidence', () => {
     expect(first.status, await first.clone().text()).toBe(200);
     const prior = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.pins[0]!;
     const firstAudit = f.workspaceDb.sqlite
-      .prepare('SELECT id FROM audit_events WHERE request_id = ? AND action = ?')
+      .prepare('SELECT audit_event_id AS id FROM audit_events WHERE request_id = ? AND action = ?')
       .get(pinInput.requestId, 'catalog.skill-pin.admit') as { id: string };
     expect(prior).toMatchObject({ digest: f.first, pinAuditRef: firstAudit.id });
 
@@ -136,7 +136,7 @@ describe('native Skill management command evidence', () => {
     const winning = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.pins[0]!;
     const winner = f.workspaceDb.sqlite
       .prepare(
-        'SELECT id, request_id AS requestId, actor_json AS actor FROM audit_events WHERE request_id = ? AND action = ?'
+        'SELECT audit_event_id AS id, request_id AS requestId, actor_json AS actor FROM audit_events WHERE request_id = ? AND action = ?'
       )
       .get(repeated.requestId, 'catalog.skill-pin.admit') as {
       id: string;
@@ -175,7 +175,9 @@ describe('native Skill management command evidence', () => {
     expect(cleared.status, await cleared.clone().text()).toBe(200);
     expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).skills.pins).toEqual([]);
     expect(
-      f.workspaceDb.sqlite.prepare('SELECT id FROM audit_events WHERE id = ?').get(winner.id)
+      f.workspaceDb.sqlite
+        .prepare('SELECT audit_event_id AS id FROM audit_events WHERE audit_event_id = ?')
+        .get(winner.id)
     ).toEqual({ id: winner.id });
   });
 
