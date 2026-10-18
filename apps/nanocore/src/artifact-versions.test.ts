@@ -129,6 +129,42 @@ function forbiddenRetrySource() {
 }
 
 describe('exact Artifact version commands', () => {
+  it('preserves exact originals when an inline version is followed by a binary version', async () => {
+    const state = await fixture();
+    const text = 'Exact inline revision.\r\n';
+    await commitArtifactVersionCommand({
+      store: state.store,
+      workspaceDb: state.db,
+      inflightCommands: state.inflightCommands,
+      context: state.context,
+      command: 'artifact.version-commit',
+      metadata: {
+        workspaceId: state.workspace.id,
+        threadId: state.thread.id,
+        artifactId: state.metadata.artifactId,
+        expectedArtifactVersion: 1,
+        requestId: 'commit-inline-between-binaries',
+        title: 'Inline revision',
+        summary: null,
+        content: { format: 'text', body: text },
+      },
+      admission: state.admission,
+      assertAuthorized: () => {},
+    });
+    const result = await state.submit(undefined, undefined, { expectedArtifactVersion: 2 });
+    expect(result.artifact.version).toBe(3);
+    expect(result.version.parentVersion).toBe(2);
+    expect(state.read(1)).toEqual(state.original);
+    expect(state.read(2)).toEqual(Buffer.from(text));
+    expect(state.read(3)).toEqual(state.next);
+    const reopened = new FsStore({ dataRoot: state.dataRoot });
+    expect(
+      reopened.getArtifactVersion(state.workspace.id, state.metadata.artifactId, 2).artifact.content
+    ).toEqual({ format: 'text', body: text });
+    expect(reopened.getArtifactVersion(state.workspace.id, state.metadata.artifactId, 3)).toEqual(
+      result
+    );
+  });
   it('refuses partial next-version authority before retry capture and after restart', async () => {
     const state = await fixture();
     mkdirSync(
