@@ -117,7 +117,8 @@ export async function publishScopedNotebook(
         : {}),
       revalidate: () => {
         // Current identity/credential admission precedes every retained read and the publisher's final CAS.
-        const currentFiles = pinScopedNotebook(context).read().files;
+        const pinnedNotebook = pinScopedNotebook(context);
+        const currentFiles = pinnedNotebook.read().files;
         const baseFiles = notebook.readRevision(request.baseRevision).files;
         const suppressions = userDb
           ? readMemorySuppressions(owner.notebookRoot, userDb.userId)
@@ -179,6 +180,10 @@ export async function publishScopedNotebook(
               .knowledgeMaintenance
           : current.openKitConfig.knowledgeMaintenance;
         return {
+          pageScopeId:
+            owner.ownerScope.kind === 'user'
+              ? `page/user/${owner.ownerScope.userId}/${pinnedNotebook.knowledgeBaseId}`
+              : `page/server/${pinnedNotebook.knowledgeBaseId}`,
           scopeSchemaText: scopeSchema(owner.notebookRoot),
           reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
           registeredSources,
@@ -205,7 +210,8 @@ export function readScopedNotebookHistory(
     target: { ...input.target },
   };
   const owner = resolveScopedNotebookOwner(context);
-  assertEmptySourceReferences(pinScopedNotebook(context).read().files);
+  const pinned = pinScopedNotebook(context);
+  assertEmptySourceReferences(pinned.read().files);
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
   });
@@ -219,6 +225,10 @@ export function readScopedNotebookHistory(
     assertEmptySourceReferences(revision.files);
     const checked = validateNotebookCandidate({
       ownerScope: owner.ownerScope,
+      pageScopeId:
+        owner.ownerScope.kind === 'user'
+          ? `page/user/${owner.ownerScope.userId}/${pinned.knowledgeBaseId}`
+          : `page/server/${pinned.knowledgeBaseId}`,
       base: { files: {} },
       candidate: revision,
       scopeSchemaText,

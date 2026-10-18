@@ -3,12 +3,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import { FsStore } from './lib/store.js';
@@ -133,7 +134,7 @@ describe('published Workspace notebook reads', () => {
       caller: 'app-api',
       query: 'Original notebook retrieval bytes',
       limit: 5,
-      pinnedReferences: [{ scopeId: `page/workspace/${f.workspaceId}`, objectId: 'stable/pinned' }],
+      pinnedReferences: [{ scopeId: workspacePageScope(f), objectId: 'stable/pinned' }],
     });
     expect(selection.notebookRevision).toBe(revision);
     expect(selection.selected[0]).toMatchObject({ revision, contentDigest: digest(content) });
@@ -166,7 +167,9 @@ describe('published Workspace notebook reads', () => {
     );
     publish(f, {
       'origin.md': origin,
-      'selected.md': page('Derived from unknown restriction', ['knowledge:origin']),
+      'selected.md': page('Derived from unknown restriction', [
+        formatReferenceUri({ scopeId: workspacePageScope(f), objectId: 'origin' }),
+      ]),
     });
     expect(() =>
       readAuthorizedWorkspaceNotebookPages({ ...f, pageIds: ['selected'] })
@@ -309,7 +312,10 @@ describe('published Workspace notebook reads', () => {
     const origin = page('Original nested source', [], 'ORIGINAL-IMMUTABLE-BYTES\n');
     const content = page('Selected page', [
       `source:${source.id}@${source.contentDigest}`,
-      `knowledge:nested/origin@${digest(origin)}`,
+      formatReferenceUri(
+        { scopeId: workspacePageScope(f), objectId: 'nested/origin' },
+        digest(origin)
+      ),
     ]);
     const revision = publish(f, { 'selected.md': content, 'nested/origin.md': origin });
     const read = f.store.readKnowledgeSourceMaterial.bind(f.store);
@@ -507,7 +513,12 @@ describe('published Workspace notebook reads', () => {
     const origin = page('Origin');
     const refs =
       condition === 'nested-digest'
-        ? [`knowledge:origin@sha256:${'f'.repeat(64)}`]
+        ? [
+            formatReferenceUri(
+              { scopeId: workspacePageScope(f), objectId: 'origin' },
+              `sha256:${'f'.repeat(64)}`
+            ),
+          ]
         : [
             `source:${source.id}@${condition === 'pin' ? `sha256:${'f'.repeat(64)}` : source.contentDigest}`,
           ];
@@ -660,4 +671,9 @@ function removeMember(f: ReturnType<typeof fixture>, userId: string): void {
       "UPDATE workspace_members SET status = 'removed', removed_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
     )
     .run(now, now, f.workspaceId, userId);
+}
+
+/** Reads the base retained by the actual Workspace creator. */
+function workspacePageScope(f: ReturnType<typeof fixture>): string {
+  return `page/workspace/${f.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspaceId } })}`;
 }

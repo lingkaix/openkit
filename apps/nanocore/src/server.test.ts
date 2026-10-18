@@ -80,6 +80,7 @@ import {
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -5617,7 +5618,7 @@ describe('nanocore server', () => {
           selected: expect.arrayContaining([
             expect.objectContaining({
               reference: {
-                scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                scopeId: `page/workspace/ws_00000000-0000-7000-8000-000000000001/${readDefaultKnowledgeBaseId({ dataRoot: coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' } })}`,
                 objectId: knowledge.id,
               },
             }),
