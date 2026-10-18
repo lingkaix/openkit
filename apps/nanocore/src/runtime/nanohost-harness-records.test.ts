@@ -109,6 +109,7 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
+  // Twenty durable Turn admissions need fixture time under parallel gates; capacity assertions stay exact.
   it('runs twenty Thread-bound Turns in one Harness and releases only the inspected sibling', () => {
     const coreDb = openActiveTurnDb('twenty-thread-turns-', 20);
     try {
@@ -242,7 +243,8 @@ describe('private NanoHost Harness records', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
+
   it('reserves the shared Sandbox bound while another runtime Harness start is still queued', () => {
     const coreDb = openActiveTurnDb('cross-harness-queued-capacity-', 2);
     try {

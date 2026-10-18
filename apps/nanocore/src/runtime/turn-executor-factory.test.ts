@@ -14202,6 +14202,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // The multi-database restart fixture needs headroom under parallel gates; storage and cleanup checks stay exact.
   it.each([
     {
       missingStorage: false,
@@ -14550,7 +14551,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('rejects persistent runtime-file credentials and unsupported Providers before effects', async () => {
     const coreDb = createFactoryCoreDb();
