@@ -16,6 +16,7 @@ import {
   deriveEntityId,
   isSealedTurnTerminal,
   readRetainedV1,
+  PolicyDelegationV1Schema,
   type TurnSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
@@ -29,6 +30,8 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { FsStore } from '../lib/store.js';
+import type { GoalDomainPolicyService } from '../policy/goal-domains.js';
+import { policyDigest } from '../policy/statements.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   StoredGoalCardTaskV1Schema,
@@ -88,6 +91,11 @@ export interface GoalOwnerServices {
   readonly wake?: (workspaceId: string, goalId: string) => void;
   readonly interrupt?: (turn: Turn) => void;
   readonly grantAuthority?: (record: PendingRequestRecord) => boolean;
+  /** Native publication uses the recorded deciding credential and the caller-owned DB lifetime. */
+  readonly goalDomain?: {
+    readonly forActor: (actor: Actor, db: WorkspaceDb) => GoalDomainPolicyService;
+    readonly currentRevision: () => string;
+  };
 }
 /** Domain-owned outcomes, preserved by every projection. */
 export class GoalCommandError extends Error {
@@ -393,6 +401,10 @@ function raiseIntent(
       'The proposal request Turn was not admitted.',
       409
     );
+  const description =
+    exact.operation === 'goal.plan.approve'
+      ? 'Approve the exact Plan and typed Goal domain.'
+      : 'Approve the exact captured commitment.';
   const itemId = allocateEntityId('it');
   raiseRecordedPendingRequest(store, db.sqlite, {
     requestId,
@@ -405,7 +417,7 @@ function raiseIntent(
     agentId: 'goal-coordinator',
     responsibleUserId: goal.responsibleUserId,
     governedIntent: exact,
-    approval: { kind: 'permission', title, description: 'Approve the exact captured commitment.' },
+    approval: { kind: 'permission', title, description },
     now: now(),
   });
   store.createItem({
@@ -419,10 +431,37 @@ function raiseIntent(
     status: 'completed',
     completedAt: now(),
     title,
-    description: 'Approve the exact captured commitment.',
+    description,
     createdAt: now(),
   });
 }
+/** Pins the typed proposal to native Plan lineage before the human sees either effect. */
+function captureGoalDomain(
+  input: OperationInput<'goal.plan.propose'>['goalDomain'],
+  goal: GoalRecord,
+  version: GoalPlanVersion,
+  context: GoalOwnerContext
+): { statement: z.infer<typeof PolicyDelegationV1Schema>; digest: string } {
+  const statement = PolicyDelegationV1Schema.parse({
+    ...input,
+    kind: 'delegation',
+    state: 'inactive',
+    purpose: 'goal-domain',
+    delegate: { kind: 'agent', id: 'goal-coordinator' },
+    author: { kind: 'human', id: context.actor.userId },
+    authority: { kind: 'human', userId: context.actor.userId },
+    authoredAt: version.createdAt,
+    source: {
+      workspaceId: goal.workspaceId,
+      goalId: goal.goalId,
+      planVersionId: version.planVersionId,
+      planDigest: version.digest,
+      approvalRequestId: version.pendingRequestId,
+    },
+  });
+  return { statement, digest: policyDigest(statement) };
+}
+
 /** Re-evaluates exact authority synchronously before CAS, with no Task effect. */
 function consumeGrant(
   store: FsStore,
@@ -771,6 +810,18 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               'The Coordinator cannot resolve its own approval.',
               403
             );
+          // A new explicit publication attempt uses the committed outcome without consuming the grant again or restoring an obsolete Plan pointer.
+          if (
+            services.goalDomain &&
+            id === 'goal.plan.approve' &&
+            !goal.disposition &&
+            goal.activePlanVersionId === request.governedIntent.planVersionId &&
+            request.state === 'resolved' &&
+            request.resolution === 'granted' &&
+            request.claim === 'finished' &&
+            request.disposition === 'approved-executed'
+          )
+            return readGoalView(store, db, goalId);
           goal = consumeGrant(store, db, goal, request, services);
         } else {
           goal = requireOpen(readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema));
@@ -865,6 +916,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               pendingRequestId: `ap_${commandInput.requestId}`,
               createdAt: now(),
             };
+            const goalDomain = captureGoalDomain(input.goalDomain, goal, version, context);
             invalidateGoalPendingRequests(
               db.sqlite,
               goalId,
@@ -895,6 +947,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
                 planVersionId: version.planVersionId,
                 digest: version.digest,
                 bytes,
+                goalDomain,
               },
               version.pendingRequestId,
               'Approve Goal Plan',
@@ -1048,6 +1101,39 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       if (id === 'goal.cancel' || ('cardId' in input && link.cardId === input.cardId))
         for (const turn of store.listThreadTurns(input.workspaceId, link.threadId))
           if (!isSealedTurnTerminal(turn.status)) services.interrupt?.(turn);
+  if (services.goalDomain && result.goal) {
+    try {
+      if (result.goal.disposition) {
+        services.goalDomain.forActor(context.actor, db).close({
+          workspaceId: input.workspaceId,
+          goalId,
+        });
+      } else if (
+        id === 'goal.plan.approve' &&
+        context.coordinatorTurnId &&
+        input.pendingRequestId
+      ) {
+        const request = readPendingRequest(db.sqlite, input.pendingRequestId);
+        if (request?.governedIntent?.planVersionId === result.goal.activePlanVersionId) {
+          if (!request.decidingActorContext)
+            throw new Error('Goal-domain deciding credential is unavailable.');
+          const policy = services.goalDomain.forActor(request.decidingActorContext, db);
+          policy.activate({
+            workspaceId: input.workspaceId,
+            requestId: input.pendingRequestId,
+            expectedPolicyRevision: services.goalDomain.currentRevision(),
+          });
+          if (!policy.read({ workspaceId: input.workspaceId, goalId }))
+            throw new Error('Goal domain was not admitted; inspect Policy before retry.');
+        }
+      }
+    } catch (error) {
+      throw new GoalCommandError(
+        'goal_domain_publication_failed',
+        error instanceof Error ? error.message : 'Goal-domain publication failed.'
+      );
+    }
+  }
   services.wake?.(input.workspaceId, goalId);
   return result;
 }

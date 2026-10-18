@@ -6,6 +6,7 @@ import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { considerGoal } from './goal-coordinator.js';
 import {
   advanceGoalRevision,
@@ -179,6 +180,7 @@ describe('Proposed Plan eligibility', () => {
           ...scope,
           requestId: requestId(),
           expectedRevision: current.goal!.changeRevision,
+          goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
           commitment: {
             intentBasis: { revision: 0, intent: 'Produce a design' },
             cards: [
@@ -1044,6 +1046,7 @@ describe('Public Goal command publication', () => {
         ...scope,
         requestId: '10000000-0000-4000-8000-000000000003',
         expectedRevision: cards.goal!.changeRevision,
+        goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
         commitment: {
           intentBasis: { revision: 0, intent: goal.intent },
           cards: [{ cardId: card.cardId, revision: 0, description: card.description, priority: 0 }],
@@ -1054,6 +1057,12 @@ describe('Public Goal command publication', () => {
       };
       const proposed = await executeGoalOperation('goal.plan.propose', input, caller, store, db);
       const request = readPendingRequest(db.sqlite, proposed.versions[0]!.pendingRequestId)!;
+      expect(request.governedIntent?.goalDomain).toMatchObject({
+        statement: {
+          author: { kind: 'human', id: caller.actor.userId },
+          authority: { kind: 'human', userId: caller.actor.userId },
+        },
+      });
       expect(request).toMatchObject({
         requesterKind: 'coordinator',
         agentId: 'goal-coordinator',

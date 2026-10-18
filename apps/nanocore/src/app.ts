@@ -125,7 +125,9 @@ import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { createGoalDomainPolicyService } from './policy/goal-domains.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from './policy/interception.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
@@ -2040,6 +2042,30 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   const goalServices = (): GoalOwnerServices => ({
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    ...(options.coreDb
+      ? {
+          goalDomain: {
+            currentRevision: () =>
+              policyDigest(
+                runtimeConfig().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
+              ),
+            forActor: (actor: Actor, db: WorkspaceDb) =>
+              createGoalDomainPolicyService({
+                coreDb: options.coreDb!,
+                store: sharedStore,
+                // Goal operations own and close this same-Workspace connection.
+                repositoryWorkspaceDb: (workspaceId) => {
+                  if (workspaceId !== db.workspaceId)
+                    throw new Error('Goal-domain Workspace context changed.');
+                  return db;
+                },
+                files: runtimeConfigFileService({ get: () => actor }),
+                currentPolicy: () => runtimeConfig().openKitConfig.policy?.mediation,
+                reload: () => runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }),
+              }),
+          },
+        }
+      : {}),
     inflightCommands,
     wake: (workspaceId, goalId) => goalCoordinator.wake(workspaceId, goalId),
     interrupt: (turn) => {

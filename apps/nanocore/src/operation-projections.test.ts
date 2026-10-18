@@ -50,6 +50,7 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
@@ -1918,6 +1919,7 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
         ...scope,
         requestId: randomUUID(),
         expectedRevision: goal.changeRevision,
+        goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
         commitment: {
           intentBasis: { intent: goal.intent, revision: 0 },
           cards: [],
