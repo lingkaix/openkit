@@ -1,7 +1,10 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Private Server-owned image outcomes; no foreign key ties settlement to candidate lifetime. */
 export const workerImageSettlements = sqliteTable('worker_image_settlements', {
+  /** Retained JSON payload format; native DDL versions scalar columns separately. */
+  schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
   /** Deterministic preparation effect identity. */
   requestId: text('request_id').primaryKey().notNull(),
   /** Closed acquisition or build operation. */

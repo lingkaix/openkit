@@ -1,3 +1,4 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
 import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
@@ -11,6 +12,8 @@ export type SchedulerExecutionDisposition = 'not_accepted' | 'accepted' | 'unkno
 export const schedulerExecutionAttempts = sqliteTable(
   'scheduler_execution_attempts',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Unique identity, never reused after closure. */
     attemptId: text('attempt_id').primaryKey().notNull(),
     /** Exact accepted queue entry and immutable preparation owner. */
