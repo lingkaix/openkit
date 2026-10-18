@@ -10982,6 +10982,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   }, 60_000);
 
+  // Four durable admissions need the same runner budget as adjacent lifecycle fixtures.
   it('dispatches DeepSeek after OpenCode returns to a previously evicted Sandbox identity', async () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
@@ -11312,7 +11313,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([

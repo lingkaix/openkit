@@ -136,6 +136,8 @@ The MCP Gateway's existing teardown-required fence refuses late tool and listing
 
 The stdio group-refusal regression reads the detached supervisor PID from the descendant's Node fixture receipt and checks real group addressability before exercising teardown under injected signal refusals. It requires no Python or external process lookup and runs with ordinary user authority in the test image.
 
+A correlated `reference.import` file-data admission refusal uses the existing exact `effect_failed` result. The dispatcher settles only the accepted pending request on the authoritative physical connection, without treating failure as a reference or invalidating that connection. This covers rejection before any Sandbox import starts; unknown outcomes and file-export/bridge special-result rules stay with the [transport owner](../../../../docs/specs/20260802-nanohost_runtime_and_transport.md#fixed-nanohost-effect-carriage). Run the complete `src/runtime/` suites after changing this dispatcher.
+
 ## Related Design
 
 - [AgentSession](../../../../docs/core/agent-session.md)
