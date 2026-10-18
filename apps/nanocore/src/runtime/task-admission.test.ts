@@ -13,6 +13,7 @@ import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -106,7 +107,10 @@ it.each([
       const manifest = createTestAgentSetup().manifest;
       admitTestNativeEnvironment(coreDb, manifest);
       recordTestNativeRuntimeTarget(coreDb);
-      const turnExecutor = new SimulatedTurnExecutor({ coreDb });
+      const turnExecutor = new SimulatedTurnExecutor({
+        coreDb,
+        fileAdmission: new FileStorageAdmission(root, () => 1_000_000_000n),
+      });
       let result: ReturnType<FsStore['createTurn']> | undefined;
       // The interrupted variant models an admitted product interruption with no collected AEP;
       // its checkpoint must remain inspectable. Successful closeout uses the complete real simulator.
