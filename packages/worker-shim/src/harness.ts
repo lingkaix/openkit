@@ -539,6 +539,8 @@ export class WorkerHarness {
     const promise = run.then(
       async (turn) => {
         if (turn.status === 'completed') session.established = true;
+        // Adapter-owned stops settle the Turn without reporting unexpected host loss.
+        if (session.resident.childState() === 'absent') session.failed = true;
         await this.cleanTurnInputs(session);
       },
       async (error: unknown) => {
