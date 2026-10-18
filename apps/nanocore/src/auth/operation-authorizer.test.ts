@@ -44,7 +44,6 @@ import type { Actor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import * as nanoHostOperations from './nanohost-operations.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
-import * as operationAuthorizer from './operation-authorizer.js';
 import {
   currentScheduledTurnWorkspaceAuthority,
   currentSchedulerAdmissionWorkspaceAuthority,
