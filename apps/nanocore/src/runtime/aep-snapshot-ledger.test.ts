@@ -179,18 +179,25 @@ describe('AEP snapshot ledger', () => {
         createdAt: '2026-07-06T00:00:01.000Z',
       });
       const path = snapshotPath(db, environmentPackage);
+      const markerRefusal = expect.objectContaining({
+        message: 'The retained record could not be read.',
+        cause: expect.objectContaining({
+          name: 'TypeError',
+          message: 'Unsupported retained record format.',
+        }),
+      });
       for (const marker of [{}, { schemaVersion: 2 }]) {
         const invalid = JSON.stringify({ ...marker, snapshot: 'invalid' });
         writeFileSync(path, invalid);
         expect(() =>
           requireAgentEnvironmentPackageSnapshot(db, db.workspaceId, environmentPackage.snapshotId)
-        ).toThrow('Unsupported retained record format.');
+        ).toThrowError(markerRefusal);
         expect(() =>
           recordAgentEnvironmentPackageSnapshot(db, {
             environmentPackage,
             createdAt: '2026-07-06T00:00:01.000Z',
           })
-        ).toThrow('Unsupported retained record format.');
+        ).toThrowError(markerRefusal);
         expect(readFileSync(path, 'utf8')).toBe(invalid);
       }
     } finally {
