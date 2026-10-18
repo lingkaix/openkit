@@ -100327,10 +100327,6 @@
                         "completed"
                       ]
                     },
-                    "point": {
-                      "type": "string",
-                      "minLength": 1
-                    },
                     "mode": {
                       "type": "string",
                       "enum": [
@@ -100617,7 +100613,6 @@
                     "binding",
                     "operation",
                     "stage",
-                    "point",
                     "mode",
                     "policyRevision",
                     "authorizationRevision",
@@ -101513,10 +101508,6 @@
                         "completed"
                       ]
                     },
-                    "point": {
-                      "type": "string",
-                      "minLength": 1
-                    },
                     "mode": {
                       "type": "string",
                       "enum": [
@@ -101803,7 +101794,6 @@
                     "binding",
                     "operation",
                     "stage",
-                    "point",
                     "mode",
                     "policyRevision",
                     "authorizationRevision",
@@ -102820,15 +102810,7 @@
                         "completed"
                       ]
                     },
-                    "point": {
-                      "type": "string",
-                      "minLength": 1
-                    },
                     "proposalDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "policyRevision": {
                       "type": "string",
                       "pattern": "^sha256:[a-f0-9]{64}$"
                     },
@@ -103151,9 +103133,7 @@
                   "required": [
                     "operation",
                     "stage",
-                    "point",
                     "proposalDigest",
-                    "policyRevision",
                     "authorizationRevision",
                     "subject",
                     "role",
@@ -103306,15 +103286,7 @@
                         "completed"
                       ]
                     },
-                    "point": {
-                      "type": "string",
-                      "minLength": 1
-                    },
                     "proposalDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "policyRevision": {
                       "type": "string",
                       "pattern": "^sha256:[a-f0-9]{64}$"
                     },
@@ -103637,9 +103609,7 @@
                   "required": [
                     "operation",
                     "stage",
-                    "point",
                     "proposalDigest",
-                    "policyRevision",
                     "authorizationRevision",
                     "subject",
                     "role",
@@ -124608,5 +124578,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:11503b9ef7501dd53594b134beb0fd65d2d2ddb9565ebf557a01635d65c2f970"
+  "x-openkit-source-digest": "sha256:d17d72a046c9058a496f96cc8a73c32eac345120858d2771e446b0853bbc0de7"
 }
