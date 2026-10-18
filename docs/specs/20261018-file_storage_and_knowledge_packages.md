@@ -94,11 +94,11 @@ Expired or revoked leases block new operations and require removal or fencing of
 
 Ablation: the raw namespace must support several locations while preserving one Knowledge and Source authority.
 
-`raw/<mount>/<path>` is a Knowledge namespace over a Storage mount table, not a requirement for nested physical folders. A mount declaration has `name`, `backend`, backend-specific `root`, and `default` boolean. Mount declarations bind `knowledgeBaseId`; mount names are unique within that Knowledge Base. Exactly one default mount resolves to the physical `raw/` directory inside it. Backend roots are locators, not credentials or permission grants. Unsupported backend activation returns unavailable, never falls back to another root.
+The default local mount is the Knowledge Base's physical `raw/` itself: `raw/image.png` has no default-mount name segment. Additional mounts occupy declared namespace subdirectories `raw/<mount>/`. A declaration carries `name`, `backend`, backend-specific `root`, `default` boolean and `knowledgeBaseId`; names are unique within that Knowledge Base. Exactly one mount is default. Reserve additional mount names in the manifest and reject a declaration that collides with a physical folder under `raw/`. Backend roots are locators, not credentials or permission grants. Unsupported backend activation returns unavailable, never another root.
 
 | Canonical path or family | Meaning |
 | --- | --- |
-| `raw/` | Default mount's immutable managed originals. Logical `raw/<default-mount>/a.pdf` resolves to physical `raw/a.pdf`. |
+| `raw/` | Default local mount's immutable managed originals; `raw/a.pdf` addresses the physical `raw/a.pdf`. Additional declared mounts occupy `raw/<mount>/`. |
 | `pages/` | One published OKF bundle, including reserved `index.md` and `log.md` when present. |
 | `schema/` | Existing authored scope schema; content edits cannot grant authority. |
 | Mount declarations | Existing scope-owned Knowledge configuration, with the shared declaration shape. |
@@ -114,7 +114,7 @@ Several additional mounts can contribute sources without copying them to the def
 
 Ablation: admitted originals need versioned, portable Source identity without putting their bytes or backend locations in Git.
 
-Each admitted Source has one small OKF `SourceSummary` pointer at `sources/<source-id>.md` in Notebook Git. Frontmatter carries its digest, size, sniffed media type, logical `raw/<mount>/<path>`, capture time/channel, availability and authored title/description/tags; existing source disclosure and governance metadata remain binding. The body is the Knowledge Manager's source summary. Raw bytes and backend locations never enter the pointer; the mount table alone maps its logical path to a backend. Relocation changes that declaration, not every pointer.
+Each admitted Source has one small OKF `SourceSummary` pointer at `sources/<source-id>.md` in Notebook Git. Frontmatter carries its digest, size, sniffed media type, Knowledge Base-relative raw path (`raw/<path>` for the default mount, `raw/<mount>/<path>` for additional mounts), capture time/channel, availability and authored title/description/tags; existing source disclosure and governance metadata remain binding. The body is the Knowledge Manager's source summary. Raw bytes and backend locations never enter the pointer; the mount table alone maps its logical path to a backend. Relocation changes that declaration, not every pointer.
 
 A changed original updates its pointer through one Notebook commit. Historical `source:<id>@<old digest>` references resolve only while Storage still has the authorized matching bytes; otherwise they are unavailable. Deletion keeps the pointer marked unavailable. Pointer edits cannot rewrite a historical digest or authorize disclosure.
 
@@ -124,13 +124,13 @@ Storage's rebuildable mount index covers every file with path, size, modificatio
 
 Ablation: portable owner URIs and authorized byte URLs need separate publication and delivery rules.
 
-Owners define file URIs. Knowledge Markdown embeds relative `raw/<mount>/<path>` paths, for example `![](raw/local/image.png)`, for ordinary Markdown rendering after export. At publication, discover every embedded file, reject paths outside the Knowledge Base's mounts and auto-admit any missing SourceSummary pointer in the same commit under current Source admission. Record each embedded file's exact digest in existing commit `sourceReferences`, using digest-qualified Source references resolved through that revision's pointers. Body embeds follow the current version; historical page revisions use their recorded digest or show unavailable. Evidence citations stay pinned in `source_refs` as `source:<id>@<digest>`. Raw-file renames/moves rewrite referencing pages through existing validation/review, without changing historical bytes.
+Owners define file URIs. Knowledge embeds use ordinary RFC 3986 relative paths from the page's own directory: `pages/topic/x.md` uses `![](../../raw/image.png)` for `raw/image.png`. The same page and payload paths resolve identically in an ordinary Markdown viewer and the exported package. At publication, normalize each embedded path, require its resolved target to stay inside the Knowledge Base and `raw/`, validate its mount and auto-admit any missing SourceSummary pointer in the same commit under current Source admission. Record each embedded file's exact digest in existing commit `sourceReferences`, using digest-qualified Source references resolved through that revision's pointers. Body embeds follow the current version; historical page revisions use their recorded digest or show unavailable. Evidence citations stay pinned in `source_refs` as `source:<id>@<digest>`. Raw-file renames/moves rewrite referencing pages; a page move rewrites its relative embeds. These edits use existing validation/review without changing historical bytes.
 
 Storage owns URL delivery: bounded proxy streaming for local bytes or a short-lived presigned redirect for S3-like backends, with HTTP Range, sniffed media type as Content-Type and digest as ETag for immutable caching. It never decides who receives a URL. An authenticated NanoCore route checks the reader's audience/sensitivity under Policy and audits issuance. Byte URLs bind the authorized content identity; URLs and caches preserve current disclosure requirements, because content identity does not confer access.
 
 Web rendering resolves stored relative paths through that route without rewriting stored Markdown. Models receive bytes through existing vision paths, not URLs. The server never fetches external HTTP(S) images, and Web does not automatically load them. The same owner-URI/Storage-URL/NanoCore-authorization split applies to Artifacts and other owners. Freeze the relative raw-path convention and embedded-digest commit evidence; the App API route is additive.
 
-The S3-compatible facade extension point and URI/URL use by Workers, agents and future sharing remain pending. This paragraph reserves space without choosing their contract. Portable Markdown resolution against the canonical package paths also requires clarification; no path projection is selected here.
+The S3-compatible facade extension point and URI/URL use by Workers, agents and future sharing remain pending. This paragraph reserves space without choosing their contract.
 
 ## Worker Access
 
@@ -173,7 +173,7 @@ Ablation: each departure from the canonical layout needs a concrete reason.
 | Omit runtime/permission/command and local proposal/review stores. | They are deployment/work history, not standalone current Knowledge content; ordinary backup retains its declared coverage. |
 | Optionally omit rebuildable indexes/derivatives. | They are accelerators, not required Knowledge authority. |
 
-Raw files, OKF paths, schema, navigation and log otherwise coincide. The logical raw namespace's mount segment maps through declarations; neither canonical storage nor the package needs an extra physical folder. Compression can wrap the package without changing its logical inventory.
+Raw files, OKF paths, schema, navigation and log otherwise coincide. Default raw paths have no mount-name segment; additional mount subdirectories use the same declared names in canonical storage and the package. Compression can wrap the package without changing its logical inventory.
 
 ### Export And Import
 
@@ -220,12 +220,12 @@ Ablation: classify retained transitions without implementing every future capabi
 | Class | Work and owner |
 | --- | --- |
 | MIGRATION | Knowledge Source text-only bindings become managed raw/mount references, and external registry records become Notebook SourceSummary pointers. Context's required-original-copy closure changes when its owner later adopts references; settle that contract now without forcing immediate adoption. L-AK Knowledge; L-AW file/Context contracts. |
-| ADDITIVE | Knowledge Base/default IDs, content refs, mount declarations, representation lineage, Knowledge package v1, content refs on retrieval trace hits, a storage-lease kind in existing Policy grants, relative raw-path embeds and embedded-digest commit evidence; the authorized byte route is additive. L-AW storage; L-AK Knowledge; existing Policy owner; L-RT Derivation/Gateway; retrieval owner. |
+| ADDITIVE | Knowledge Base/default IDs, content refs, mount declarations, representation lineage, Knowledge package v1, content refs on retrieval trace hits, a storage-lease kind in existing Policy grants, page-relative raw embeds, reserved mount names and embedded-digest commit evidence; the authorized byte route is additive. L-AW storage; L-AK Knowledge; existing Policy owner; L-RT Derivation/Gateway; retrieval owner. |
 | Implementation-only | Initial local Storage backend/Knowledge integration and later adapter adoption; move existing PDF, ZIP and vision processors into Derivation without changing their output authority. Remote stores, ASR, vectors and video capabilities remain later work. |
 
 Register required semantics through existing format/envelope owners before writers or imports activate them. Unknown descriptive additions are ignored; unknown core values, major versions and required semantics fail closed. Do not add pre-v0.1.0 conversion migrations, legacy readers or dual writes. Resets need existing explicit operator authorization; stable continuity follows Core Contract Evolution.
 
-Acceptance observes one-to-one published-tree/package paths and justified differences; raw bytes excluded from Git; versioned Source pointers and unavailable old digest pins; two-tier admission/indexing; exact default-mount bytes; current source admission; explicit unavailable/external references; mismatch refusal without rebinding; valid remapping; optional index rebuild; unchanged backup files; scoped leases; and trace hits containing citable content refs. Each implementation supplies its lowest-sufficient regression.
+Acceptance observes one-to-one published-tree/package paths and justified differences; raw bytes excluded from Git; versioned Source pointers and unavailable old digest pins; two-tier admission/indexing; exact default-mount bytes; identical page-relative embed resolution; mount-name collision refusal; current source admission; explicit unavailable/external references; mismatch refusal without rebinding; valid remapping; optional index rebuild; unchanged backup files; scoped leases; and trace hits containing citable content refs. Each implementation supplies its lowest-sufficient regression.
 
 ## Current Implementation Projection
 
