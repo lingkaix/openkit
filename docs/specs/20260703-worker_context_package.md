@@ -11,7 +11,7 @@ Implementation note: item projection, digest records, and the accepted Turn-owne
 
 For the shared file-reference format, [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) supersedes requirements to retain another original or derivative excerpt solely for historical replay. Packages keep exact owner references, captured digests, locations, delivered identities and explicit availability. Missing historical bytes remain unavailable; current content never reconstructs them.
 
-An authorized running Turn may still require a verified disposable read-only snapshot. Existing readiness, delivery proof, source admission and Item/evidence lifecycles remain binding. Current copied-original inventories below are the pre-transition implementation, not a promise to retain reference-only files. The source and delivery format owners must change together before the new format becomes writable.
+An authorized running Turn may still require a verified disposable read-only snapshot. Existing readiness, delivery proof, source admission and Item/evidence lifecycles remain binding. Context source entries use digest references and exact delivered projections as defined below. A separate explicitly admitted full input snapshot keeps its execution contract without creating a historical source-retention promise.
 
 ## Personal Scope Projection
 
@@ -164,7 +164,7 @@ Context packages may draw from these categories:
 
 ## Bounded Model Projection
 
-The package contains compact instructions, a bounded source inventory, selected representations, and retrieval affordances. An included original file is not automatically a provider message. Original bytes travel through the [read-only Turn snapshot](20260704-session_static_workspace_materialization.md#read-only-turn-source-snapshot); the model receives logical qualified references rather than host paths or base64 bodies.
+The package contains compact instructions, a bounded source inventory, selected delivered representations and retrieval affordances. A file reference does not imply full original delivery or a Provider message. Exact selected preview or descriptor bytes travel through the [read-only Turn input](20260704-session_static_workspace_materialization.md#read-only-turn-source-snapshot); models receive logical qualified references rather than host paths or base64 bodies. Full originals are read on demand under current admission and digest verification.
 
 Current text defaults are 2,048 UTF-8 bytes or 50 lines per preview, and 51,200 bytes or 2,000 lines per requested read. Whichever cap binds first applies. Independently bound serialized envelopes, inventories, aggregate list/search results, and the complete model request. Reserve envelope capacity for status, identity, continuation, and errors. Final model-capacity admission is independent of all byte caps and includes the separately owned media cost.
 
@@ -505,7 +505,7 @@ Historical inspection is diagnostic only. It cannot establish a missing accepted
 - Determinism tests proving one accepted worker Turn yields exactly `ctxpkg_${turnId}`, one immutable trace, stable ordering, and the same digest from the same authoritative inputs.
 - One Task Knowledge test proves the exact single S17-to-S61 request, deterministic package-budget subset, exact delivered body/excerpt/descriptor bytes, separate original and delivered digests, and complete source references, and absence of S61-excluded or restricted bytes in the one existing package. A Goal-dispatched Task uses that same proof.
 - One representative fail-closed Knowledge test proves a digest-invalid selected page prevents worker launch with the bounded error and cannot be reconstructed from retrieval diagnostics.
-- Material tests proving the trace and package select the exact bound revision, verify the original snapshot digest separately from the delivered projection digest, preserve matching workspace handoff lineage, and never include restricted Material bytes or metadata beyond the allowed exclusion tuple.
+- Material tests proving the trace and package select the exact bound revision, verify the captured original digest separately from the delivered projection digest, preserve matching workspace handoff lineage, and never include restricted Material bytes or metadata beyond the allowed exclusion tuple.
 - Replay tests proving same-request/no-effect retry reuses the exact trace and bytes, while a changed request, second trace, missing file, missing page bytes, digest mismatch, or restricted selection fails `recovery_required` without reconstruction or settlement state.
 - Historical-inspection tests proving retained package bytes verify exactly, while missing or drifted bytes remain unavailable and cannot satisfy accepted delivery or authorize worker launch.
 
