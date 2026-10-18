@@ -15,6 +15,7 @@ import {
   rotateOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
 } from './access-token-store.js';
+import { auditAuthenticationFromActor } from './audit-attribution.js';
 import { consumeServerBootstrapToken } from './bootstrap-token.js';
 import type { Actor } from './identity.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
@@ -76,6 +77,8 @@ function recordAccessTokenLifecycleAuditEvent(
     action,
     category: 'system',
     coreDb,
+    actor: actor ? { kind: 'user', id: actor.userId } : null,
+    ...(actor ? { authentication: auditAuthenticationFromActor(actor) } : {}),
     outcome: 'succeeded',
     resource: `auth-token:${record.tokenId}`,
     severity: 'info',

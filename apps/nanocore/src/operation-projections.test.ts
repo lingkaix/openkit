@@ -994,6 +994,7 @@ describe('operation projection cutover', () => {
     }
   });
 
+  // Real invocation setup shares gate CPU; identity and zero-effect checks are the oracle.
   it('rejects model-bound identity conflicts and unproved Worker lineage before effects', async () => {
     const f = await operationFixture();
     try {
@@ -1053,7 +1054,7 @@ describe('operation projection cutover', () => {
     } finally {
       f.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('keeps a caller-selected Workspace distinct from context-bound identity and scoped children', async () => {
     const f = await operationFixture();

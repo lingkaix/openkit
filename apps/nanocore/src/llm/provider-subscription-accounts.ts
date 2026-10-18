@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,7 +20,7 @@ import {
 } from '@openkit/config-schema';
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
 
-import { recordServerAuditEvent } from '../audit-events.js';
+import { type RecordServerAuditEventInput, recordServerAuditEvent } from '../audit-events.js';
 import type { CoreDb } from '../storage/db.js';
 import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
 import {
@@ -397,8 +398,22 @@ export class ProviderSubscriptionAccountError extends Error {
   }
 }
 
+/** Current command attribution; background credential lifecycle keeps its own available facts. */
+export type ProviderSubscriptionAuditContext = Pick<
+  RecordServerAuditEventInput,
+  'actor' | 'authentication' | 'requestId'
+>;
+
 /** Direct provider-subscription account, Vault credential, and pi-ai runtime owner. */
 export class ProviderSubscriptionAccountManager {
+  /** Keeps the admitted caller through stock credential callbacks, including asynchronous login. */
+  private readonly credentialAudit = new AsyncLocalStorage<ProviderSubscriptionAuditContext>();
+
+  /** Runs one known native caller's lifecycle without attributing unrelated background work. */
+  public withAuditContext<T>(audit: ProviderSubscriptionAuditContext, operation: () => T): T {
+    return this.credentialAudit.run(audit, operation);
+  }
+
   private readonly coreDb: CoreDb;
 
   private readonly vaultBackend: () => VaultBackend;
@@ -427,36 +442,42 @@ export class ProviderSubscriptionAccountManager {
    * Creates one strict unbound account slot.
    *
    * @param input Provider-slot identity and optional display name.
+   * @param audit Current admitted command attribution, when available.
    * @returns Sanitized created account snapshot.
    * @throws ProviderSubscriptionAccountError when the pair is invalid, occupied, or inconsistent.
    */
   public async createAccount(
-    input: CreateProviderSubscriptionAccountInput
+    input: CreateProviderSubscriptionAccountInput,
+    audit?: ProviderSubscriptionAuditContext
   ): Promise<ProviderSubscriptionAccountSnapshot> {
     const pair = this.requirePair(input);
 
-    return this.withLifecycleAudit('provider_subscription.account.create', pair, () =>
-      this.withPairFence(pair, async () => {
-        const inspection = this.inspectPair(pair);
-        if (inspection.kind !== 'absent') {
-          throw accountExistsError();
-        }
+    return this.withLifecycleAudit(
+      'provider_subscription.account.create',
+      pair,
+      () =>
+        this.withPairFence(pair, async () => {
+          const inspection = this.inspectPair(pair);
+          if (inspection.kind !== 'absent') {
+            throw accountExistsError();
+          }
 
-        const timestamp = this.canonicalNow();
-        const displayName = validateOptionalLabel(input.displayName);
-        const record: ProviderSubscriptionAccountRecord = {
-          accountSlotId: pair.accountSlotId,
-          createdAt: timestamp,
-          ...(displayName === undefined ? {} : { displayName }),
-          schemaVersion: 1,
-          status: 'logged_out',
-          subscriptionProviderId: pair.subscriptionProviderId,
-          updatedAt: timestamp,
-        };
+          const timestamp = this.canonicalNow();
+          const displayName = validateOptionalLabel(input.displayName);
+          const record: ProviderSubscriptionAccountRecord = {
+            accountSlotId: pair.accountSlotId,
+            createdAt: timestamp,
+            ...(displayName === undefined ? {} : { displayName }),
+            schemaVersion: 1,
+            status: 'logged_out',
+            subscriptionProviderId: pair.subscriptionProviderId,
+            updatedAt: timestamp,
+          };
 
-        this.writeAccount(record);
-        return snapshot(record, 'logged_out');
-      })
+          this.writeAccount(record);
+          return snapshot(record, 'logged_out');
+        }),
+      audit
     );
   }
 
@@ -465,28 +486,34 @@ export class ProviderSubscriptionAccountManager {
    *
    * @param pair Provider-slot identity.
    * @param input Replacement display name.
+   * @param audit Current admitted command attribution, when available.
    * @returns Sanitized updated account snapshot.
    * @throws ProviderSubscriptionAccountError when the pair is absent or inconsistent.
    */
   public async updateAccount(
     pair: ProviderSubscriptionAccountPair,
-    input: UpdateProviderSubscriptionAccountInput
+    input: UpdateProviderSubscriptionAccountInput,
+    audit?: ProviderSubscriptionAuditContext
   ): Promise<ProviderSubscriptionAccountSnapshot> {
     const exactPair = this.requirePair(pair);
 
-    return this.withLifecycleAudit('provider_subscription.account.update', exactPair, () =>
-      this.withPairFence(exactPair, async () => {
-        const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(exactPair));
-        const record = inspection.record;
-        const updated: ProviderSubscriptionAccountRecord = {
-          ...record,
-          displayName: validateLabel(input.displayName, MAX_LABEL_BYTES),
-          updatedAt: this.monotonicTimestamp(record.updatedAt),
-        };
+    return this.withLifecycleAudit(
+      'provider_subscription.account.update',
+      exactPair,
+      () =>
+        this.withPairFence(exactPair, async () => {
+          const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(exactPair));
+          const record = inspection.record;
+          const updated: ProviderSubscriptionAccountRecord = {
+            ...record,
+            displayName: validateLabel(input.displayName, MAX_LABEL_BYTES),
+            updatedAt: this.monotonicTimestamp(record.updatedAt),
+          };
 
-        this.writeAccount(updated);
-        return this.accountSnapshot(inspection, updated);
-      })
+          this.writeAccount(updated);
+          return this.accountSnapshot(inspection, updated);
+        }),
+      audit
     );
   }
 
@@ -494,35 +521,44 @@ export class ProviderSubscriptionAccountManager {
    * Cancels pending login and deletes metadata after exact credential revocation.
    *
    * @param pair Provider-slot identity; configured references do not prevent removal.
+   * @param audit Current admitted command attribution, when available.
    * @returns Promise settled after account metadata is absent.
    * @throws ProviderSubscriptionAccountError when the pair is absent or inconsistent.
    */
-  public async deleteAccount(pair: ProviderSubscriptionAccountPair): Promise<void> {
+  public async deleteAccount(
+    pair: ProviderSubscriptionAccountPair,
+    audit?: ProviderSubscriptionAuditContext
+  ): Promise<void> {
     const exactPair = this.requirePair(pair);
-    await this.withLifecycleAudit('provider_subscription.account.delete', exactPair, async () => {
-      // Settlement must run outside the mutation fence because login completion also takes it.
-      for (;;) {
-        const interactionId = await this.withPairFence(exactPair, async () => {
-          let inspection = this.inspectPair(exactPair, true);
-          if (inspection.kind === 'absent') throw accountNotFoundError();
-          const login = this.handles.get(pairKey(exactPair))?.login;
-          if (login) {
-            login.settling = true;
-            return login.interactionId;
-          }
-          if (inspection.kind === 'live' || inspection.kind === 'current-tombstone') {
-            await this.removeCredential(exactPair, inspection, true);
-            inspection = this.inspectPair(exactPair);
-          }
-          if (inspection.kind !== 'unbound') throw persistenceError();
-          this.removeAccount(inspection.record);
-          this.invalidateHandle(exactPair);
-          return null;
-        });
-        if (interactionId === null) return;
-        await this.cancelLogin(exactPair, interactionId);
-      }
-    });
+    await this.withLifecycleAudit(
+      'provider_subscription.account.delete',
+      exactPair,
+      async () => {
+        // Settlement must run outside the mutation fence because login completion also takes it.
+        for (;;) {
+          const interactionId = await this.withPairFence(exactPair, async () => {
+            let inspection = this.inspectPair(exactPair, true);
+            if (inspection.kind === 'absent') throw accountNotFoundError();
+            const login = this.handles.get(pairKey(exactPair))?.login;
+            if (login) {
+              login.settling = true;
+              return login.interactionId;
+            }
+            if (inspection.kind === 'live' || inspection.kind === 'current-tombstone') {
+              await this.removeCredential(exactPair, inspection, true);
+              inspection = this.inspectPair(exactPair);
+            }
+            if (inspection.kind !== 'unbound') throw persistenceError();
+            this.removeAccount(inspection.record);
+            this.invalidateHandle(exactPair);
+            return null;
+          });
+          if (interactionId === null) return;
+          await this.cancelLogin(exactPair, interactionId);
+        }
+      },
+      audit
+    );
   }
 
   /**
@@ -1918,27 +1954,32 @@ export class ProviderSubscriptionAccountManager {
    * @param action Exact lifecycle action.
    * @param pair Provider-slot resource identity.
    * @param operation Lifecycle work.
+   * @param audit Current admitted command attribution, when available.
    * @returns Lifecycle result.
    */
   private async withLifecycleAudit<T>(
     action: LifecycleAuditAction,
     pair: ProviderSubscriptionAccountPair,
-    operation: () => Promise<T>
+    operation: () => Promise<T>,
+    audit?: ProviderSubscriptionAuditContext
   ): Promise<T> {
     let result: T;
     try {
-      result = await operation();
+      result = await this.credentialAudit.run(
+        audit ?? this.credentialAudit.getStore() ?? {},
+        operation
+      );
     } catch (error) {
       const normalized = normalizeAccountError(error);
       try {
-        this.recordLifecycleAudit(action, pair, 'failed', normalized.code);
+        this.recordLifecycleAudit(action, pair, 'failed', normalized.code, audit);
       } catch {
         throw persistenceError();
       }
       throw normalized;
     }
     try {
-      this.recordLifecycleAudit(action, pair, 'succeeded', null);
+      this.recordLifecycleAudit(action, pair, 'succeeded', null, audit);
     } catch {
       throw persistenceError();
     }
@@ -1952,15 +1993,18 @@ export class ProviderSubscriptionAccountManager {
    * @param pair Provider-slot resource identity.
    * @param outcome Stable event outcome.
    * @param errorCode Stable error code for failures.
+   * @param audit Current admitted command attribution, when available.
    */
   private recordLifecycleAudit(
     action: LifecycleAuditAction,
     pair: ProviderSubscriptionAccountPair,
     outcome: 'succeeded' | 'failed',
-    errorCode: ProviderSubscriptionAccountErrorCode | null
+    errorCode: ProviderSubscriptionAccountErrorCode | null,
+    audit?: ProviderSubscriptionAuditContext
   ): void {
     const timestamp = new Date(this.canonicalNow());
     recordServerAuditEvent({
+      ...(audit ?? this.credentialAudit.getStore()),
       action,
       category: 'system',
       coreDb: this.coreDb,

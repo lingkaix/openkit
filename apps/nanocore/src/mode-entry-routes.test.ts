@@ -5039,6 +5039,7 @@ describe('#144 real Assistant command wiring', () => {
             .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
             .all(call.id)
         ).toEqual([
+          expect.objectContaining({ action: 'capability.admit', request_id: f.requestId }),
           expect.objectContaining({
             action: 'capability.finish',
             capability_call_id: call.id,

@@ -300,6 +300,7 @@ describe('database setup', () => {
         '0008_server_capability_usage.sql',
         '0009_policy_audit_v1.sql',
         '0010_retained_record_formats.sql',
+        '0011_audit_authentication.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -319,6 +320,7 @@ describe('database setup', () => {
         'core_0008_server_capability_usage',
         'core_0009_policy_audit_v1',
         'core_0010_retained_record_formats',
+        'core_0011_audit_authentication',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -714,6 +716,7 @@ describe('database setup', () => {
         'user_0002_notebook_admission',
         'user_0003_policy_audit_v1',
         'user_0004_retained_record_formats',
+        'user_0005_audit_authentication',
       ]);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
@@ -728,6 +731,7 @@ describe('database setup', () => {
         'workspace_0003_exact_review_feedback',
         'workspace_0004_policy_audit_v1',
         'workspace_0005_retained_record_formats',
+        'workspace_0006_audit_authentication',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1108,6 +1112,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0003_exact_review_feedback',
         'workspace_0004_policy_audit_v1',
         'workspace_0005_retained_record_formats',
+        'workspace_0006_audit_authentication',
       ]);
     } finally {
       db.sqlite.close();

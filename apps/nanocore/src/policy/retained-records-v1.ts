@@ -1,5 +1,6 @@
 import {
   AgentSessionIdSchema,
+  AuditAuthenticationSchema,
   AuditEventIdSchema,
   AutomationIdSchema,
   CapabilityCallIdSchema,
@@ -88,6 +89,7 @@ export const AuditEventRetainedV1Schema = z.object({
   vaultGrantId: VaultGrantIdSchema.nullable(),
   requestId: RequestIdSchema.nullable(),
   actor: actorV1.nullable(),
+  authentication: AuditAuthenticationSchema.strip().optional(),
   subject: actorV1.nullable(),
   agentId: z.string().min(1).nullable(),
   agentSessionId: AgentSessionIdSchema.nullable(),
@@ -198,6 +200,9 @@ export function readAuditEventRowV1(input: unknown): z.infer<typeof AuditEventRe
       vaultGrantId: row.vault_grant_id,
       requestId: row.request_id,
       actor: row.actor_json ? JSON.parse(String(row.actor_json)) : null,
+      ...(row.authentication_json
+        ? { authentication: JSON.parse(String(row.authentication_json)) }
+        : {}),
       subject: row.subject_json ? JSON.parse(String(row.subject_json)) : null,
       agentId: row.agent_id,
       agentSessionId: row.agent_session_id,

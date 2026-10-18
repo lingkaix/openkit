@@ -171,6 +171,7 @@ describe('workspace apply results', () => {
       applyScopedMigrations(workspaceDb);
 
       recordWorkspaceApplyResult(workspaceDb, {
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: '00000000-0000-4000-8000-000000000021',
         result: {
           appliedAt: '2026-07-05T00:00:00.000Z',
@@ -227,6 +228,10 @@ describe('workspace apply results', () => {
       expect(audits).toEqual([
         expect.objectContaining({
           action: 'workspace.apply.finish',
+          actor_json: JSON.stringify({
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }),
           category: 'artifact',
           created_at: '2026-07-05T00:00:00.000Z',
           error_code: null,

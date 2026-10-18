@@ -68,6 +68,7 @@ describe('createDiagnosticsSnapshot', () => {
             'core_0008_server_capability_usage',
             'core_0009_policy_audit_v1',
             'core_0010_retained_record_formats',
+            'core_0011_audit_authentication',
           ],
         },
         mode: 'local',

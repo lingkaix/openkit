@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   ArtifactVersionRecordSchema,
+  AuditEventSchema,
   allocateEntityId,
   deriveEntityId,
   isEntityId,
@@ -230,6 +231,59 @@ function writeExportTree(
 }
 
 describe('workspace export verifier', () => {
+  it('carries non-secret authenticated credential identity through verified export and import', () => {
+    const root = freshExportRoot('audit-auth-export-');
+    const workspaceId = testEntityId('ws', 'audit-auth-export');
+    const authentication = {
+      credentialKind: 'session' as const,
+      credentialId: testEntityId('auth', 'source-credential'),
+    };
+    const event = AuditEventSchema.parse({
+      id: testEntityId('aud', 'audit-auth-export'),
+      workspaceId,
+      actor: { kind: 'user', id: testEntityId('usr', 'source-actor') },
+      authentication,
+      action: 'catalog.mcp-create',
+      resource: 'mcp:stub',
+      outcome: 'succeeded',
+      summary: 'MCP created.',
+      createdAt: timestamp,
+      occurredAt: timestamp,
+    });
+    try {
+      writeWorkspaceExportTree({
+        exportRoot: root,
+        exportId: testEntityId('wsexp', 'audit-auth-export'),
+        sourceDeploymentId: testEntityId('dep', 'audit-auth-export'),
+        createdAt: timestamp,
+        workspace: {
+          id: workspaceId,
+          name: 'Audit',
+          kind: 'code',
+          status: 'active',
+          counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        threads: [],
+        turns: [],
+        itemRevisions: [],
+        artifacts: [],
+        artifactReviews: [],
+        agentSessions: [],
+        turnEvents: [],
+        knowledge: [],
+        auditEvents: [event],
+      });
+      const targetWorkspaceId = testEntityId('ws', 'audit-auth-import');
+      const imported = readImportSnapshot(root, targetWorkspaceId);
+      expect(imported.auditEvents).toEqual([{ ...event, workspaceId: targetWorkspaceId }]);
+      expect(imported.auditEvents[0]?.authentication).toEqual(authentication);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('always exports all three empty recurring families with their required feature', () => {
     const root = freshExportRoot('recurring-empty-export-');
     const verified = writeWorkspaceExportTree({

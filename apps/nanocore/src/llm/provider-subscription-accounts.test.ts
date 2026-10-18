@@ -26,9 +26,11 @@ import {
   type OAuthCredential,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
+import type { AdmittedOperationContext } from '../operation-contract.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
@@ -68,6 +70,7 @@ import {
   type ProviderSubscriptionAccountSnapshot,
   type ProviderSubscriptionPairHandle,
 } from './provider-subscription-accounts.js';
+import { createProviderSubscriptionOperationImplementations } from './provider-subscription-operation-implementations.js';
 
 const durability = vi.hoisted(() => ({
   paths: new Map<number, string>(),
@@ -3290,6 +3293,48 @@ describe('ProviderSubscriptionAccountManager', () => {
     ]);
   });
 
+  it('keeps the admitted account caller and credential on lifecycle success and failure', async () => {
+    const fixture = createFixture();
+    try {
+      const user = ensureLocalUser(fixture.coreDb);
+      const app = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.dataRoot,
+        providerSubscriptionAccountManager: fixture.manager,
+      });
+      const pair = accountPair('attributed');
+      const invoke = () =>
+        app.request(...operationRequest('provider-subscription.account-create', pair));
+      expect((await invoke()).status).toBe(200);
+      expect((await invoke()).status).toBe(409);
+      const rows = fixture.coreDb.sqlite
+        .prepare(
+          "SELECT actor_json, authentication_json, outcome FROM audit_events WHERE action = 'provider_subscription.account.create' ORDER BY rowid"
+        )
+        .all() as { actor_json: string; authentication_json: string; outcome: string }[];
+      expect(
+        rows.map((row) => ({
+          actor: JSON.parse(row.actor_json),
+          authentication: JSON.parse(row.authentication_json),
+          outcome: row.outcome,
+        }))
+      ).toEqual([
+        {
+          actor: { kind: 'user', id: user },
+          authentication: { credentialKind: 'local', credentialId: null },
+          outcome: 'succeeded',
+        },
+        {
+          actor: { kind: 'user', id: user },
+          authentication: { credentialKind: 'local', credentialId: null },
+          outcome: 'failed',
+        },
+      ]);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('emits exact lifecycle success and failure evidence while plaintext canaries stay encrypted', async () => {
     const fixture = createFixture();
     const pair = accountPair('audit_lifecycle');
@@ -5531,5 +5576,56 @@ describe('uncommitted ancestor account recovery', () => {
     } finally {
       durability.fail = undefined;
     }
+  });
+});
+
+describe('native subscription credential attribution', () => {
+  it('keeps the asynchronous login caller, attributes logout to its caller and leaves later background rotation unattributed', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('audit_login');
+    const context = (id: string): AdmittedOperationContext => ({
+      kind: 'public',
+      actor: { kind: 'local', userId: id },
+      actorRef: { kind: 'user', id },
+      scope: { kind: 'server' },
+    });
+    const first = context(allocateEntityId('usr'));
+    const second = context(allocateEntityId('usr'));
+    const operations = createProviderSubscriptionOperationImplementations({
+      accountManager: fixture.manager,
+      boundProviderIds: () => [],
+    });
+    await operations['provider-subscription.account-create'](pair, first);
+    const handle = await fixture.manager.getPairHandle(pair);
+    const oauth = requireProviderOAuth(handle, pair);
+    const release = deferredGate();
+    fixture.queueReferenceIds(allocateEntityId('vault'));
+    vi.spyOn(oauth, 'login').mockImplementation(async (interaction: AuthInteraction) => {
+      interaction.notify({
+        type: 'device_code',
+        userCode: 'AUDIT-LOGIN',
+        verificationUri: 'https://login.example.test/audit',
+      });
+      await release.promise;
+      return oauthCredential('audit-login');
+    });
+    await operations['provider-subscription.login-start']({ ...pair, mode: 'device_code' }, first);
+    await operations['provider-subscription.account-status'](pair, second);
+    release.resolve();
+    const actorFor = (action: string) =>
+      fixture.coreDb.sqlite
+        .prepare('SELECT actor_json FROM audit_events WHERE action = ? ORDER BY rowid DESC LIMIT 1')
+        .get(action);
+    await expect
+      .poll(() => actorFor('provider_subscription.credential.store'))
+      .toEqual({ actor_json: JSON.stringify(first.actorRef) });
+    await handle.credentials.modify(pair.subscriptionProviderId, async () =>
+      oauthCredential('background')
+    );
+    expect(actorFor('provider_subscription.credential.rotate')).toEqual({ actor_json: null });
+    await operations['provider-subscription.account-logout'](pair, second);
+    expect(actorFor('provider_subscription.credential.revoke')).toEqual({
+      actor_json: JSON.stringify(second.actorRef),
+    });
   });
 });

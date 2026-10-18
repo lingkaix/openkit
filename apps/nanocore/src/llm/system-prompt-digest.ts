@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { readRetainedV1, SystemPromptDigestSchema } from '@openkit/protocol';
 
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
 /** Gateway endpoint family that carries a pre-adapter system prompt. */
 export type LlmSystemPromptEndpoint = 'chat_completions' | 'responses';
@@ -120,12 +120,12 @@ export function digestLlmSystemPrompt(input: {
 /**
  * Records the system-prompt digest on an already-opened gateway-entry family llm CapabilityCall row.
  *
- * @param input Workspace database, durable call id, and digest.
+ * @param input Owning database, durable call id, and digest.
  * @throws When the row is missing, is not a gateway-entry llm call, or the digest is not recorded.
  */
 export function persistLlmCapabilityCallSystemPromptDigest(input: {
   /** Workspace database that owns the opened CapabilityCall. */
-  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceDb: WorkspaceDb | CoreDb;
   /** Durable capability call id. */
   readonly callId: string;
   /** Pre-adapter system-prompt digest. */

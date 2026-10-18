@@ -78,6 +78,13 @@
       "when": 1792367086777,
       "tag": "0010_retained_record_formats",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792367629333,
+      "tag": "0011_audit_authentication",
+      "breakpoints": true
     }
   ]
 }

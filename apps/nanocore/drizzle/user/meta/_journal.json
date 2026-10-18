@@ -36,6 +36,13 @@
       "when": 1792367087402,
       "tag": "0004_retained_record_formats",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792367634020,
+      "tag": "0005_audit_authentication",
+      "breakpoints": true
     }
   ]
 }

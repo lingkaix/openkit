@@ -1557,6 +1557,7 @@ describe('quick chat app API', () => {
             .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
             .all(call?.call_id)
         ).toEqual([
+          expect.objectContaining({ action: 'capability.admit', request_id: requestId }),
           expect.objectContaining({
             action: 'capability.finish',
             request_id: requestId,
@@ -3123,9 +3124,14 @@ describe('quick chat app API', () => {
     ]);
     expect(
       workspaceDb.sqlite
-        .prepare('SELECT request_id FROM audit_events WHERE capability_call_id = ?')
+        .prepare(
+          'SELECT action, request_id FROM audit_events WHERE capability_call_id = ? ORDER BY rowid'
+        )
         .all(call.call_id)
-    ).toEqual([expect.objectContaining({ request_id: requestId })]);
+    ).toEqual([
+      { action: 'capability.admit', request_id: requestId },
+      { action: 'capability.finish', request_id: requestId },
+    ]);
     const replay = await fixture.submit('Explain a short concept.', requestId);
     expect(replay.status).toBe(200);
     expect(

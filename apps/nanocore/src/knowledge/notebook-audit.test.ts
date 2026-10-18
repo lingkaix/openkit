@@ -133,7 +133,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
         );
     }
     const table = scope === 'user' ? 'idempotency_requests' : 'audit_events';
-    const before = sqlite.prepare(`SELECT * FROM ${table}`).all();
+    const before = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
     const previousCount = Number(
       (
         sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get() as {

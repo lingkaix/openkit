@@ -1,5 +1,7 @@
 import {
   type ActorRef,
+  AuditAuthenticationSchema,
+  type AuditEvent,
   allocateEntityId,
   type CapabilityCall,
   CapabilityCallExtensionsSchema,
@@ -19,6 +21,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { WorkerRawOutputStateSchema } from '../runtime/worker-raw-output.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
@@ -84,6 +87,8 @@ export interface GatewayCallContext {
   workspaceId: string;
   /** Process-local authority actor for linked usage attribution. */
   authorityActor: ActorRef | null;
+  /** Available native credential attribution; never secret material or permission. */
+  authentication?: AuditEvent['authentication'];
   /** Thread lineage when available. */
   threadId?: string | null;
   /** Turn lineage when available. */
@@ -130,6 +135,8 @@ export interface ServerGatewayCallContext extends Omit<GatewayCallContext, 'work
 
 /** Server input for the shared capability-call writer. */
 export interface StartServerCapabilityCallInput extends ServerGatewayCallContext {
+  /** Existing command lineage for Audit only; it never changes call idempotency. */
+  readonly auditLineage?: CapabilityAuditLineage;
   readonly workspaceDb: CoreDb;
   readonly callId?: string;
   readonly now?: Date;
@@ -137,6 +144,8 @@ export interface StartServerCapabilityCallInput extends ServerGatewayCallContext
 
 /** Input for starting one capability call. */
 export interface StartCapabilityCallInput extends GatewayCallContext {
+  /** Existing command lineage for Audit only; it never changes call idempotency. */
+  readonly auditLineage?: CapabilityAuditLineage;
   /** Database handle for the immutable call owner. */
   workspaceDb: WorkspaceDb;
   /** Stable call id for deterministic tests. */
@@ -256,53 +265,57 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
 export function startCapabilityCall(
   input: StartCapabilityCallInput | StartServerCapabilityCallInput
 ): StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> {
-  const {
-    workspaceDb: _workspaceDb,
-    now: _now,
-    callId: _callId,
-    authorityActor: _authorityActor,
-    ...safeInput
-  } = input;
-  assertNoUnsafeLedgerValue(safeInput);
+  return input.workspaceDb.sqlite
+    .transaction(() => {
+      const {
+        workspaceDb: _workspaceDb,
+        now: _now,
+        callId: _callId,
+        authorityActor: _authorityActor,
+        authentication: _authentication,
+        auditLineage: _auditLineage,
+        ...safeInput
+      } = input;
+      assertNoUnsafeLedgerValue(safeInput);
 
-  const startedAt = (input.now ?? new Date()).toISOString();
-  const callId = input.callId ?? allocateEntityId('cap');
-  if (
-    input.workspaceDb.scope === 'core'
-      ? input.workspaceId !== undefined || !('owner' in input) || input.owner.kind !== 'server'
-      : input.workspaceId !== input.workspaceDb.workspaceId
-  ) {
-    throw new Error('Capability call database owner mismatch.');
-  }
-  const protocolCall = (
-    input.workspaceDb.scope === 'core' ? ServerCapabilityCallSchema : CapabilityCallSchema
-  ).parse({
-    id: callId,
-    ...(input.workspaceDb.scope === 'core'
-      ? { owner: { kind: 'server' } }
-      : { workspaceId: input.workspaceId }),
-    threadId: input.threadId ?? null,
-    turnId: input.turnId ?? null,
-    itemId: input.itemId ?? null,
-    agentId: input.agentId ?? null,
-    agentSessionId: input.agentSessionId ?? null,
-    packageSnapshotId: input.packageSnapshotId ?? null,
-    schemaSnapshotId: input.schemaSnapshotId ?? null,
-    runtimeOriginRef: input.runtimeOriginRef ?? null,
-    runtimeCacheLineageRef: input.runtimeCacheLineageRef ?? null,
-    requestId: input.requestId ?? null,
-    sourceIds: normalizeSourceIds(input.sourceIds),
-    capabilityId: input.capabilityId,
-    status: 'running',
-    summary: input.summary ?? null,
-    errorCode: null,
-    startedAt,
-    completedAt: null,
-  });
+      const startedAt = (input.now ?? new Date()).toISOString();
+      const callId = input.callId ?? allocateEntityId('cap');
+      if (
+        input.workspaceDb.scope === 'core'
+          ? input.workspaceId !== undefined || !('owner' in input) || input.owner.kind !== 'server'
+          : input.workspaceId !== input.workspaceDb.workspaceId
+      ) {
+        throw new Error('Capability call database owner mismatch.');
+      }
+      const protocolCall = (
+        input.workspaceDb.scope === 'core' ? ServerCapabilityCallSchema : CapabilityCallSchema
+      ).parse({
+        id: callId,
+        ...(input.workspaceDb.scope === 'core'
+          ? { owner: { kind: 'server' } }
+          : { workspaceId: input.workspaceId }),
+        threadId: input.threadId ?? null,
+        turnId: input.turnId ?? null,
+        itemId: input.itemId ?? null,
+        agentId: input.agentId ?? null,
+        agentSessionId: input.agentSessionId ?? null,
+        packageSnapshotId: input.packageSnapshotId ?? null,
+        schemaSnapshotId: input.schemaSnapshotId ?? null,
+        runtimeOriginRef: input.runtimeOriginRef ?? null,
+        runtimeCacheLineageRef: input.runtimeCacheLineageRef ?? null,
+        requestId: input.requestId ?? null,
+        sourceIds: normalizeSourceIds(input.sourceIds),
+        capabilityId: input.capabilityId,
+        status: 'running',
+        summary: input.summary ?? null,
+        errorCode: null,
+        startedAt,
+        completedAt: null,
+      });
 
-  const insertion = input.workspaceDb.sqlite
-    .prepare(
-      `INSERT OR IGNORE INTO capability_calls (
+      const insertion = input.workspaceDb.sqlite
+        .prepare(
+          `INSERT OR IGNORE INTO capability_calls (
         schema_version,
         call_id,
         workspace_id,
@@ -329,65 +342,119 @@ export function startCapabilityCall(
         runtime_origin_ref,
         runtime_cache_lineage_ref
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          writeRetainedV1(protocolCall).schemaVersion,
+          protocolCall.id,
+          protocolCall.workspaceId ?? null,
+          protocolCall.threadId,
+          protocolCall.turnId,
+          protocolCall.itemId,
+          protocolCall.agentId,
+          protocolCall.agentSessionId,
+          protocolCall.requestId,
+          sourceIdsJson(protocolCall.sourceIds),
+          protocolCall.capabilityId,
+          input.family,
+          input.operation,
+          protocolCall.status,
+          protocolCall.summary,
+          input.providerRef ?? null,
+          input.serviceRef ?? null,
+          input.redactionClass,
+          protocolCall.errorCode,
+          protocolCall.startedAt,
+          protocolCall.completedAt,
+          protocolCall.packageSnapshotId,
+          protocolCall.schemaSnapshotId,
+          protocolCall.runtimeOriginRef,
+          protocolCall.runtimeCacheLineageRef
+        );
+
+      if (insertion.changes === 1 && input.authorityActor) {
+        const audit = {
+          action: 'capability.admit',
+          actor: input.authorityActor,
+          ...(input.authentication ? { authentication: input.authentication } : {}),
+          agentId: protocolCall.agentId,
+          agentSessionId: protocolCall.agentSessionId,
+          capabilityCallId: protocolCall.id,
+          category: 'capability' as const,
+          itemId: protocolCall.itemId,
+          now: new Date(startedAt),
+          occurredAt: new Date(startedAt),
+          outcome: 'unknown' as const,
+          requestId:
+            protocolCall.requestId ??
+            (input.auditLineage
+              ? RequestIdSchema.parse(input.auditLineage.commandRequestId)
+              : null),
+          resource: `capability:${protocolCall.capabilityId}`,
+          summary: 'Capability call admitted; effect outcome is not yet known.',
+          threadId: protocolCall.threadId,
+          turnId: protocolCall.turnId,
+        };
+        if (input.workspaceDb.scope === 'core')
+          recordServerAuditEvent({ ...audit, coreDb: input.workspaceDb });
+        else
+          recordWorkspaceAuditEvent({
+            ...audit,
+            workspaceDb: input.workspaceDb,
+            workspaceId: input.workspaceDb.workspaceId,
+          });
+      }
+
+      const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, { ...input, callId });
+      assertMatchingCapabilityCallAttribution(stored, protocolCall, input);
+
+      return {
+        id: stored.call_id,
+        inserted: insertion.changes === 1,
+        context: {
+          agentId: stored.agent_id,
+          agentSessionId: stored.agent_session_id,
+          authorityActor:
+            readCapabilityAdmissionAttribution(input.workspaceDb, stored.call_id).actor ?? null,
+          capabilityId: stored.capability_id,
+          family: stored.family as CapabilityCallFamily,
+          itemId: stored.item_id,
+          operation: stored.operation,
+          packageSnapshotId: stored.package_snapshot_id,
+          schemaSnapshotId: stored.schema_snapshot_id,
+          providerRef: stored.provider_ref,
+          redactionClass: stored.redaction_class,
+          requestId: stored.request_id,
+          runtimeCacheLineageRef: stored.runtime_cache_lineage_ref,
+          runtimeOriginRef: stored.runtime_origin_ref,
+          serviceRef: stored.service_ref,
+          sourceIds: parseSourceIdsJson(stored.source_ids_json),
+          summary: stored.summary,
+          threadId: stored.thread_id,
+          turnId: stored.turn_id,
+          ...(stored.workspace_id === null
+            ? { owner: { kind: 'server' as const } }
+            : { workspaceId: stored.workspace_id }),
+        },
+      };
+    })
+    .immediate();
+}
+
+/** Reads paired attribution captured before effect contact, including after process restart. */
+function readCapabilityAdmissionAttribution(
+  db: WorkspaceDb | CoreDb,
+  callId: string
+): Pick<AuditEvent, 'actor' | 'authentication' | 'requestId'> {
+  const row = db.sqlite
+    .prepare(
+      "SELECT * FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit' ORDER BY created_at, audit_event_id LIMIT 1"
     )
-    .run(
-      writeRetainedV1(protocolCall).schemaVersion,
-      protocolCall.id,
-      protocolCall.workspaceId ?? null,
-      protocolCall.threadId,
-      protocolCall.turnId,
-      protocolCall.itemId,
-      protocolCall.agentId,
-      protocolCall.agentSessionId,
-      protocolCall.requestId,
-      sourceIdsJson(protocolCall.sourceIds),
-      protocolCall.capabilityId,
-      input.family,
-      input.operation,
-      protocolCall.status,
-      protocolCall.summary,
-      input.providerRef ?? null,
-      input.serviceRef ?? null,
-      input.redactionClass,
-      protocolCall.errorCode,
-      protocolCall.startedAt,
-      protocolCall.completedAt,
-      protocolCall.packageSnapshotId,
-      protocolCall.schemaSnapshotId,
-      protocolCall.runtimeOriginRef,
-      protocolCall.runtimeCacheLineageRef
-    );
-
-  const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, { ...input, callId });
-  assertMatchingCapabilityCallAttribution(stored, protocolCall, input);
-
+    .get(callId);
+  const event = row ? readAuditEventRowV1(row) : undefined;
   return {
-    id: stored.call_id,
-    inserted: insertion.changes === 1,
-    context: {
-      agentId: stored.agent_id,
-      agentSessionId: stored.agent_session_id,
-      authorityActor: input.authorityActor,
-      capabilityId: stored.capability_id,
-      family: stored.family as CapabilityCallFamily,
-      itemId: stored.item_id,
-      operation: stored.operation,
-      packageSnapshotId: stored.package_snapshot_id,
-      schemaSnapshotId: stored.schema_snapshot_id,
-      providerRef: stored.provider_ref,
-      redactionClass: stored.redaction_class,
-      requestId: stored.request_id,
-      runtimeCacheLineageRef: stored.runtime_cache_lineage_ref,
-      runtimeOriginRef: stored.runtime_origin_ref,
-      serviceRef: stored.service_ref,
-      sourceIds: parseSourceIdsJson(stored.source_ids_json),
-      summary: stored.summary,
-      threadId: stored.thread_id,
-      turnId: stored.turn_id,
-      ...(stored.workspace_id === null
-        ? { owner: { kind: 'server' as const } }
-        : { workspaceId: stored.workspace_id }),
-    },
+    requestId: event?.requestId ?? null,
+    actor: event?.actor ?? null,
+    ...(event?.authentication ? { authentication: event.authentication } : {}),
   };
 }
 
@@ -560,8 +627,13 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
       if (!call || call.completed_at) {
         return;
       }
+      const admittedAttribution = readCapabilityAdmissionAttribution(
+        input.workspaceDb,
+        call.call_id
+      );
       const auditRequestId =
         call.request_id ??
+        admittedAttribution.requestId ??
         (input.auditLineage === undefined
           ? null
           : RequestIdSchema.parse(input.auditLineage.commandRequestId));
@@ -597,6 +669,7 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
 
       const audit: Omit<Parameters<typeof recordServerAuditEvent>[0], 'coreDb'> = {
         action: 'capability.finish',
+        ...admittedAttribution,
         agentId: call.agent_id,
         agentSessionId: call.agent_session_id,
         capabilityCallId: call.call_id,

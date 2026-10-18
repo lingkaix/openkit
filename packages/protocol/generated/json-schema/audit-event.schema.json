@@ -201,6 +201,43 @@
         }
       ]
     },
+    "authentication": {
+      "type": "object",
+      "properties": {
+        "credentialKind": {
+          "type": "string",
+          "enum": [
+            "local",
+            "session",
+            "token"
+          ]
+        },
+        "credentialId": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^tok_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^auth_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "credentialKind",
+        "credentialId"
+      ],
+      "additionalProperties": false
+    },
     "subject": {
       "default": null,
       "anyOf": [

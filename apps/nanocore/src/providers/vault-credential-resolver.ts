@@ -33,9 +33,9 @@ export interface CreateVaultProviderCredentialResolverInput {
 export function createVaultProviderCredentialResolver(
   input: CreateVaultProviderCredentialResolverInput
 ): ProviderCredentialResolver {
-  return (secretRef) => {
+  return (secretRef, context) => {
     if (input.fallback) {
-      const fallbackValue = input.fallback(secretRef);
+      const fallbackValue = input.fallback(secretRef, context);
 
       if (fallbackValue != null) {
         return fallbackValue;
@@ -50,6 +50,7 @@ export function createVaultProviderCredentialResolver(
 
     try {
       const auditedBackend = createVaultUseAuditedBackend({
+        ...context,
         backend: input.vaultBackend(),
         db: input.coreDb,
         ownerScope: 'server',

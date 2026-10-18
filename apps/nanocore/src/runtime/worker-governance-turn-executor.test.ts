@@ -53,6 +53,7 @@ import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/
 import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -833,7 +834,10 @@ function createWorkspaceChangeIngressFixture(name: string, strategy: 'git' | 'fi
     now: () => timestamp,
   });
   const environmentPackage = {
+    agent: { agentId: turn.agentId },
     scope: {
+      agentSessionId: testEntityId('as', `as_ingress_${name}`),
+      triggerActor: turn.triggerActor,
       requestId,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -6673,6 +6677,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }),
       ]);
       expect(listWorkspaceChangeSets(fixture.workspaceDb, fixture.workspaceId)).toHaveLength(1);
+      expect(listWorkspaceAuditEvents(fixture.workspaceDb, fixture.workspaceId)).toEqual([
+        expect.objectContaining({
+          action: 'workspace.review.stage',
+          actor: {
+            kind: 'agent',
+            id: fixture.environmentPackage.agent.agentId,
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          },
+          agentId: fixture.environmentPackage.agent.agentId,
+          agentSessionId: fixture.environmentPackage.scope.agentSessionId,
+          requestId: fixture.environmentPackage.scope.requestId,
+          threadId: fixture.environmentPackage.scope.threadId,
+          turnId: fixture.environmentPackage.scope.turnId,
+        }),
+      ]);
     } finally {
       fixture.workspaceDb.sqlite.close();
     }

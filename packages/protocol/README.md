@@ -63,6 +63,8 @@ Knowledge list items project the exact canonical page contentDigest at the respo
 
 `src/common/retained-format.ts` supplies the single retained marker helper: `writeRetainedV1` emits `schemaVersion: 1`, and `readRetainedV1` checks that exact marker before its family decoder runs. Stored schemas remain with their persistence owners; wire schemas, content versions and digests do not select a retained decoder. The v1 marker remains 1; a future family format must select its own decoder rather than bump the shared constant.
 
+`AuditEvent.authentication` is optional, closed non-secret attribution: local/session/token credential kind and nullable canonical access Token or authentication Session record id. It carries no channel, credential value or hash. Its generated JSON Schema and conformance tests enforce the same boundary; imported identity remains historical, not an authorization binding.
+
 `ServerThreadSchema`, `ServerTurnSchema`, `ServerItemSchema` and `ServerTurnEventEnvelopeSchema` preserve the same narrative, lifecycle, Item vocabulary and transcript event families for the immutable `{ kind: 'server' }` owner. Server records prohibit a Workspace anchor and use Server visibility. The existing Workspace schemas retain required Workspace placement and their current audiences. Current Server administration authority governs admission outside these record schemas.
 
 `ServerCapabilityCallSchema` and `ServerUsageRecordSchema` add Server attribution to the existing call and measurement families. They require `owner: { kind: 'server' }`, forbid `workspaceId`, and retain the same call lifecycle and measurement fields. Existing Workspace schemas and types stay unchanged.
