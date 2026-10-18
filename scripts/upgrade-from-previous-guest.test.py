@@ -32,6 +32,8 @@ class StandIn(DRIVER.Boundary):
         self.failed_worker = None
         self.downgrade_prior_image = False
         self.reader = None
+        self.live_app_reads = 0
+        self.change_live_app = False
         self.carrier = {"Id": "carrier", "State": {"Running": True, "Pid": 123}}
 
     def namespace(self, pid):
@@ -54,6 +56,13 @@ class StandIn(DRIVER.Boundary):
 
     def docker(self, path, body=None, method="GET"):
         """Model Engine operations without starting any container."""
+        if path == "/containers/openkit-app/json":
+            assert method == "GET" and body is None
+            self.events.append("live-app-read")
+            self.live_app_reads += 1
+            return {"Id": "e" * 64, "Image": "sha256:" + "f" * 64,
+                    "State": {"Running": True, "StartedAt": "changed-start" if self.change_live_app
+                              and self.live_app_reads > 1 else "original-start"}}
         if path == "/containers/lrt-p14-network/json":
             return self.carrier
         if path.startswith("/containers/json?"):
@@ -231,6 +240,7 @@ class LifecycleTests(unittest.TestCase):
             },
             "baseline": str(root / "result/baseline.json"), "userId": "synthetic-user",
             "origin": "http://127.0.0.1:18081", "agentId": "synthetic-agent", "modelId": "synthetic-model",
+            "liveDevOrigin": "http://127.0.0.1:9099", "liveDevAppContainer": "openkit-app",
             "requestId": "synthetic-request", "expectedRuntime": {"identityId": "host", "deploymentId": "deployment"},
             "login": {"email": "synthetic@example.invalid", "userId": "synthetic-user"},
             "preparedLayout": {"privateRoot": str(root), "guestRoot": str(guest), "appContainer": "lrt-p14-upgrade",
@@ -252,7 +262,6 @@ class LifecycleTests(unittest.TestCase):
 
     def test_continuity_retains_whole_state_before_candidate_mutation(self):
         """Candidate mutation follows stopped baseline and complete retention."""
-        self.input["liveDevOrigin"] = "http://127.0.0.1:9099"
         result = DRIVER.run_upgrade(self.input, self.boundary)
         self.assertTrue(result["passed"], result)
         events = self.boundary.events
@@ -268,7 +277,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(events.count("live-health-read"), 2)
         self.assertEqual(events.count("live-host-read"), 2)
         self.assertLess(events.index("live-host-read"), events.index("host-stop"))
-        self.assertEqual(events[-2:], ["live-health-read", "live-host-read"])
+        self.assertEqual(events[-3:], ["live-health-read", "live-host-read", "live-app-read"])
         report = json.dumps(result)
         self.assertNotIn("synthetic-token", report)
         self.assertNotIn(self.input["dataRoot"], report)
@@ -305,6 +314,25 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("candidate-previous-image-read", self.boundary.events)
         self.assertNotIn("candidate-app-start", self.boundary.events)
         self.assertNotIn("compare", self.boundary.events)
+
+    def test_changed_live_app_process_is_rejected_with_unchanged_health(self):
+        """A new App start time fails unchanged-live proof despite equal health and Host state."""
+        self.boundary.change_live_app = True
+        result = DRIVER.run_upgrade(self.input, self.boundary)
+        self.assertFalse(result["passed"])
+        self.assertFalse(result["liveDevObservation"]["unchanged"])
+        self.assertEqual(self.boundary.live_app_reads, 2)
+
+    def test_live_observation_boundary_is_required_before_effects(self):
+        """Missing live health or a different container target fails admission."""
+        del self.input["liveDevOrigin"]
+        with self.assertRaises(RuntimeError):
+            DRIVER.run_upgrade(self.input, self.boundary)
+        self.input["liveDevOrigin"] = "http://127.0.0.1:9099"
+        self.input["liveDevAppContainer"] = "unrelated-container"
+        with self.assertRaises(RuntimeError):
+            DRIVER.run_upgrade(self.input, self.boundary)
+        self.assertEqual(self.boundary.events, [])
 
 
 if __name__ == "__main__":

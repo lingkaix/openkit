@@ -218,9 +218,10 @@ def validate(input):
     tag = re.fullmatch(r"v?0\.1\.0-rc\.([0-9]+)", input["previous"]["tag"])
     require(tag and int(tag[1]) >= 9, "previous_reset_not_upgrade")
     input["origin"] = local_origin(input["origin"])
-    if input.get("liveDevOrigin"):
-        input["liveDevOrigin"] = local_origin(input["liveDevOrigin"])
-        require(input["origin"] != input["liveDevOrigin"], "live_fixture_origin_collision")
+    require(input.get("liveDevOrigin") and input.get("liveDevAppContainer") == "openkit-app",
+            "live_observation_boundary_required")
+    input["liveDevOrigin"] = local_origin(input["liveDevOrigin"])
+    require(input["origin"] != input["liveDevOrigin"], "live_fixture_origin_collision")
     require(Path(input["baseline"]).resolve().parent == output, "baseline_outside_retained_root")
     require(Path(input["checkout"]).is_absolute(), "checkout_path_invalid")
     require(os.environ.get("OPENKIT_UPGRADE_ADMIN_TOKEN") and os.environ.get("OPENKIT_UPGRADE_LOGIN_PASSWORD"),
@@ -436,7 +437,7 @@ class Upgrade:
         online = phase in ("activate-before", "activate", "worker-before", "worker")
         require(self.stopped != online, "phase_stop_boundary_invalid")
         value = {key: val for key, val in self.input.items()
-                 if key not in ("preparedLayout", "login", "liveDevOrigin")}
+                 if key not in ("preparedLayout", "login", "liveDevOrigin", "liveDevAppContainer")}
         worker = phase in ("worker-before", "worker")
         if worker:
             value["requestId"] = str(uuid.uuid4())
@@ -561,19 +562,23 @@ class Upgrade:
         self.note("candidate_payloads_replaced_same_roots")
 
     def live_observation(self):
-        """Read only public health and fixed non-secret live service properties."""
-        origin = self.input.get("liveDevOrigin")
-        if not origin:
-            return None
+        """Read public health and only the fixed live App and Host process identities."""
+        origin = self.input["liveDevOrigin"]
         status, body = self.boundary.http(origin, "/api/health")
         require(status == 200, "live_readonly_health_failed")
         service = self.boundary.run([
             "systemctl", "show", SERVICE, "-p", "MainPID", "-p", "InvocationID",
             "-p", "NRestarts", "-p", "ActiveState",
         ])
+        app = self.boundary.docker("/containers/openkit-app/json")
+        identity = {"id": app["Id"], "image": app["Image"],
+                    "startedAt": app["State"]["StartedAt"], "running": app["State"]["Running"]}
+        require(identity["running"] is True and re.fullmatch(r"[a-f0-9]{64}", identity["id"])
+                and DIGEST.fullmatch(identity["image"]) and isinstance(identity["startedAt"], str)
+                and identity["startedAt"], "live_app_identity_unavailable")
         return hashlib.sha256(json.dumps({"status": status, "healthStatus": body.get("status"),
                                          "serviceName": body.get("service"),
-                                         "service": service}, sort_keys=True).encode()).hexdigest()
+                                         "service": service, "app": identity}, sort_keys=True).encode()).hexdigest()
 
 
 def run_upgrade(input, boundary=None):
