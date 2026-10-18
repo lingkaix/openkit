@@ -22,6 +22,7 @@ import {
 } from './commands.js';
 import { collectionTableName, fieldColumnName } from './native.js';
 import { admitLightAppDefinition, admitLightAppSchema } from './schema.js';
+import { readLightAppSnapshots } from './snapshots.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -76,6 +77,28 @@ function proposal(app: Awaited<ReturnType<typeof createLightApp>>): LightAppSche
 }
 
 describe('Light App migration recovery', () => {
+  it('refuses missing or unknown recovery metadata versions before decoding core fields', async () => {
+    const ctx = context();
+    const app = await createLightApp(ctx, schema);
+    const next = proposal(app);
+    next.title = 'Updated title';
+    await updateLightAppSchema(request(ctx), app.appId, 1, 1, next);
+    const selected = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots[0]!;
+    const path = join(
+      lightAppRoot(ctx.dataRoot, ctx.workspaceId, app.appId),
+      'snapshots',
+      `${selected.snapshotId}.json`
+    );
+    for (const marker of [{}, { schemaVersion: 2 }]) {
+      const invalid = JSON.stringify({ ...marker, snapshotId: 42 });
+      writeFileSync(path, invalid);
+      expect(() => readLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(readFileSync(path, 'utf8')).toBe(invalid);
+    }
+  });
+
   it('admits reusable definitions once and preserves their stable identities across app instances and template renames', () => {
     const definition = admitLightAppDefinition(schema);
     const first = admitLightAppSchema(definition, randomUUID(), 1);
@@ -189,6 +212,17 @@ describe('Light App migration recovery', () => {
     const snapshots = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots;
     expect(snapshots).toHaveLength(1);
     const selected = snapshots[0]!;
+    const metadataPath = join(
+      lightAppRoot(ctx.dataRoot, ctx.workspaceId, app.appId),
+      'snapshots',
+      `${selected.snapshotId}.json`
+    );
+    const retained = JSON.parse(readFileSync(metadataPath, 'utf8'));
+    expect(retained.schemaVersion).toBe(1);
+    const annotated = { ...retained, publicNote: 'Retain this description.' };
+    writeFileSync(metadataPath, JSON.stringify(annotated));
+    expect(readLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId)).toEqual(snapshots);
+    expect(JSON.parse(readFileSync(metadataPath, 'utf8'))).toEqual(annotated);
     await expect(
       rollbackLightAppSnapshot(request(ctx), app.appId, 1, selected.snapshotId)
     ).rejects.toMatchObject({ code: 'conflict' });
