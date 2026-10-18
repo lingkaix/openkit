@@ -299,7 +299,9 @@ export function writeWorkspacePortableFileState(
         !initialized.workspace.defaultKnowledgeBaseId ||
         initialized.workspace.defaultKnowledgeBaseId !== imported.workspace.defaultKnowledgeBaseId
       )
-        throw new Error('Portable configuration contradicts the initialized Knowledge Base binding.');
+        throw new Error(
+          'Portable configuration contradicts the initialized Knowledge Base binding.'
+        );
     }
     writeText(root, 'config/workspace.jsonc', state.workspaceConfig, initializedConfig !== null);
   }
