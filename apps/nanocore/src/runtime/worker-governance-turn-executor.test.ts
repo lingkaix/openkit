@@ -8082,6 +8082,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  // Real native handoff setup shares gate CPU; assertions check exact source authority, not latency.
   it.each([
     'source',
     'cursor',
@@ -8294,7 +8295,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     workspaceDb.sqlite.close();
     launchGate.mockRestore();
     coreDb.sqlite.close();
-  });
+  }, 60_000);
 
   it.each([
     'validation',
