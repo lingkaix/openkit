@@ -447,7 +447,7 @@ export const StoredAgentSessionPayloadV1Shape = {
   updatedAt: CanonicalTimestampV1Schema,
   configVersion: z.number().int().positive().nullable(),
   environmentPackageSnapshotId: z.string().min(1).nullable(),
-  /** Retained absence records no admitted attachment; it never creates current storage authority. */
+  /** Actual admitted attachment, persisted before native open and immutable for this AgentSession; retained absence supplies no current authority. */
   retainedStorage: z
     .object({
       storageRef: WorkerStorageTargetIdSchema,
@@ -456,7 +456,10 @@ export const StoredAgentSessionPayloadV1Shape = {
     .strip()
     .nullable()
     .default(null),
-  /** Retained absence records that no native ready proof was accepted for this session. */
+  /**
+   * The accepted native ready-proof digest and this record's id form the resume pair a successor presents for the binding.
+   * Retained absence records that no proof was accepted; it never supplies current attachment authority.
+   */
   nativeHandleDigest: z
     .string()
     .regex(/^[0-9a-f]{64}$/)

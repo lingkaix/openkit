@@ -45,7 +45,7 @@ const TurnStatusSchema = z.enum([
 const StopReasonSchema = z.enum(['completed', 'error', 'aborted', 'length', 'budget_exhausted']);
 
 /** Captured aggregate fields are evidence, not a second Workspace authority. */
-const WorkspaceSnapshotV1Schema = z.object({
+export const StoredWorkspaceSnapshotV1Schema = z.object({
   ...StoredWorkspacePayloadV1Shape,
   name: z.string().min(1),
   counts: z.object({
@@ -193,7 +193,7 @@ type NonEmptyItemTypeList = readonly [ItemType, ...ItemType[]];
  */
 const WorkspaceUpdatedEventSchema = z.object({
   type: z.literal('workspace-updated'),
-  workspace: WorkspaceSnapshotV1Schema,
+  workspace: StoredWorkspaceSnapshotV1Schema,
 });
 
 /**
