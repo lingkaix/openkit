@@ -743,6 +743,7 @@ describe('workspace import route handles', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const input = minimalExportInput(join(dataRoot, 'verified-export'));
+      input.workspace = store.getWorkspace(sourceWorkspaceId);
       input.portableFileState = {
         ...input.portableFileState!,
         workspaceConfig: readFileSync(
@@ -827,6 +828,7 @@ describe('workspace import route handles', () => {
     mkdirSync(dirname(exportRoot), { recursive: true });
     const verified = writeWorkspaceExportTree({
       ...input,
+      workspace: store.getWorkspace(input.workspace.id),
       sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       portableFileState: {
         ...input.portableFileState!,

@@ -151,7 +151,8 @@ function expectRepeatedImportSnapshot(
         modify(
           repeatedConfig,
           ['workspace', 'defaultKnowledgeBaseId'],
-          imported.defaultKnowledgeBaseId
+          imported.defaultKnowledgeBaseId,
+          {}
         )
       ),
     },
