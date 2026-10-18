@@ -10475,6 +10475,9 @@ describe('createConfiguredTurnExecutor', () => {
               .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
               .run('f'.repeat(64));
           const desired = completeNanoHostPackage({
+            runtime: {
+              image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
+            },
             scope: {
               agentSessionId: testEntityId('as', 'as_capacity_preview'),
               threadId: testEntityId('th', 'thread_resume_1'),
