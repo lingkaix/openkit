@@ -2,7 +2,11 @@ import { PolicyDelegationV1Schema, type PolicySubjectV1Schema } from '@openkit/p
 import { describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { evaluateGoalTaskAccess, type GoalTaskAccessInput } from './goal-task-access.js';
+import {
+  evaluateGoalTaskAccess,
+  evaluateGoalTaskAdmission,
+  type GoalTaskAccessInput,
+} from './goal-task-access.js';
 import { evaluateWorkspaceMemberAccess } from './workspace-access.js';
 
 const workspaceId = testEntityId('ws', 'goal-task-kernel');
@@ -57,6 +61,27 @@ function input(changes: Partial<GoalTaskAccessInput> = {}): GoalTaskAccessInput 
 }
 
 describe('Goal Task native Kernel projection', () => {
+  it('admits prepared bounds without inventing a Worker process or credential', () => {
+    const prepared = {
+      domain,
+      workspaceId,
+      planVersionId: 'plan',
+      agentId: 'design-worker',
+      resources: [resource],
+      humanKernel: evaluateWorkspaceMemberAccess({ operation: 'turn.run' }),
+    };
+    const result = evaluateGoalTaskAdmission(prepared);
+    expect(result.kernel.effect).toBe('allow');
+    expect(result.kernel.trace.process).toBeUndefined();
+    expect(evaluateGoalTaskAdmission({ ...prepared, resources: [] }).kernel.effect).toBe('allow');
+    for (const change of [
+      { agentId: 'other-worker' },
+      { planVersionId: 'obsolete-plan' },
+      { resources: [{ ...resource, toolName: 'write' }] },
+      { humanKernel: evaluateWorkspaceMemberAccess({ operation: 'deployment.recover' }) },
+    ])
+      expect(evaluateGoalTaskAdmission({ ...prepared, ...change }).kernel.effect).toBe('deny');
+  });
   it('requires both Goal and exact Task associations in the existing Kernel', () => {
     const result = evaluateGoalTaskAccess(input());
     expect(result.kernel.effect).toBe('allow');

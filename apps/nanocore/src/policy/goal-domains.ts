@@ -22,6 +22,8 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import {
+  type PolicyUseDecision,
+  policyStatementUsedByDecision,
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
@@ -79,7 +81,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     return current;
   }
 
-  function approved(workspaceId: string, requestId: string) {
+  function approved(workspaceId: string, requestId: string, ownDecision?: PolicyUseDecision) {
     const db = deps.repositoryWorkspaceDb(workspaceId);
     const request = readPendingRequest(db.sqlite, requestId);
     const intent = request?.governedIntent;
@@ -150,7 +152,15 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       anchor.id !== source.goalId ||
       (active.lifetime.notAfter && Date.now() >= Date.parse(active.lifetime.notAfter)) ||
       (active.lifetime.uses !== undefined &&
-        readPolicyStatementUseCount(db, { id: active.id, digest: policyDigest(active) }) >=
+        readPolicyStatementUseCount(db, { id: active.id, digest: policyDigest(active) }) -
+          (ownDecision &&
+          policyStatementUsedByDecision(
+            db,
+            { id: active.id, digest: policyDigest(active) },
+            ownDecision
+          )
+            ? 1
+            : 0) >=
           active.lifetime.uses)
     )
       throw new GoalDomainUnavailable('Goal-domain lifetime is unavailable.');
@@ -369,26 +379,14 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
 
     /** Rechecks the recorded human, exact Plan, saved/loaded revision and lifetime on every use. */
     read(key: GoalDomainKey): GoalDomainStatement | null {
-      const current = loaded();
-      const candidates = current.document.statements.filter(
-        (statement) =>
-          statement.kind === 'delegation' &&
-          statement.purpose === 'goal-domain' &&
-          statement.state === 'active' &&
-          statement.source?.workspaceId === key.workspaceId &&
-          statement.source.goalId === key.goalId
-      );
-      const currentStatements = candidates.filter((value) => {
-        const statement = value as GoalDomainStatement;
-        try {
-          const approval = approved(key.workspaceId, statement.source.approvalRequestId);
-          return policyDigest(approval.statement) === policyDigest(statement);
-        } catch (error) {
-          if (error instanceof GoalDomainUnavailable) return false;
-          throw error;
-        }
-      });
-      return currentStatements.length === 1 ? (currentStatements[0]! as GoalDomainStatement) : null;
+      return readCurrent(key);
+    },
+
+    /** Dispatch-only readback: recognizes this exact allow's own use, never a new authorization. */
+    readForDecision(
+      key: GoalDomainKey & { readonly decision: PolicyUseDecision }
+    ): GoalDomainStatement | null {
+      return readCurrent(key, key.decision);
     },
 
     /** Withdraws only this Goal without requiring its old Plan or human credential to remain valid. */
@@ -424,6 +422,33 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       return { changed: true, policyRevision };
     },
   };
+
+  function readCurrent(
+    key: GoalDomainKey,
+    ownDecision?: PolicyUseDecision
+  ): GoalDomainStatement | null {
+    const current = loaded();
+    if (ownDecision && ownDecision.policyRevision !== current.revision) return null;
+    const candidates = current.document.statements.filter(
+      (statement) =>
+        statement.kind === 'delegation' &&
+        statement.purpose === 'goal-domain' &&
+        statement.state === 'active' &&
+        statement.source?.workspaceId === key.workspaceId &&
+        statement.source.goalId === key.goalId
+    );
+    const currentStatements = candidates.filter((value) => {
+      const statement = value as GoalDomainStatement;
+      try {
+        const approval = approved(key.workspaceId, statement.source.approvalRequestId, ownDecision);
+        return policyDigest(approval.statement) === policyDigest(statement);
+      } catch (error) {
+        if (error instanceof GoalDomainUnavailable) return false;
+        throw error;
+      }
+    });
+    return currentStatements.length === 1 ? (currentStatements[0]! as GoalDomainStatement) : null;
+  }
 }
 
 /** Native Goal consumers use the same instance shape without importing transport types. */

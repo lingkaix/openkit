@@ -1,5 +1,10 @@
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
-import { PolicyResourceV1Schema, PolicySubjectV1Schema, UserIdSchema } from '@openkit/protocol';
+import {
+  AgentIdSchema,
+  PolicyResourceV1Schema,
+  PolicySubjectV1Schema,
+  UserIdSchema,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import type { GoalDomainStatement } from './goal-domains.js';
 import { policyDigest } from './statements.js';
@@ -59,12 +64,93 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
       domain.scope.resources.some((value) => policyDigest(value) === resourceDigest)
   );
   const selectedByTask = resources.some((value) => policyDigest(value) === resourceDigest);
+  const kernel = scopeKernel({
+    operation: input.operation,
+    user: `${subject.principal.kind}:${subject.principal.id}`,
+    process: subject.process?.turnId,
+    inGoalEnvelope,
+    selectedByTask,
+    humanKernel: input.humanKernel,
+  });
+  return {
+    kernel,
+    inGoalEnvelope,
+    authorizationRevision: policyDigest({
+      domain: domain ? { id: domain.id, digest: policyDigest(domain) } : null,
+      subject,
+      responsibleHumanId,
+      resources,
+      operation: input.operation,
+      resource,
+      humanKernel: input.humanKernel,
+    }),
+  };
+}
+
+/** Native prepared admission facts; this boundary has no Worker Session or process yet. */
+export interface GoalTaskAdmissionInput {
+  readonly domain: GoalDomainStatement | null;
+  readonly workspaceId: string;
+  readonly planVersionId: string;
+  readonly agentId: string;
+  readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
+  /** Existing current responsible-human turn.run decision. */
+  readonly humanKernel: PolicyDecision;
+}
+
+/** Bounds the prepared Worker/resource selection; it neither grants an effect nor spends a use. */
+export function evaluateGoalTaskAdmission(
+  input: GoalTaskAdmissionInput
+): Pick<GoalTaskAccessResult, 'kernel' | 'authorizationRevision'> {
+  const agentId = AgentIdSchema.parse(input.agentId);
+  const resources = input.resources.map((value) => PolicyResourceV1Schema.parse(value));
+  const domain = input.domain;
+  const inGoalEnvelope = Boolean(
+    domain?.state === 'active' &&
+      domain.source.workspaceId === input.workspaceId &&
+      domain.source.planVersionId === input.planVersionId &&
+      domain.scope.subjects.some((value) => value.kind === 'agent' && value.id === agentId)
+  );
+  const selectedByTask = Boolean(
+    domain &&
+      resources.every((resource) =>
+        domain.scope.resources.some((value) => policyDigest(value) === policyDigest(resource))
+      )
+  );
+  return {
+    kernel: scopeKernel({
+      operation: 'turn.run',
+      user: `agent:${agentId}`,
+      inGoalEnvelope,
+      selectedByTask,
+      humanKernel: input.humanKernel,
+    }),
+    authorizationRevision: policyDigest({
+      domain,
+      workspaceId: input.workspaceId,
+      planVersionId: input.planVersionId,
+      agentId,
+      resources,
+      humanKernel: input.humanKernel,
+    }),
+  };
+}
+
+/** Reuses the same two mandatory NGAC classes for prepared admission and concrete effects. */
+function scopeKernel(input: {
+  operation: string;
+  user: string;
+  process?: string;
+  inGoalEnvelope: boolean;
+  selectedByTask: boolean;
+  humanKernel: PolicyDecision;
+}): PolicyDecision {
   const operation = Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, input.operation)
     ? (input.operation as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS)
     : null;
   const accessRights = operation ? [PRODUCT_OPERATION_ACCESS_RIGHTS[operation]] : [];
   // Graph-local names are disjoint from attributes and are not product identifiers.
-  const user = `${subject.principal.kind}:${subject.principal.id}`;
+  const user = input.user;
   const classes = ['goal-envelope', 'goal-task'] as const;
   const graph: PolicyState = {
     elements: [
@@ -84,30 +170,16 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
     ]),
     operations: operation ? [{ id: operation, accessRights }] : [],
     associations: classes
-      .filter((id) => (id === 'goal-envelope' ? inGoalEnvelope : selectedByTask))
+      .filter((id) => (id === 'goal-envelope' ? input.inGoalEnvelope : input.selectedByTask))
       .map((id) => ({ id, userAttribute: `ua:${id}`, targetAttribute: `oa:${id}`, accessRights })),
-    ...(subject.process ? { processUsers: [{ process: subject.process.turnId, user }] } : {}),
+    ...(input.process ? { processUsers: [{ process: input.process, user }] } : {}),
   };
-  const kernel =
-    input.humanKernel.effect === 'deny'
-      ? input.humanKernel
-      : evaluateAccess(graph, {
-          operation: input.operation,
-          target: 'goal-request',
-          user,
-          ...(subject.process ? { process: subject.process.turnId } : {}),
-        });
-  return {
-    kernel,
-    inGoalEnvelope,
-    authorizationRevision: policyDigest({
-      domain: domain ? { id: domain.id, digest: policyDigest(domain) } : null,
-      subject,
-      responsibleHumanId,
-      resources,
-      operation: input.operation,
-      resource,
-      humanKernel: input.humanKernel,
-    }),
-  };
+  return input.humanKernel.effect === 'deny'
+    ? input.humanKernel
+    : evaluateAccess(graph, {
+        operation: input.operation,
+        target: 'goal-request',
+        user,
+        ...(input.process ? { process: input.process } : {}),
+      });
 }
