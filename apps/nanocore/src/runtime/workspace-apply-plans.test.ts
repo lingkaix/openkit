@@ -8,6 +8,7 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   importWorkspaceApplyPlans,
+  listExportableWorkspaceApplyPlans,
   listWorkspaceApplyPlans,
   recordWorkspaceApplyPlan,
 } from './workspace-apply-plans.js';
@@ -129,6 +130,9 @@ describe('retained Workspace Apply Plan SQL format', () => {
     const before = db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get();
     expect(before).toMatchObject({ schema_version: 1 });
     expect(listWorkspaceApplyPlans(db, plan.workspaceId)).toEqual([plan]);
+    expect(listExportableWorkspaceApplyPlans(db, plan.workspaceId)[0]).toMatchObject({
+      annotation: 'Retained plan description',
+    });
     expect(recordWorkspaceApplyPlan(db, plan)).toEqual(plan);
     expect(db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get()).toEqual(before);
   });

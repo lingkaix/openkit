@@ -308,7 +308,10 @@ export function listExportableArtifactReviews(
   rows.forEach((row) => {
     assertStoredReview(workspaceDb, row);
   });
-  return rows.map((row) => ({ ...toView(row), decisionRequestId: row.decisionRequestId }));
+  return rows.map((row) => ({
+    ...readStoredReviewV1(row),
+    decisionRequestId: row.decisionRequestId,
+  }));
 }
 
 /**

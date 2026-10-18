@@ -10,6 +10,7 @@ import {
   decideArtifactReview,
   getArtifactReview,
   listArtifactReviews,
+  listExportableArtifactReviews,
   replayArtifactReviewDecision,
   selectArtifactReviewCandidate,
 } from './artifact-reviews.js';
@@ -612,6 +613,9 @@ describe('retained Artifact Review SQL format', () => {
       requestId: 'selection',
     });
     expect(review.candidateSelections[0]).not.toHaveProperty('note');
+    expect(listExportableArtifactReviews(db)[0]?.candidateSelections[0]).toMatchObject({
+      note: 'Retained description',
+    });
     expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual(before);
     selectArtifactReviewCandidate(db, {
       actorId: 'reviewer',
