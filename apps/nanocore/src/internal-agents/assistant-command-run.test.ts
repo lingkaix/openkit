@@ -204,6 +204,7 @@ async function fixture(selected = true, description?: string) {
     requestId,
     workspaceDb,
     gateway,
+    profileId: null,
     limits,
     signal: new AbortController().signal,
   };
@@ -517,9 +518,15 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       tools: f.tools,
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] }],
     });
+    const profileId = 'assistant-summary-profile';
+    const selectedLimits = { maxModelTurns: 8, maxToolCalls: 5, deadlineMs: 20_000 };
     let summaryCalls = 0;
     f.createResponses.mockImplementation(async (_provider, request) => {
       expect(environments(f)).toHaveLength(1);
+      expect(f.store.getTurnById(f.turn.id).internalExecution).toMatchObject({
+        profileId,
+        limits: selectedLimits,
+      });
       const summary = JSON.stringify(request.input).includes('openkit_context_summary_task');
       expect(JSON.stringify(request.input).includes('knowledge_overviews')).toBe(!summary);
       if (summary) {
@@ -582,7 +589,8 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           threadId: f.threadId,
           items,
         }),
-      limits: { ...limits, maxModelTurns: 8 },
+      profileId,
+      limits: selectedLimits,
       gateway: {
         ...f.input.gateway,
         logicalModel: boundedModel,

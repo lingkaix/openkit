@@ -48,6 +48,11 @@ const CAPABILITY_BODY_MAX_BYTES: usize = 512 * 1024;
 const FILE_DATA_BODY_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const FILE_DATA_APPLICATION_CHUNK_BYTES: usize = 64 * 1024;
 const FILE_CONTENT_TYPE: &str = "application/octet-stream";
+/// One source for the first-party native admission framing contract.
+pub(crate) const NANOHOST_TRANSPORT_REVISION: &str =
+    include_str!("../../nanocore/src/auth/nanohost-transport-revision.json");
+/// Exact revision carriage on the single native admission exchange.
+pub(crate) const NANOHOST_TRANSPORT_REVISION_HEADER: &str = "x-openkit-nanohost-transport-revision";
 const REQUEST_ID_HEADER: &str = "x-openkit-request-id";
 const SLOT_HEADER: &str = "x-openkit-slot";
 const RELATIVE_PATH_HEADER: &str = "x-openkit-relative-path";
@@ -381,6 +386,8 @@ pub struct PolledEffectCommand {
     pub input: serde_json::Value,
     /// Complete verified entry for the one `reference.import` direction.
     pub file_data: Option<RawImportEntry>,
+    /// Definite correlated import refusal before any Sandbox helper effect.
+    pub admission_failure: Option<&'static str>,
     /// Ephemeral diagnostic parent, replaced by the ended local effect context.
     pub trace_context: opentelemetry::Context,
 }
@@ -1575,6 +1582,10 @@ where
         let admission = Request::builder()
             .method(Method::POST)
             .uri(admission_uri)
+            .header(
+                NANOHOST_TRANSPORT_REVISION_HEADER,
+                NANOHOST_TRANSPORT_REVISION.trim(),
+            )
             .header("authorization", format!("Bearer {authorization_secret}"))
             .header("content-type", "application/json")
             .body(())
@@ -1616,12 +1627,56 @@ where
                 reconnect_after,
             )
         })?;
-        if response.status() != StatusCode::OK {
+        let status = response.status();
+        if status != StatusCode::OK {
+            let mut reason = "outer-session admission rejected";
+            if status == StatusCode::CONFLICT {
+                // Read only the bounded existing error envelope. Other conflicts retain
+                // their ordinary admission failure, including incomplete or invalid bodies.
+                let mut body = response.into_body();
+                let mut bytes = BytesMut::new();
+                let mut complete = true;
+                while let Some(chunk) = body.data().await {
+                    let Ok(chunk) = chunk else {
+                        complete = false;
+                        break;
+                    };
+                    if bytes.len() + chunk.len()
+                        > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES
+                        || body.flow_control().release_capacity(chunk.len()).is_err()
+                    {
+                        complete = false;
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                if complete
+                    && serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .is_some_and(|error| {
+                            error.get("code").and_then(serde_json::Value::as_str)
+                                == Some("nanohost_protocol_mismatch")
+                        })
+                {
+                    reason = "nanohost_protocol_mismatch";
+                }
+            }
             return Err(OuterSessionFailure::terminal(
                 OuterSessionStage::Admission,
                 OuterSessionOperation::None,
-                Some(response.status().as_u16()),
-                "outer-session admission rejected",
+                Some(status.as_u16()),
+                reason,
+            )
+            .with_reconnect_after(reconnect_after));
+        }
+        if required_header(response.headers(), NANOHOST_TRANSPORT_REVISION_HEADER).ok()
+            != Some(NANOHOST_TRANSPORT_REVISION.trim())
+        {
+            return Err(OuterSessionFailure::terminal(
+                OuterSessionStage::Admission,
+                OuterSessionOperation::None,
+                Some(status.as_u16()),
+                "nanohost_protocol_mismatch",
             )
             .with_reconnect_after(reconnect_after));
         }
@@ -1929,7 +1984,9 @@ where
 ///
 /// Rejects transport failure, any status other than `204` or `200`, an
 /// oversized or malformed command, missing `requestId`, a body operation
-/// selector, or bulk/credential/physical-connection fields.
+/// selector, or bulk/credential/physical-connection fields. A correlated raw
+/// import admission refusal returns only its identity and local failure reason
+/// for the existing typed effect result, without exposing unverified content.
 pub async fn poll_effect_command(
     authority: &str,
     sender: &mut h2::client::SendRequest<Bytes>,
@@ -2167,6 +2224,7 @@ pub async fn poll_effect_command(
         input,
         trace_context,
         file_data: None,
+        admission_failure: None,
     }))
 }
 
@@ -2333,125 +2391,143 @@ async fn poll_reference_import(
         return Err(terminal("reference.import command poll rejected"));
     }
     let headers = response.headers();
-    if required_header(headers, "content-type").map_err(terminal)? != FILE_CONTENT_TYPE {
-        return Err(terminal("reference.import content type invalid"));
-    }
+    // Correlation must be proved before a malformed payload can become an effect result.
+    // Missing, duplicate or invalid identity retains the session protocol failure.
     let request_id = required_header(headers, REQUEST_ID_HEADER)
         .map_err(terminal)?
         .to_string();
     if !is_lowercase_hex(&request_id, 64) {
         return Err(terminal("reference.import requestId invalid"));
     }
-    let slot = required_header(headers, SLOT_HEADER)
-        .map_err(terminal)?
-        .to_string();
-    if !is_valid_slot(&slot) {
-        return Err(terminal("reference.import slot invalid"));
-    }
-    let encoded_path = required_header(headers, RELATIVE_PATH_HEADER).map_err(terminal)?;
-    let relative_path = decode_relative_path(encoded_path).map_err(terminal)?;
-    let entry_kind = required_header(headers, ENTRY_KIND_HEADER).map_err(terminal)?;
-    let content_length_text = required_header(headers, "content-length").map_err(terminal)?;
-    let content_length = content_length_text
-        .parse::<u64>()
-        .ok()
-        .filter(|length| length.to_string() == content_length_text)
-        .ok_or_else(|| terminal("reference.import content length invalid"))?;
-    let entry = match entry_kind {
-        "directory" => {
-            if slot != "worker-supply"
-                || content_length != 0
-                || [SHA256_HEADER, BYTE_LENGTH_HEADER, EXECUTABLE_HEADER]
-                    .iter()
-                    .any(|name| headers.contains_key(*name))
-            {
-                return Err(terminal("reference.import directory metadata invalid"));
-            }
-            // Complete the empty body before the command can reach any Sandbox effect.
-            let mut body = response.into_body();
-            while let Some(chunk) = body.data().await {
-                if !chunk
-                    .map_err(|_| reconnect("reference.import response failed"))?
-                    .is_empty()
+    let admitted = async {
+        let headers = response.headers();
+        if required_header(headers, "content-type").map_err(terminal)? != FILE_CONTENT_TYPE {
+            return Err(terminal("reference.import content type invalid"));
+        }
+        let slot = required_header(headers, SLOT_HEADER)
+            .map_err(terminal)?
+            .to_string();
+        if !is_valid_slot(&slot) {
+            return Err(terminal("reference.import slot invalid"));
+        }
+        let encoded_path = required_header(headers, RELATIVE_PATH_HEADER).map_err(terminal)?;
+        let relative_path = decode_relative_path(encoded_path).map_err(terminal)?;
+        let entry_kind = required_header(headers, ENTRY_KIND_HEADER).map_err(terminal)?;
+        let content_length_text = required_header(headers, "content-length").map_err(terminal)?;
+        let content_length = content_length_text
+            .parse::<u64>()
+            .ok()
+            .filter(|length| length.to_string() == content_length_text)
+            .ok_or_else(|| terminal("reference.import content length invalid"))?;
+        let entry = match entry_kind {
+            "directory" => {
+                if slot != "worker-supply"
+                    || content_length != 0
+                    || [SHA256_HEADER, BYTE_LENGTH_HEADER, EXECUTABLE_HEADER]
+                        .iter()
+                        .any(|name| headers.contains_key(*name))
                 {
-                    return Err(terminal("reference.import directory body invalid"));
+                    return Err(terminal("reference.import directory metadata invalid"));
                 }
+                // Complete the empty body before the command can reach any Sandbox effect.
+                let mut body = response.into_body();
+                while let Some(chunk) = body.data().await {
+                    if !chunk
+                        .map_err(|_| reconnect("reference.import response failed"))?
+                        .is_empty()
+                    {
+                        return Err(terminal("reference.import directory body invalid"));
+                    }
+                }
+                crate::sandbox_bridge::ImportEntry::Directory
             }
-            crate::sandbox_bridge::ImportEntry::Directory
+            "file" => {
+                let executable =
+                    match required_header(headers, EXECUTABLE_HEADER).map_err(terminal)? {
+                        "true" if slot == "worker-supply" => true,
+                        "false" => false,
+                        _ => return Err(terminal("reference.import executable invalid")),
+                    };
+                let sha256 = required_header(headers, SHA256_HEADER)
+                    .map_err(terminal)?
+                    .to_string();
+                if !sha256
+                    .strip_prefix("sha256:")
+                    .is_some_and(|digest| is_lowercase_hex(digest, 64))
+                {
+                    return Err(terminal("reference.import digest invalid"));
+                }
+                let byte_length_text =
+                    required_header(headers, BYTE_LENGTH_HEADER).map_err(terminal)?;
+                let byte_length = byte_length_text
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|length| {
+                        length.to_string() == byte_length_text
+                            && *length
+                                <= if matches!(
+                                    slot.as_str(),
+                                    "artifact-input" | "turn-inputs" | "context"
+                                ) {
+                                    crate::file_transfer::FILE_BYTES
+                                } else {
+                                    FILE_DATA_BODY_MAX_BYTES
+                                }
+                    })
+                    .ok_or_else(|| terminal("reference.import byte length invalid"))?;
+                if content_length != byte_length {
+                    return Err(terminal("reference.import length mismatch"));
+                }
+                let mut response_body = response.into_body();
+                let mut stage =
+                    crate::file_transfer::FileStage::create(staging_root, byte_length, byte_length)
+                        .map_err(|_| terminal("reference.import capacity unavailable"))?;
+                let mut observed = 0_u64;
+                while let Some(chunk) = response_body.data().await {
+                    let chunk = chunk.map_err(|_| reconnect("reference.import response failed"))?;
+                    if observed + chunk.len() as u64 > byte_length {
+                        return Err(terminal("reference.import body exceeded declared length"));
+                    }
+                    for consumed in chunk.chunks(FILE_DATA_APPLICATION_CHUNK_BYTES) {
+                        std::io::Write::write_all(&mut stage, consumed)
+                            .map_err(|_| terminal("reference.import staging failed"))?;
+                        observed += consumed.len() as u64;
+                        response_body
+                            .flow_control()
+                            .release_capacity(consumed.len())
+                            .map_err(|_| terminal("reference.import flow control failed"))?;
+                    }
+                }
+                let file = stage
+                    .complete(Some((byte_length, &sha256)))
+                    .map_err(|_| terminal("reference.import body digest or length mismatch"))?;
+                crate::sandbox_bridge::ImportEntry::File { executable, file }
+            }
+            _ => return Err(terminal("reference.import entry kind invalid")),
+        };
+        Ok(RawImportEntry {
+            slot,
+            relative_path,
+            entry,
+        })
+    }
+    .await;
+    let (file_data, admission_failure) = match admitted {
+        Ok(entry) => (Some(entry), None),
+        // No helper ran. Only the correlated local validation failure is settled;
+        // physical transport loss still uses its existing reconnect/unknown fence.
+        Err(failure) if failure.disposition() == OuterSessionDisposition::Terminal => {
+            (None, Some(failure.reason()))
         }
-        "file" => {
-            let executable = match required_header(headers, EXECUTABLE_HEADER).map_err(terminal)? {
-                "true" if slot == "worker-supply" => true,
-                "false" => false,
-                _ => return Err(terminal("reference.import executable invalid")),
-            };
-            let sha256 = required_header(headers, SHA256_HEADER)
-                .map_err(terminal)?
-                .to_string();
-            if !sha256
-                .strip_prefix("sha256:")
-                .is_some_and(|digest| is_lowercase_hex(digest, 64))
-            {
-                return Err(terminal("reference.import digest invalid"));
-            }
-            let byte_length_text =
-                required_header(headers, BYTE_LENGTH_HEADER).map_err(terminal)?;
-            let byte_length = byte_length_text
-                .parse::<u64>()
-                .ok()
-                .filter(|length| {
-                    length.to_string() == byte_length_text
-                        && *length
-                            <= if matches!(
-                                slot.as_str(),
-                                "artifact-input" | "turn-inputs" | "context"
-                            ) {
-                                crate::file_transfer::FILE_BYTES
-                            } else {
-                                FILE_DATA_BODY_MAX_BYTES
-                            }
-                })
-                .ok_or_else(|| terminal("reference.import byte length invalid"))?;
-            if content_length != byte_length {
-                return Err(terminal("reference.import length mismatch"));
-            }
-            let mut response_body = response.into_body();
-            let mut stage =
-                crate::file_transfer::FileStage::create(staging_root, byte_length, byte_length)
-                    .map_err(|_| terminal("reference.import capacity unavailable"))?;
-            let mut observed = 0_u64;
-            while let Some(chunk) = response_body.data().await {
-                let chunk = chunk.map_err(|_| reconnect("reference.import response failed"))?;
-                if observed + chunk.len() as u64 > byte_length {
-                    return Err(terminal("reference.import body exceeded declared length"));
-                }
-                for consumed in chunk.chunks(FILE_DATA_APPLICATION_CHUNK_BYTES) {
-                    std::io::Write::write_all(&mut stage, consumed)
-                        .map_err(|_| terminal("reference.import staging failed"))?;
-                    observed += consumed.len() as u64;
-                    response_body
-                        .flow_control()
-                        .release_capacity(consumed.len())
-                        .map_err(|_| terminal("reference.import flow control failed"))?;
-                }
-            }
-            let file = stage
-                .complete(Some((byte_length, &sha256)))
-                .map_err(|_| terminal("reference.import body digest or length mismatch"))?;
-            crate::sandbox_bridge::ImportEntry::File { executable, file }
-        }
-        _ => return Err(terminal("reference.import entry kind invalid")),
+        Err(failure) => return Err(failure),
     };
     Ok(Some(PolledEffectCommand {
         kind: RuntimeEffectKind::ImportReference,
         request_id,
         input: serde_json::json!({}),
         trace_context,
-        file_data: Some(RawImportEntry {
-            slot,
-            relative_path,
-            entry,
-        }),
+        file_data,
+        admission_failure,
     }))
 }
 
@@ -3532,6 +3608,7 @@ mod tests {
                 input: serde_json::json!({}),
                 trace_context: opentelemetry::Context::new(),
                 file_data: None,
+                admission_failure: None,
             };
             let started = tokio::time::Instant::now();
             let delivered = submit_effect_result(
@@ -3839,10 +3916,15 @@ mod tests {
                 std::env::temp_dir().as_path(),
             )
             .await;
-            if result.is_ok() != accepted {
+            let admitted = result
+                .as_ref()
+                .ok()
+                .and_then(|command| command.as_ref())
+                .is_some_and(|command| command.admission_failure.is_none());
+            if admitted != accepted {
                 mismatches.push(format!(
                     "case {index}: {kind}/{slot}/{executable:?}, accepted={} expected={accepted}",
-                    result.is_ok()
+                    admitted
                 ));
             }
             if let (true, Ok(command)) = (accepted, result) {
@@ -4612,6 +4694,209 @@ mod tests {
         }
     }
 
+    /// Refuses settlement when a poll has no proved identity or rejects session authority.
+    #[tokio::test]
+    async fn uncorrelated_reference_import_and_auth_rejections_remain_terminal() {
+        for case in ["missing", "invalid", "duplicate", "unauthorized", "stale"] {
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let (mut sender, connection) = h2::client::handshake(client_io).await.unwrap();
+            let driver = tokio::spawn(connection);
+            let server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io).await.unwrap();
+                let (_, mut respond) = connection.accept().await.unwrap().unwrap();
+                let mut response = Response::builder().status(match case {
+                    "unauthorized" => 401,
+                    "stale" => 409,
+                    _ => 200,
+                });
+                if case != "missing" {
+                    response = response.header(
+                        REQUEST_ID_HEADER,
+                        if case == "invalid" {
+                            "invalid".into()
+                        } else {
+                            "a".repeat(64)
+                        },
+                    );
+                }
+                if case == "duplicate" {
+                    response = response.header(REQUEST_ID_HEADER, "a".repeat(64));
+                }
+                respond
+                    .send_response(response.body(()).unwrap(), true)
+                    .unwrap();
+                // Drive the response until the client rejects and drops its sender.
+                while connection.accept().await.is_some() {}
+            });
+            let failure = match poll_reference_import(
+                "http://core:80",
+                &mut sender,
+                EFFECT_PATHS
+                    .iter()
+                    .find(|(_, _, kind)| *kind == RuntimeEffectKind::ImportReference)
+                    .unwrap()
+                    .0,
+                std::env::temp_dir().as_path(),
+            )
+            .await
+            {
+                Err(failure) => failure,
+                Ok(_) => panic!("{case} must retain its session failure"),
+            };
+            assert_eq!(
+                failure.disposition(),
+                OuterSessionDisposition::Terminal,
+                "{case}"
+            );
+            assert_eq!(
+                failure.status(),
+                Some(match case {
+                    "unauthorized" => 401,
+                    "stale" => 409,
+                    _ => 200,
+                })
+            );
+            drop(sender);
+            driver.abort();
+            server.await.unwrap();
+        }
+    }
+
+    /// Rejects one correlated malformed import without ending its physical session.
+    #[tokio::test]
+    async fn malformed_reference_import_settles_failure_then_continues_polling() {
+        for case in ["missing-header", "digest-mismatch"] {
+            let expected_reason = if case == "missing-header" {
+                "file-data header missing"
+            } else {
+                "reference.import body digest or length mismatch"
+            };
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let (mut sender, connection) = h2::client::handshake(client_io).await.unwrap();
+            let driver = tokio::spawn(connection);
+            let request_id = "a".repeat(64);
+            let expected_request_id = request_id.clone();
+            let (release_server, hold_server) = tokio::sync::oneshot::channel::<()>();
+            let import_index = EFFECT_PATHS
+                .iter()
+                .position(|(_, _, kind)| *kind == RuntimeEffectKind::ImportReference)
+                .unwrap();
+            let next_path = EFFECT_PATHS[import_index + 1].0;
+            let server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io).await.unwrap();
+                for (index, path) in [
+                    EFFECT_PATHS[import_index].0,
+                    EFFECT_PATHS[import_index].1,
+                    next_path,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                    assert_eq!(request.uri().path(), path);
+                    let mut body = request.into_body();
+                    let mut bytes = BytesMut::new();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.unwrap();
+                        body.flow_control().release_capacity(chunk.len()).unwrap();
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    if index == 1 {
+                        assert_eq!(
+                            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                            serde_json::json!({
+                                "requestId": expected_request_id,
+                                "failureCode": "effect_failed"
+                            })
+                        );
+                    } else {
+                        assert_eq!(bytes.as_ref(), b"{}");
+                    }
+                    let response = if index == 0 {
+                        // Correlation is canonical; only the entry metadata or content is invalid.
+                        let response = Response::builder()
+                            .status(200)
+                            .header("content-type", FILE_CONTENT_TYPE)
+                            .header("content-length", "0")
+                            .header(REQUEST_ID_HEADER, expected_request_id.as_str())
+                            .header(SLOT_HEADER, "worker-supply")
+                            .header(RELATIVE_PATH_HEADER, "session/supply/empty");
+                        if case == "missing-header" {
+                            response
+                        } else {
+                            response
+                                .header(ENTRY_KIND_HEADER, "file")
+                                .header(EXECUTABLE_HEADER, "false")
+                                .header(BYTE_LENGTH_HEADER, "0")
+                                .header(SHA256_HEADER, format!("sha256:{}", "0".repeat(64)))
+                        }
+                    } else {
+                        Response::builder().status(204)
+                    };
+                    respond
+                        .send_response(response.body(()).unwrap(), true)
+                        .unwrap();
+                }
+                tokio::select! {
+                    _ = hold_server => {}
+                    request = connection.accept() => panic!("unexpected request: {}", request.is_some()),
+                }
+            });
+            let mut cursor = import_index;
+            let mut command = poll_effect_command(
+                "http://core:80",
+                &mut sender,
+                &mut cursor,
+                false,
+                std::env::temp_dir().as_path(),
+            )
+            .await
+            .unwrap_or_else(|failure| {
+                panic!("correlated malformed import must remain effect-local: {failure}")
+            })
+            .expect("correlated rejected effect");
+            assert_eq!(command.request_id, request_id);
+            assert_eq!(command.admission_failure, Some(expected_reason));
+            assert!(
+                command.file_data.is_none(),
+                "invalid input must not reach the Sandbox helper"
+            );
+            let root = std::env::temp_dir()
+                .join(format!("malformed-import-{}-{case}", std::process::id()));
+            let (mut coordinator, _) =
+                crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root);
+            assert_eq!(
+                crate::execute_effect_command(&mut coordinator, &mut command).err(),
+                Some(expected_reason)
+            );
+            drop(coordinator);
+            std::fs::remove_dir_all(&root).unwrap();
+            submit_effect_result(
+                "http://core:80",
+                &mut sender,
+                &command,
+                serde_json::json!({"failureCode": "effect_failed"}),
+            )
+            .await
+            .unwrap();
+            assert!(
+                poll_effect_command(
+                    "http://core:80",
+                    &mut sender,
+                    &mut cursor,
+                    false,
+                    std::env::temp_dir().as_path()
+                )
+                .await
+                .unwrap()
+                .is_none()
+            );
+            let _ = release_server.send(());
+            server.await.unwrap();
+            driver.abort();
+        }
+    }
+
     #[tokio::test]
     async fn wp5_r7_submits_one_exact_typed_failure_then_continues_polling() {
         let (client_io, server_io) = tokio::io::duplex(4096);
@@ -4690,6 +4975,7 @@ mod tests {
             input: serde_json::json!({ "imageReference": "openkit/worker:test" }),
             trace_context: opentelemetry::Context::new(),
             file_data: None,
+            admission_failure: None,
         };
 
         submit_effect_result(
@@ -4862,6 +5148,10 @@ mod tests {
                             .send_response(
                                 Response::builder()
                                     .status(StatusCode::OK)
+                                    .header(
+                                        NANOHOST_TRANSPORT_REVISION_HEADER,
+                                        NANOHOST_TRANSPORT_REVISION.trim(),
+                                    )
                                     .body(())
                                     .expect("admission response"),
                                 false,
@@ -5019,6 +5309,125 @@ mod tests {
             secret: "okt_test_only".to_string(),
         };
         (context, presentation)
+    }
+
+    /// Admission revision refusal must end before readiness or an effect callback.
+    #[tokio::test]
+    async fn transport_revision_mismatch_is_typed_before_readiness_or_effects() {
+        let revision = NANOHOST_TRANSPORT_REVISION.trim();
+        for case in [
+            "typed-conflict",
+            "old-core",
+            "wrong-echo",
+            "ordinary-conflict",
+            "match",
+        ] {
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io).await.unwrap();
+                let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                assert_eq!(
+                    request.uri().path(),
+                    "/api/nanohost/transport/session/admit"
+                );
+                if case == "match" {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("x-openkit-nanohost-transport-revision")
+                            .and_then(|value| value.to_str().ok()),
+                        Some(revision)
+                    );
+                }
+                let mut body = request.into_body();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    let chunk = chunk.unwrap();
+                    body.flow_control().release_capacity(chunk.len()).unwrap();
+                    bytes.extend_from_slice(&chunk);
+                }
+                assert_eq!(bytes, b"{}");
+                let conflict = matches!(case, "typed-conflict" | "ordinary-conflict");
+                let mut response = Response::builder().status(if conflict { 409 } else { 200 });
+                if case == "match" || case == "wrong-echo" {
+                    response = response.header(
+                        "x-openkit-nanohost-transport-revision",
+                        if case == "match" {
+                            revision
+                        } else {
+                            "unsupported"
+                        },
+                    );
+                }
+                let mut response_body = respond
+                    .send_response(response.body(()).unwrap(), false)
+                    .unwrap();
+                let payload = if conflict {
+                    serde_json::json!({"code": if case == "typed-conflict" {"nanohost_protocol_mismatch"} else {"nanohost_transport_admission_rejected"}})
+                } else {
+                    serde_json::json!({"connectionGeneration":1,"deploymentId":"deployment-a","identityId":"nanohost-a","mayCarryWork":true,"role":"authoritative"})
+                };
+                response_body
+                    .send_data(Bytes::from(payload.to_string()), true)
+                    .unwrap();
+                if case == "match" {
+                    let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                    assert_eq!(
+                        request.uri().path(),
+                        "/api/nanohost/transport/session/readiness"
+                    );
+                    let mut body = request.into_body();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.unwrap();
+                        body.flow_control().release_capacity(chunk.len()).unwrap();
+                    }
+                    respond
+                        .send_response(Response::builder().status(204).body(()).unwrap(), true)
+                        .unwrap();
+                }
+                // A rejected admission cannot send readiness or any effect request.
+                assert!(connection.accept().await.is_none());
+            });
+            let (context, presentation) = test_outer_credentials();
+            let gate_ran = std::cell::Cell::new(false);
+            let dispatch_ran = std::cell::Cell::new(false);
+            let result = run_outer_session(
+                client_io,
+                "http://core:80",
+                &context,
+                &presentation,
+                None,
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    gate_ran.set(true);
+                    Ok(None)
+                }),
+                |_, _| async {
+                    dispatch_ran.set(true);
+                    Ok(())
+                },
+            )
+            .await;
+            if case == "match" {
+                assert_eq!(result.unwrap(), 1);
+                assert!(gate_ran.get());
+                assert!(dispatch_ran.get());
+            } else {
+                let failure = result.expect_err("incompatible admission must fail closed");
+                assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+                assert_eq!(
+                    failure.reason(),
+                    if case == "ordinary-conflict" {
+                        "outer-session admission rejected"
+                    } else {
+                        "nanohost_protocol_mismatch"
+                    },
+                    "{case}"
+                );
+                assert!(!gate_ran.get());
+                assert!(!dispatch_ran.get());
+            }
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -5320,6 +5729,7 @@ mod tests {
             input: serde_json::json!({}),
             trace_context: opentelemetry::Context::new(),
             file_data: None,
+            admission_failure: None,
         };
         let (client_io, server) = scripted_outer_server(
             8,
@@ -5441,6 +5851,7 @@ mod tests {
             input: serde_json::json!({}),
             trace_context: opentelemetry::Context::new(),
             file_data: None,
+            admission_failure: None,
         };
         let mut dispositions = Vec::new();
         for has_retained_result in [false, true] {
@@ -5969,6 +6380,7 @@ mod tests {
                 input: received.input.clone(),
                 trace_context: opentelemetry::Context::new(),
                 file_data: None,
+                admission_failure: None,
             };
             submit = match crate::execute_effect_command(coordinator, &mut command).unwrap() {
                 crate::ExecutedEffectResult::WorkspaceCollect(delivery) => Some(delivery),
@@ -5984,6 +6396,7 @@ mod tests {
                 input: serde_json::json!({}),
                 trace_context: opentelemetry::Context::new(),
                 file_data: None,
+                admission_failure: None,
             });
             let outcome = {
                 let submit_future = submit_workspace_collect_result(
@@ -6903,6 +7316,7 @@ mod tests {
             input: serde_json::json!({}),
             trace_context: opentelemetry::Context::new(),
             file_data: None,
+            admission_failure: None,
         };
         let delivery = candidate_delivery(vec![0x41; 200 * 1024]);
         let start = tokio::time::Instant::now();

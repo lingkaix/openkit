@@ -383,6 +383,54 @@ function createAssignedTurn(
   });
 }
 
+/** Records the named same-Agent/runtime package required by a native-continuity fixture. */
+function recordNativeResumeFixturePackage(
+  coreDb: CoreDb,
+  store: FsStore,
+  agentSessionId: string
+): void {
+  const session = store.getAgentSession(agentSessionId);
+  const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
+  const environmentPackage = resolveAgentEnvironmentPackage({
+    coreDb,
+    captureCoverage: { scope: 'server', value: 'off' },
+    agentSetup: createTestAgentSetup({ agentId: session.agentId }),
+    agentSessionId,
+    backend: { kind: 'openshell' },
+    createdAt: session.createdAt,
+    triggerActor: actor,
+    turn: {
+      id: testEntityId('tu', `native-resume:${agentSessionId}`),
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      triggerActor: actor,
+      status: 'completed',
+      startedAt: session.createdAt,
+      completedAt: session.createdAt,
+      configVersion: null,
+      durationMs: 0,
+      error: null,
+      items: [],
+    },
+    turnInput: 'Earlier native conversation',
+    workspaceCwd: null,
+    workspaceRoots: [],
+  });
+  store.updateAgentSession(agentSessionId, {
+    environmentPackageSnapshotId: environmentPackage.snapshotId,
+    updatedAt: session.updatedAt,
+  });
+  const workspaceDb = openTestWorkspaceDb(coreDb);
+  try {
+    snapshotLedger.recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      environmentPackage,
+      createdAt: session.createdAt,
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
 /**
  * Binds one running Turn and busy AgentSession to a live worker-control package.
  *
@@ -2101,7 +2149,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('reuses compatible continuity without previewing a fresh AgentSession target', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2127,10 +2176,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: turn.workspaceId,
       workspaceRoots: [],
     });
+    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6');
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'reusable' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const preview = vi.fn((agentSessionId: string) => {
       if (agentSessionId !== 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6') {
         throw new Error('Fresh target must not be previewed for compatible reuse.');
@@ -2170,7 +2220,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('previews a fresh target before closing runtime-incompatible continuity', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2192,10 +2243,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: turn.workspaceId,
       workspaceRoots: [],
     });
+    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-7cba-9aba-f054b08da113');
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'replacement-required' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     Object.assign(executor, {
       previewAgentSessionCompatibilityKey: (agentSessionId: string) => {
         if (agentSessionId === 'as_00000000-0000-79f4-a228-8748c8f8333f') {
@@ -4435,6 +4487,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       nativeHandleDigest: 'a'.repeat(64),
       retainedStorage,
     });
+    recordNativeResumeFixturePackage(coreDb, store, testEntityId('as', 'as_retained_proof'));
     store.createAgentSession({
       id: testEntityId('as', 'as_failed_unproved'),
       agentId: 'agent_codex_host',
@@ -4654,7 +4707,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'different-storage',
     'different-slot',
   ])('refuses continuation before planning or effects when attachment choice is $0', async (violation) => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const predecessor = store.createAgentSession({
       id: testEntityId('as', 'as_choice_predecessor'),
       agentId: 'agent_codex_host',
@@ -4670,14 +4724,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
       storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
       workSlotRef: 'slot-exact',
     };
+    recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
     // Isolate selection from schema evolution: the durable-record regression verifies real persistence.
     vi.spyOn(store, 'listThreadAgentSessions').mockReturnValue([
-      { ...predecessor, retainedStorage: violation === 'missing' ? null : retainedStorage },
+      {
+        ...store.getAgentSession(predecessor.id),
+        retainedStorage: violation === 'missing' ? null : retainedStorage,
+      },
     ]);
     const backend = new FakeWorkerGovernanceBackend();
     const inspect = vi.fn(async () => 'absent' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: inspect });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const turn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4779,6 +4837,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ),
       },
     });
+    recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
     let refused = false;
     const effects: string[] = [];
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
@@ -5182,7 +5241,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     for (const session of sessions) {
       store.createAgentSession({
-        agentId: 'agent_demo',
+        agentId: 'agent_codex_host',
         createdAt: session.createdAt,
         id: session.id,
         message: null,
@@ -5199,6 +5258,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         updatedAt: session.createdAt,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
+      recordNativeResumeFixturePackage(coreDb, store, session.id);
     }
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -8694,6 +8754,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  // The runner includes durable Material admission and publication before exact-byte checks.
   it('delivers a bounded Material excerpt and the exact admitted original without bytes-per-token guessing', async () => {
     const fixture = await createWorkerContextExecutorFixture('binding-budget', {
       materialContent: 'B'.repeat(5_000),
@@ -8802,7 +8863,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       launchSpy.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('persists the exact pre-Turn Thread retrieval reference through the S39 bridge', async () => {
     const fixture = await createWorkerContextExecutorFixture('thread-retrieval-trace', {

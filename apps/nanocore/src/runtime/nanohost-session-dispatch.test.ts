@@ -1800,7 +1800,7 @@ describe('authoritative NanoHost session dispatch', () => {
     expect(appSource).toContain('createNanoHostSessionDispatch({');
   });
 
-  it('rejects one exact ordinary typed failure and acknowledges only its identical successor resend', async () => {
+  it('settles exact ordinary and import typed failures and preserves successor result fences', async () => {
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-typed-effect-failure-')));
@@ -2123,14 +2123,34 @@ describe('authoritative NanoHost session dispatch', () => {
         },
       ];
       for (const request of specialRequests) {
-        void dispatch.effect(request);
+        const pending = dispatch.effect(request);
+        void pending.catch(() => undefined);
         await dispatch.poll(thirdPhysical, request.kind);
-        await expect(
-          dispatch.result(thirdPhysical, request.kind, {
-            failureCode: 'effect_failed',
-            requestId: request.requestId,
-          })
-        ).rejects.toThrow(/special|sensitive|raw|failure|result/i);
+        const failure = { failureCode: 'effect_failed', requestId: request.requestId };
+        if (request.kind === 'reference.import') {
+          const rejected = expect(pending).rejects.toThrow(/effect_failed/);
+          await expect(
+            dispatch.result(thirdPhysical, request.kind, failure)
+          ).resolves.toBeUndefined();
+          await rejected;
+          expect(authority.mayCarryWork(thirdPhysical)).toBe(true);
+          await expect(dispatch.poll(thirdPhysical, request.kind)).resolves.toBeNull();
+          const freshId = '6'.repeat(64);
+          const fresh = dispatch.effect({ ...request, requestId: freshId });
+          await expect(dispatch.poll(thirdPhysical, request.kind)).resolves.toMatchObject({
+            requestId: freshId,
+          });
+          const result = {
+            byteLength: 0,
+            reference: 'sandbox://sandbox-special/package-config/package.json',
+          };
+          await dispatch.result(thirdPhysical, request.kind, { ...result, requestId: freshId });
+          await expect(fresh).resolves.toEqual(result);
+        } else {
+          await expect(dispatch.result(thirdPhysical, request.kind, failure)).rejects.toThrow(
+            /special|sensitive|raw|failure|result/i
+          );
+        }
       }
 
       expect(() =>

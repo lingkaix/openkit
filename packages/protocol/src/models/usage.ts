@@ -57,3 +57,12 @@ export const UsageRecordSchema = z.object({
  * Product-visible usage attribution record.
  */
 export type UsageRecord = z.infer<typeof UsageRecordSchema>;
+
+/** Server-owned measurement in the existing usage record family, with no Workspace anchor. */
+export const ServerUsageRecordSchema = UsageRecordSchema.extend({
+  workspaceId: z.never().optional(),
+  owner: z.object({ kind: z.literal('server') }).strict(),
+});
+
+/** Server-owned usage attribution record. */
+export type ServerUsageRecord = z.infer<typeof ServerUsageRecordSchema>;

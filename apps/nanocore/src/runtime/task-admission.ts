@@ -28,6 +28,8 @@ import { runWorkerTurnLoop } from './worker-turn-loop.js';
 export type TaskWorkerStarter = (input: {
   store: FsStore;
   triggerActor: { kind: 'user'; id: string };
+  /** Native Task handoff cause supplied independently of the responsible actor. */
+  triggerSource?: ReturnType<FsStore['createTurn']>['triggerSource'];
   requestActor: Actor;
   workspaceId: string;
   threadId: string;
@@ -175,6 +177,7 @@ export function createCoordinatorTaskTool(options: {
               startWorker: async ({ onAdmitted }) => {
                 const ended = await options.startWorker({
                   store: options.store,
+                  triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                   triggerActor: { kind: 'user', id: actor.userId },
                   requestActor: actor,
                   workspaceId: goal.workspaceId,
