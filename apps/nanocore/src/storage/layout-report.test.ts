@@ -1,11 +1,19 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db.js';
 import { createStorageLayoutReport } from './layout-report.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
+
+const dataRoots: string[] = [];
+
+afterEach(() => {
+  for (const dataRoot of dataRoots.splice(0)) {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
 
 /**
  * Creates a temporary NanoCore data root for storage report tests.
@@ -13,7 +21,9 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
  * @returns Temporary data root path.
  */
 function createDataRoot(): string {
-  return mkdtempSync(join(tmpdir(), 'openkit-storage-report-'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-storage-report-'));
+  dataRoots.push(dataRoot);
+  return dataRoot;
 }
 
 describe('storage layout report', () => {
@@ -37,7 +47,9 @@ describe('storage layout report', () => {
         'core_0002_durable_recurring_schedules',
         'core_0003_notebook_admission',
         'core_0004_equal_workspace_members',
-        'core_0005_audit_authentication',
+
+        'core_0005_channel_notifications',
+        'core_0006_audit_authentication',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -49,7 +61,6 @@ describe('storage layout report', () => {
                 'user_0000_setup',
                 'user_0001_thread_read_receipts',
                 'user_0002_notebook_admission',
-                'user_0003_audit_authentication',
               ],
             }),
           },
@@ -66,7 +77,6 @@ describe('storage layout report', () => {
               'workspace_0001_assistant_handoff',
               'workspace_0002_notebook_admission',
               'workspace_0003_exact_review_feedback',
-              'workspace_0004_audit_authentication',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

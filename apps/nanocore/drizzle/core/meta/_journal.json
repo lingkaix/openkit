@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "6",
+      "when": 1792246083724,
+      "tag": "0005_channel_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
       "when": 1792285339687,
-      "tag": "0005_audit_authentication",
+      "tag": "0006_audit_authentication",
       "breakpoints": true
     }
   ]
