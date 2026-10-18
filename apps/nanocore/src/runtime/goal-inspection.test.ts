@@ -15,6 +15,7 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -116,6 +117,7 @@ it.each([
         ...scope,
         requestId: randomUUID(),
         expectedRevision: cards.goal!.changeRevision,
+        goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
         commitment: {
           intentBasis: { revision: goal.intentRevision, intent: goal.intent },
           cards: [

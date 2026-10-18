@@ -34,12 +34,14 @@ it('captures the exact typed Goal domain and Plan in one human approval preview'
       scope: {
         subjects: [{ kind: 'agent' as const, id: 'admissions-worker' }],
         actions: ['tool.use'],
-        resources: [{
-          kind: 'mcp-tool' as const,
-          workspaceId: workspace.id,
-          serverId: 'sis',
-          toolName: 'application.read',
-        }],
+        resources: [
+          {
+            kind: 'mcp-tool' as const,
+            workspaceId: workspace.id,
+            serverId: 'sis',
+            toolName: 'application.read',
+          },
+        ],
       },
       lifetime: {
         anchor: {
@@ -56,21 +58,16 @@ it('captures the exact typed Goal domain and Plan in one human approval preview'
       completionEvidence: ['Reviewed application'],
       boundaries: 'No email effect',
     };
-    const proposed = await executeGoalOperation(
-      'goal.plan.propose',
-      {
-        workspaceId: workspace.id,
-        threadId: goal.threadId,
-        goalId: goal.goalId,
-        requestId: randomUUID(),
-        expectedRevision: goal.changeRevision,
-        commitment,
-        goalDomain,
-      },
-      context,
-      store,
-      db
-    );
+    const input = {
+      workspaceId: workspace.id,
+      threadId: goal.threadId,
+      goalId: goal.goalId,
+      requestId: randomUUID(),
+      expectedRevision: goal.changeRevision,
+      commitment,
+      goalDomain,
+    };
+    const proposed = await executeGoalOperation('goal.plan.propose', input, context, store, db);
     const plan = proposed.versions[0]!;
     const request = readPendingRequest(db.sqlite, plan.pendingRequestId)!;
     const captured = request.governedIntent!.goalDomain as {
@@ -98,6 +95,18 @@ it('captures the exact typed Goal domain and Plan in one human approval preview'
     expect(JSON.parse(plan.bytes)).toEqual(commitment);
     expect(proposed.requests).toHaveLength(1);
     expect(proposed.goal!.activePlanVersionId).toBeNull();
+    await expect(
+      executeGoalOperation(
+        'goal.plan.propose',
+        {
+          ...input,
+          goalDomain: { ...goalDomain, scope: { ...goalDomain.scope, actions: ['tool.grant'] } },
+        },
+        context,
+        store,
+        db
+      )
+    ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
     const preview = projectApprovalEffect({ record: request, store, actor: context.actor });
     expect(preview.status).toBe('available');
     if (preview.status !== 'available') throw new Error('Exact approval preview is unavailable.');
@@ -107,7 +116,13 @@ it('captures the exact typed Goal domain and Plan in one human approval preview'
       goalDomain: captured,
     });
     const reopened = new FsStore({ dataRoot: root });
-    expect(projectApprovalEffect({ record: readPendingRequest(db.sqlite, request.requestId)!, store: reopened, actor: context.actor })).toEqual(preview);
+    expect(
+      projectApprovalEffect({
+        record: readPendingRequest(db.sqlite, request.requestId)!,
+        store: reopened,
+        actor: context.actor,
+      })
+    ).toEqual(preview);
   } finally {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });

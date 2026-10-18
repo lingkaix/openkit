@@ -21,6 +21,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
@@ -276,6 +277,7 @@ it.each([
         ...scope,
         requestId: randomUUID(),
         expectedRevision: cards.goal!.changeRevision,
+        goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
         commitment: {
           intentBasis: { revision: 0, intent: goal.intent },
           cards: [
