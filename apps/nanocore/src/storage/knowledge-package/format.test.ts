@@ -178,6 +178,13 @@ describe('Knowledge package v1 format', () => {
         files: [duplicate.files[0]!, duplicate.files[0]!],
       })
     ).rejects.toThrow();
+    const nested = await packageInput(join(await temporaryRoot(), 'package'));
+    const path = `raw/${Array.from({ length: 5 }, (_, index) => `${index}${'a'.repeat(220)}`).join('/')}/original.bin`;
+    const original = nested.files.find((file) => file.path === 'raw/original.bin')!;
+    await writeKnowledgePackageFormat({ ...nested, files: [{ ...original, path }] });
+    expect(
+      (await verifyKnowledgePackageFormat({ directory: nested.directory, limits })).contentInventory
+    ).toEqual([{ path, contentDigest: original.contentDigest, byteLength: original.byteLength }]);
   });
 
   it('refuses linked roots, linked directories and linked included files without changing targets', async () => {

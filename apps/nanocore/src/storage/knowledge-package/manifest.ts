@@ -61,7 +61,6 @@ function hasControlCharacter(value: string): boolean {
 export function isKnowledgePackagePath(path: string): boolean {
   const parts = path.split('/');
   return (
-    path.length <= 1024 &&
     Buffer.from(path, 'utf8').toString('utf8') === path &&
     !path.includes('\\') &&
     !hasControlCharacter(path) &&
