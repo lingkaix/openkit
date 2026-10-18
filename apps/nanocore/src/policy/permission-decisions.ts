@@ -56,6 +56,8 @@ export interface RecordPermissionDecisionInput {
   auditEventId?: string | null;
   /** Actor stored on an automatically linked audit event when available. */
   auditActor?: AuditEvent['actor'];
+  /** Exact common observation linked to this existing decision Audit. */
+  interception?: AuditEvent['interception'];
   /** Creation time. */
   now?: Date;
 }
@@ -98,6 +100,8 @@ export interface RecordProductPermissionDecisionInput {
   auditEventId?: string | null;
   /** Actor stored on an automatically linked audit event when available. */
   auditActor?: AuditEvent['actor'];
+  /** Exact common observation linked to this existing decision Audit. */
+  interception?: AuditEvent['interception'];
   /** Creation time. */
   now?: Date;
 }
@@ -528,6 +532,8 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
     ) {
       recordWorkspaceAuditEvent({
         action: 'permission.decision',
+        interception: input.interception,
+        capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
         actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
@@ -549,6 +555,8 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
     if (input.ownerScope === 'server' && input.coreDb && auditEventId && !input.auditEventId) {
       recordServerAuditEvent({
         action: 'permission.decision',
+        interception: input.interception,
+        capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
         actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
@@ -978,6 +986,8 @@ export function recordBootPolicySelfCheckDecisions(
           agent_session_id: null,
           category: 'approval',
           action: 'permission.decision',
+          interception: input.interception,
+          capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
           resource: `permission:${request.operation}`,
           resource_revision: null,
           outcome: permissionAuditOutcome(row.result),

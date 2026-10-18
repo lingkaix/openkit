@@ -52,6 +52,8 @@ export interface RecordServerAuditEventInput {
   resourceRevision?: number | null;
   /** Exact notebook admission facts, never page bodies or a reusable permission. */
   notebookAdmission?: AuditEvent['notebookAdmission'];
+  /** Typed safe interception observation; no participant payloads. */
+  interception?: AuditEvent['interception'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -108,6 +110,8 @@ export interface RecordWorkspaceAuditEventInput {
   resourceRevision?: number | null;
   /** Exact notebook admission facts, never page bodies or a reusable permission. */
   notebookAdmission?: AuditEvent['notebookAdmission'];
+  /** Typed safe interception observation; no participant payloads. */
+  interception?: AuditEvent['interception'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -278,6 +282,7 @@ export function listSqliteAuditEvents(
         resource,
         resource_revision,
         notebook_admission_json,
+        interception_json,
         outcome,
         severity,
         summary,
@@ -337,6 +342,7 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         resource,
         resource_revision,
         notebook_admission_json,
+        interception_json,
         outcome,
         severity,
         summary,
@@ -411,6 +417,7 @@ function recordAuditEvent(
     resource: input.resource ?? null,
     resourceRevision: input.resourceRevision ?? null,
     ...(input.notebookAdmission ? { notebookAdmission: input.notebookAdmission } : {}),
+    ...(input.interception ? { interception: input.interception } : {}),
     outcome: input.outcome,
     severity: input.severity ?? 'info',
     summary: input.summary,
@@ -453,13 +460,14 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         resource,
         resource_revision,
         notebook_admission_json,
+        interception_json,
         outcome,
         severity,
         summary,
         error_code,
         created_at,
         occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.id,
@@ -481,6 +489,7 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
       event.resource,
       event.resourceRevision,
       event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
+      event.interception === undefined ? null : JSON.stringify(event.interception),
       event.outcome,
       event.severity,
       event.summary,
@@ -517,6 +526,9 @@ function auditEventFromRow(row: unknown): AuditEvent {
     action: event.action,
     resource: event.resource,
     resourceRevision: event.resource_revision ?? null,
+    ...(event.interception_json
+      ? { interception: JSON.parse(String(event.interception_json)) }
+      : {}),
     ...(event.notebook_admission_json
       ? { notebookAdmission: JSON.parse(String(event.notebook_admission_json)) }
       : {}),

@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: In Progress
 kind: mechanism
 date: "2026-10-18"
 ---
@@ -85,6 +85,35 @@ Timeout, provider refusal to perform its job, dependency failure, invalid result
 
 Use a Policy-configured bounded timeout and circuit breaker for the participant binding. Repeated provider failures open that circuit; a bounded probe after its configured wait can close it on success. While open, do not invoke the unavailable provider; record that disposition through the same owner and apply the binding's unavailable behavior. This is request/binding-local availability control, not a new durable recovery service. Restart loads current bindings, preserves recorded outcomes and does not resume or replay old participant effects.
 
+## Frozen BASE Formats
+
+Needed before v0.1.0 so later bindings and row migrations keep one retained contract.
+
+`protocol/models/interception.ts` owns runtime-neutral schemas only. Authored statements live in the existing Policy/config owner; `server.jsonc.policy.interceptions` is an optional protected Server declaration. The trusted owner resolves a binding from that statement and its actual source revision; no authored entry supplies its enclosing configuration hash. Statement replacement/removal through the current owner replaces/revokes the active binding. No separate store, identity allocator, registration service or proposal workflow is introduced.
+
+| Element | Frozen contract and ablation |
+| --- | --- |
+| Statement identity | Version 1 carries an owner-defined key, point/mode, participant version, existing owner scope, subject/action/resource, input/output contract versions and stage order. Without the exact target and contracts, the executor cannot distinguish the admitted job from another effect. |
+| Attribution | Author and optional delegation reference come from the admitted Policy writer. Native evaluator projections name their actual system author; absent catalog-rule authorship stays unknown. Without this distinction, a requester or evaluator could be mislabeled as the rule author. |
+| Resolved version | NanoCore derives the binding digest from the admitted statement and qualified source reference. I16 uses retained AEP selection and the effective MCP catalog digest, including tool rules, not only a transport declaration digest or fixed Policy label. Without this pin, a changed rule could reuse an old assessment. |
+| References | Content uses the existing scope-qualified reference grammar plus owner version; other records carry their exact Server/User/Workspace owner, family, opaque identifier and version. References grant no access and missing historical bytes stay unavailable. Without qualification, a shared notebook or grant could resolve in the invocation's wrong scope. |
+| Invocation | The existing scoped Audit event holds a typed version-1 observation with the admitted binding snapshot, safe input/output references, actual actor, outcome/reason and start/end times. Its existing call/Turn/request/PermissionDecision links remain authoritative. Without that small snapshot, a replaced configuration file would lose which binding was evaluated. |
+| Availability | Each binding carries bounded timeout, failure threshold, circuit wait and unavailable behavior. Only observe/advise may explicitly continue without a valid result; a required gate/transform never does. Without these fields, a participant failure could silently become authorization. |
+| Current release | The specialized owner supplies current admission, safe output resolution/validation, final Policy and synchronous release. No suspension separates final checks, required record and dispatch. Without this boundary, a late assessment could release a stale or unauthorized effect. |
+| Native contracts | Deterministic fixtures retain Gateway per-Agent/tool scope and reference Storage lease facts (issuer/subject/audience, KB, mount, prefix, mode and expiry) through their existing owner. Without these fixtures, the frozen format could omit inputs needed by its first consumers. |
+
+Invocation data is an additive optional field in the existing Audit family, with ordinary nullable-column migrations. It is historical evidence, never an active Policy statement. A portable historical observation does not grant or activate its source binding in the destination. No body, raw argument, secret, new transcript or history service is retained by this format.
+
+## BASE Executor And Pilot
+
+Needed to exercise the frozen contract at one real boundary before moving the other rows.
+
+`nanocore/src/policy/interception.ts` orders admitted jobs, validates typed mode outcomes and rejects revoked or changed binding/input results. Observe is non-decisive and records at the admitted boundary; transform, advise and gate retain their required order before final Policy. Safe transformed values resolve through their existing owner and pass the specialized input validator. A process-local circuit is keyed by full scoped binding identity/version; one bounded probe after its wait can restore availability. Restart resumes no participant or effect. Without this small executor, the first native consumers would implement incompatible order and failure rules.
+
+The BASE pilot is I16's final MCP `tool.use` admission. It preserves existing schema, Vault, Turn, audience and Pending Request checks, current NGAC evaluation, call/AEP joins and specialized regressions. A failed authority read is an explicit error, never a fabricated durable deny. The native evaluator author is distinct from the Worker/trigger actor and unknown catalog author. No external adapter is installed; tests inject one deterministic provider, and an unavailable participant produces a recorded unavailable result. Without the actual I16 seam, schema-only proof would not establish truthful dispatch behavior.
+
+Only the BASE formats, small executor and I16 pilot land before freeze in this cut. The semantic audit lists reachable conflicts for owner-lane correction through the coordinator; missing invocation evidence alone remains ADDITIVE under the later migration issue. Other existing rows and provider adapters remain later work. This additive cut requires no reset or conversion reader.
+
 ## Decision Trace And Provenance
 
 Needed for pre-freeze edges and the later read-only trace view.
@@ -168,7 +197,7 @@ Phase F lands before the v0.1.0 retained-data freeze. MIGRATION means a changed 
 | C07 capture origin | ADDITIVE; L-CH + L-AK + L-GO, F | Trusted capture channel/actor and trigger provenance; reuse existing Discord event/request and recurring occurrence edges. |
 | C08 Decision Trace | ADDITIVE; L-GA with record owners, L | Read-only authorized traversal with explicit missing links; no graph authority. |
 | C09 agent Policy | ADDITIVE bindings/provenance; L-GA with L-GO/L-AK, L | Delegated authorship, revocation and shadow activation; changed old configuration meaning requires separate MIGRATION classification. |
-| C10 shared execution | ADDITIVE evidence, implementation-only routing; L-GA base and table lanes, U | Integrate every existing row with common bindings/order/failure records; add no duplicate semantic gate. |
+| C10 shared execution | ADDITIVE formats/evidence; L-CH BASE/I16 with L-GA Policy review, F; remaining table lanes, L | Freeze binding/invocation formats and minimal executor with I16; audit semantic conflicts now, migrate other rows after v0.1.0 without duplicate gates. |
 | C11 transform references | ADDITIVE; producing owner, U | Safe before/after versions resolve through existing owners, with no raw-secret retention. |
 | C12 optional providers | ADDITIVE contracts, implementation-only adapters; table lanes, L | Inject a provider behind the contract; absent rows gain capability only when separately implemented and authorized. |
 

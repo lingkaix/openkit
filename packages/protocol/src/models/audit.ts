@@ -15,6 +15,7 @@ import {
 } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { ActorRefSchema } from './actor.js';
+import { InterceptionInvocationSchema } from './interception.js';
 import { KnowledgeNotebookAdmissionSchema } from './knowledge-notebook.js';
 
 /**
@@ -48,6 +49,7 @@ export const AuditEventSchema = z
     resource: z.string().min(1).nullable().default(null),
     resourceRevision: z.number().int().positive().nullable().default(null),
     notebookAdmission: KnowledgeNotebookAdmissionSchema.optional(),
+    interception: InterceptionInvocationSchema.optional(),
     outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled', 'unknown']),
     severity: AuditSeveritySchema.default('info'),
     summary: z.string().min(1),

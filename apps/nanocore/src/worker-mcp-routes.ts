@@ -16,6 +16,9 @@ import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-sch
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import {
   type ActorRef,
+  type InterceptionBinding,
+  type InterceptionInvocation,
+  type InterceptionRecordReference,
   allocateEntityId,
   CapabilityCallStatusSchema,
   deriveEntityId,
@@ -46,6 +49,8 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
+import { createInterceptionExecutor, resolveInterceptionBinding } from './policy/interception.js';
+import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
@@ -141,6 +146,8 @@ interface WorkerMcpToolCallInput {
 
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
+  /** One process-local executor; the effect owner still records and dispatches each call. */
+  readonly interceptionExecutor?: ReturnType<typeof createInterceptionExecutor>;
   readonly automationStore?: OperationInvocationDependencies['automationStore'];
   readonly turnStartServices?: OperationInvocationDependencies['turnStartServices'];
   readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
@@ -171,6 +178,16 @@ export interface RegisterWorkerMcpRoutesInput {
 
 /** Registers the private per-catalog-entry MCP Streamable HTTP endpoint. */
 export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): void {
+  input = {
+    ...input,
+    interceptionExecutor:
+      input.interceptionExecutor ??
+      createInterceptionExecutor({
+        invoke: async () => {
+          throw new Error('No external interception participant is installed.');
+        },
+      }),
+  };
   const activeRequests = new Map<string, AbortController>();
   const toolCallTails = new Map<string, Promise<void>>();
   const builtinInflight = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
@@ -1461,16 +1478,31 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
       }
     }
-    recordMcpToolUseDecision(input, call, 'allow', grantedApproval);
     const dispatchCredentials = observedCredentials;
-    const result = await input.input.workerMcpGateway.callTool({
-      arguments: input.arguments,
-      ...(dispatchCredentials ? { credentials: dispatchCredentials } : {}),
-      server: input.resolved,
-      signal: input.signal,
-      toolName: input.toolName,
-      workspaceId: input.environmentPackage.scope.workspaceId,
-    });
+    const admitted = await executeMcpToolUseInterception(
+      input,
+      call,
+      observed.injections,
+      grantedApproval,
+      () =>
+        input.input.workerMcpGateway.callTool({
+          arguments: input.arguments,
+          ...(dispatchCredentials ? { credentials: dispatchCredentials } : {}),
+          server: input.resolved,
+          signal: input.signal,
+          toolName: input.toolName,
+          workspaceId: input.environmentPackage.scope.workspaceId,
+        })
+    );
+    if (admitted.outcome !== 'allowed') {
+      publishTerminalItem = false;
+      throw new WorkerControlGatewayError(
+        admitted.outcome === 'refused' ? 'mcp-denied' : 'mcp-policy-unavailable',
+        admitted.outcome === 'refused' ? 'MCP tool call was denied.' : 'MCP policy is unavailable.',
+        admitted.outcome === 'refused' ? 403 : 503
+      );
+    }
+    const result = await admitted.released;
     observedCredentials = undefined;
     upstreamEffect = 'contacted';
     usageAttempted = true;
@@ -1640,15 +1672,172 @@ function mcpApprovalEffect(
   };
 }
 
+/** Routes the final I16 admission through the base; earlier schema, Turn and Vault guards keep their owners. */
+async function executeMcpToolUseInterception<T>(
+  input: WorkerMcpToolCallInput,
+  call: StartedCapabilityCall,
+  injections: Parameters<typeof assertCurrentMcpVaultBindings>[1],
+  grantedApproval: GrantedMcpApproval | null,
+  release: () => T
+) {
+  const scope = input.environmentPackage.scope;
+  const owner = { kind: 'workspace' as const, workspaceId: scope.workspaceId };
+  const actor: ActorRef = {
+    kind: 'agent',
+    id: input.environmentPackage.agent.agentId,
+    responsibleUserId: responsibleUserIdForActor(scope.triggerActor),
+  };
+  const source: InterceptionRecordReference = {
+    kind: 'record',
+    owner,
+    family: 'aep',
+    id: input.environmentPackage.snapshotId,
+    // This identifies the retained selected MCP rules, not a snapshot of raw tool arguments.
+    version: input.selected.catalogDigest,
+  };
+  const resource: InterceptionRecordReference = {
+    ...source,
+    family: 'mcp-tool',
+    id: `${input.serverId}/${input.toolName}`,
+  };
+  const facts = { subject: actor, action: 'tool.use', resource };
+  const native = resolveInterceptionBinding(
+    {
+      schemaVersion: 1,
+      id: 'native-mcp-tool-use',
+      point: 'P3',
+      mode: 'gate',
+      owner: { kind: 'server' },
+      subject: actor,
+      action: 'tool.use',
+      resource,
+      participant: { id: 'nanocore-workspace-member-policy', version: '1' },
+      inputContract: { id: 'mcp-tool-use-authority', version: '1' },
+      outputContract: { id: 'policy-decision', version: '1' },
+      order: 0,
+      timeoutMs: 1000,
+      circuit: { failureThreshold: 1, resetAfterMs: 1000 },
+      onUnavailable: 'error',
+      // The system authors this evaluator projection; the catalog rule's absent author stays unknown.
+      author: { kind: 'system', id: 'nanocore-mcp-tool-use-policy', responsibleUserId: null },
+      delegation: null,
+    },
+    source
+  );
+  const snapshot = input.input.runtimeConfig();
+  const configurationSource: InterceptionRecordReference = {
+    kind: 'record',
+    owner: { kind: 'server' },
+    family: 'server-config',
+    id: 'policy.interceptions',
+    version: snapshot.contentHash,
+  };
+  const matches = (binding: InterceptionBinding) =>
+    binding.point === 'P3' &&
+    binding.action === 'tool.use' &&
+    isDeepStrictEqual(binding.subject, actor) &&
+    isDeepStrictEqual(binding.resource, resource);
+  const bindings = (snapshot.openKitConfig.policy?.interceptions ?? [])
+    .map((statement) => resolveInterceptionBinding(statement, configurationSource))
+    .filter(matches);
+  const isCurrent = (binding: InterceptionBinding) => {
+    if (binding.id === native.id && binding.version === native.version) return true;
+    const current = input.input.runtimeConfig();
+    return (current.openKitConfig.policy?.interceptions ?? []).some(
+      (statement) =>
+        resolveInterceptionBinding(statement, {
+          ...configurationSource,
+          version: current.contentHash,
+        }).version === binding.version
+    );
+  };
+  return input.input.interceptionExecutor!.execute({
+    nativeBinding: native,
+    bindings,
+    input: { reference: source, value: facts },
+    actor,
+    isCurrent,
+    authorize: (binding) => matches(binding) && isCurrent(binding),
+    resolveOutput: () => {
+      throw new Error('This native input has no transformed representation owner.');
+    },
+    validateInput: (value) => {
+      if (!isDeepStrictEqual(value, facts))
+        throw new Error('The exact MCP target cannot be replaced.');
+    },
+    finalPolicy: () => {
+      if (
+        !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage) ||
+        !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+      )
+        return 'deny';
+      const current = input.input.runtimeConfig();
+      const local = current.workspaceMcpServerCatalogs.find(
+        (entry) => entry.workspaceId === scope.workspaceId
+      )?.catalog;
+      const catalog = composeWorkspaceMcpCatalog({
+        dataRoot: input.input.coreDb!.dataRoot,
+        workspaceId: scope.workspaceId,
+        workspaceCatalog: local ?? { schemaVersion: 1, servers: [] },
+      });
+      if (
+        resolveWorkspaceMcpServer({ catalog, serverId: input.serverId }).catalogDigest !==
+        input.selected.catalogDigest
+      )
+        throw new Error('The current MCP rule version changed.');
+      assertCurrentMcpVaultBindings(input, injections);
+      return 'allow';
+    },
+    record: (invocation) => {
+      if (invocation.binding.id === native.id && invocation.binding.version === native.version) {
+        recordMcpToolUseDecision(
+          input,
+          call,
+          invocation.outcome === 'allowed'
+            ? 'allow'
+            : invocation.outcome === 'refused'
+              ? 'deny'
+              : 'error',
+          grantedApproval,
+          invocation
+        );
+      } else {
+        recordWorkspaceAuditEvent({
+          workspaceDb: input.workspaceDb,
+          workspaceId: scope.workspaceId,
+          threadId: scope.threadId,
+          turnId: scope.turnId,
+          capabilityCallId: call.id,
+          actor,
+          category: 'approval',
+          action: 'interception.invoke',
+          resource: `mcp-tool:${input.serverId}/${input.toolName}`,
+          outcome:
+            invocation.outcome === 'refused'
+              ? 'denied'
+              : invocation.outcome === 'unavailable' || invocation.outcome === 'error'
+                ? 'failed'
+                : 'succeeded',
+          summary: 'Interception invocation.',
+          interception: invocation,
+        });
+      }
+    },
+    release,
+  });
+}
+
 /** Records the current tool.use decision, with prior Approval lineage only in context. */
 function recordMcpToolUseDecision(
   input: WorkerMcpToolCallInput,
   call: StartedCapabilityCall,
-  result: 'allow' | 'deny',
-  grantedApproval: GrantedMcpApproval | null
+  result: 'allow' | 'deny' | 'error',
+  grantedApproval: GrantedMcpApproval | null,
+  interception?: InterceptionInvocation
 ): void {
   recordProductPermissionDecision({
     action: 'tool.use',
+    interception,
     auditActor: input.environmentPackage.scope.triggerActor,
     contextSummary: {
       agentSessionId: input.environmentPackage.scope.agentSessionId,
@@ -1665,11 +1854,13 @@ function recordMcpToolUseDecision(
     policyEngineVersion: 'nanocore-workspace-role-policy:v1',
     policySnapshotId: input.environmentPackage.policy.snapshotId,
     reasonCode:
-      result === 'deny'
-        ? 'mcp_call_denied'
-        : grantedApproval
-          ? 'mcp_approval_grant_reauthorized'
-          : 'workspace_role_allows_tool_use',
+      result === 'error'
+        ? 'mcp_policy_unavailable'
+        : result === 'deny'
+          ? 'mcp_call_denied'
+          : grantedApproval
+            ? 'mcp_approval_grant_reauthorized'
+            : 'workspace_role_allows_tool_use',
     resourceSummary: grantedApproval?.resource ?? {
       serverId: input.serverId,
       toolName: input.toolName,
@@ -2332,21 +2523,30 @@ function hasCurrentMcpWorkspaceAuthority(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackage
 ): boolean {
-  return Boolean(
-    currentWorkerLineageWorkspaceAuthority(
-      coreDb,
-      {
-        workspaceId: environmentPackage.scope.workspaceId,
-        threadId: environmentPackage.scope.threadId,
-        turnId: environmentPackage.scope.turnId,
-        agentSessionId: environmentPackage.scope.agentSessionId,
-        packageSnapshotId: environmentPackage.snapshotId,
-        triggerActor: environmentPackage.scope.triggerActor,
-      },
-      'tool.use',
-      true
-    )
-  );
+  try {
+    return Boolean(
+      currentWorkerLineageWorkspaceAuthority(
+        coreDb,
+        {
+          workspaceId: environmentPackage.scope.workspaceId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          triggerActor: environmentPackage.scope.triggerActor,
+        },
+        'tool.use',
+        true,
+        'throw'
+      )
+    );
+  } catch {
+    throw new WorkerControlGatewayError(
+      'mcp-policy-unavailable',
+      'MCP policy is unavailable.',
+      503
+    );
+  }
 }
 
 /** No new capability effect may pass a proved exhausted or unmeasurable Worker output bound. */

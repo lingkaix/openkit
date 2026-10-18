@@ -15,6 +15,7 @@ export * from './models/artifact.js';
 export * from './models/audit.js';
 export * from './models/capability.js';
 export * from './models/item.js';
+export * from './models/interception.js';
 export * from './models/knowledge.js';
 export * from './models/knowledge-notebook.js';
 export * from './models/thread.js';

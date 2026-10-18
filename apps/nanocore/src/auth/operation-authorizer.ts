@@ -285,7 +285,8 @@ export function currentWorkspaceAuthority(
   actor: ActorRef,
   operation: string,
   effectAuthority: boolean,
-  requestActor?: Actor
+  requestActor?: Actor,
+  failureMode: 'deny' | 'throw' = 'deny'
 ): WorkspaceAuthority | null {
   try {
     if (!effectAuthority) {
@@ -314,7 +315,8 @@ export function currentWorkspaceAuthority(
       return null;
     }
     return 'member';
-  } catch {
+  } catch (error) {
+    if (failureMode === 'throw') throw error;
     return null;
   }
 }
@@ -335,7 +337,8 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
     'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
   >,
   operation: string,
-  effectAuthority: boolean
+  effectAuthority: boolean,
+  failureMode: 'deny' | 'throw' = 'deny'
 ): WorkspaceAuthority | null {
   if (admission.serverAdminTokenId === null) {
     return currentWorkspaceAuthority(
@@ -343,7 +346,9 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
       admission.workspaceId,
       admission.triggerActor,
       operation,
-      effectAuthority
+      effectAuthority,
+      undefined,
+      failureMode
     );
   }
   if (admission.serverAdminTokenId.length === 0 || admission.triggerActor.kind !== 'user') {
@@ -361,7 +366,8 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
     admission.triggerActor,
     operation,
     effectAuthority,
-    requestActor
+    requestActor,
+    failureMode
   );
 }
 
@@ -378,13 +384,20 @@ export function currentWorkerLineageWorkspaceAuthority(
   coreDb: CoreDb,
   lineage: SchedulerExecutionLineage & { readonly triggerActor: ActorRef },
   operation: string,
-  effectAuthority: boolean
+  effectAuthority: boolean,
+  failureMode: 'deny' | 'throw' = 'deny'
 ): WorkspaceAuthority | null {
   const admission = findSchedulerAdmissionForWorkerLineage(coreDb, lineage);
   if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
     return null;
   }
-  return currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, operation, effectAuthority);
+  return currentSchedulerAdmissionWorkspaceAuthority(
+    coreDb,
+    admission,
+    operation,
+    effectAuthority,
+    failureMode
+  );
 }
 
 /**

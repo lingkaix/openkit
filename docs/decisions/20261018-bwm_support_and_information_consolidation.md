@@ -7,7 +7,7 @@ decider: Engineer
 
 ## Decision
 
-The engineer approved the BWM support direction on 2026-10-18, including its later refinement to one NanoCore interception mechanism. The [implementation specification](../specs/20261018-nanocore_interception_and_information_consolidation.md) records the contract and migration phases. Implementation of that unified design is **Not Started**; existing specialized mechanisms do not establish completion.
+The engineer approved the BWM support direction on 2026-10-18, including its later refinement to one NanoCore interception mechanism. The [implementation specification](../specs/20261018-nanocore_interception_and_information_consolidation.md) records the contract and migration phases. Delivery is phased; existing specialized mechanisms do not establish unified completion.
 
 Solidified reusable procedures belong in Skills; other reusable understanding belongs in the owner-scoped OKF Knowledge Base under the Knowledge Manager. Claim becomes an OKF page, without a separate claims ledger. Confidence keeps its numeric 0..1 meaning. Rule, Effect and business Objective pages use Scope Schema types and applicability metadata; a business Objective page is not a work-model Goal.
 
@@ -18,6 +18,8 @@ Decision Trace is a later derived, read-only view over retained identifier edges
 Policy is agent-native: a responsible supervising agent may author fine-grained per-agent and per-action policy inside its current delegated envelope. Human-required decisions remain human-required. Risk tiers and confidence are inputs, not grants. Agent approvers run in shadow before explicit Policy activation.
 
 NanoCore owns mediation points, policy-written bindings and observe, advise, gate and transform modes. Participants are replaceable providers, including internal or external agents, decision models, deterministic engines, third parties and humans. Gate and transform need explicit Policy authority; transforms retain safe references to both versions. Execution orders transform, advise, gate, then the final Policy Kernel check. Every invocation has durable evidence in existing owners; timeout and an open circuit mean unavailable, not deny or allow.
+
+The engineer's 2026-10-18 07:37Z ruling places the binding and invocation formats, minimal executor and I16 pilot before v0.1.0. Remaining rows migrate after v0.1.0; only reachable conflicts with common order/failure semantics require owner correction before freeze. Invocation evidence stays in existing Audit/Policy and bindings stay in existing Policy/config. This additive BASE needs no reset.
 
 ## Reason
 
