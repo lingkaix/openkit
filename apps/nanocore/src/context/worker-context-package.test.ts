@@ -60,6 +60,8 @@ import {
   writeWorkerContextPackageTrace,
 } from './worker-context-package.js';
 
+const KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000001';
+
 /** Fixed timestamp shared by accepted-Turn authority fixtures. */
 const TURN_STARTED_AT = '2026-07-18T00:00:00.000Z';
 
@@ -302,6 +304,7 @@ async function createAcceptedFixture(
         {
           content: KNOWLEDGE_PAGE_BYTES,
           contentDigest: sha256(KNOWLEDGE_PAGE_BYTES),
+          knowledgeBaseId: KNOWLEDGE_BASE_ID,
           knowledgePageId: 'lessons/task-mode',
           sourceRefs: [
             'source:ks_00000000-0000-7971-9553-9dd821fd7f55',
@@ -344,6 +347,7 @@ async function createAcceptedFixture(
     knowledgeExclusions: options.knowledge
       ? [
           {
+            knowledgeBaseId: KNOWLEDGE_BASE_ID,
             knowledgePageId: 'lessons/omitted',
             contentDigest: sha256('Omitted page'),
             reason: 'budget_exceeded',
@@ -784,6 +788,41 @@ describe('worker request source selector projection', () => {
 });
 
 describe('worker Context Package owner', () => {
+  it('retains the base identity while preserving the default delivered path', () => {
+    const input = {
+      contextBudgetTokens: 4096,
+      includedItemIds: ['it_00000000-0000-7a3c-ae74-d9d096838a5d'],
+      knowledgeSelections: [
+        {
+          knowledgeBaseId: KNOWLEDGE_BASE_ID,
+          knowledgePageId: 'lessons/example',
+          content: 'Exact page bytes.',
+          contentDigest: sha256('Exact page bytes.'),
+          sourceRefs: [],
+        },
+      ],
+      materialSelections: [],
+      threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+      turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
+      workerRequestBytes: WORKER_REQUEST_BYTES,
+      workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
+      workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
+    };
+    const first = createWorkerContextPackageFiles(input);
+    const otherBase = 'kb_0190f4c8-0000-7000-8000-000000000002';
+    const second = createWorkerContextPackageFiles({
+      ...input,
+      knowledgeSelections: [{ ...input.knowledgeSelections[0]!, knowledgeBaseId: otherBase }],
+    });
+    expect(first.knowledgeSelections[0]?.knowledgeBaseId).toBe(KNOWLEDGE_BASE_ID);
+    expect(second.knowledgeSelections[0]?.knowledgeBaseId).toBe(otherBase);
+    expect(first.knowledgeSelections[0]?.packagePath).toBe('knowledge/pages/lessons/example.md');
+    expect(second.knowledgeSelections[0]?.packagePath).toBe(
+      first.knowledgeSelections[0]?.packagePath
+    );
+    expect(second.packageRootDigest).not.toBe(first.packageRootDigest);
+  });
+
   it('inventories exact bounded overview bytes without changing the worker request', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-overview-'));
     const baseline = await createPackage(workspaceRoot, false);
@@ -1022,6 +1061,7 @@ describe('worker Context Package owner', () => {
           content: KNOWLEDGE_PAGE_BYTES,
           contentDigest,
           notebookRevision,
+          knowledgeBaseId: KNOWLEDGE_BASE_ID,
           knowledgePageId: 'lessons/task-mode',
           sourceRefs: [
             'source:ks_00000000-0000-7930-9f0d-0ed5d41a7410',
@@ -1043,6 +1083,7 @@ describe('worker Context Package owner', () => {
     const expectedSelection = {
       contentDigest,
       notebookRevision,
+      knowledgeBaseId: KNOWLEDGE_BASE_ID,
       knowledgePageId: 'lessons/task-mode',
       packagePath: 'knowledge/pages/lessons/task-mode.md',
       sourceRefs: [
@@ -2013,6 +2054,7 @@ describe('S39 bounded delivery and publication refusal', () => {
         ...boundedInputs(),
         knowledgeSelections: [
           {
+            knowledgeBaseId: KNOWLEDGE_BASE_ID,
             knowledgePageId: 'limits/example',
             content,
             contentDigest: sha256(content),
@@ -2028,6 +2070,7 @@ describe('S39 bounded delivery and publication refusal', () => {
     const content = '界'.repeat(30_000);
     const deliveredContent = '界'.repeat(682);
     const selection = {
+      knowledgeBaseId: KNOWLEDGE_BASE_ID,
       knowledgePageId: 'limits/pinned',
       notebookRevision: 'selected-notebook-commit',
       content,
