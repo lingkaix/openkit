@@ -1291,6 +1291,86 @@ describe('workspace derived index rebuild', () => {
     });
   });
 
+  it('verifies canonical page-source pins against exact Notebook bytes in every static index', () => {
+    const dataRoot = createDataRoot();
+    createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+    const target = publishEntry(dataRoot, workspaceId, {
+      kind: 'project-context',
+      title: 'Pinned target',
+      content: 'Exact target bytes.',
+    });
+    const scopeId = workspacePageScope(dataRoot);
+    const matchingReference = formatReferenceUri(
+      { scopeId, objectId: target.id },
+      sha256Digest(publishedPage(workspaceRoot, `${target.id}.md`))
+    );
+    const mismatchingReference = formatReferenceUri(
+      { scopeId, objectId: target.id },
+      `sha256:${'0'.repeat(64)}`
+    );
+    const foreignReference = formatReferenceUri({
+      scopeId: `page/workspace/${workspaceId}/kb_00000000-0000-7000-8000-000000000009`,
+      objectId: target.id,
+    });
+    expect(foreignReference).not.toBe(formatReferenceUri({ scopeId, objectId: target.id }));
+    const unknownReference = formatReferenceUri({ scopeId, objectId: 'unknown-target' });
+    const cases = [
+      { reference: matchingReference, targetId: target.id, resolved: true },
+      { reference: mismatchingReference, targetId: target.id, resolved: false },
+      { reference: foreignReference, targetId: null, resolved: false },
+      { reference: unknownReference, targetId: 'unknown-target', resolved: false },
+    ].map((testCase) => ({
+      ...testCase,
+      page: publishEntry(dataRoot, workspaceId, {
+        kind: 'project-context',
+        title: 'Page-source proof',
+        content: `[Target](${target.id}.md)`,
+        sourceReferences: [testCase.reference],
+      }),
+    }));
+    rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId });
+    const validation = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    );
+    const sourceReferences = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-source-refs.json'), 'utf8')
+    );
+    const links = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-links.json'), 'utf8')
+    );
+    for (const testCase of cases) {
+      expect(validation.records).toContainEqual(
+        expect.objectContaining({
+          conceptId: testCase.page.id,
+          indexed: testCase.resolved,
+          errors: testCase.resolved
+            ? []
+            : expect.arrayContaining([
+                expect.objectContaining({ code: 'reference.unresolved_knowledge' }),
+              ]),
+        })
+      );
+      expect(sourceReferences.references).toContainEqual({
+        conceptId: testCase.page.id,
+        path: `knowledge/pages/${testCase.page.id}.md`,
+        reference: testCase.reference,
+        kind: 'workspace-knowledge',
+        targetId: testCase.targetId,
+        resolved: testCase.resolved,
+      });
+      const edge = {
+        fromId: testCase.page.id,
+        target: `${target.id}.md`,
+        toId: target.id,
+        resolved: true,
+      };
+      if (testCase.resolved) expect(links.edges).toContainEqual(edge);
+      else expect(links.edges).not.toContainEqual(edge);
+    }
+  });
+
   it('rebuilds the knowledge source-reference index from file-backed pages', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
@@ -1412,7 +1492,7 @@ describe('workspace derived index rebuild', () => {
           ),
           kind: 'workspace-knowledge',
           targetId: knowledge.id,
-          resolved: true,
+          resolved: false,
         },
         {
           conceptId: 'source-reference-index',

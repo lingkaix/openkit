@@ -1679,6 +1679,25 @@ function readRegisteredSources(
   return sources;
 }
 
+/** Checks only exact same-base page bytes in the selected Notebook tree; native retrieval still owns current access. */
+function verifiedKnowledgePageSourceReferences(
+  references: readonly string[],
+  pages: ReadonlyMap<string, string>,
+  pageScopeId: string
+): ReadonlySet<string> {
+  return new Set(
+    references.filter((reference) => {
+      const parsed = parseKnowledgePageSourceReference(reference, pageScopeId);
+      if (!parsed) return false;
+      const content = pages.get(parsed.reference.objectId);
+      return (
+        content !== undefined &&
+        (parsed.contentDigest === undefined || sha256Digest(content) === parsed.contentDigest)
+      );
+    })
+  );
+}
+
 /**
  * Returns whether source-prefixed references resolve to registered sources.
  *
@@ -1719,6 +1738,7 @@ function sourceReferencesResolve(
  * @param registeredSources Current registered Source identities and digests.
  * @param knowledgeIds Current Workspace Knowledge identities.
  * @param pageScopeId Exact retained Workspace page collection.
+ * @param resolvedReferences Page references verified against the exact selected tree.
  * @returns True only for an active, valid, directly user-authored Page.
  */
 function isStaticKnowledgeIndexPage(
@@ -1726,12 +1746,19 @@ function isStaticKnowledgeIndexPage(
   schema: ScopeKnowledgeSchema,
   registeredSources: ReadonlyMap<string, string | null>,
   knowledgeIds: ReadonlySet<string>,
-  pageScopeId: string
+  pageScopeId: string,
+  resolvedReferences: ReadonlySet<string>
 ): boolean {
   return (
     stringFrontmatterField(document, 'review_state') === 'user-authored' &&
     isActiveOpenKitKnowledgePage(document, schema) &&
-    sourceReferencesResolve(document, registeredSources, knowledgeIds, undefined, pageScopeId)
+    sourceReferencesResolve(
+      document,
+      registeredSources,
+      knowledgeIds,
+      resolvedReferences,
+      pageScopeId
+    )
   );
 }
 
@@ -1763,6 +1790,11 @@ function buildKnowledgeValidationRecords(
 
     const report = validateKnowledgePageCandidate({
       pageScopeId,
+      resolvedReferences: verifiedKnowledgePageSourceReferences(
+        parsed.document ? (stringListFrontmatterField(parsed.document, 'source_refs') ?? []) : [],
+        pages,
+        pageScopeId
+      ),
       path,
       content,
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
@@ -1825,6 +1857,11 @@ function buildKnowledgeSourceReferences(
 
     const conceptId = document.conceptId ?? knowledgePageId;
     const workspacePath = `knowledge/pages/${knowledgePageId}.md`;
+    const resolvedReferences = verifiedKnowledgePageSourceReferences(
+      sourceRefs,
+      pages,
+      pageScopeId
+    );
 
     for (const reference of sourceRefs) {
       references.push(
@@ -1835,6 +1872,7 @@ function buildKnowledgeSourceReferences(
           registeredSources,
           knowledgeIds,
           pageScopeId,
+          resolvedReferences,
         })
       );
     }
@@ -1866,6 +1904,8 @@ function classifyKnowledgeSourceReference(input: {
   knowledgeIds: ReadonlySet<string>;
   /** Exact current Workspace page collection. */
   pageScopeId: string;
+  /** Page references verified against the exact selected tree. */
+  resolvedReferences: ReadonlySet<string>;
 }): WorkspaceKnowledgeSourceReference {
   if (input.reference.startsWith('source:')) {
     const resolution = resolveRegisteredKnowledgeSourceReference(
@@ -1893,7 +1933,10 @@ function classifyKnowledgeSourceReference(input: {
       reference: input.reference,
       kind: 'workspace-knowledge',
       targetId,
-      resolved: targetId !== null && input.knowledgeIds.has(targetId),
+      resolved:
+        targetId !== null &&
+        input.knowledgeIds.has(targetId) &&
+        input.resolvedReferences.has(input.reference),
     };
   }
 
@@ -1908,7 +1951,7 @@ function classifyKnowledgeSourceReference(input: {
       },
       input.registeredSources,
       input.knowledgeIds,
-      undefined,
+      input.resolvedReferences,
       input.pageScopeId
     ).length === 0;
 
@@ -1956,7 +1999,12 @@ function buildKnowledgeLinkEdges(
         schema,
         registeredSources,
         knowledgeIds,
-        pageScopeId
+        pageScopeId,
+        verifiedKnowledgePageSourceReferences(
+          stringListFrontmatterField(parsed.document, 'source_refs') ?? [],
+          pages,
+          pageScopeId
+        )
       )
     ) {
       continue;
