@@ -170,9 +170,9 @@ describe('governed worker image contracts', () => {
     expect(dockerfile).toContain('pnpm --filter @openkit/worker-shim build');
     expect(dockerfile).toContain('pnpm --filter @openkit/worker-shim deploy --prod --legacy');
     expect(dockerfile).toContain('/usr/local/lib/openkit/worker-shim');
-    expect(dockerfile).toContain('COPY containers/workers/openkit-worker-shim');
+    expect(dockerfile).toContain('COPY --chmod=0755 containers/workers/openkit-worker-shim');
     expect(dockerfile).toContain(
-      'COPY containers/workers/openkit-file-effect /usr/local/bin/openkit-file-effect'
+      'COPY --chmod=0755 containers/workers/openkit-file-effect /usr/local/bin/openkit-file-effect'
     );
     expect(dockerfile).toContain('/usr/sbin/groupmod --new-name sandbox node');
     expect(dockerfile).toContain(
@@ -237,7 +237,7 @@ describe('governed worker image contracts', () => {
     expect(targetSection).toContain(
       'LABEL org.openkit.worker.runtimes="codex,pi,opencode,deepseek"'
     );
-    expect(targetSection).toContain(`COPY containers/${id}/smoke.sh`);
+    expect(targetSection).toContain(`COPY --chmod=0755 containers/${id}/smoke.sh`);
     expect(targetSection).toContain('USER 1000:1000');
     expect(agentManifest.runtime).toMatchObject({
       adapter: runtime,
@@ -297,7 +297,7 @@ describe('governed worker image contracts', () => {
     expect(
       dockerTargetSection(readFileSync(sharedDockerfilePath, 'utf8'), 'worker-runtimes')
     ).toContain(
-      'COPY containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json'
+      'COPY --chmod=0644 containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json'
     );
   });
 
@@ -314,7 +314,7 @@ describe('governed worker image contracts', () => {
     const common = dockerCommonSection(dockerfile);
     const deployment = dockerTargetSection(dockerfile, 'worker-runtimes');
     expect(dockerfile).toContain('pnpm --filter @openkit/pi-runtime-host deploy --prod --legacy');
-    expect(deployment).toContain('COPY --from=worker-shim-builder /deploy/pi-runtime-host/');
+    expect(deployment).toContain('COPY --chmod=0755 --from=worker-shim-builder /deploy/pi-runtime-host/');
     expect(deployment).toContain(`@opencode/cli@\${OPENCODE_VERSION}`);
     expect(deployment).toContain(`@opencode/client@\${OPENCODE_VERSION}`);
     expect(deployment).toContain(`@deepseek-ai/dsh@\${DEEPSEEK_VERSION}`);
