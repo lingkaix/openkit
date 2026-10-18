@@ -64,6 +64,13 @@
       "when": 1792315196420,
       "tag": "0008_server_capability_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792315196421,
+      "tag": "0009_policy_audit_v1",
+      "breakpoints": true
     }
   ]
 }

@@ -26,6 +26,31 @@ function createDataRoot(): string {
 }
 
 describe('workspace audit events', () => {
+  it('writes version one and rejects an unknown marker before decoding retained JSON', () => {
+    const dataRoot = createDataRoot();
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      const event = recordServerAuditEvent({
+        coreDb,
+        action: 'version.fixture',
+        outcome: 'succeeded',
+        summary: 'Fixture recorded.',
+      });
+      expect(coreDb.sqlite.prepare('SELECT schema_version FROM audit_events').get()).toEqual({
+        schema_version: 1,
+      });
+      expect(listServerAuditEvents(coreDb)).toEqual([event]);
+      coreDb.sqlite
+        .prepare("UPDATE audit_events SET schema_version = 2, actor_json = 'not JSON'")
+        .run();
+      expect(() => listServerAuditEvents(coreDb)).toThrow('Unsupported retained record format.');
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('joins Core-homed Workspace Audit only after exact Workspace selection', () => {
     const dataRoot = createDataRoot();
     const workspaceId = testEntityId('ws', 'audit-selected-workspace');

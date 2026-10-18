@@ -100001,6 +100001,493 @@
                   ],
                   "additionalProperties": false
                 },
+                "policyInvocation": {
+                  "type": "object",
+                  "properties": {
+                    "binding": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "operation": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "propose",
+                        "decide",
+                        "commit",
+                        "completed"
+                      ]
+                    },
+                    "point": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "observe",
+                        "advise",
+                        "gate",
+                        "transform"
+                      ]
+                    },
+                    "policyRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "authorizationRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "proposalDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "subject": {
+                      "type": "object",
+                      "properties": {
+                        "principal": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "human"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "agent"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "onBehalfOf": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "actor": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "user"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "agent",
+                                    "integration",
+                                    "system"
+                                  ]
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "automation"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "process": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "workspaceId",
+                                "threadId",
+                                "turnId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "credentialKind": {
+                          "type": "string",
+                          "enum": [
+                            "local",
+                            "session",
+                            "token",
+                            "worker-package"
+                          ]
+                        },
+                        "responsibleHumanId": {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "principal",
+                        "onBehalfOf",
+                        "actor",
+                        "process",
+                        "credentialKind",
+                        "responsibleHumanId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "participant": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "version": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "inputDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "outputDigest": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "completed",
+                        "unavailable",
+                        "timeout",
+                        "open-circuit",
+                        "malformed",
+                        "error",
+                        "stale"
+                      ]
+                    },
+                    "startedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "capabilityCallId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "binding",
+                    "operation",
+                    "stage",
+                    "point",
+                    "mode",
+                    "policyRevision",
+                    "authorizationRevision",
+                    "proposalDigest",
+                    "subject",
+                    "participant",
+                    "inputDigest",
+                    "outputDigest",
+                    "outcome",
+                    "startedAt",
+                    "completedAt",
+                    "capabilityCallId"
+                  ],
+                  "additionalProperties": false
+                },
+                "policyWriteOutcome": {
+                  "type": "object",
+                  "properties": {
+                    "candidate": {
+                      "type": "object",
+                      "properties": {
+                        "artifactId": {
+                          "type": "string",
+                          "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "artifactId",
+                        "version",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "decider": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "human"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "agent"
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "decidedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "approval": {
+                      "type": "object",
+                      "properties": {
+                        "proposalDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "policyRevision": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "authorizationRevision": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "proposalDigest",
+                        "policyRevision",
+                        "authorizationRevision"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validation": {
+                      "type": "string",
+                      "enum": [
+                        "valid",
+                        "invalid"
+                      ]
+                    },
+                    "persistedRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "activeRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "validation-failed",
+                        "persisted",
+                        "active",
+                        "failed",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "candidate",
+                    "decider",
+                    "decidedAt",
+                    "approval",
+                    "validation",
+                    "persistedRevision",
+                    "activeRevision",
+                    "outcome"
+                  ],
+                  "additionalProperties": false
+                },
                 "outcome": {
                   "type": "string",
                   "enum": [
@@ -100697,6 +101184,493 @@
                     "producer",
                     "authority",
                     "sourceReferences"
+                  ],
+                  "additionalProperties": false
+                },
+                "policyInvocation": {
+                  "type": "object",
+                  "properties": {
+                    "binding": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "operation": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "propose",
+                        "decide",
+                        "commit",
+                        "completed"
+                      ]
+                    },
+                    "point": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "observe",
+                        "advise",
+                        "gate",
+                        "transform"
+                      ]
+                    },
+                    "policyRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "authorizationRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "proposalDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "subject": {
+                      "type": "object",
+                      "properties": {
+                        "principal": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "human"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "agent"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "onBehalfOf": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "actor": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "user"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "agent",
+                                    "integration",
+                                    "system"
+                                  ]
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "automation"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "process": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "workspaceId",
+                                "threadId",
+                                "turnId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "credentialKind": {
+                          "type": "string",
+                          "enum": [
+                            "local",
+                            "session",
+                            "token",
+                            "worker-package"
+                          ]
+                        },
+                        "responsibleHumanId": {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "principal",
+                        "onBehalfOf",
+                        "actor",
+                        "process",
+                        "credentialKind",
+                        "responsibleHumanId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "participant": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "version": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "inputDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "outputDigest": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "completed",
+                        "unavailable",
+                        "timeout",
+                        "open-circuit",
+                        "malformed",
+                        "error",
+                        "stale"
+                      ]
+                    },
+                    "startedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "completedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "capabilityCallId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "binding",
+                    "operation",
+                    "stage",
+                    "point",
+                    "mode",
+                    "policyRevision",
+                    "authorizationRevision",
+                    "proposalDigest",
+                    "subject",
+                    "participant",
+                    "inputDigest",
+                    "outputDigest",
+                    "outcome",
+                    "startedAt",
+                    "completedAt",
+                    "capabilityCallId"
+                  ],
+                  "additionalProperties": false
+                },
+                "policyWriteOutcome": {
+                  "type": "object",
+                  "properties": {
+                    "candidate": {
+                      "type": "object",
+                      "properties": {
+                        "artifactId": {
+                          "type": "string",
+                          "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "artifactId",
+                        "version",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "decider": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "human"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "agent"
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "decidedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "approval": {
+                      "type": "object",
+                      "properties": {
+                        "proposalDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "policyRevision": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "authorizationRevision": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "proposalDigest",
+                        "policyRevision",
+                        "authorizationRevision"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validation": {
+                      "type": "string",
+                      "enum": [
+                        "valid",
+                        "invalid"
+                      ]
+                    },
+                    "persistedRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "activeRevision": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "validation-failed",
+                        "persisted",
+                        "active",
+                        "failed",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "candidate",
+                    "decider",
+                    "decidedAt",
+                    "approval",
+                    "validation",
+                    "persistedRevision",
+                    "activeRevision",
+                    "outcome"
                   ],
                   "additionalProperties": false
                 },
@@ -101538,6 +102512,364 @@
                   "type": "string",
                   "minLength": 1
                 },
+                "mediation": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "propose",
+                        "decide",
+                        "commit",
+                        "completed"
+                      ]
+                    },
+                    "point": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "proposalDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "policyRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "authorizationRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "subject": {
+                      "type": "object",
+                      "properties": {
+                        "principal": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "human"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "agent"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "onBehalfOf": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "actor": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "user"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "agent",
+                                    "integration",
+                                    "system"
+                                  ]
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "automation"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "process": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "workspaceId",
+                                "threadId",
+                                "turnId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "credentialKind": {
+                          "type": "string",
+                          "enum": [
+                            "local",
+                            "session",
+                            "token",
+                            "worker-package"
+                          ]
+                        },
+                        "responsibleHumanId": {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "principal",
+                        "onBehalfOf",
+                        "actor",
+                        "process",
+                        "credentialKind",
+                        "responsibleHumanId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "gate",
+                        "final"
+                      ]
+                    },
+                    "binding": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "kernel": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "effect": {
+                              "type": "string",
+                              "enum": [
+                                "allow",
+                                "deny"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "effect",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "invocations": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "decision"
+                              },
+                              "id": {
+                                "type": "string",
+                                "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "audit"
+                              },
+                              "id": {
+                                "type": "string",
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "consumedStatements": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "digest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "digest"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "operation",
+                    "stage",
+                    "point",
+                    "proposalDigest",
+                    "policyRevision",
+                    "authorizationRevision",
+                    "subject",
+                    "role",
+                    "invocations",
+                    "consumedStatements"
+                  ],
+                  "additionalProperties": false
+                },
                 "requiredApprovalKind": {
                   "anyOf": [
                     {
@@ -101665,6 +102997,364 @@
                 "enforcementPoint": {
                   "type": "string",
                   "minLength": 1
+                },
+                "mediation": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "propose",
+                        "decide",
+                        "commit",
+                        "completed"
+                      ]
+                    },
+                    "point": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "proposalDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "policyRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "authorizationRevision": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "subject": {
+                      "type": "object",
+                      "properties": {
+                        "principal": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "human"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "agent"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "onBehalfOf": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "actor": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "user"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "agent",
+                                    "integration",
+                                    "system"
+                                  ]
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "automation"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "process": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "workspaceId",
+                                "threadId",
+                                "turnId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "credentialKind": {
+                          "type": "string",
+                          "enum": [
+                            "local",
+                            "session",
+                            "token",
+                            "worker-package"
+                          ]
+                        },
+                        "responsibleHumanId": {
+                          "type": "string",
+                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "principal",
+                        "onBehalfOf",
+                        "actor",
+                        "process",
+                        "credentialKind",
+                        "responsibleHumanId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "gate",
+                        "final"
+                      ]
+                    },
+                    "binding": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "digest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "digest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "kernel": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "effect": {
+                              "type": "string",
+                              "enum": [
+                                "allow",
+                                "deny"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "effect",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "invocations": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "decision"
+                              },
+                              "id": {
+                                "type": "string",
+                                "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "audit"
+                              },
+                              "id": {
+                                "type": "string",
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "consumedStatements": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "digest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "digest"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "operation",
+                    "stage",
+                    "point",
+                    "proposalDigest",
+                    "policyRevision",
+                    "authorizationRevision",
+                    "subject",
+                    "role",
+                    "invocations",
+                    "consumedStatements"
+                  ],
+                  "additionalProperties": false
                 },
                 "requiredApprovalKind": {
                   "anyOf": [
@@ -122626,5 +124316,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:cf87bea413f326cb262975c7cb385bf92c79f1347b9db5e7384f555d74dc7b3c"
+  "x-openkit-source-digest": "sha256:eddfa8509fb59007cdd33c62c2b385882147f00da8ca176b1cb05525d7415b13"
 }

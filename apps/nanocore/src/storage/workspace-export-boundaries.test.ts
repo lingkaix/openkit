@@ -732,6 +732,44 @@ describe('workspace export route boundaries', () => {
 
 describe('workspace import route handles', () => {
   it.each([
+    'auditEvents',
+    'permissionDecisions',
+  ] as const)('checks the portable %s marker before decoding invalid family bytes', (family) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-policy-version-'));
+    try {
+      const exportRoot = join(dataRoot, 'export');
+      const input = minimalExportInput(exportRoot);
+      input[family] = [{ invalidFamilyBody: true }];
+      writeWorkspaceExportTree(input);
+      const path = `records/${family === 'auditEvents' ? 'audit-events' : 'permission-decisions'}.jsonl`;
+      const original = JSON.parse(readFileSync(join(exportRoot, path), 'utf8'));
+      expect(original.schemaVersion).toBe(1);
+      const content = `${JSON.stringify({ ...original, schemaVersion: 2 })}\n`;
+      writeFileSync(join(exportRoot, path), content);
+      const manifestPath = join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      const entry = manifest.contentInventory.find(
+        (value: { path: string }) => value.path === path
+      );
+      if (!entry) throw new Error('Expected portable family inventory.');
+      entry.digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+      entry.bytes = Buffer.byteLength(content);
+      manifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(manifest.contentInventory)).digest('hex')}`;
+      writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+      const verified = verifyWorkspaceExportTree({ exportRoot });
+      expect(() =>
+        readWorkspaceImportSnapshot({
+          verified,
+          targetServerId: 'server_target',
+          targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000002',
+        })
+      ).toThrow('Unsupported retained record format.');
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     'legacy',
     'ws_00000000-0000-7000-8000-000000000001',
   ])('refuses a verified portable PermissionDecision with invalid kind %s before Workspace publication', (decisionId) => {

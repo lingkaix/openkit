@@ -5,6 +5,7 @@ import {
   type ApplyAdministrationConfigurationResponse,
   ApplyAdministrationConfigurationResponseSchema,
   ApplyDelegatedAdministrationConfigurationRequestSchema,
+  type ConfigurationCandidateArtifact,
   ConfigurationCandidateArtifactSchema,
   type ProposeAdministrationConfigurationRequest,
   ProposeAdministrationConfigurationRequestSchema,
@@ -12,12 +13,17 @@ import {
 import {
   GatewayConfigSchema,
   GatewayLogicalModelSchema,
+  OpenKitConfigSchema,
   ProviderModelMetadataSchema,
   ProviderProfileSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  PolicyDocumentV1Schema,
+  PolicyWriteOutcomeV1Schema,
+} from '@openkit/protocol';
 import { z } from 'zod';
-
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
@@ -26,7 +32,13 @@ import {
   type FsStore,
   quickChatWorkspaceIdForUser,
 } from '../lib/store.js';
+import {
+  preparePolicyConfiguration,
+  readAdmittedPolicyDocument,
+  recordPolicyWriteDecision,
+} from '../policy/configuration.js';
 import { recordPermissionDecision } from '../policy/permission-decisions.js';
+import { policyDigest } from '../policy/statements.js';
 import { evaluateWorkerGitReadMaintenance } from '../policy/worker-git-read-maintenance.js';
 import {
   type InflightIdempotentCommand,
@@ -87,7 +99,18 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
   }
 
   /** Resolves an existing target by registered identity, never by a caller-selected path. */
-  function source(targetFamily: 'provider' | 'gateway', targetId: string) {
+  function source(targetFamily: 'provider' | 'gateway' | 'policy', targetId: string) {
+    if (targetFamily === 'policy') {
+      if (targetId !== 'server') fail('configuration_target_not_found');
+      const read = files.readFile('server.jsonc');
+      const config = OpenKitConfigSchema.parse(parseJsoncObject(read.content, 'server.jsonc'));
+      return {
+        read,
+        value: PolicyDocumentV1Schema.parse(
+          config.policy?.mediation ?? { schemaVersion: 1, statements: [] }
+        ),
+      };
+    }
     const matches = files
       .listFiles()
       .files.filter((file) => file.kind === targetFamily)
@@ -106,7 +129,21 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
   }
 
   /** Validates one exact revision and merged candidate using the existing whole-config loader. */
-  function prepare(request: ProposeAdministrationConfigurationRequest) {
+  function prepare(
+    request: ProposeAdministrationConfigurationRequest | ConfigurationCandidateArtifact
+  ) {
+    if (request.targetFamily === 'policy') {
+      return preparePolicyConfiguration({
+        request,
+        actor,
+        coreDb,
+        files,
+        store,
+        repositoryWorkspaceDb: options.repositoryWorkspaceDb,
+        loadedPolicy: options.runtimeConfig().openKitConfig.policy?.mediation,
+        ...('policyProposal' in request ? { candidate: request.policyProposal } : {}),
+      });
+    }
     if (request.targetFamily === 'agent') {
       const prepared = prepareWorkerGitReadCorrection({
         request,
@@ -271,7 +308,26 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             JSON.stringify(prepared.failureEvidence) !== JSON.stringify(body.failureEvidence))
         )
           fail('configuration_candidate_conflict');
+        if (
+          body.targetFamily === 'policy' &&
+          'before' in prepared &&
+          JSON.stringify(prepared.before) !== JSON.stringify(body.before)
+        )
+          fail('configuration_candidate_conflict');
         let permissionDecisionId: string | null = null;
+        const policyAdmission =
+          body.targetFamily === 'policy' && 'policyProposal' in prepared
+            ? recordPolicyWriteDecision({
+                coreDb,
+                actor,
+                candidate: request.candidate,
+                proposal: prepared.policyProposal,
+                requestId: request.requestId,
+                threadId,
+                turnId,
+              })
+            : null;
+        if (policyAdmission) permissionDecisionId = policyAdmission.decisionId;
         if (invocation) {
           if (
             !('failureEvidence' in prepared) ||
@@ -353,12 +409,15 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         let restartRequired = body.restartRequired;
         try {
           requireCurrentDeploymentAdmin(coreDb, actor);
-          const written = files.updateFile({
-            id: prepared.current.read.file.id,
-            kind: body.targetFamily,
-            content: prepared.content,
-            expectedRevision: body.expectedRevision,
-          });
+          const written = files.updateFile(
+            {
+              id: prepared.current.read.file.id,
+              kind: body.targetFamily === 'policy' ? 'server' : body.targetFamily,
+              content: prepared.content,
+              expectedRevision: body.expectedRevision,
+            },
+            policyAdmission ? { policyWrite: true } : undefined
+          );
           persisted = true;
           revision = written.file.revision;
           reload = 'failed';
@@ -376,15 +435,62 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           reload,
           restartRequired,
         });
+        let activePolicyRevision: string | null = null;
+        let policyInspectionUnknown = false;
+        if (policyAdmission) {
+          try {
+            activePolicyRevision = policyDigest(
+              readAdmittedPolicyDocument(
+                coreDb,
+                options.runtimeConfig().openKitConfig.policy?.mediation
+              )
+            );
+          } catch {
+            policyInspectionUnknown = true;
+          }
+        }
+        const expectedPolicyRevision =
+          'policyProposal' in prepared ? policyDigest(prepared.policyProposal.proposed) : null;
+        const policyWriteOutcome = policyAdmission
+          ? PolicyWriteOutcomeV1Schema.parse({
+              candidate: {
+                artifactId: request.candidate.artifactId,
+                version: request.candidate.artifactVersion,
+                digest: request.candidate.contentDigest,
+              },
+              decider: { kind: 'human', id: actor.userId },
+              decidedAt: new Date().toISOString(),
+              approval: policyAdmission.approval,
+              validation: 'valid',
+              persistedRevision: persisted ? expectedPolicyRevision : null,
+              activeRevision: activePolicyRevision,
+              outcome: policyInspectionUnknown
+                ? 'unknown'
+                : persisted && activePolicyRevision === expectedPolicyRevision
+                  ? 'active'
+                  : persisted
+                    ? 'persisted'
+                    : 'failed',
+            })
+          : undefined;
         recordServerAuditEvent({
           coreDb,
           actor: { kind: 'user', id: actor.userId },
           requestId: request.requestId,
           ...(permissionDecisionId ? { permissionDecisionId } : {}),
-          action: body.command,
+          ...(policyWriteOutcome ? { policyWriteOutcome } : {}),
+          action: body.targetFamily === 'policy' ? 'policy.write' : body.command,
           category: 'system',
           resource: `${body.targetFamily}:${body.targetId}`,
-          outcome: persisted && reload === 'applied' ? 'succeeded' : 'failed',
+          outcome: policyWriteOutcome
+            ? policyWriteOutcome.outcome === 'unknown'
+              ? 'unknown'
+              : policyWriteOutcome.outcome === 'active'
+                ? 'succeeded'
+                : 'failed'
+            : persisted && reload === 'applied'
+              ? 'succeeded'
+              : 'failed',
           summary: `Candidate ${request.candidate.contentDigest}; base ${body.expectedRevision}; persisted ${persisted}; reload ${reload}; restart required ${restartRequired}.`,
         });
         publish(result, threadId, turnId, request.requestId, outcomeId);
@@ -395,8 +501,15 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
 
   return {
     /** Reads only editable, non-secret catalog fields and exact source revisions. */
-    read(targetFamily: 'provider' | 'gateway', targetId?: string) {
+    read(targetFamily: 'provider' | 'gateway' | 'policy', targetId?: string) {
       requireCurrentDeploymentAdmin(coreDb, actor);
+      if (targetFamily === 'policy' && !targetId) {
+        const current = source('policy', 'server');
+        return {
+          targetFamily,
+          targets: [{ targetId: 'server', expectedRevision: current.read.file.revision }],
+        };
+      }
       if (!targetId) {
         return {
           targetFamily,
@@ -423,7 +536,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       };
     },
     /** Returns only editable fields derived from the registered schema owner. */
-    schema(targetFamily: 'provider' | 'gateway') {
+    schema(targetFamily: 'provider' | 'gateway' | 'policy') {
       requireCurrentDeploymentAdmin(coreDb, actor);
       return {
         targetFamily,
@@ -439,7 +552,10 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           },
         }),
         operation: 'update',
-        excludedFields: ['credentials', 'extensions', 'endpoint', 'policy'],
+        excludedFields:
+          targetFamily === 'policy'
+            ? ['credentials', 'extensions', 'endpoint']
+            : ['credentials', 'extensions', 'endpoint', 'policy'],
       };
     },
     /** Proposes an exact catalog patch in an already admitted private administration Turn. */
@@ -460,6 +576,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         command: 'administration.configuration.apply',
         operation: 'update',
         ...('failureEvidence' in prepared ? { failureEvidence: prepared.failureEvidence } : {}),
+        ...('policyProposal' in prepared ? { policyProposal: prepared.policyProposal } : {}),
       });
       const candidate = publish(body, home.threadId, home.turnId, home.requestId);
       return {
@@ -486,11 +603,17 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
 }
 
 /** Editable fields deliberately exclude secret references, account bindings and open extensions. */
-function changeSchema(family: 'gateway' | 'provider') {
+function changeSchema(family: 'gateway' | 'provider' | 'policy') {
+  if (family === 'policy')
+    return z.object({ proposed: PolicyDocumentV1Schema, rationale: z.string().min(1) }).strict();
   return family === 'provider' ? providerChanges : gatewayChanges;
 }
 /** Projects only the catalog fields accepted by this entry, preserving private fields on disk. */
-function project(family: 'gateway' | 'provider', value: object): Record<string, unknown> {
+function project(
+  family: 'gateway' | 'provider' | 'policy',
+  value: object
+): Record<string, unknown> {
+  if (family === 'policy') return { ...PolicyDocumentV1Schema.parse(value) };
   const keys =
     family === 'provider'
       ? ['displayName', 'models', 'defaultModel', 'modelMetadata']

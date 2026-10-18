@@ -6,6 +6,7 @@ import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
+import { listServerAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -14,6 +15,9 @@ import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { readAdmittedPolicyDocument } from '../policy/configuration.js';
+import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
+import { policyDigest } from '../policy/statements.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -162,6 +166,169 @@ function fixture() {
 }
 
 describe('administration catalog configuration', () => {
+  it('retains inactive Policy forms through the exact human candidate and records actual activation', async () => {
+    const f = fixture();
+    const leaseKnowledgeBaseId = allocateEntityId('kb');
+    const principal = { kind: 'human' as const, id: f.actor.userId };
+    const fields = {
+      author: principal,
+      authority: { kind: 'human' as const, userId: f.actor.userId },
+      authoredAt: '2026-10-18T00:00:00Z',
+      state: 'inactive' as const,
+      scope: {
+        subjects: [principal],
+        actions: ['tool.use'],
+        resources: [
+          {
+            kind: 'mcp-tool' as const,
+            workspaceId: f.workspaceId,
+            serverId: 'issues',
+            toolName: 'read',
+          },
+        ],
+      },
+      lifetime: {
+        anchor: {
+          owner: { kind: 'workspace' as const, workspaceId: f.workspaceId },
+          kind: 'workspace',
+          id: f.workspaceId,
+        },
+        uses: 1,
+      },
+    };
+    const proposed = {
+      schemaVersion: 1 as const,
+      statements: [
+        {
+          ...fields,
+          id: 'tool-rule',
+          kind: 'permission' as const,
+          effect: 'require_approval' as const,
+          grant: { kind: 'gateway-tool-rule' as const, toolNames: ['issues.read'] },
+        },
+        {
+          ...fields,
+          id: 'storage-lease',
+          kind: 'permission' as const,
+          effect: 'allow' as const,
+          lifetime: { ...fields.lifetime, notAfter: '2999-01-01T00:00:00Z' },
+          grant: {
+            kind: 'storage-lease' as const,
+            knowledgeBaseId: leaseKnowledgeBaseId,
+            mount: 'work',
+            pathPrefix: 'inputs',
+            mode: 'read-only' as const,
+          },
+        },
+        {
+          ...fields,
+          id: 'agent-worker',
+          kind: 'agent-principal' as const,
+          principal: { kind: 'agent' as const, id: 'worker' },
+          creator: { kind: 'human' as const, id: testEntityId('usr', 'claimed-creator') },
+          responsiblePrincipal: principal,
+        },
+      ],
+    };
+    const serverPath = join(f.dataRoot, 'config/server.jsonc');
+    const original = readFileSync(serverPath, 'utf8');
+    for (const knowledgeBaseId of ['invalid-kb', f.workspaceId]) {
+      const invalid = {
+        ...proposed,
+        statements: proposed.statements.map((statement) =>
+          statement.kind === 'permission' && statement.grant.kind === 'storage-lease'
+            ? { ...statement, grant: { ...statement.grant, knowledgeBaseId } }
+            : statement
+        ),
+      };
+      expect(() =>
+        f.service.propose(
+          {
+            targetFamily: 'policy',
+            targetId: 'server',
+            expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+            changes: {
+              proposed: invalid,
+              rationale: 'Reject a malformed or wrong-kind lease target.',
+            },
+          },
+          f.home
+        )
+      ).toThrow(/knowledgeBaseId/);
+      expect(readFileSync(serverPath, 'utf8')).toBe(original);
+      expect(f.reload).not.toHaveBeenCalled();
+    }
+    const proposal = f.service.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed,
+          rationale: 'Retain inactive native declarations for their later consumers.',
+        },
+      },
+      f.home
+    );
+    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+    const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
+    if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
+    const candidate = JSON.parse(artifact.content.body);
+    expect(candidate.policyProposal).toMatchObject({
+      proposer: principal,
+      classification: 'widening',
+      validation: 'valid',
+      diff: { added: ['tool-rule', 'storage-lease', 'agent-worker'], changed: [], removed: [] },
+    });
+    expect(candidate.after.statements[2].creator).toEqual(principal);
+    expect(candidate.after.statements[1].grant).toEqual({
+      kind: 'storage-lease',
+      knowledgeBaseId: leaseKnowledgeBaseId,
+      mount: 'work',
+      pathPrefix: 'inputs',
+      mode: 'read-only',
+    });
+    expect(candidate.after.statements[1].lifetime.notAfter).toBe('2999-01-01T00:00:00Z');
+    expect(
+      candidate.after.statements.every(
+        (statement: { state: string }) => statement.state === 'inactive'
+      )
+    ).toBe(true);
+    const confirmed = f.confirm(proposal);
+    const result = await f.service.apply(confirmed);
+    expect(result).toMatchObject({ persisted: true, reload: 'applied' });
+    const loaded = readAdmittedPolicyDocument(
+      f.coreDb,
+      f.manager.current().openKitConfig.policy?.mediation
+    );
+    expect(loaded).toEqual(candidate.after);
+    const decision = listServerPermissionDecisions(f.coreDb).find(
+      (row) => row.mediation?.operation === 'policy.write'
+    );
+    expect(decision).toMatchObject({
+      result: 'allow',
+      enforcementPoint: 'policy.write@decide',
+      mediation: {
+        role: 'final',
+        kernel: { effect: 'allow' },
+        proposalDigest: proposal.candidate.contentDigest,
+        subject: { principal, process: null, responsibleHumanId: f.actor.userId },
+      },
+    });
+    const audit = listServerAuditEvents(f.coreDb).find((row) => row.action === 'policy.write');
+    expect(audit).toMatchObject({
+      permissionDecisionId: decision?.decisionId,
+      outcome: 'succeeded',
+      policyWriteOutcome: {
+        persistedRevision: policyDigest(candidate.after),
+        activeRevision: policyDigest(loaded),
+        outcome: 'active',
+      },
+    });
+    expect(await f.service.apply(confirmed)).toEqual(result);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+  });
+
   it('publishes only editable schema fields while preserving their constraints', () => {
     const f = fixture();
     const provider = f.service.schema('provider').schema;

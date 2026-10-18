@@ -241,9 +241,9 @@ Decision traces are required for development, tests, audit projection, and futur
 | Access request decision function | Implement now | Evaluate process or user, operation, object or policy element, required access rights, privileges, restrictions, and trace. |
 | Process context | Existing subset; Goal projection Not Started | Map the actual process to the evaluated principal's NGAC user element, outside the policy-element graph. Record the responsible human separately for accountability; that identity supplies no inherited rights. |
 | Agent principal accountability | Planned; Not Started | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Permissions; suspend grants on failure until human reassignment. |
-| Administrative operations | Planned; Not Started | The pre-v0.1.0 `policy.write` review path is owned by Policy Enforcement Mapping. Full standard administrative routines remain outside the implemented subset. |
+| Administrative operations | Native human Policy candidate path; broader routines Not Started | The pre-v0.1.0 `policy.write` review path is owned by Policy Enforcement Mapping. Full standard administrative routines remain outside the implemented subset. |
 | Obligations | Deferred after v0.1.0 | Future `react` participation may change Policy after successful access under the defining author's current authority; issue #375 tracks it. Commit obligations such as credential injection are not NGAC post-success Policy obligations. |
-| Dynamic policy mutation | Adapter administration planned; Not Started | The evaluator receives immutable state and stays pure and synchronous. The Policy owner validates and commits new revisions outside it. |
+| Dynamic policy mutation | Native human Policy update; other adapters Not Started | The evaluator receives immutable state and stays pure and synchronous. The Policy owner validates and commits new revisions outside it. |
 | Delegated administration | Planned; Not Started | Plan approval creates a delegated Goal domain administered by the Coordinator under Permissions. This does not claim full standard delegated-administration support. |
 | Functional architecture entities | No current plan | Do not make PEP, PDP, PAP, PIP, RAP, or EPP public OpenKit product concepts unless a future product need requires it. |
 | Standards-level API and full conformance | No current plan | Do not claim complete ANSI/INCITS NGAC compatibility. Claim only the implemented NGAC subset that is verified against the standard. |
@@ -362,7 +362,7 @@ The first runtime-policy integration should map one OpenKit policy decision into
 
 ## Current Implementation Projection
 
-The current package implements the first standard-aligned subset in this spec. The approved unified mediation, agent responsibility-chain evaluation, Goal delegated-domain projection, and Policy review/update integration are Not Started; existing subset implementation does not prove them. The [unified design decision](../decisions/20261018-unified_mediation_and_policy.md) records their acceptance.
+The current package implements the first standard-aligned subset in this spec. The native I16 mediation pilot and human Policy candidate path use this subset without changing its evaluator. Agent responsibility-chain evaluation, Goal delegated-domain activation and automatic Policy review remain Not Started. Inactive declarations and shape validation do not prove these authority consumers. The [unified design decision](../decisions/20261018-unified_mediation_and_policy.md) records their acceptance.
 
 The existing subset includes:
 

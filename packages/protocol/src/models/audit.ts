@@ -1,5 +1,4 @@
 import { z } from 'zod';
-
 import {
   AgentIdSchema,
   AgentSessionIdSchema,
@@ -16,6 +15,7 @@ import {
 import { TimestampSchema } from '../common/timestamps.js';
 import { ActorRefSchema } from './actor.js';
 import { KnowledgeNotebookAdmissionSchema } from './knowledge-notebook.js';
+import { PolicyInvocationV1Schema, PolicyWriteOutcomeV1Schema } from './policy-v1.js';
 
 /**
  * Stable audit event severity values.
@@ -48,6 +48,8 @@ export const AuditEventSchema = z
     resource: z.string().min(1).nullable().default(null),
     resourceRevision: z.number().int().positive().nullable().default(null),
     notebookAdmission: KnowledgeNotebookAdmissionSchema.optional(),
+    policyInvocation: PolicyInvocationV1Schema.optional(),
+    policyWriteOutcome: PolicyWriteOutcomeV1Schema.optional(),
     outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled', 'unknown']),
     severity: AuditSeveritySchema.default('info'),
     summary: z.string().min(1),

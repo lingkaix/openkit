@@ -1,18 +1,29 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   type ActorRef,
-  ActorRefSchema,
   type AuditEvent,
   allocateEntityId,
   isEntityId,
+  type PolicyDecisionV1,
+  type PolicyInvocationV1,
+  PolicyInvocationV1Schema,
+  PolicyStatementReferenceV1Schema,
   RequestIdSchema,
   TimestampSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
+import { z } from 'zod';
 
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { BootPolicyKernel } from '../bootstrap/policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
+import {
+  PermissionDecisionRetainedV1Schema,
+  readAuditEventRowV1,
+  readPermissionDecisionRowV1,
+} from './retained-records-v1.js';
 
 /** Supported storage owner scopes for the first permission decision recorder. */
 export type PermissionDecisionOwnerScope = 'server' | 'workspace' | 'user';
@@ -90,6 +101,12 @@ export interface RecordProductPermissionDecisionInput {
   reasonCode: string;
   /** Enforcement point that produced this row. */
   enforcementPoint: string;
+  /** Exact mediated evaluation, absent on specialized records. */
+  mediation?: PolicyDecisionV1;
+  /** Gate participant evidence published on this decision's existing linked Audit. */
+  policyInvocation?: PolicyInvocationV1;
+  /** Ephemeral limits consumed by this final allowing Workspace decision. */
+  uses?: readonly { statement: PolicyDecisionV1['consumedStatements'][number]; limit: number }[];
   /** Approval kind required when applicable. */
   requiredApprovalKind?: string | null;
   /** Linked approval id when present. */
@@ -128,6 +145,8 @@ export interface ExportedWorkspacePermissionDecision {
   readonly reasonCode: string;
   /** Enforcement point that produced this row. */
   readonly enforcementPoint: string;
+  /** Exact mediated evaluation when the producer supplies it. */
+  readonly mediation?: PolicyDecisionV1 | undefined;
   /** Approval kind required when applicable. */
   readonly requiredApprovalKind: string | null;
   /** Linked approval id when present. */
@@ -164,6 +183,8 @@ export interface ServerPermissionDecisionRecord {
   readonly reasonCode: string;
   /** Enforcement point that produced this row. */
   readonly enforcementPoint: string;
+  /** Exact mediated evaluation when the producer supplies it. */
+  readonly mediation?: PolicyDecisionV1 | undefined;
   /** Approval kind required when applicable. */
   readonly requiredApprovalKind: string | null;
   /** Linked approval id when present. */
@@ -175,6 +196,7 @@ export interface ServerPermissionDecisionRecord {
 }
 
 interface PermissionDecisionRow {
+  readonly schema_version: number;
   readonly decision_id: string;
   readonly owner_scope: string;
   readonly workspace_id: string | null;
@@ -187,6 +209,7 @@ interface PermissionDecisionRow {
   readonly result: PermissionDecisionResult;
   readonly reason_code: string;
   readonly enforcement_point: string;
+  readonly mediation_json: string | null;
   readonly required_approval_kind: string | null;
   readonly approval_id: string | null;
   readonly audit_event_id: string | null;
@@ -243,35 +266,21 @@ export function listPolicyApprovalSourceDecisions(
   approvalId: string
 ): PolicyApprovalSourceDecision[] {
   const rows = workspaceDb.sqlite
-    .prepare(
-      `SELECT
-        action,
-        context_summary_json,
-        required_approval_kind,
-        resource_summary_json,
-        subject_summary_json
-      FROM permission_decisions
-      WHERE owner_scope = 'workspace'
-        AND workspace_id = ?
-        AND result = 'require_approval'
-        AND approval_id = ?
-      ORDER BY created_at, decision_id`
-    )
-    .all(workspaceId, approvalId) as Array<{
-    action: string;
-    context_summary_json: string;
-    required_approval_kind: string | null;
-    resource_summary_json: string;
-    subject_summary_json: string;
-  }>;
-
-  return rows.map((row) => ({
-    action: row.action,
-    contextSummary: JSON.parse(row.context_summary_json),
-    requiredApprovalKind: row.required_approval_kind,
-    resourceSummary: JSON.parse(row.resource_summary_json),
-    subjectSummary: JSON.parse(row.subject_summary_json),
-  }));
+    .prepare(`SELECT * FROM permission_decisions
+      WHERE owner_scope = 'workspace' AND workspace_id = ?
+        AND result = 'require_approval' AND approval_id = ?
+      ORDER BY created_at, decision_id`)
+    .all(workspaceId, approvalId);
+  return rows.map((row) => {
+    const decision = readPermissionDecisionRowV1(row);
+    return {
+      action: decision.action,
+      contextSummary: decision.contextSummary,
+      requiredApprovalKind: decision.requiredApprovalKind,
+      resourceSummary: decision.resourceSummary,
+      subjectSummary: decision.subjectSummary,
+    };
+  });
 }
 
 /**
@@ -293,54 +302,10 @@ export function readPolicyApprovalTerminalWinner(
   turnId: string
 ): PolicyApprovalTerminalWinner | null {
   const rows = workspaceDb.sqlite
-    .prepare(
-      `SELECT
-        decision.action,
-        decision.audit_event_id AS audit_event_id,
-        decision.decision_id,
-        decision.required_approval_kind,
-        decision.resource_summary_json,
-        decision.result,
-        decision.subject_summary_json,
-        audit.action AS audit_action,
-        audit.actor_json,
-        audit.audit_event_id AS linked_audit_event_id,
-        audit.occurred_at,
-        audit.outcome,
-        audit.permission_decision_id,
-        audit.request_id,
-        audit.resource AS audit_resource,
-        audit.thread_id AS audit_thread_id,
-        audit.turn_id AS audit_turn_id,
-        audit.workspace_id AS audit_workspace_id
-      FROM permission_decisions AS decision
-      LEFT JOIN audit_events AS audit
-        ON audit.audit_event_id = decision.audit_event_id
-      WHERE decision.owner_scope = 'workspace'
-        AND decision.workspace_id = ?
-        AND decision.approval_id = ?
-        AND decision.result IN ('allow', 'deny')`
-    )
-    .all(workspaceId, approvalId) as Array<{
-    action: string;
-    actor_json: string | null;
-    audit_action: string | null;
-    audit_event_id: string | null;
-    audit_resource: string | null;
-    audit_thread_id: string | null;
-    audit_turn_id: string | null;
-    audit_workspace_id: string | null;
-    decision_id: string;
-    linked_audit_event_id: string | null;
-    occurred_at: string | null;
-    outcome: string | null;
-    permission_decision_id: string | null;
-    request_id: string | null;
-    required_approval_kind: string | null;
-    resource_summary_json: string;
-    result: 'allow' | 'deny';
-    subject_summary_json: string;
-  }>;
+    .prepare(`SELECT * FROM permission_decisions
+      WHERE owner_scope = 'workspace' AND workspace_id = ?
+        AND approval_id = ? AND result IN ('allow', 'deny')`)
+    .all(workspaceId, approvalId) as PermissionDecisionRow[];
 
   if (rows.length === 0) {
     return null;
@@ -349,40 +314,42 @@ export function readPolicyApprovalTerminalWinner(
     throw new Error('Policy Approval has multiple terminal permission decisions.');
   }
 
-  const row = rows[0]!;
+  const decision = readPermissionDecisionRowV1(rows[0]);
+  const auditRow = workspaceDb.sqlite
+    .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+    .get(decision.auditEventId);
+  const audit = auditRow ? readAuditEventRowV1(auditRow) : null;
   if (
-    !row.audit_event_id ||
-    row.linked_audit_event_id !== row.audit_event_id ||
-    row.permission_decision_id !== row.decision_id ||
-    row.audit_workspace_id !== workspaceId ||
-    row.audit_thread_id !== threadId ||
-    row.audit_turn_id !== turnId ||
-    row.audit_action !== 'permission.decision' ||
-    row.audit_resource !== `permission:${row.action}` ||
-    row.outcome !== (row.result === 'allow' ? 'succeeded' : 'denied') ||
-    !row.required_approval_kind ||
-    !row.actor_json ||
-    !row.request_id ||
-    !row.occurred_at
+    !decision.auditEventId ||
+    !audit ||
+    audit.id !== decision.auditEventId ||
+    audit.permissionDecisionId !== decision.decisionId ||
+    audit.workspaceId !== workspaceId ||
+    audit.threadId !== threadId ||
+    audit.turnId !== turnId ||
+    audit.action !== 'permission.decision' ||
+    audit.resource !== `permission:${decision.action}` ||
+    audit.outcome !== (decision.result === 'allow' ? 'succeeded' : 'denied') ||
+    !decision.requiredApprovalKind ||
+    !audit.actor ||
+    !audit.requestId ||
+    !audit.occurredAt
   ) {
     throw new Error('Policy Approval terminal decision has incomplete Audit linkage.');
   }
-
-  const actor = ActorRefSchema.parse(JSON.parse(row.actor_json));
-  if (actor.kind !== 'user') {
+  if (audit.actor.kind !== 'user') {
     throw new Error('Policy Approval terminal Audit actor must be a user.');
   }
-
   return {
-    action: row.action,
-    actor,
-    decidedAt: TimestampSchema.parse(row.occurred_at),
-    decisionId: row.decision_id,
-    requiredApprovalKind: row.required_approval_kind,
-    requestId: RequestIdSchema.parse(row.request_id),
-    resourceSummary: JSON.parse(row.resource_summary_json),
-    result: row.result,
-    subjectSummary: JSON.parse(row.subject_summary_json),
+    action: decision.action,
+    actor: audit.actor,
+    decidedAt: TimestampSchema.parse(audit.occurredAt),
+    decisionId: decision.decisionId,
+    requiredApprovalKind: decision.requiredApprovalKind,
+    requestId: RequestIdSchema.parse(audit.requestId),
+    resourceSummary: decision.resourceSummary,
+    result: decision.result as 'allow' | 'deny',
+    subjectSummary: decision.subjectSummary,
   };
 }
 
@@ -477,12 +444,87 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
   const createdAt = now.toISOString();
   const sqlite = permissionDecisionDb(input);
   const auditEventId = permissionDecisionAuditEventId(input);
+  const retained = writeRetainedV1(input);
+  const mediation = PermissionDecisionRetainedV1Schema.parse({
+    ...input,
+    workspaceId: input.workspaceId ?? null,
+    requiredApprovalKind: input.requiredApprovalKind ?? null,
+    approvalId: input.approvalId ?? null,
+    auditEventId,
+    createdAt,
+  }).mediation;
+  const policyInvocation =
+    input.policyInvocation === undefined
+      ? undefined
+      : PolicyInvocationV1Schema.parse(input.policyInvocation);
+  if (
+    policyInvocation &&
+    (mediation?.role !== 'gate' ||
+      policyInvocation.mode !== 'gate' ||
+      input.auditEventId ||
+      !auditEventId ||
+      policyInvocation.point !== mediation.point ||
+      policyInvocation.policyRevision !== mediation.policyRevision ||
+      policyInvocation.authorizationRevision !== mediation.authorizationRevision ||
+      policyInvocation.proposalDigest !== mediation.proposalDigest ||
+      !isDeepStrictEqual(policyInvocation.binding, mediation.binding) ||
+      !isDeepStrictEqual(policyInvocation.subject, mediation.subject) ||
+      policyInvocation.capabilityCallId !==
+        optionalStringField(input.contextSummary, 'capabilityCallId'))
+  )
+    throw new Error('Gate Policy invocation must match its decision and atomic linked Audit.');
+  const uses =
+    input.uses === undefined
+      ? []
+      : z
+          .array(
+            z
+              .object({
+                statement: PolicyStatementReferenceV1Schema,
+                limit: z.number().int().positive(),
+              })
+              .strict()
+          )
+          .min(1)
+          .parse(input.uses);
+  if (uses.length || (mediation?.consumedStatements.length ?? 0)) {
+    if (
+      input.ownerScope !== 'workspace' ||
+      !input.workspaceDb ||
+      input.workspaceId !== input.workspaceDb.workspaceId ||
+      mediation?.role !== 'final' ||
+      input.result !== 'allow' ||
+      mediation.kernel?.effect !== 'allow' ||
+      input.auditEventId ||
+      (mediation.subject.process !== null &&
+        mediation.subject.process.workspaceId !== input.workspaceId)
+    )
+      throw new Error(
+        'Finite Policy uses require a final Workspace allow and atomic linked Audit.'
+      );
+    const requested = uses
+      .map(({ statement }) => JSON.stringify([statement.id, statement.digest]))
+      .sort();
+    const consumed = mediation.consumedStatements
+      .map(({ id, digest }) => JSON.stringify([id, digest]))
+      .sort();
+    if (
+      new Set(requested).size !== requested.length ||
+      JSON.stringify(requested) !== JSON.stringify(consumed)
+    )
+      throw new Error('Consumed Policy statements must exactly match requested finite-use limits.');
+  }
 
-  sqlite.transaction(() => {
+  const publish = sqlite.transaction(() => {
+    for (const { statement, limit } of uses) {
+      if (readPolicyStatementUseCount(input.workspaceDb!, statement) >= limit)
+        throw new Error('Policy statement use limit is exhausted.');
+    }
     sqlite
       .prepare(
         `INSERT INTO permission_decisions (
           decision_id,
+          schema_version,
           owner_scope,
           workspace_id,
           policy_engine_version,
@@ -494,14 +536,16 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.decisionId,
+        retained.schemaVersion,
         input.ownerScope,
         input.workspaceId ?? null,
         input.policyEngineVersion,
@@ -513,6 +557,7 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         input.result,
         input.reasonCode,
         input.enforcementPoint,
+        mediation === undefined ? null : JSON.stringify(mediation),
         input.requiredApprovalKind ?? null,
         input.approvalId ?? null,
         auditEventId,
@@ -531,11 +576,13 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
+        capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
         errorCode: permissionAuditErrorCode(input),
         itemId: optionalStringField(input.contextSummary, 'itemId'),
         now,
         outcome: permissionAuditOutcome(input.result),
         permissionDecisionId: input.decisionId,
+        ...(policyInvocation === undefined ? {} : { policyInvocation }),
         requestId: optionalStringField(input.contextSummary, 'requestId'),
         resource: `permission:${input.action}`,
         severity: permissionAuditSeverity(input.result),
@@ -552,12 +599,14 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         actor: input.auditActor ?? null,
         auditEventId,
         category: 'approval',
+        capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
         errorCode: permissionAuditErrorCode(input),
         itemId: optionalStringField(input.contextSummary, 'itemId'),
         coreDb: input.coreDb,
         now,
         outcome: permissionAuditOutcome(input.result),
         permissionDecisionId: input.decisionId,
+        ...(policyInvocation === undefined ? {} : { policyInvocation }),
         requestId: optionalStringField(input.contextSummary, 'requestId'),
         resource: `permission:${input.action}`,
         severity: permissionAuditSeverity(input.result),
@@ -566,7 +615,31 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
         turnId: optionalStringField(input.contextSummary, 'turnId'),
       });
     }
-  })();
+  });
+  if (uses.length) publish.immediate();
+  else publish();
+}
+
+/** Counts exact statement consumption from immutable final allows in this Workspace owner. */
+export function readPolicyStatementUseCount(
+  workspaceDb: WorkspaceDb,
+  reference: PolicyDecisionV1['consumedStatements'][number]
+): number {
+  const statement = PolicyStatementReferenceV1Schema.parse(reference);
+  const rows = workspaceDb.sqlite
+    .prepare(`SELECT * FROM permission_decisions
+    WHERE owner_scope = 'workspace' AND workspace_id = ? AND result = 'allow'`)
+    .all(workspaceDb.workspaceId);
+  return rows
+    .map(readPermissionDecisionRowV1)
+    .filter(
+      ({ mediation }) =>
+        mediation?.role === 'final' &&
+        mediation.kernel?.effect === 'allow' &&
+        mediation.consumedStatements.some(
+          ({ id, digest }) => id === statement.id && digest === statement.digest
+        )
+    ).length;
 }
 
 /**
@@ -585,6 +658,7 @@ export function listExportableWorkspacePermissionDecisions(
       .prepare(
         `SELECT
           decision_id,
+          schema_version,
           owner_scope,
           workspace_id,
           policy_engine_version,
@@ -596,6 +670,7 @@ export function listExportableWorkspacePermissionDecisions(
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
@@ -620,6 +695,7 @@ export function listServerPermissionDecisions(coreDb: CoreDb): ServerPermissionD
       .prepare(
         `SELECT
           decision_id,
+          schema_version,
           owner_scope,
           workspace_id,
           policy_engine_version,
@@ -631,6 +707,7 @@ export function listServerPermissionDecisions(coreDb: CoreDb): ServerPermissionD
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
@@ -653,7 +730,9 @@ export function importWorkspacePermissionDecisions(
   workspaceDb: WorkspaceDb,
   decisions: readonly ExportedWorkspacePermissionDecision[]
 ): void {
-  for (const decision of decisions) {
+  for (const source of decisions) {
+    const decision = PermissionDecisionRetainedV1Schema.parse(source);
+    const retained = writeRetainedV1(decision);
     if (decision.ownerScope !== 'workspace' || !decision.workspaceId) {
       throw new Error('Workspace permission decision import record must be workspace-scoped.');
     }
@@ -662,6 +741,7 @@ export function importWorkspacePermissionDecisions(
       .prepare(
         `INSERT OR IGNORE INTO permission_decisions (
           decision_id,
+          schema_version,
           owner_scope,
           workspace_id,
           policy_engine_version,
@@ -673,14 +753,16 @@ export function importWorkspacePermissionDecisions(
           result,
           reason_code,
           enforcement_point,
+          mediation_json,
           required_approval_kind,
           approval_id,
           audit_event_id,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         decision.decisionId,
+        retained.schemaVersion,
         decision.ownerScope,
         decision.workspaceId,
         decision.policyEngineVersion,
@@ -692,6 +774,7 @@ export function importWorkspacePermissionDecisions(
         decision.result,
         decision.reasonCode,
         decision.enforcementPoint,
+        decision.mediation === undefined ? null : JSON.stringify(decision.mediation),
         decision.requiredApprovalKind,
         decision.approvalId,
         decision.auditEventId,
@@ -781,28 +864,11 @@ function optionalStringField(value: unknown, field: string): string | null {
  * @returns Exportable workspace permission decision.
  */
 function mapPermissionDecisionRow(row: PermissionDecisionRow): ExportedWorkspacePermissionDecision {
-  if (row.owner_scope !== 'workspace' || !row.workspace_id) {
+  const decision = readPermissionDecisionRowV1(row);
+  if (decision.ownerScope !== 'workspace' || !decision.workspaceId) {
     throw new Error('Exported permission decision row must be workspace-scoped.');
   }
-
-  return {
-    action: row.action,
-    approvalId: row.approval_id,
-    auditEventId: row.audit_event_id,
-    contextSummary: JSON.parse(row.context_summary_json) as unknown,
-    createdAt: row.created_at,
-    decisionId: row.decision_id,
-    enforcementPoint: row.enforcement_point,
-    ownerScope: 'workspace',
-    policyEngineVersion: row.policy_engine_version,
-    policySnapshotId: row.policy_snapshot_id,
-    reasonCode: row.reason_code,
-    requiredApprovalKind: row.required_approval_kind,
-    resourceSummary: JSON.parse(row.resource_summary_json) as unknown,
-    result: row.result,
-    subjectSummary: JSON.parse(row.subject_summary_json) as unknown,
-    workspaceId: row.workspace_id,
-  };
+  return { ...decision, ownerScope: 'workspace', workspaceId: decision.workspaceId };
 }
 
 /**
@@ -814,28 +880,11 @@ function mapPermissionDecisionRow(row: PermissionDecisionRow): ExportedWorkspace
 function mapServerPermissionDecisionRow(
   row: PermissionDecisionRow
 ): ServerPermissionDecisionRecord {
-  if (row.owner_scope !== 'server' || row.workspace_id !== null) {
+  const decision = readPermissionDecisionRowV1(row);
+  if (decision.ownerScope !== 'server' || decision.workspaceId !== null) {
     throw new Error('Server permission decision row must be server-scoped.');
   }
-
-  return {
-    action: row.action,
-    approvalId: row.approval_id,
-    auditEventId: row.audit_event_id,
-    contextSummary: JSON.parse(row.context_summary_json) as unknown,
-    createdAt: row.created_at,
-    decisionId: row.decision_id,
-    enforcementPoint: row.enforcement_point,
-    ownerScope: 'server',
-    policyEngineVersion: row.policy_engine_version,
-    policySnapshotId: row.policy_snapshot_id,
-    reasonCode: row.reason_code,
-    requiredApprovalKind: row.required_approval_kind,
-    resourceSummary: JSON.parse(row.resource_summary_json) as unknown,
-    result: row.result,
-    subjectSummary: JSON.parse(row.subject_summary_json) as unknown,
-    workspaceId: null,
-  };
+  return { ...decision, ownerScope: 'server', workspaceId: null };
 }
 
 /**
@@ -938,11 +987,16 @@ export function recordBootPolicySelfCheckDecisions(
   ] as const;
   // Both decisions and Audit share this existing Core authority and rollback boundary.
   input.coreDb.sqlite.transaction(() => {
-    const existingRows = input.coreDb.sqlite
+    const bootRows = input.coreDb.sqlite
       .prepare(`SELECT * FROM permission_decisions
       WHERE owner_scope = 'server' AND enforcement_point = 'boot.policy.self_check'
-        AND json_extract(context_summary_json, '$.bootId') = ?`)
-      .all(input.bootId) as PermissionDecisionRow[];
+      `)
+      .all() as PermissionDecisionRow[];
+    const existingRows = bootRows.filter(
+      (row) =>
+        optionalStringField(readPermissionDecisionRowV1(row).contextSummary, 'bootId') ===
+        input.bootId
+    );
     if (existingRows.length !== 0 && existingRows.length !== requests.length)
       throw new Error('Boot policy self-check record is contradictory.');
     for (const request of requests) {
@@ -960,6 +1014,14 @@ export function recordBootPolicySelfCheckDecisions(
         const linkedAudit = input.coreDb.sqlite
           .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
           .get(row.audit_event_id) as Record<string, unknown> | undefined;
+        if (linkedAudit) {
+          try {
+            readAuditEventRowV1(linkedAudit);
+          } catch {
+            // Boot owns the pair's corruption diagnostic; a failed retained read still blocks retry.
+            throw new Error('Boot policy self-check record is contradictory.');
+          }
+        }
         // Compare the known immutable core and leave additive storage columns untouched.
         const expectedAudit = {
           audit_event_id: row.audit_event_id,
