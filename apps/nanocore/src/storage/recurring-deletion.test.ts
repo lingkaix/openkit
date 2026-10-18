@@ -110,6 +110,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
         schedules: before[0],
         occurrences: before[1],
         expiredRanges: before[2],
+        externalAdmissions: [],
       },
     ]);
     const audit = readFileSync(join(root, 'records', 'core-audit-events.jsonl'), 'utf8');

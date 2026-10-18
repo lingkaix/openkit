@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http';
 export interface CapabilityHit {
   readonly authorization: string | null;
   readonly method: string;
+  readonly params?: unknown;
   readonly serverId: string;
 }
 
@@ -18,11 +19,14 @@ export interface SyntheticCapability {
 }
 
 /**
- * Starts a loopback Streamable HTTP MCP server. Each server id exposes one `echo-<id>` tool.
+ * Starts a loopback Streamable HTTP MCP server. By default, each server exposes one `echo-<id>` tool.
  *
+ * @param tools Optional descriptors in place of the default parameterless echo tool.
  * @returns The server, its origin, and every captured call.
  */
-export async function startSyntheticCapability(): Promise<SyntheticCapability> {
+export async function startSyntheticCapability(
+  tools?: readonly { readonly name: string; readonly inputSchema: Record<string, unknown> }[]
+): Promise<SyntheticCapability> {
   const hits: CapabilityHit[] = [];
   const endpoint = {
     close: async () => {
@@ -36,8 +40,11 @@ export async function startSyntheticCapability(): Promise<SyntheticCapability> {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
-      const serverId = req.url?.split('/').filter(Boolean).at(-1) ?? '';
-      let message: { id?: unknown; method?: string } = {};
+      // Native CodeMode appends a query; production routing identifies servers by pathname.
+      const serverId =
+        new URL(req.url ?? '/', 'http://127.0.0.1').pathname.split('/').filter(Boolean).at(-1) ??
+        '';
+      let message: { id?: unknown; method?: string; params?: unknown } = {};
       try {
         message = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as typeof message;
       } catch {
@@ -47,6 +54,7 @@ export async function startSyntheticCapability(): Promise<SyntheticCapability> {
       hits.push({
         authorization: typeof authorization === 'string' ? authorization : null,
         method: message.method ?? req.method ?? '',
+        ...(message.method === 'tools/call' ? { params: message.params } : {}),
         serverId,
       });
       if (message.id === undefined) {
@@ -64,7 +72,7 @@ export async function startSyntheticCapability(): Promise<SyntheticCapability> {
         };
       } else if (message.method === 'tools/list') {
         result = {
-          tools: [
+          tools: tools ?? [
             {
               description: 'echo',
               inputSchema: { properties: {}, type: 'object' },

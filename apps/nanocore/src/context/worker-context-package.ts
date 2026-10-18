@@ -612,6 +612,8 @@ export interface CreateWorkerContextPackageFilesInput {
   readonly includedItemIds: readonly string[];
   /** Explicit maximum worker context budget. */
   readonly contextBudgetTokens: number;
+  /** Bounded scope indexes with pinned revisions, already admitted by the Knowledge reader. */
+  readonly knowledgeOverview?: string | undefined;
   /** Exact governed Knowledge page bytes selected for delivery. */
   readonly knowledgeSelections?: readonly WorkerContextPackageKnowledgeSelectionInput[];
   /** Exact included Material revision candidates. */
@@ -721,6 +723,12 @@ export function createWorkerContextPackageFiles(
   const ordinaryFiles: WorkerContextPackageFile[] = [
     { path: 'instructions.md', bytes: Buffer.from(input.workerRequestBytes, 'utf8') },
   ];
+  if (input.knowledgeOverview) {
+    ordinaryFiles.push({
+      path: 'knowledge-overview.md',
+      bytes: Buffer.from(input.knowledgeOverview, 'utf8'),
+    });
+  }
   for (const selection of knowledgeInputs) {
     assertKnowledgePageId(selection.knowledgePageId, 'Knowledge page id');
     const sourceRefs = [...new Set(selection.sourceRefs)].sort(compareBytewise);

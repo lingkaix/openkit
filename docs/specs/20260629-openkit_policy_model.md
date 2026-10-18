@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 kind: mechanism
 ---
 # OpenKit Policy Model
@@ -156,13 +156,15 @@ A policy element is a typed node in the authorization graph. Kernel-internal pol
 
 The standard-aligned kernel target supports these element kinds:
 
-- `user`: an authenticated human, service identity, automation identity, or product actor mapped into NGAC user semantics.
+- `user`: an identified principal, including a human, agent, service identity, automation identity, or product actor mapped into NGAC user semantics.
 - `object`: a protected resource instance.
 - `userAttribute`: a container for users or other user attributes.
 - `objectAttribute`: a container for objects or other object attributes.
 - `policyClass`: a trust domain or policy boundary.
 
-Processes are not policy elements. When a product request has process context, adapters MUST represent it through NGAC process-to-user facts and process-scoped restrictions rather than assigning a process into the policy element graph. The terms `userAttribute` and `objectAttribute` are inherited from NGAC. OpenKit-facing adapters may project friendlier names such as subject group, capability group, resource group, trust domain, or policy domain.
+An agent Turn supplies the actual process context for the evaluated principal. A direct User request may omit process context; adapters MUST NOT invent a Turn. Processes are not policy elements. When a product request has process context, adapters MUST represent it through NGAC process-to-user facts and process-scoped restrictions rather than assigning a process into the policy element graph. The terms `userAttribute` and `objectAttribute` are inherited from NGAC. OpenKit-facing adapters may project friendlier names such as subject group, capability group, resource group, trust domain, or policy domain.
+
+For an agent principal, request facts MUST resolve the responsibility chain defined by [Permissions](../core/permissions.md#subject). The Kernel MUST check that its terminal human remains current and authorized over the domain. A broken or no-longer-authorized chain suspends the agent's grants until human reassignment. This check supplies no inherited human rights and does not change the process-to-user relation.
 
 ### Assignment
 
@@ -222,7 +224,7 @@ OpenKit adapters may map a kernel decision plus product policy requirements into
 
 ### Decision Trace
 
-A decision trace explains why a request was allowed or denied. It records the subject closure, object closure, matching associations, matching prohibitions, and reason codes.
+A decision trace explains why a request was allowed or denied. It records the subject closure, object closure, matching associations, matching prohibitions, and reason codes. Missing privilege and a matching prohibition MUST remain distinguishable as `not_granted` and `prohibited`. The product adapter preserves `require_approval` as a separate requirement reason; the Kernel does not emit a product approval result.
 
 Decision traces are required for development, tests, audit projection, and future support tooling. Product APIs must redact traces before exposing them to users or agents.
 
@@ -237,10 +239,12 @@ Decision traces are required for development, tests, audit projection, and futur
 | Prohibitions | Implement now | Implement user, process, and user-attribute restrictions over access rights with conjunctive and disjunctive attribute ranges. |
 | Policy classes | Implement now | Represent as elements and implement the NGAC policy-class semantics required for derived privileges. |
 | Access request decision function | Implement now | Evaluate process or user, operation, object or policy element, required access rights, privileges, restrictions, and trace. |
-| Administrative operations | Document and defer | Do not implement full admin routines until product policy administration needs them. |
-| Obligations | Model and defer | Reserve the concept for event-triggered audit, Action Center, cleanup, and temporary grant workflows, but do not mutate policy state automatically in the first package. |
-| Dynamic policy mutation | Defer | Policy state is caller-supplied and immutable from the evaluator's perspective. |
-| Delegated administration | Defer | Future team and organization work may need this. |
+| Process context | Existing subset; Goal projection Not Started | Map the actual process to the evaluated principal's NGAC user element, outside the policy-element graph. Record the responsible human separately for accountability; that identity supplies no inherited rights. |
+| Agent principal accountability | Planned; Not Started | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Permissions; suspend grants on failure until human reassignment. |
+| Administrative operations | Planned; Not Started | The pre-v0.1.0 `policy.write` review path is owned by Policy Enforcement Mapping. Full standard administrative routines remain outside the implemented subset. |
+| Obligations | Deferred after v0.1.0 | Future `react` participation may change Policy after successful access under the defining author's current authority; issue #375 tracks it. Commit obligations such as credential injection are not NGAC post-success Policy obligations. |
+| Dynamic policy mutation | Adapter administration planned; Not Started | The evaluator receives immutable state and stays pure and synchronous. The Policy owner validates and commits new revisions outside it. |
+| Delegated administration | Planned; Not Started | Plan approval creates a delegated Goal domain administered by the Coordinator under Permissions. This does not claim full standard delegated-administration support. |
 | Functional architecture entities | No current plan | Do not make PEP, PDP, PAP, PIP, RAP, or EPP public OpenKit product concepts unless a future product need requires it. |
 | Standards-level API and full conformance | No current plan | Do not claim complete ANSI/INCITS NGAC compatibility. Claim only the implemented NGAC subset that is verified against the standard. |
 
@@ -358,7 +362,9 @@ The first runtime-policy integration should map one OpenKit policy decision into
 
 ## Current Implementation Projection
 
-The current package implements the first standard-aligned subset in this spec:
+The current package implements the first standard-aligned subset in this spec. The approved unified mediation, agent responsibility-chain evaluation, Goal delegated-domain projection, and Policy review/update integration are Not Started; existing subset implementation does not prove them. The [unified design decision](../decisions/20261018-unified_mediation_and_policy.md) records their acceptance.
+
+The existing subset includes:
 
 - `packages/policy-kernel` exists as `@openkit/policy-kernel`.
 - The current package implements typed NGAC policy elements, assignments, associations, operation-to-access-right mappings, user/process/user-attribute prohibitions, process-to-user mappings, access requests, allow or deny decisions, and structural traces.
@@ -382,4 +388,5 @@ The Runtime Epoch and stock RelayStream plus nested standard HTTP/2 transport ar
 - Add NanoCore enforcement-point integration through `PermissionDecision` records.
 - Add product-safe trace redaction helpers.
 - Add indexes for higher-volume policy evaluation paths.
-- Add administrative policy update APIs only after product policy administration needs are explicit.
+- Implement the accepted pre-v0.1.0 Policy review/update path through the existing enforcement owner. Keep administration outside the pure evaluator.
+- Defer NGAC-style post-success Policy obligations and `react` until after v0.1.0 under issue #375. Do not claim complete NGAC conformance.

@@ -52,3 +52,30 @@ Four Skill files and the existing top-level guide are authored; no Skill-interna
 Local evidence must cover Skill metadata, self-contained reference links, declared operation identities and existing complete operations Skill interface/redaction/archive suites, plus the lane local gate. No production module changed. The dev probe separately proves actual grounded KM work, retained outputs, human decisions, native Skill consumption, approved fake effect, audit joins and next-case comparison. Gateway lacks a dedicated proposal/review operation. No aggregate Skill comparison operation is present, but ordinary exact-version Turns and artifact.review.select on existing output Reviews provide the bounded human comparison/choice path. No aggregate mechanism is required or added. The KM fix and live journey are outstanding dependencies/proof, not successful results.
 
 Complexity: six authored/updated files, no owning document changed, no registry or closed set added. Existing work, Skill, Kernel, Knowledge and approval owners are consumed without changing their contracts.
+
+## Intent Revision 3 — BWM Support Text
+
+After R093 landed, the coordinator assigned the engineer-approved 2026-10-18 03:58Z text change. A domain Skill, Gateway rules and typed OKF Knowledge remain the required proposals. A Light App proposal is optional and limited to glue instance data that no external system owns. Cross-system links retain their match basis as ordinary fields; cross-system work progress may also be local. Concept, role and relationship definitions belong to Knowledge Entity/Topic pages or the domain Skill. General knowledge receives no business model. Knowledge output uses existing base types plus proposed Scope Schema domain types for human review; Rule pages declare applies_to. Safety-critical execution rules belong in the pinned domain Skill. This text consumes the existing Kernel, Knowledge and Skill owners; it adds no product code or mechanism.
+
+## Support Text Ablation
+
+- SKILL.md, intake.md, proposals.md and the top-level guide replace the mandatory Light App with conditional glue data, because the source systems already own the business records.
+- The Knowledge proposal changes from untyped prose to typed OKF pages and human-reviewed Scope Schema proposals, because rules need a tool/step lookup target and effects need their basis and last check.
+- Domain Skill guidance includes safety-critical execution rules in the pinned bytes, because a case must receive these rules without relying on a successful Knowledge retrieval.
+
+The existing Goal Plan, separate human decisions, exact catalog versions, captured effect approval and candidate-to-v2 selection loop keep their owners. improvement.md is unchanged. The external B01 probe follows the conditional schema output; live KM and workflow evidence remain separate from this text landing.
+
+## Intent Revision 4 — Workspace Onboarding
+
+The coordinator approved the 12-line onboarding plan on 2026-10-18 at 12:00Z, including the engineer's push-versus-pull and domain Skill boundary addenda. The human creates an empty Workspace and approves the onboarding Goal Plan. The Meta-Skill prepares role Skills, Knowledge, system connections and tool rules, zero or more needed glue apps and supported recurring work for separate human adoption. Pinned Skills push frequent or costly execution rules; Knowledge supplies retrieved reference information. Every costly rule names an independent decision-point check. Domain Skill Markdown states responsibility, authority, information access and per-action rules, evidence, effects and side effects, consistently with Policy/tool rules and Knowledge references. No new schema or product capability is authorized by this content.
+
+The external restaurant-group intake tests non-case work with synthetic files only. Human reviews of setup outputs and a fixed downstream task set use existing records for outcomes, corrections, Turns, usage, time, approvals, denials and escalations. A corrected Meta-Skill uses existing exact-version candidate and selection paths in fresh Workspaces; the human chooses. Unsupported checks, formal rule-review adoption, missing evidence joins or required connector/write-back capabilities go to the rc.12 gap list. The full loop runs in rc.11 on final formats; this additive text may land before the pre-reset cut.
+
+## Onboarding Text Ablation
+
+- The empty-Workspace checklist and connection proposals cover setup that the existing-case entry cannot perform; actual creation and configuration retain their existing human authority.
+- Distinct role Skills, push/pull placement, boundary and information-map sections make the instructions needed at execution available in the selected Skill. Independent checks address costly errors that pushed text alone cannot enforce.
+- Multiple optional glue apps and report, analysis, content and recurring-work proposals cover work outside one admissions case without relocating external truth or adding a runner.
+- Existing-record measurement and fresh-Workspace v1/v2 comparison expose setup quality and downstream authority mismatches without an evaluator, score or new durable record.
+
+Verification remains metadata, reference/operation inspection, complete Skill interface/redaction/archive suites, the exact lane gate and independent Sol review. The synthetic files and text are not live acceptance. No product module, public contract, generated API/CLI, Web code, schema or registry changes.

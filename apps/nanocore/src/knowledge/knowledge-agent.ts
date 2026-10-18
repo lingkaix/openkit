@@ -18,13 +18,15 @@ import { OperationError } from '../operation-error.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import {
   admitKnowledgeRetrieval,
+  admitUserMemoryRetrieval,
   canReadServerKnowledge,
   knowledgeSourceAudienceReadable,
   readAuthorizedServerNotebookPages,
+  readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
+import { retrieveUserMemory, retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { AuthorizedHistory } from './notebook-history.js';
 import {
@@ -32,12 +34,15 @@ import {
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
 } from './okf.js';
+import { readUserKnowledgeSource } from './scoped-knowledge-sources.js';
 import { listServerKnowledgeSources, readServerKnowledgeSource } from './server-knowledge-owner.js';
 
 /** Trusted query context remains that of the asker, separate from the Knowledge Manager work Turn. */
 export interface KnowledgeAgentQuestion {
   readonly workspaceId: string;
   readonly question: string;
+  /** Trusted native Assistant assembly only; Memory remains a separate private query. */
+  readonly source?: 'memory';
   readonly caller: 'internal-agent' | 'worker' | 'app-api';
   readonly access: KnowledgeRetrievalAccess;
   readonly capabilityCallId?: string;
@@ -112,8 +117,13 @@ export async function askKnowledgeAgent(
   const userId = responsibleUserIdForActor(input.access.actor);
   if (!dataRoot || !userId || !input.access.coreDb)
     throw new Error('Knowledge query owner is unavailable.');
+  const memory = input.source === 'memory';
   const target = { dataRoot, workspaceId: input.workspaceId, access: input.access };
-  admitKnowledgeRetrieval(target);
+  if (memory) {
+    if (input.caller === 'worker' || !input.access.userDb)
+      throw new OperationError('memory_access_denied', 'Memory retrieval access denied.', 403);
+    admitUserMemoryRetrieval(target);
+  } else admitKnowledgeRetrieval(target);
   const parent = input.access.outputThreadId
     ? store.getThread(input.workspaceId, input.access.outputThreadId)
     : undefined;
@@ -122,7 +132,7 @@ export async function askKnowledgeAgent(
     'Knowledge question',
     undefined,
     'knowledge-manager',
-    parent?.visibility === 'workspace'
+    !memory && parent?.visibility === 'workspace'
       ? { visibility: 'workspace' }
       : { visibility: 'private', privateOwnerUserId: userId }
   );
@@ -146,6 +156,16 @@ export async function askKnowledgeAgent(
       outputTurnId: input.access.outputThreadId ? input.access.outputTurnId : turn.id,
     };
     const bound = { ...target, access };
+    // Initial Memory admission fixes these exact self handles and private Timeline; the model cannot replace them.
+    const memoryAccess = memory
+      ? {
+          ...access,
+          coreDb: input.access.coreDb,
+          userDb: access.userDb!,
+          requestActor: access.requestActor!,
+          outputThreadId: access.outputThreadId!,
+        }
+      : undefined;
     // Retrieval keeps its existing trusted caller classes; the KM Turn owns role accounting.
     const retrievalCaller =
       input.caller === 'worker'
@@ -153,38 +173,75 @@ export async function askKnowledgeAgent(
         : input.caller === 'internal-agent'
           ? 'assistant'
           : 'app-api';
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
-    });
-    const baseRevision = notebook.publishedRevision();
+    const notebook = memory
+      ? undefined
+      : new KnowledgeNotebook({
+          repositoryPath: join(
+            dataRoot,
+            'workspaces',
+            input.workspaceId,
+            'knowledge',
+            'notebook.git'
+          ),
+        });
+    const baseRevision = notebook
+      ? notebook.publishedRevision()
+      : readAuthorizedUserMemoryPages({ ...bound, pageIds: [] }).notebookRevision;
     const pinned = { ...bound, notebookRevision: baseRevision };
-    const overviewPage = readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'] })
-      .pages[0];
-    if (!overviewPage) throw new Error('Knowledge overview is unavailable.');
+    const overviewPage = memory
+      ? undefined
+      : readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'] }).pages[0];
+    if (!memory && !overviewPage) throw new Error('Knowledge overview is unavailable.');
     const candidates = new Map<string, KnowledgeRetrievalCandidate>();
-    const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage.content });
+    const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage?.content ?? '' });
     const workspaceIndexId = `page/workspace/${input.workspaceId}/index`;
-    candidates.set(workspaceIndexId, {
-      reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: 'index' },
-      revision: baseRevision,
-      contentDigest: overviewPage.contentDigest,
-      score: 0,
-      sourceReferences: navigation.document
-        ? (stringListFrontmatterField(navigation.document, 'source_refs') ?? [])
-        : [],
-    });
+    if (overviewPage)
+      candidates.set(workspaceIndexId, {
+        reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: 'index' },
+        revision: baseRevision,
+        contentDigest: overviewPage.contentDigest,
+        score: 0,
+        sourceReferences: navigation.document
+          ? (stringListFrontmatterField(navigation.document, 'source_refs') ?? [])
+          : [],
+      });
     const read = new Map<string, { candidate: KnowledgeRetrievalCandidate; content: string }>();
     const readSources = new Map<string, { pageId: string; sourceId: string; digest: string }>();
     const serverContext = {
       coreDb: input.access.coreDb,
       actor: access.serverKnowledgeActor ?? access.requestActor,
     };
-    const serverAdmitted = canReadServerKnowledge({ access });
+    const serverAdmitted = !memory && canReadServerKnowledge({ access });
     let serverRevision: string | undefined;
     let serverUnavailable = false;
-    const overviews = [
-      { source: 'workspace', ...overviewProjection(overviewPage, workspaceIndexId, baseRevision) },
-    ];
+    // An unavailable overview is not evidence of an empty corpus.
+    const overviews = overviewPage
+      ? [
+          {
+            source: 'workspace',
+            ...overviewProjection(overviewPage, workspaceIndexId, baseRevision),
+          },
+        ]
+      : [];
+    let memoryOverviewUnavailable = false;
+    if (memory) {
+      try {
+        const page = readAuthorizedUserMemoryPages({ ...pinned, pageIds: ['index'] }).pages[0];
+        if (!page) throw new Error('Memory overview is unavailable.');
+        const pageId = `page/user/${userId}/index`;
+        overviews.push({ source: 'memory', ...overviewProjection(page, pageId, baseRevision) });
+        candidates.set(pageId, {
+          reference: { scopeId: `page/user/${userId}`, objectId: 'index' },
+          revision: baseRevision,
+          contentDigest: page.contentDigest,
+          score: 0,
+          sourceReferences: [],
+        });
+      } catch {
+        // Reserved navigation can be unavailable while governed Memory page retrieval remains usable.
+        memoryOverviewUnavailable = true;
+      }
+    }
     if (serverAdmitted) {
       try {
         const server = readAuthorizedServerNotebookPages({ ...bound, pageIds: ['index'] });
@@ -219,12 +276,24 @@ export async function askKnowledgeAgent(
         pageIds: selection.map((page) => page.reference.objectId),
       };
       return (
-        candidate.reference.scopeId === 'page/server'
-          ? readAuthorizedServerNotebookPages(selected)
-          : readAuthorizedWorkspaceNotebookPages(selected)
+        memory
+          ? readAuthorizedUserMemoryPages(selected)
+          : candidate.reference.scopeId === 'page/server'
+            ? readAuthorizedServerNotebookPages(selected)
+            : readAuthorizedWorkspaceNotebookPages(selected)
       ).pages;
     };
     const currentSource = (candidate: KnowledgeRetrievalCandidate, sourceId: string) => {
+      if (memoryAccess)
+        return readUserKnowledgeSource(
+          {
+            coreDb: memoryAccess.coreDb,
+            userDb: memoryAccess.userDb,
+            actor: memoryAccess.requestActor,
+          },
+          sourceId,
+          'model'
+        );
       if (candidate.reference.scopeId === 'page/server')
         return readServerKnowledgeSource(serverContext, sourceId);
       if (!knowledgeSourceAudienceReadable(bound, sourceId)) return null;
@@ -235,7 +304,8 @@ export async function askKnowledgeAgent(
     const assertCallerCurrent = () => {
       input.assertCurrent?.();
       input.signal.throwIfAborted();
-      admitKnowledgeRetrieval(bound);
+      if (memory) admitUserMemoryRetrieval(bound);
+      else admitKnowledgeRetrieval(bound);
     };
     const assertCurrent = () => {
       assertCallerCurrent();
@@ -270,21 +340,25 @@ export async function askKnowledgeAgent(
     const tools: AgentTool[] = [
       {
         name: 'knowledge.retrieval',
-        description:
-          'Search the Workspace and currently admitted Server Knowledge separately. Read selected scope-qualified pageIds before citing them. Source rankings are independent.',
+        description: memory
+          ? 'Search only current User Memory. Read selected scope-qualified pageIds before citing them.'
+          : 'Search the Workspace and currently admitted Server Knowledge separately. Read selected scope-qualified pageIds before citing them. Source rankings are independent.',
         inputSchema: schema(searchSchema),
         execute: async (value: unknown) => {
           assertCurrent();
           const args = searchSchema.parse(value);
           retrievalCalls += 1;
-          const workspace = await retrieveWorkspaceKnowledge({
-            ...bound,
-            caller: retrievalCaller,
-            ...args,
-          });
-          if (workspace.notebookRevision !== baseRevision)
+          const primary = memoryAccess
+            ? await retrieveUserMemory({
+                ...bound,
+                access: memoryAccess,
+                caller: input.caller === 'app-api' ? 'app-api' : 'assistant',
+                ...args,
+              })
+            : await retrieveWorkspaceKnowledge({ ...bound, caller: retrievalCaller, ...args });
+          if (primary.notebookRevision !== baseRevision)
             throw new Error('Notebook changed; start a new query.');
-          const sources = [{ source: 'workspace', ...workspace }];
+          const sources = [{ source: memory ? 'memory' : 'workspace', ...primary }];
           if (serverAdmitted && !serverUnavailable) {
             if (!canReadServerKnowledge({ access }))
               throw new Error('Server Knowledge is no longer available.');
@@ -409,7 +483,9 @@ export async function askKnowledgeAgent(
           };
         },
       },
-      {
+    ];
+    if (notebook)
+      tools.push({
         name: 'knowledge.notebook.history',
         description:
           'Read bounded commit history of this fixed notebook base; history grants no publication authority.',
@@ -430,8 +506,7 @@ export async function askKnowledgeAgent(
             ],
           };
         },
-      },
-    ];
+      });
     const nativeAuthority = {
       actorRef: input.access.actor,
       assertCurrent,
@@ -456,7 +531,9 @@ export async function askKnowledgeAgent(
         assertCurrent,
         inputs: {
           purpose: 'query',
-          ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
+          ownerScope: memory
+            ? { kind: 'user', userId }
+            : { kind: 'workspace', workspaceId: input.workspaceId },
           baseRevision,
           trigger: 'request',
           instructions: input.question,
@@ -474,6 +551,9 @@ export async function askKnowledgeAgent(
                 text: JSON.stringify({
                   question: input.question,
                   overviews,
+                  ...(memory
+                    ? { unavailableOverviews: memoryOverviewUnavailable ? ['memory'] : [] }
+                    : {}),
                   unavailableSources: serverUnavailable ? ['server'] : [],
                   instruction:
                     'Use exact scope-qualified pageId values for reads and citationIds. Report any unavailable source in uncertainty.',
@@ -519,11 +599,21 @@ export async function askKnowledgeAgent(
       });
       const answer = answerSchema.parse(JSON.parse(result.text));
       assertCurrent();
-      const workspaceSources = new Map(
-        store
-          .listKnowledgeSources(input.workspaceId)
-          .map((source) => [source.id, source.contentDigest])
-      );
+      const primarySources = memory
+        ? new Map(
+            [
+              ...readAuthorizedUserMemoryPages({
+                ...bound,
+                notebookRevision: baseRevision,
+                pageIds: [...read.values()].map(({ candidate }) => candidate.reference.objectId),
+              }).registeredSources,
+            ].flatMap(([id, digest]) => (digest ? [[id, digest] as const] : []))
+          )
+        : new Map(
+            store
+              .listKnowledgeSources(input.workspaceId)
+              .map((source) => [source.id, source.contentDigest])
+          );
       const serverSources =
         serverAdmitted && !serverUnavailable
           ? new Map(
@@ -541,7 +631,7 @@ export async function askKnowledgeAgent(
         citations: [...new Set(answer.citationIds)].map((id) => {
           const { candidate } = read.get(id)!;
           const registered =
-            candidate.reference.scopeId === 'page/server' ? serverSources : workspaceSources;
+            candidate.reference.scopeId === 'page/server' ? serverSources : primarySources;
           return {
             reference: `${id}@${candidate.revision}`,
             revision: candidate.revision,

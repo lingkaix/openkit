@@ -6,6 +6,12 @@ date: 2026-09-09
 ---
 # Knowledge Notebook Editing And Publication
 
+## Source Pointer Extension
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) extends the published Git tree with admitted OKF SourceSummary pointers at `sources/<source-id>.md`, retaining the same fixed-base publisher, current source disclosure, history and suppression rules. This supersedes the external Source-registry authority on activation; raw bytes and backend locations remain outside Git. Original changes update one pointer through one commit; an old digest pin resolves only while matching authorized bytes remain available.
+
+The publisher also auto-admits embedded raw files and pins their digests in existing `sourceReferences` in the same commit; historical rendering uses those pins or shows unavailable. Embedded paths use RFC 3986 resolution from each page directory and must resolve inside Knowledge Base `raw/`. Raw renames/moves rewrite referrers, and admitted page relocation rewrites its embeds, under existing validation/review and page-identity constraints; no new move operation is added. The existing tree/editing paths below describe the current implementation until this extension lands. Package import validates the remapped Source/page graph before publication and cannot replace retained history merely because the current view is empty.
+
 ## Owns
 
 The single fixed-base editing and publication contract for an owner-scoped OKF notebook: retained Git content revisions, bounded Knowledge Manager file editing, final-tree validation, exact authority and conflict checks, multi-page publication, history/diff/restore, and their publication command projections. This contract replaces the former single-page generated-change restriction and mandatory per-edit human Review for ordinary explicitly delegated maintenance.
@@ -98,6 +104,10 @@ The Notebook UI provides page editing, state selection, source links, revision h
 Required Proposal review reads the saved candidate through the existing Proposal owner, with current Source disclosure checks on both sides. Its preview binds the Proposal digest, base and candidate commits. A bounded preview names remaining text ranges; an excerpt cannot stand in for the complete diff. The Web review requires inspection of every complete changed page before acceptance and submits the displayed identity tuple. Rejection and deferral do not require acceptance. Unpublished candidates remain outside generic published history.
 
 Restore computes a candidate diff from selected historical paths into the current base and publishes it through the same validation and authority checks as any edit. It adds a new commit, never rewinds published history or undoes external effects. No generic cherry-pick/rebase/reset API is exposed. Missing historical bytes, revoked source access or now-invalid schema produces an explicit unavailable/conflict result, not a lossy restore.
+
+## User Memory Maintenance Join
+
+The current User's bounded Knowledge Manager run uses the same publisher with an Agent producer and the actual responsible User actor. The User setting delegates ordinary publication; a protected or destructive change retains the exact candidate in the existing User Proposal family. Human Review binds the displayed Proposal digest and base/candidate commits, preserves Agent attribution, and cannot be supplied by the model. Current self authority, source-version suppression and the fixed base are rechecked at publication and preview. No User or Workspace selector in model text can widen that authority.
 
 ## Administrator Masking (Not Implemented)
 

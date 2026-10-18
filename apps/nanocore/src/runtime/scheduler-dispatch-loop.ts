@@ -31,6 +31,7 @@ import {
   listExistingWorkspaceDatabaseScopes,
   openWorkspaceDb,
 } from '../storage/db.js';
+import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
@@ -44,6 +45,7 @@ import {
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempt-records.js';
 import type { ExecutionBackend } from './execution-backend.js';
+import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
 import {
   type StartTurnDependencies,
   startTurn,
@@ -151,7 +153,7 @@ export async function runSchedulerDispatchLoop(
     return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
   const unpublishedQueueEntryIds = new Set<string>();
-  let recurringRecoveryRequired = false;
+  let sourceRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     const entry = findNextDispatchableSchedulerAdmissionEntry(
       input.coreDb,
@@ -162,7 +164,7 @@ export async function runSchedulerDispatchLoop(
         startedTurns,
         terminalResult: {
           status: 'queued',
-          reason: recurringRecoveryRequired
+          reason: sourceRecoveryRequired
             ? 'recovery-required'
             : unpublishedQueueEntryIds.size
               ? 'entry-publication-pending'
@@ -189,8 +191,11 @@ export async function runSchedulerDispatchLoop(
     // An incomplete cross-store publication fences only its own request/Thread. Continue
     // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
     if (!schedulerEntryPublicationComplete(input, entry)) {
-      if (findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId))
-        recurringRecoveryRequired = true;
+      if (
+        findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId) ||
+        findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId)
+      )
+        sourceRecoveryRequired = true;
       unpublishedQueueEntryIds.add(entry.queueEntryId);
       count--;
       continue;
@@ -236,6 +241,9 @@ function schedulerEntryPublicationComplete(
 ): boolean {
   const occurrence = findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId);
   if (occurrence) return recurringTurnPublicationIssue(input.store, entry) === null;
+  const eventAdmission = findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId);
+  if (eventAdmission)
+    return externalTriggerTurnPublicationComplete(input.coreDb, input.store, eventAdmission);
   try {
     const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
     if (turn.status !== 'pending' || turn.agentId !== entry.requestedAgentId) return false;

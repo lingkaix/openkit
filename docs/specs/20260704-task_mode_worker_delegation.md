@@ -77,6 +77,7 @@ Task Mode may start from:
 
 - Assistant handoff
 - direct product UI or remote MCP interface operation
+- bounded external-event admission from an authorized scheduled poll Worker under Scheduler Recurring Triggers
 - user request in an existing thread
 - a new user request after a prior completed or failed Task attempt
 
@@ -99,6 +100,10 @@ A worker's approval or user-input request in a direct Task is a pending request.
 Worker final status must satisfy the canonicalization contract in [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). This version starts from a new data root and reads no earlier-version data ([decision](../decisions/20260930-earlier_version_data_not_carried.md)). A final status outside that contract, or any other contradictory tuple, is preserved as recorded and stays `recovery_required`: Task Mode MUST NOT synthesize a request, publish a receipt, project a human-waiting Turn, offer an answer or approval action, retry, or resume the worker from it.
 
 A Chat-subordinate Task worker raises requests on its receiving Thread exactly as a direct Task does. A user-input request is non-secret elicitation, not authorization: a secret question is refused, and it creates or requires no Approval, policy action, or `PermissionDecision`. The answer command validates the answering actor against the request's responsible user, who is the actor of the outer `conversation.submit` command, or, for a handoff from an outcome-initiated Assistant Turn, the responsible user of the pending request that admitted that Turn. The outer `conversation.submit` receipt, where one exists, remains the sole delegation-ledger owner and is never mutated or re-published; a handoff from an outcome-initiated Assistant Turn is owned by its source tuple in [Chat Mode Assistant](20260704-chat_mode_assistant.md), and no nested `task.start` receipt is required in either case. The answer is delivered on the receiving Thread's next Turn, whose admission keeps the handoff lineage (`parentThreadId`, receiving Thread, and `resultKind=task-handoff`). Receipt lookup precedes mutation; the same answer command identity with the same answer map replays, a changed answer map returns `409 idempotency_key_conflict`, a secret question returns `400 secret_input_not_supported` before any write, and a missing or contradictory request, receipt, or lineage owner returns `409 recovery_required` without worker resume, replacement work, or inferred repair.
+
+### Scheduled External Event Entry
+
+[Scheduler Recurring Triggers](20260711-scheduler_recurring_event_triggers.md#external-events-through-scheduled-pull) admits one bounded Worker case per new external event through ordinary admission. Each case uses the existing new-Task-Worker isolation: a fresh Workspace-visible execution Thread linked to the poll Thread, a fresh conversation, and ordinary fresh-storage admission. Only the explicitly supplied brief crosses into the case. Source Turn lineage does not copy its conversation, previous applicants' context or native state. Several events from one poll may create separate cases; no case shares the poll Thread's execution slot. This entry gives no standalone Task loop, general Worker delegation tool or Task-specific retry lifecycle. The trigger join owns duplicate source admission; the scheduler, Turn, Pending Request and Worker owners retain execution and continuation.
 
 ### Worker Thread Sandbox Selection
 

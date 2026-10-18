@@ -7,6 +7,12 @@ kind: boundary
 
 Implementation note: item projection, digest records, and the accepted Turn-owned Task and Goal delivery trace are implemented. Real worker launches persist and verify the exact Coordinator request, generated `context` input, immutable package files and trace, Workspace Input Snapshot, Workspace Materialization Record, backend handoff, selected or excluded Workspace Material revisions, and queue proof before launch. Direct Task traces also bind selected Knowledge page identities, content digests, complete provenance, and worker-visible bytes through the same owner. Broader candidate audit detail and citation projection remain unimplemented, so this broader specification remains Partial. A Goal-dispatched Task uses this ordinary Task package. Goal-mode Knowledge integration is not a second path.
 
+## File References And Historical Availability
+
+For the shared file-reference format, [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) supersedes requirements to retain another original or derivative excerpt solely for historical replay. Packages keep exact owner references, captured digests, locations, delivered identities and explicit availability. Missing historical bytes remain unavailable; current content never reconstructs them.
+
+An authorized running Turn may still require a verified disposable read-only snapshot. Existing readiness, delivery proof, source admission and Item/evidence lifecycles remain binding. Current copied-original inventories below are the pre-transition implementation, not a promise to retain reference-only files. The source and delivery format owners must change together before the new format becomes writable.
+
 ## Personal Scope Projection
 
 Personal Memory is not ambient Worker input. Under `20260909-thread_visibility_and_sharing.md`, shared Task/Goal work receives only the exact confirmed brief, selected attachments and explicitly promoted personal context. Source selection must exclude private Thread/Memory bodies and metadata outside the receiving audience before materialization. Existing S39 trace records the actual admitted bytes; an inaccessible origin link is not permission to fetch the private conversation. Scoped Knowledge trace identities include owner scope and page revision/digest while this owner alone proves delivery.
@@ -66,6 +72,8 @@ This spec supersedes `docs/specs/superseded/20260702-worker_context_taxonomy.md`
 - Do not define Web UI notebook interactions.
 
 ## Current Implementation Projection
+
+The optional `knowledgeOverview` package input becomes `knowledge-overview.md` in the package root. The AEP Turn input names that file so the stock Worker shim exposes the navigation instruction.
 
 The current implementation is the accepted V1 context package projection:
 
@@ -369,6 +377,10 @@ Baseline exclusion reasons:
 Implementation-specific projection reasons may be more granular, such as `diagnostic_noise`, `artifact_pointer`, `approval_gate`, `goal_state_not_needed`, and `review_context_not_needed`. Those reasons should map back to a baseline reason when package traces become durable cross-version records.
 
 ## Knowledge Handling
+
+When Core and retained data authority are available, each accepted Worker package includes the applicable Workspace overview and any currently admitted Server overview from the notebook root index. Each overview states its scope, exact notebook revision, original digest, delivered digest and truncation state. Overview content is bounded to 4096 UTF-8 bytes per scope. A missing or denied overview is marked unavailable without storage diagnostics; absence of an overview does not establish absence of Knowledge. User Memory is excluded. Current source and receiving Thread authority are checked before and after package publication, and again before backend materialization and model submission. Server access uses only the current credential retained by the originating scheduler admission.
+
+The Worker receives an explicit instruction to read the overview and ask the Knowledge Manager through `knowledge_ask` for relevant understanding and citations. The overview is untrusted navigation, not instructions or complete evidence. Its exact delivered bytes use the existing package file inventory and digests; no separate selection record, receipt or lifecycle is added. The canonical Worker request and its instruction file remain byte-exact. Historical inspection and exact replay use the retained overview bytes under the existing package rules. Workspace portable read, export and import refuse an immutable package that contains Server overview content under [S51 Personal Data And Audience Coverage](20260704-workspace_backup_export_import.md#personal-data-and-audience-coverage); the value-free Server-unavailable notice remains portable.
 
 Each Knowledge package entry retains the original page id, pinned notebook commit, original digest, complete source references, validated review state, and sensitivity decision. The immutable package separately retains the exact delivered body, excerpt, or descriptor and its digest. Git proves source version; only the S39 trace, inventory, manifest, and retained package bytes prove delivery. A bounded projection never claims delivery of omitted source bytes.
 
