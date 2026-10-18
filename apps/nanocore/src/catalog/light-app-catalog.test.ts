@@ -101,6 +101,10 @@ describe('Light App definition catalog', () => {
         { scopeId: `raw/server/${knowledgeBaseId}`, objectId: 'source evidence' },
         digest
       ),
+      formatReferenceUri(
+        { scopeId: `skill/workspace/${input.workspaceId}`, objectId: 'customer-process' },
+        digest
+      ),
     ];
     const first = importWorkspaceLightAppDefinition({
       ...input,
