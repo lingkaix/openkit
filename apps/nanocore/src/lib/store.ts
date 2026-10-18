@@ -34,6 +34,7 @@ import {
   ArtifactSchema,
   allocateEntityId,
   deriveEntityId,
+  formatReferenceUri,
   ItemSchema,
   isSealedTurnTerminal,
   PROTOCOL_VERSION,
@@ -1932,17 +1933,20 @@ export class FsStore {
    * @throws Knowledge Proposal conflict failure before any Review or Page mutation.
    */
   private assertNoUnresolvedKnowledgeProposalConflict(proposal: KnowledgeProposalRecord): void {
+    const scopeId = this.workspaceKnowledgePageScopeId(proposal.workspaceId);
+    if (scopeId === undefined) throw new KnowledgePageValidationError();
+    const targetIds = proposal.changes
+      ? proposal.changes.map(({ path }) => path.slice(0, -3))
+      : [proposal.knowledgePageId!];
     const relevantReferences = new Set<string>([
-      ...(proposal.changes
-        ? proposal.changes.map(({ path }) => `knowledge:${path.slice(0, -3)}`)
-        : [`knowledge:${proposal.knowledgePageId}`]),
+      ...targetIds.map((objectId) => formatReferenceUri({ scopeId, objectId })),
       ...proposal.sourceReferences,
     ]);
     for (const reference of proposal.sourceReferences) {
-      const qualifiedReference = /^(source|knowledge):(.+)@sha256:[a-f0-9]{64}$/.exec(reference);
-      if (qualifiedReference) {
-        relevantReferences.add(`${qualifiedReference[1]}:${qualifiedReference[2]}`);
-      }
+      const qualifiedSource = /^source:(.+)@sha256:[a-f0-9]{64}$/.exec(reference);
+      if (qualifiedSource) relevantReferences.add(`source:${qualifiedSource[1]}`);
+      const pagePin = parseReferenceUri(reference);
+      if (pagePin) relevantReferences.add(formatReferenceUri(pagePin.reference));
     }
 
     if (
