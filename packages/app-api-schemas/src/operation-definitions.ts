@@ -1,4 +1,4 @@
-import { PolicyWriteProposalV1Schema, PolicyWriteOutcomeV1Schema } from '@openkit/protocol';
+import { PolicyWriteOutcomeV1Schema, PolicyWriteProposalV1Schema } from '@openkit/protocol';
 import { z } from 'zod';
 import { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
@@ -156,7 +156,8 @@ const API_OPERATION_DEFINITIONS = composeOperationTables(
 export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIONS, {
   'policy.write': {
     binding: 'native',
-    description: 'Apply one exact human-confirmed Policy candidate through the configuration owner.',
+    description:
+      'Apply one exact human-confirmed Policy candidate through the configuration owner.',
     inputSchema: PolicyWriteProposalV1Schema,
     outputSchema: PolicyWriteOutcomeV1Schema,
     policyOperation: 'workspace.configure',

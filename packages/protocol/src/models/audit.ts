@@ -1,6 +1,4 @@
-import { PolicyInvocationV1Schema, PolicyWriteOutcomeV1Schema } from './policy-v1.js';
 import { z } from 'zod';
-
 import {
   AgentIdSchema,
   AgentSessionIdSchema,
@@ -17,6 +15,7 @@ import {
 import { TimestampSchema } from '../common/timestamps.js';
 import { ActorRefSchema } from './actor.js';
 import { KnowledgeNotebookAdmissionSchema } from './knowledge-notebook.js';
+import { PolicyInvocationV1Schema, PolicyWriteOutcomeV1Schema } from './policy-v1.js';
 
 /**
  * Stable audit event severity values.

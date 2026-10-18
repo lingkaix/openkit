@@ -1,4 +1,3 @@
-import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +16,7 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,

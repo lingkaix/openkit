@@ -1,6 +1,6 @@
 # Product Policy Bridge
 
-This directory owns NanoCore's product-level permission-decision projection and pending-request admission.
+This directory owns NanoCore's product Policy projection, authored Policy admission, I16 mediation and pending-request admission.
 
 ## Boundaries
 
@@ -28,3 +28,13 @@ Boot self-check decisions use independent canonical `pd` UUIDv7 identities. Thei
 `server-access.ts` projects already-established User, Server and administrator Workspace eligibility into the existing NGAC evaluator using the current actor, exact admitted scope and registered operation/right mapping. `operation-resolvers.ts` consumes the User and Server decisions; the shared `auth/operation-authorizer.ts` consumes the Workspace decision after current credential and membership or administrator eligibility. Denials and evaluation failures stop the handler through the existing access-denial result. Ordinary admission remains transient; it adds no decision ledger or workflow. The exclusive actorless bootstrap-secret entry and finite delegated-maintenance assignment keep their existing owners. This baseline does not implement configurable restrictions or named-resource grant administration.
 
 Server targets may declare `family: administration | mcp | knowledge`; omission selects administration and unknown families deny. The current administrator maps to `ua:server-administrator`, and each selected family has its own object and object attribute under `pc:server`. Administration retains existing registered rights; MCP uses `api.call`; Knowledge uses its existing read, write, Review and Thread/Turn rights. These transient associations reuse `PolicyState`, `evaluateAccess` and `PolicyDecision`, with no saved assignment or operator setup. Native invocation performs the current credential read before the Kernel call: unexpected storage errors propagate to the error handler, while a Kernel deny or evaluation failure refuses admission. Server MCP operations declare their family in the shared table; prepared Server Knowledge registration remains with its operation owner.
+
+## Unified Policy Slice
+
+`statements.ts` validates the native subset, stamps real candidate authorship and derives exact content revisions. `configuration.ts` admits the typed Policy target through the existing human candidate, confirmation and sole file writer. The collection lives at `server.jsonc.policy.mediation`; its content digest is the Policy revision. Saved bytes, admitted bytes and the current loaded revision remain separate observations. Generic file updates cannot change the collection.
+
+`interception.ts` runs bounded deterministic participation for I16 before credential preparation. Advice feeds gates and the actual mandatory Kernel. Current membership, Token lineage, binding author, audience, anchor and Policy changes invalidate the attempt. The existing captured Pending owner handles human escalation and re-evaluates the same logical proposal at response time. An allowing decision permits an attempt; it is not a Tool outcome. Completion observers cannot veto or replay the settled call.
+
+`retained-records-v1.ts` owns frozen family decoders for PermissionDecision and Audit. SQL readers check `schema_version` with the shared Protocol helper before JSON decoding. Portable records carry `schemaVersion`. Unknown optional additions are ignored; required authority values fail closed. All native writers stamp version one explicitly; there is no default, converter or predecessor reader. Gate evidence shares the existing decision/Audit transaction. Only final combined allows consume finite statement uses in that Workspace transaction.
+
+The format retains inactive Goal-domain, principal, Gateway-rule and storage-lease declarations through the real human candidate path. Native validation checks exact Plan-source evidence, responsibility-chain structure, lease shape and delegation references. Unsupported activation is refused. Active I16 transforms and finite-use completed observations also remain unavailable. This slice claims no Goal-domain grant, Task resource intersection, agent authority, Storage effect or automatic narrowing review. Remaining behavior stays in the accepted rollout.

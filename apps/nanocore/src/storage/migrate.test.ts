@@ -192,36 +192,43 @@ function listColumnNames(
 }
 
 describe('database setup', () => {
-  it.each(['core', 'workspace', 'user', 'app'] as const)(
-    'requires an explicit Audit and Policy retained version in a fresh %s database',
-    (scope) => {
-      const sqlite = new Database(':memory:');
-      try {
-        applyNativeScopeMigrations(sqlite, scope);
-        const tables = scope === 'core' || scope === 'workspace'
+  it.each([
+    'core',
+    'workspace',
+    'user',
+    'app',
+  ] as const)('requires an explicit Audit and Policy retained version in a fresh %s database', (scope) => {
+    const sqlite = new Database(':memory:');
+    try {
+      applyNativeScopeMigrations(sqlite, scope);
+      const tables =
+        scope === 'core' || scope === 'workspace'
           ? ['audit_events', 'permission_decisions']
           : ['audit_events'];
-        for (const table of tables) {
-          const columns = sqlite.pragma(`table_info(${table})`) as Array<{
-            name: string;
-            notnull: number;
-            dflt_value: unknown;
-          }>;
-          expect(columns.find(({ name }) => name === 'schema_version')).toMatchObject({
-            notnull: 1,
-            dflt_value: null,
-          });
-        }
-        // A reset-format row must carry its writer's version; SQL cannot infer it.
-        expect(() => sqlite.prepare(
-          `INSERT INTO audit_events (audit_event_id, category, action, outcome, severity, summary, created_at, occurred_at)
-           VALUES ('unversioned-fixture', 'system', 'test', 'succeeded', 'info', 'test', 'now', 'now')`
-        ).run()).toThrow(/schema_version/);
-      } finally {
-        sqlite.close();
+      for (const table of tables) {
+        const columns = sqlite.pragma(`table_info(${table})`) as Array<{
+          name: string;
+          notnull: number;
+          dflt_value: unknown;
+        }>;
+        expect(columns.find(({ name }) => name === 'schema_version')).toMatchObject({
+          notnull: 1,
+          dflt_value: null,
+        });
       }
+      // A reset-format row must carry its writer's version; SQL cannot infer it.
+      expect(() =>
+        sqlite
+          .prepare(
+            `INSERT INTO audit_events (audit_event_id, category, action, outcome, severity, summary, created_at, occurred_at)
+           VALUES ('unversioned-fixture', 'system', 'test', 'succeeded', 'info', 'test', 'now', 'now')`
+          )
+          .run()
+      ).toThrow(/schema_version/);
+    } finally {
+      sqlite.close();
     }
-  );
+  });
 
   it.each([
     5, 7, 8,

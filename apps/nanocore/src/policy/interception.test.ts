@@ -289,6 +289,7 @@ describe('bounded native Policy pipeline', () => {
     ).toMatchObject({
       result: 'require_approval',
       requiredApprovalKind: 'permission',
+      reasonCode: 'require_approval',
       mediation: { kernel: { effect: 'allow' } },
     });
   });
@@ -313,9 +314,9 @@ describe('bounded native Policy pipeline', () => {
     expect(rows.find((row) => row.mediation?.role === 'gate')?.result).toBe('deny');
     expect(rows.find((row) => row.decisionId === result.decisionId)?.result).toBe('allow');
     expect(
-      audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId).find(
-        (event) => event.policyInvocation?.mode === 'observe'
-      )
+      audit
+        .listWorkspaceAuditEvents(input.workspaceDb, workspaceId)
+        .find((event) => event.policyInvocation?.mode === 'observe')
     ).toMatchObject({ outcome: 'failed', policyInvocation: { outcome: 'error' } });
   });
 

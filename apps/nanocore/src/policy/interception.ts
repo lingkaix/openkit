@@ -159,7 +159,7 @@ export class PolicyInterception {
           ? kernel?.effect === 'allow' || kernel?.reasons.some(({ code }) => code === 'restriction')
             ? 'prohibited'
             : 'not_granted'
-          : result === 'require_escalation'
+          : result === 'require_escalation' || result === 'require_approval'
             ? 'require_approval'
             : result === 'allow'
               ? 'granted'

@@ -1,4 +1,3 @@
-import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -13,9 +12,9 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { deriveEntityId, isEntityId } from '@openkit/protocol';
-
 import { recordServerAuditEvent } from '../audit-events.js';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck } from '../storage/db.js';
 import {
   createOpenKitAccessTokenSecret,

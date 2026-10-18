@@ -903,13 +903,17 @@ export function diffRuntimeConfig(
       )
     );
   }
-  if (!equalSemantic(previous.openKitConfig.policy?.mediation, next.openKitConfig.policy?.mediation)) {
-    applied.push(change(
-      'policy.mediation',
-      'hot-swappable',
-      'applied',
-      'Authored Policy statements changed; native admission rechecks their exact revision before effects.'
-    ));
+  if (
+    !equalSemantic(previous.openKitConfig.policy?.mediation, next.openKitConfig.policy?.mediation)
+  ) {
+    applied.push(
+      change(
+        'policy.mediation',
+        'hot-swappable',
+        'applied',
+        'Authored Policy statements changed; native admission rechecks their exact revision before effects.'
+      )
+    );
   }
   if (!equalSemantic(previous.gatewayConfig, next.gatewayConfig)) {
     applied.push(

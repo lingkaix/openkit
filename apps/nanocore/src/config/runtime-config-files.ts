@@ -1,4 +1,3 @@
-import { policyDigest } from '../policy/statements.js';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -55,6 +54,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import { policyDigest } from '../policy/statements.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
@@ -319,9 +319,14 @@ export class RuntimeConfigFileService {
       : null;
 
     if (spec.kind === 'server' && !admission?.policyWrite) {
-      const previous = currentContent ? parse(currentContent) as { policy?: { mediation?: unknown } } : null;
+      const previous = currentContent
+        ? (parse(currentContent) as { policy?: { mediation?: unknown } })
+        : null;
       const next = parse(input.content) as { policy?: { mediation?: unknown } };
-      if (policyDigest(previous?.policy?.mediation ?? null) !== policyDigest(next?.policy?.mediation ?? null)) {
+      if (
+        policyDigest(previous?.policy?.mediation ?? null) !==
+        policyDigest(next?.policy?.mediation ?? null)
+      ) {
         throw new RuntimeConfigFileServiceError(
           'policy_write_required',
           'Policy statements require the governed Policy candidate and human application path.',

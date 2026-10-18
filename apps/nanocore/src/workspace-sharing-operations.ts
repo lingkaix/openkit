@@ -1,4 +1,3 @@
-import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
 import type { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   AcceptWorkspaceInvitationRequestSchema,
@@ -42,6 +41,7 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import type { OperationImplementations } from './operation-contract.js';
 import { publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -969,11 +969,7 @@ function requireNoLifecycleAudit(
     readonly workspaceId?: string;
   }
 ): void {
-  const predicates = [
-    'request_id = ?',
-    'action = ?',
-    "outcome = 'succeeded'",
-  ];
+  const predicates = ['request_id = ?', 'action = ?', "outcome = 'succeeded'"];
   const values: string[] = [input.requestId, input.action];
   if (input.resource) {
     predicates.push('resource = ?');
@@ -986,9 +982,9 @@ function requireNoLifecycleAudit(
   const rows = coreDb.sqlite
     .prepare(`SELECT * FROM audit_events WHERE ${predicates.join(' AND ')}`)
     .all(...values);
-  const found = rows.map(readAuditEventRowV1).some(({ actor }) =>
-    actor?.kind === 'user' && actor.id === input.actorId
-  );
+  const found = rows
+    .map(readAuditEventRowV1)
+    .some(({ actor }) => actor?.kind === 'user' && actor.id === input.actorId);
   if (found) {
     throw new OperationError(
       'recovery_required',

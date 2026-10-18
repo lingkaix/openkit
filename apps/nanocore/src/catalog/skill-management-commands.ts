@@ -1,4 +1,3 @@
-import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app-api-schemas';
 import type { ResourceCatalogDocument, SkillVersionRecord } from '@openkit/config-schema';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -6,6 +5,7 @@ import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js'
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type AdmittedOperationContext, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { CatalogOperationHooks } from './catalog-operations.js';

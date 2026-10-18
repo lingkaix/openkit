@@ -1,4 +1,3 @@
-import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
@@ -12,6 +11,7 @@ import {
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
 import type { CommandRequestScope, FsStore } from '../lib/store.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
@@ -206,7 +206,9 @@ function readNotebookAdmissions(
   return rows
     .map((row) => {
       try {
-        const parsed = KnowledgeNotebookAdmissionSchema.parse(readAuditEventRowV1(row).notebookAdmission);
+        const parsed = KnowledgeNotebookAdmissionSchema.parse(
+          readAuditEventRowV1(row).notebookAdmission
+        );
         if (
           !isDeepStrictEqual(parsed.ownerScope, ownerScope) ||
           parsed.requestId !== request.requestId

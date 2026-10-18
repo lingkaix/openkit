@@ -1464,7 +1464,10 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       publishTerminalItem = false;
       finishCapabilityCall({
         callId: call.id,
-        errorCode: 'policy_requires_escalation',
+        errorCode:
+          policyDecision.result === 'require_approval'
+            ? 'policy_requires_approval'
+            : 'policy_requires_escalation',
         status: 'denied',
         workspaceDb: input.workspaceDb,
       });

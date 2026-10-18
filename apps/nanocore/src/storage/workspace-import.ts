@@ -1,4 +1,3 @@
-import { AuditEventRetainedV1Schema, PermissionDecisionRetainedV1Schema } from '../policy/retained-records-v1.js';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -71,9 +70,9 @@ import {
   MaterialIdSchema,
   PermissionDecisionIdSchema,
   parseReferenceScope,
-  readRetainedV1,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
+  readRetainedV1,
   SseEventEnvelopeSchema,
   ThreadIdSchema,
   ThreadSchema,
@@ -126,6 +125,10 @@ import {
 import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
+import {
+  AuditEventRetainedV1Schema,
+  PermissionDecisionRetainedV1Schema,
+} from '../policy/retained-records-v1.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { TaskTerminalFactSchema } from '../runtime/task-terminal-fact.js';
@@ -2361,7 +2364,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     context.files,
     'records/permission-decisions.jsonl'
   ).map((record) => {
-    const parsed = readRetainedV1(record, (value) => ExportedWorkspacePermissionDecisionSchema.parse(value));
+    const parsed = readRetainedV1(record, (value) =>
+      ExportedWorkspacePermissionDecisionSchema.parse(value)
+    );
 
     return ExportedWorkspacePermissionDecisionSchema.parse({
       ...parsed,
