@@ -58,7 +58,6 @@ describe('governed Claim and reusable Observation fields', () => {
   ])('preserves numeric Claim confidence %s and descriptive extensions', (confidence) => {
     const content = page('Claim', {
       confidence,
-      conflict_status: 'none',
       custom_annotation: { confidence: 'not an assessment', retained: true },
     });
     expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
@@ -81,16 +80,38 @@ describe('governed Claim and reusable Observation fields', () => {
     Number.NaN,
     Number.POSITIVE_INFINITY,
   ])('refuses missing or invalid Claim confidence %s', (confidence) => {
-    const report = validate(page('Claim', { confidence, conflict_status: 'none' }));
+    const report = validate(page('Claim', { confidence }));
     expect(report.errors).toContainEqual(expect.objectContaining({ field: 'confidence' }));
   });
 
+  it.each(['unresolved', 'resolved'])('retains only conflict-specific Claim state %s', (conflict_status) => {
+    expect(validate(page('Claim', { confidence: 0.75, conflict_status }))).toMatchObject({
+      conformance: 'scope-schema-valid', errors: [],
+    });
+  });
+
   it.each([
-    undefined,
-    'unrecognized',
-  ])('refuses an absent or unknown Claim conflict state %s', (conflict_status) => {
-    const report = validate(page('Claim', { confidence: 0.75, conflict_status }));
-    expect(report.errors).toContainEqual(expect.objectContaining({ field: 'conflict_status' }));
+    'none', 'conflicting', 'weak_evidence', 'stale', 'needs_review',
+    'superseded', 'partially_superseded', 'unrecognized',
+  ])('refuses overloaded or unsupported conflict state %s', (conflict_status) => {
+    for (const type of ['Claim', 'Observation'] as const) {
+      const report = validate(page(type, { confidence: 0.75, conflict_status, subject_refs: [subjectUri] }));
+      expect(report.errors).toContainEqual(expect.objectContaining({ field: 'conflict_status' }));
+    }
+  });
+
+  it('keeps freshness, Review, lifecycle and confidence independent from actual conflicts', () => {
+    const content = page('Claim', {
+      confidence: 0.1, freshness: 'stale', review_state: 'needs-review',
+      openkit_status: 'superseded', status: 'deprecated',
+    });
+    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+    expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
+    expect(parsed.document.frontmatter).toMatchObject({
+      confidence: 0.1, freshness: 'stale', review_state: 'needs-review', openkit_status: 'superseded',
+    });
   });
 
   it('keeps a reusable Observation non-active without inventing confidence or conflict state', () => {
@@ -104,22 +125,22 @@ describe('governed Claim and reusable Observation fields', () => {
     expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
   });
 
-  it('refuses nonnumeric Observation confidence when an assessment is present', () => {
-    expect(validate(page('Observation', { confidence: 'high' })).errors).toContainEqual(
-      expect.objectContaining({ field: 'confidence' })
-    );
+  it('does not assign core assessment meaning to an Observation confidence annotation', () => {
+    expect(validate(page('Observation', { confidence: 'author annotation' }))).toMatchObject({
+      conformance: 'scope-schema-valid', errors: [],
+    });
   });
 
   it.each(
     [undefined, [], [{}]].map((value) => [value])
   )('requires structured conflict subjects %j', (subject_refs) => {
-    const report = validate(page('Observation', { conflict_status: 'conflicting', subject_refs }));
+    const report = validate(page('Observation', { conflict_status: 'unresolved', subject_refs }));
     expect(report.errors).toContainEqual(expect.objectContaining({ field: 'subject_refs' }));
   });
 
   it('retains a canonical conflict subject separately from supporting source evidence', () => {
     const content = page('Observation', {
-      conflict_status: 'conflicting',
+      conflict_status: 'unresolved',
       subject_refs: [subjectUri],
     });
     expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
@@ -133,7 +154,7 @@ describe('governed Claim and reusable Observation fields', () => {
   it('refuses a plain string in place of an owner-qualified subject URI', () => {
     const report = validate(
       page('Observation', {
-        conflict_status: 'conflicting',
+        conflict_status: 'unresolved',
         subject_refs: ['not-an-owner-reference'],
       })
     );
