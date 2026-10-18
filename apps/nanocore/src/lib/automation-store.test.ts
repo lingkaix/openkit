@@ -12,6 +12,7 @@ import {
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { exportRecurringPortableHistory } from '../storage/recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -193,6 +194,9 @@ it.each([
       'Unsupported retained record format.'
     );
   }
+  expect(() => exportRecurringPortableHistory(db, schedule.workspaceId, null, [])).toThrow(
+    'Unsupported retained record format.'
+  );
   expect(
     db.sqlite
       .prepare(`SELECT schema_version AS schemaVersion, record_json FROM ${table} WHERE id = ?`)
