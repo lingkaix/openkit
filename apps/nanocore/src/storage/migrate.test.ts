@@ -252,6 +252,7 @@ describe('database setup', () => {
         '0004_equal_workspace_members.sql',
 
         '0005_channel_notifications.sql',
+        '0006_external_trigger_admissions.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -266,6 +267,7 @@ describe('database setup', () => {
         'core_0004_equal_workspace_members',
 
         'core_0005_channel_notifications',
+        'core_0006_external_trigger_admissions',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(

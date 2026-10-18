@@ -149,6 +149,17 @@ describe('automation, scheduler and recovery definitions', () => {
       ],
       ['automation.update', { automationId, expectedRevision: 1, status: 'paused' }, true],
       ['automation.delete', { automationId }, true],
+      [
+        'automation.event-admit',
+        {
+          workspaceId,
+          threadId,
+          turnId: allocateEntityId('tu'),
+          eventKey: 'source/event-1',
+          input: 'Handle this isolated case.',
+        },
+        true,
+      ],
       ['scheduler.list', { workspaceId }, false],
       ['scheduler.retry', { workspaceId, queueEntryId: 'queue_one' }, true],
       ['scheduler.cancel', { workspaceId, queueEntryId: 'queue_one' }, true],

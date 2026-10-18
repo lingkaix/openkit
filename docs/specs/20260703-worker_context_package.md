@@ -7,6 +7,12 @@ kind: boundary
 
 Implementation note: item projection, digest records, and the accepted Turn-owned Task and Goal delivery trace are implemented. Real worker launches persist and verify the exact Coordinator request, generated `context` input, immutable package files and trace, Workspace Input Snapshot, Workspace Materialization Record, backend handoff, selected or excluded Workspace Material revisions, and queue proof before launch. Direct Task traces also bind selected Knowledge page identities, content digests, complete provenance, and worker-visible bytes through the same owner. Broader candidate audit detail and citation projection remain unimplemented, so this broader specification remains Partial. A Goal-dispatched Task uses this ordinary Task package. Goal-mode Knowledge integration is not a second path.
 
+## File References And Historical Availability
+
+For the shared file-reference format, [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) supersedes requirements to retain another original or derivative excerpt solely for historical replay. Packages keep exact owner references, captured digests, locations, delivered identities and explicit availability. Missing historical bytes remain unavailable; current content never reconstructs them.
+
+An authorized running Turn may still require a verified disposable read-only snapshot. Existing readiness, delivery proof, source admission and Item/evidence lifecycles remain binding. Current copied-original inventories below are the pre-transition implementation, not a promise to retain reference-only files. The source and delivery format owners must change together before the new format becomes writable.
+
 ## Personal Scope Projection
 
 Personal Memory is not ambient Worker input. Under `20260909-thread_visibility_and_sharing.md`, shared Task/Goal work receives only the exact confirmed brief, selected attachments and explicitly promoted personal context. Source selection must exclude private Thread/Memory bodies and metadata outside the receiving audience before materialization. Existing S39 trace records the actual admitted bytes; an inaccessible origin link is not permission to fetch the private conversation. Scoped Knowledge trace identities include owner scope and page revision/digest while this owner alone proves delivery.

@@ -43,6 +43,13 @@
       "when": 1792246083724,
       "tag": "0005_channel_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792273105805,
+      "tag": "0006_external_trigger_admissions",
+      "breakpoints": true
     }
   ]
 }
