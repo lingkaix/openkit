@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
-import { type StopReason, StopReasonSchema, type TurnStatus } from '@openkit/protocol';
+import {
+  readRetainedV1,
+  type StopReason,
+  StopReasonSchema,
+  type TurnStatus,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
@@ -145,15 +151,18 @@ export function recordWorkerControlAcceptedRecord(
       : null;
   const receipt = event ? workerControlEventReceipt(event) : input.record;
   const existing = coreDb.sqlite
-    .prepare(`SELECT record_json AS recordJson FROM worker_control_records
+    .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson FROM worker_control_records
     WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = ? AND record_key = ?`)
     .get(
       input.lineage.agentSessionId,
       input.lineage.packageSnapshotId,
       input.operation,
       input.recordKey
-    ) as { recordJson: string } | undefined;
-  if (existing && !isDeepStrictEqual(JSON.parse(existing.recordJson), receipt))
+    ) as { schemaVersion: unknown; recordJson: string } | undefined;
+  if (
+    existing &&
+    !readRetainedV1(existing, () => isDeepStrictEqual(JSON.parse(existing.recordJson), receipt))
+  )
     throw new Error('recovery_required: worker receipt identity conflict');
   if (event) recordWorkerObservation(coreDb, event, existing !== undefined);
   coreDb.sqlite
@@ -170,9 +179,10 @@ export function recordWorkerControlAcceptedRecord(
         record_key,
         sequence,
         record_json,
-        accepted_at
+        accepted_at,
+        schema_version
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
     .run(
@@ -186,7 +196,8 @@ export function recordWorkerControlAcceptedRecord(
       input.recordKey,
       input.sequence ?? null,
       JSON.stringify(receipt),
-      input.acceptedAt
+      input.acceptedAt,
+      writeRetainedV1({}).schemaVersion
     );
 }
 
@@ -352,7 +363,7 @@ export function listWorkerControlAcceptedEvents(
   const rows = coreDb.sqlite
     .prepare(
       `
-      SELECT record_json AS recordJson
+      SELECT schema_version AS schemaVersion, record_json AS recordJson
       FROM worker_control_records
       WHERE workspace_id = ?
         AND thread_id = ?
@@ -371,10 +382,12 @@ export function listWorkerControlAcceptedEvents(
       lineage.agentSessionId,
       lineage.packageSnapshotId,
       lineage.requestId ?? null
-    ) as Array<{ readonly recordJson: string }>;
+    ) as Array<{ readonly schemaVersion: unknown; readonly recordJson: string }>;
 
   return rows.flatMap((row) => {
-    const value = JSON.parse(row.recordJson) as { event?: { type?: string } };
+    const value = readRetainedV1(row, () => JSON.parse(row.recordJson)) as {
+      event?: { type?: string };
+    };
     if (value.event?.type === 'observation.content.chunk') return [];
     const record = WorkerCanonicalEventRecordSchema.parse(value);
 
@@ -393,7 +406,7 @@ export function getWorkerControlAcceptedFinalStatus(
 ): AcceptedWorkerFinalStatus | null {
   const row = coreDb.sqlite
     .prepare(
-      `SELECT record_json AS recordJson, accepted_at AS acceptedAt
+      `SELECT schema_version AS schemaVersion, record_json AS recordJson, accepted_at AS acceptedAt
        FROM worker_control_records
        WHERE workspace_id = ?
          AND thread_id = ?
@@ -411,11 +424,13 @@ export function getWorkerControlAcceptedFinalStatus(
       lineage.agentSessionId,
       lineage.packageSnapshotId,
       lineage.requestId ?? null
-    ) as { readonly acceptedAt: string; readonly recordJson: string } | undefined;
+    ) as
+    | { readonly schemaVersion: unknown; readonly acceptedAt: string; readonly recordJson: string }
+    | undefined;
   if (!row) {
     return null;
   }
-  const raw = JSON.parse(row.recordJson) as Record<string, unknown>;
+  const raw = readRetainedV1(row, () => JSON.parse(row.recordJson)) as Record<string, unknown>;
   // Reuse terminal admission's schema while leaving unrelated durable record fields alone.
   const record = WorkerCanonicalTerminalEventDataSchema.parse({
     ...(raw.diagnostics !== undefined ? { diagnostics: raw.diagnostics } : {}),
@@ -593,7 +608,18 @@ export function resolveWorkerControlFinalStatusTokenBinding(
                    AND worker_control_records.package_snapshot_id = scheduler_execution_attempts.input_ref
                    AND worker_control_records.request_id IS ?
                    AND worker_control_records.operation = 'final_status'
-              ) AS finalStatusRecorded
+              ) AS finalStatusRecorded,
+              (
+                SELECT schema_version FROM worker_control_records
+                 WHERE worker_control_records.workspace_id = scheduler_execution_attempts.workspace_id
+                   AND worker_control_records.thread_id = scheduler_execution_attempts.thread_id
+                   AND worker_control_records.turn_id = scheduler_execution_attempts.turn_id
+                   AND worker_control_records.agent_session_id = scheduler_execution_attempts.agent_session_id
+                   AND worker_control_records.package_snapshot_id = scheduler_execution_attempts.input_ref
+                   AND worker_control_records.request_id IS ?
+                   AND worker_control_records.operation = 'final_status'
+                 LIMIT 1
+              ) AS finalStatusSchemaVersion
          FROM scheduler_execution_attempts
         WHERE binding_ref = ?
           AND workspace_id = ?
@@ -604,6 +630,7 @@ export function resolveWorkerControlFinalStatusTokenBinding(
           AND phase IN ('closing', 'closed')`
     )
     .get(
+      input.lineage.requestId ?? null,
       input.lineage.requestId ?? null,
       input.sandboxBindingRef,
       input.lineage.workspaceId,
@@ -616,6 +643,7 @@ export function resolveWorkerControlFinalStatusTokenBinding(
         expiresAt: string | null;
         attemptId: string;
         finalStatusRecorded: number;
+        finalStatusSchemaVersion: unknown;
       }
     | undefined;
 
@@ -630,7 +658,11 @@ export function resolveWorkerControlFinalStatusTokenBinding(
     return { reason: 'lineage-mismatch', status: 'rejected' };
   }
 
-  if (row.finalStatusRecorded) return { replayOnly: true, status: 'accepted' };
+  if (row.finalStatusRecorded)
+    return readRetainedV1(
+      { schemaVersion: row.finalStatusSchemaVersion },
+      () => ({ replayOnly: true, status: 'accepted' }) as const
+    );
   // The live resolver authenticated the token and binding before refusing effects; the first-final exception still requires current native authority.
   if (
     hasPendingWorkerCancellationFinal(
