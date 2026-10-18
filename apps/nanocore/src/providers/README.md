@@ -31,3 +31,5 @@ Run provider registry, profile, data-root, LLM config, dispatcher, diagnostics, 
 `data-root.ts` captures the model extension catalog together with loaded Provider profiles. The registry contains projected extension-plus-profile metadata for listed models only; the loader never persists that projection into authored profiles.
 
 `revokeVaultProviderCredential` removes the exact server-scoped Provider API key through existing backend revocation and Core dependent-state revocation. It validates both authorities before effects, rejects subscription-owned material and unsupported external references, and returns redacted failures without restoring material after a partial effect. Runtime-config profile deletion supplies deployment-admin and file-revision authority before invoking it.
+
+The credential resolver accepts the consuming operation's admitted actor and existing Workspace, AgentSession and capability-call correlation. Vault resolution writes these facts to its existing linked AuditEvent and VaultUse records. The context grants no access and contains no credential material; presence probes do not create a consuming context.

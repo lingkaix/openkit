@@ -3339,11 +3339,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                 actor: {
                   kind: 'agent',
                   id: environmentPackage.agent.agentId,
-                  responsibleUserId: environmentPackage.scope.userId,
+                  responsibleUserId: responsibleUserIdForActor(
+                    environmentPackage.scope.triggerActor
+                  ),
                 },
                 agentId: environmentPackage.agent.agentId,
                 agentSessionId: environmentPackage.scope.agentSessionId,
-                requestId: environmentPackage.scope.requestId,
+                requestId: artifactRequestId,
                 threadId: environmentPackage.scope.threadId,
                 turnId: environmentPackage.scope.turnId,
               },

@@ -36,7 +36,10 @@ import {
 import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import type {
+  ProviderCredentialConfigured,
+  ProviderCredentialUseContext,
+} from '../providers/registry.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -1772,7 +1775,11 @@ export function registerWorkerInferenceRoutes({
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Resolves a private Provider route selected by the current Gateway config. */
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) => ResolvedLLMProviderConfig;
   /** Returns the current hot-reloadable Gateway configuration snapshot. */
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
@@ -2504,7 +2511,11 @@ export async function dispatchLogicalModel<T>(input: {
   /** Entry-admitted coherent minimums; absent or unknown limits constrain nothing. */
   pinnedLimits?: Pick<NonNullable<ResolvedLogicalModel['contract']>, 'context' | 'output'>;
   clock?: GatewayClock;
-  resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  resolveGatewayProvider: (
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) => ResolvedLLMProviderConfig;
   providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Private diagnostic observer before member resolution, including failures that never reach the producer. */
   onAttemptStart?: (context: { corr: string; attempt: number }) => void;
@@ -2520,6 +2531,15 @@ export async function dispatchLogicalModel<T>(input: {
   }) => Promise<T>;
 }): Promise<T> {
   const corr = randomUUID();
+  const callContext = input.ledger?.call.context;
+  const credentialUseContext: ProviderCredentialUseContext | undefined = callContext?.authorityActor
+    ? {
+        actor: callContext.authorityActor,
+        capabilityCallId: input.ledger!.call.id,
+        ...(callContext.workspaceId ? { consumerWorkspaceId: callContext.workspaceId } : {}),
+        ...(callContext.agentSessionId ? { agentSessionId: callContext.agentSessionId } : {}),
+      }
+    : undefined;
   const providers = new Map<string, ResolvedLLMProviderConfig>();
   const resolutionFailures = new Map<string, unknown>();
   const selections = planLogicalModel(
@@ -2534,7 +2554,11 @@ export async function dispatchLogicalModel<T>(input: {
         return true;
       let provider: ResolvedLLMProviderConfig;
       try {
-        provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+        provider = input.resolveGatewayProvider(
+          route.providerProfileId,
+          route.providerModel,
+          credentialUseContext
+        );
       } catch (error) {
         resolutionFailures.set(route.id, error);
         return true;
@@ -2628,7 +2652,11 @@ export async function dispatchLogicalModel<T>(input: {
         }
         provider =
           providers.get(route.id) ??
-          input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+          input.resolveGatewayProvider(
+            route.providerProfileId,
+            route.providerModel,
+            credentialUseContext
+          );
         providers.set(route.id, provider);
         assertGatewayModelAuthorized(provider, route.providerModel);
         subscriptionModels = await resolveGatewaySubscriptionModels(
@@ -2796,7 +2824,11 @@ export function registerLlmGatewayRoutes({
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
   /**
