@@ -915,8 +915,11 @@ fn preflight_lifecycle_result(
     Ok(None)
 }
 
-/// Hard bound for one attempt-local image import.
-pub const MID_EPOCH_IMPORT_TIMEOUT: Duration = Duration::from_secs(45);
+/// Absolute hard bound shared by archive-name verification and one cold image load.
+pub const MID_EPOCH_IMPORT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Separate per-command bound for small image metadata replies and post-load inspection.
+const IMAGE_METADATA_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Attempt-local image import outcome.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -976,7 +979,7 @@ fn run_image_metadata_command(
     mut command: Command,
     deadline: Instant,
 ) -> Result<String, ImageImportError> {
-    let deadline = deadline.min(Instant::now() + MID_EPOCH_IMPORT_TIMEOUT);
+    let deadline = deadline.min(Instant::now() + IMAGE_METADATA_TIMEOUT);
     if Instant::now() >= deadline {
         return Err(ImageImportError::Inspect);
     }
@@ -1206,7 +1209,7 @@ impl ImageBackend for DockerImageBackend {
 
     /// Re-verifies the installed manifest digest through the private daemon.
     fn inspect_digest(&mut self, digest: &str) -> Result<String, ImageImportError> {
-        let actual = self.inspect_manifest(digest, Instant::now() + MID_EPOCH_IMPORT_TIMEOUT)?;
+        let actual = self.inspect_manifest(digest, Instant::now() + IMAGE_METADATA_TIMEOUT)?;
         if actual == digest {
             Ok(actual)
         } else {
@@ -4843,6 +4846,7 @@ mod tests {
         inspected: BTreeMap<String, String>,
         imports: Vec<(String, Duration)>,
         fail_import: bool,
+        required_import_time: Duration,
     }
 
     impl ImageBackend for ImportBackend {
@@ -4857,7 +4861,7 @@ mod tests {
             timeout: Duration,
         ) -> Result<(), ImageImportError> {
             self.imports.push((digest.to_string(), timeout));
-            if self.fail_import {
+            if self.fail_import || timeout < self.required_import_time {
                 return Err(ImageImportError::Load);
             }
             self.present.insert(digest.to_string());
@@ -5838,9 +5842,8 @@ mod tests {
             );
         }
         assert!(
-            inspect_source.contains(
-                "self.inspect_manifest(digest, Instant::now() + MID_EPOCH_IMPORT_TIMEOUT)"
-            )
+            inspect_source
+                .contains("self.inspect_manifest(digest, Instant::now() + IMAGE_METADATA_TIMEOUT)")
         );
         assert!(inspect_source.contains("actual == digest"));
         assert!(inspect_source.contains("Err(ImageImportError::DigestMismatch)"));
@@ -5879,9 +5882,27 @@ mod tests {
         );
     }
 
+    /// A cold load that needs one minute must fit the admitted import budget.
+    #[test]
+    fn cold_image_import_allows_a_load_longer_than_metadata_commands() {
+        let (store, digest, root) = admitted_store("cold-import", b"cold image");
+        let mut backend = ImportBackend {
+            required_import_time: Duration::from_secs(60),
+            ..ImportBackend::default()
+        };
+        assert_eq!(
+            import_attempt_image(&store, &digest, &mut backend),
+            Ok(AttemptImportOutcome::Imported)
+        );
+        assert!(backend.present.contains(&digest));
+        drop(store);
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
     #[test]
     fn attempt_import_verifies_store_before_backend_hit_and_is_failure_isolated() {
-        assert_eq!(MID_EPOCH_IMPORT_TIMEOUT, Duration::from_secs(45));
+        assert_eq!(MID_EPOCH_IMPORT_TIMEOUT, Duration::from_secs(300));
+        assert_eq!(super::IMAGE_METADATA_TIMEOUT, Duration::from_secs(45));
         let (store, digest, root) = admitted_store("attempt", b"attempt image");
 
         let mut already_present = ImportBackend {
