@@ -96,7 +96,7 @@ requiredFeatures
 extensions
 ```
 
-`schemaVersion` identifies the major schema family for the record.
+`schemaVersion` identifies the major schema family for the record. Writers emit an explicit marker, and readers check it with the shared retained-format helper before decoding payload fields. New retained formats begin at version 1. An absent or unsupported marker fails closed. Family-local stored schemas define retained meaning independently of release-coupled API and Protocol response schemas; those responses project from admitted stored records. Existing native migration journals govern scalar SQL rows, while independently decoded JSON-bearing rows carry their own version. Original content and opaque native payloads retain exact bytes under their versioned owning descriptors.
 
 `recordType` identifies the record family, such as workspace, thread, turn, item-log-entry, artifact, knowledge-page, source, context-package, aep-snapshot, evidence-bundle, or runtime-evidence.
 
