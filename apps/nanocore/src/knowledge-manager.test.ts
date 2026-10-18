@@ -22,7 +22,9 @@ import {
   RegisterKnowledgeSourceResponseSchema,
   ResolveKnowledgeConflictResponseSchema,
 } from '@openkit/app-api-schemas';
+import { formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -509,7 +511,7 @@ describe('Knowledge Manager answer operation', () => {
             kind: 'retrieval',
             summary: 'Worker repeatedly needed release cadence context.',
             sourceReferences: [
-              'knowledge:kn_demo',
+              workspacePageUri(dataRoot, 'kn_demo'),
               'source:ks_00000000-0000-7ef0-a551-80b39073108f',
             ],
             producer: 'knowledge-manager',
@@ -525,7 +527,10 @@ describe('Knowledge Manager answer operation', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'retrieval',
       summary: 'Worker repeatedly needed release cadence context.',
-      sourceReferences: ['knowledge:kn_demo', 'source:ks_00000000-0000-7ef0-a551-80b39073108f'],
+      sourceReferences: [
+        workspacePageUri(dataRoot, 'kn_demo'),
+        'source:ks_00000000-0000-7ef0-a551-80b39073108f',
+      ],
       scope: 'workspace',
       producer: 'knowledge-manager',
       confidence: 0.75,
@@ -609,7 +614,7 @@ describe('Knowledge Manager answer operation', () => {
             requestId: '00000000-0000-4000-8000-000000000103',
             statement: 'Release cadence is weekly.',
             sourceReferences: [
-              'knowledge:release-plan',
+              workspacePageUri(dataRoot, 'release-plan'),
               'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
             ],
             producer: 'knowledge-manager',
@@ -625,7 +630,7 @@ describe('Knowledge Manager answer operation', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       statement: 'Release cadence is weekly.',
       sourceReferences: [
-        'knowledge:release-plan',
+        workspacePageUri(dataRoot, 'release-plan'),
         'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
       ],
       scope: 'workspace',
@@ -711,7 +716,7 @@ describe('Knowledge Manager answer operation', () => {
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000104',
             subjectReferences: [
-              'knowledge:release-plan',
+              workspacePageUri(dataRoot, 'release-plan'),
               'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
             ],
             sourceReferences: [
@@ -731,7 +736,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(recorded.conflict).toMatchObject({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       subjectReferences: [
-        'knowledge:release-plan',
+        workspacePageUri(dataRoot, 'release-plan'),
         'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
       ],
       sourceReferences: [
@@ -884,7 +889,7 @@ describe('Knowledge Manager answer operation', () => {
           id: 'alpha',
           title: 'Alpha',
           content: `See [Beta](/${knowledge.id}.md).`,
-          sourceReferences: [`knowledge:${knowledge.id}`, `source:${sourceId}`],
+          sourceReferences: [`source:${sourceId}`],
         },
         {
           ...knowledge,
@@ -896,6 +901,30 @@ describe('Knowledge Manager answer operation', () => {
       ],
       [source, { ...source, id: missingId }]
     );
+    // The real import establishes its base before this test-owned Git page can name that base.
+    const importedNotebook = notebook(dataRoot);
+    const importedRevision = importedNotebook.publishedRevision();
+    const alphaContent = importedNotebook
+      .readRevision(importedRevision)
+      .files['alpha.md']!.replace(
+        /^source_refs: .+$/m,
+        `source_refs: ${JSON.stringify([workspacePageUri(dataRoot, knowledge.id), `source:${sourceId}`])}`
+      );
+    const candidateRevision = importedNotebook.prepare({
+      baseRevision: importedRevision,
+      changes: { 'alpha.md': alphaContent },
+      metadata: {
+        summary: 'Bind authored index fixture to its retained Knowledge Base',
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        authority: { kind: 'direct', instructionReference: 'test:knowledge-derived-indexes' },
+        changeRequest: {
+          requestId,
+          inputDigest: `sha256:${createHash('sha256').update(alphaContent).digest('hex')}`,
+        },
+        sourceReferences: [],
+      },
+    });
+    importedNotebook.publish({ baseRevision: importedRevision, candidateRevision });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
@@ -939,7 +968,7 @@ describe('Knowledge Manager answer operation', () => {
         expect.arrayContaining([
           expect.objectContaining({
             conceptId: 'alpha',
-            reference: `knowledge:${knowledge.id}`,
+            reference: workspacePageUri(dataRoot, knowledge.id),
             kind: 'workspace-knowledge',
             resolved: true,
           }),
@@ -1029,7 +1058,7 @@ describe('Knowledge Manager answer operation', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
-      sourceScope: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+      sourceScope: workspacePageScope(dataRoot),
       notebookRevision,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'app-api',
@@ -1043,7 +1072,7 @@ describe('Knowledge Manager answer operation', () => {
       selected: [
         {
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            scopeId: workspacePageScope(dataRoot),
             objectId: 'release-plan',
           },
           revision: notebookRevision,
@@ -1114,7 +1143,7 @@ describe('Knowledge Manager answer operation', () => {
     const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'release cadence',
-        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/release-plan`,
+        pageId: workspacePageUri(dataRoot, 'release-plan'),
         answer: 'Release cadence is fortnightly with a Tuesday review.',
         uncertainty: null,
       },
@@ -1186,7 +1215,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(body.citations).toEqual([
       expect.objectContaining({
         reference: {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: knowledge.id,
         },
         kind: 'project-context',
@@ -1357,13 +1386,13 @@ describe('Knowledge Manager answer operation', () => {
     const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'Cadence',
-        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/cadence`,
+        pageId: workspacePageUri(dataRoot, 'cadence'),
         answer: 'Weekly ship after smoke.',
         uncertainty: null,
       },
       {
         query: 'Weekly',
-        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/cadence`,
+        pageId: workspacePageUri(dataRoot, 'cadence'),
         answer: 'Weekly ship after smoke.',
         uncertainty: null,
       },
@@ -1514,7 +1543,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(body.selected).toEqual([
       {
         reference: {
-          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          scopeId: workspacePageScope(dataRoot),
           objectId: knowledge.id,
         },
         revision: notebook(dataRoot).publishedRevision(),
@@ -2234,3 +2263,13 @@ describe('Knowledge Manager answer operation', () => {
     }
   });
 });
+
+/** Reads the exact base retained by the real Workspace creator or importer. */
+function workspacePageScope(dataRoot: string): string {
+  return `page/workspace/${DEMO_WORKSPACE_ID}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID } })}`;
+}
+
+/** Serializes a Page in that admitted fixture owner without inventing revision or digest evidence. */
+function workspacePageUri(dataRoot: string, objectId: string): string {
+  return formatReferenceUri({ scopeId: workspacePageScope(dataRoot), objectId });
+}
