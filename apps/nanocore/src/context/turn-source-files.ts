@@ -47,7 +47,6 @@ export async function prepareTurnFileSourceInputs(input: {
       scopeId: `input/turn/${workspaceId}/${threadId}/${turnId}`,
       objectId: String(ordinal),
     });
-    const originalSnapshotPath = `originals/turn-inputs/${ordinal}/payload`;
     const packagePath = `sources/turn-inputs/${ordinal}.txt`;
     const path = turnFilePayloadPath(workspaceRoot, threadId, turnId, ordinal);
     const first = await acquire(path, original.sizeBytes, assertCurrent, signal);
@@ -101,7 +100,6 @@ export async function prepareTurnFileSourceInputs(input: {
           byteLength: delivered.byteLength,
           truncated: page.truncated,
           availability: page.truncated ? 'incomplete' : 'available',
-          originalSnapshotPath,
         };
       } else {
         if (!['unsupported', 'invalid_utf8', 'resource_limited'].includes(page.reason))
@@ -128,7 +126,6 @@ export async function prepareTurnFileSourceInputs(input: {
           byteLength: delivered.byteLength,
           truncated: true,
           availability: 'unavailable',
-          originalSnapshotPath,
         };
       }
       assertCurrent();
@@ -150,7 +147,7 @@ export async function prepareTurnFileSourceInputs(input: {
       originalDigest: original.contentDigest,
       byteLength: original.sizeBytes,
       mediaType: original.mediaType,
-      originalSnapshotPath,
+
       packagePath,
       projection,
       deliveredBytes: delivered,
