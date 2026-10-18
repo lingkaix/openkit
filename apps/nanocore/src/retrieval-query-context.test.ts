@@ -14,8 +14,10 @@ import {
   formatReferenceUri,
   PageReferenceSchema,
   RetrievalTraceReferenceSchema,
+  readRetainedV1,
   ScopeQualifiedReferenceSchema,
   WorkspaceRecordSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
@@ -36,6 +38,7 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
+import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
@@ -401,8 +404,16 @@ describe('retrieval query context, references, and query-owned traces', () => {
     );
     const threadBytes = readFileSync(threadPath, 'utf8');
     const turnBytes = readFileSync(turnPath, 'utf8');
-    const parsedThread = KnowledgeRetrievalTraceSchema.parse(JSON.parse(threadBytes));
-    const parsedTurn = KnowledgeRetrievalTraceSchema.parse(JSON.parse(turnBytes));
+    const parsedThread = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(threadBytes), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
+    const parsedTurn = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(turnBytes), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
     const serverId = readDataRootLayoutMarker(fixture.dataRoot).deploymentId;
 
     expect(parsedThread).toMatchObject({
@@ -566,7 +577,9 @@ describe('retrieval query context, references, and query-owned traces', () => {
     const restrictedRevision = fixtureNotebook(fixture).publishedRevision();
     const restrictedDigest = sha256(restrictedPageBytes);
     const originalTrace = KnowledgeRetrievalTraceSchema.parse(
-      JSON.parse(readFileSync(path, 'utf8'))
+      readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
     );
     const restrictedTrace = KnowledgeRetrievalTraceSchema.parse({
       ...originalTrace,
@@ -577,7 +590,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
           : candidate
       ),
     });
-    const restrictedTraceBytes = JSON.stringify(restrictedTrace);
+    const restrictedTraceBytes = JSON.stringify(writeRetainedV1(restrictedTrace));
     writeFileSync(path, restrictedTraceBytes);
 
     let caught: unknown;
@@ -623,7 +636,11 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'retrieval-traces',
       `${id}.json`
     );
-    const original = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+    const original = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
     const selected = original.selected[0]!;
     const foreignReference = {
       scopeId:
@@ -682,7 +699,9 @@ describe('retrieval query context, references, and query-owned traces', () => {
     ];
 
     for (const variant of variants) {
-      const bytes = JSON.stringify(KnowledgeRetrievalTraceSchema.parse(variant.trace));
+      const bytes = JSON.stringify(
+        writeRetainedV1(KnowledgeRetrievalTraceSchema.parse(variant.trace))
+      );
       writeFileSync(path, bytes);
       let caught: unknown;
       try {
@@ -915,7 +934,11 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'retrieval-traces',
       `${id}.json`
     );
-    const original = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+    const original = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
     const targetServerId = readDataRootLayoutMarker(fixture.dataRoot).deploymentId;
     expect(fixture.store.getWorkspace(fixture.workspaceId).importedFrom).toMatchObject({
       sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
@@ -975,7 +998,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
       })),
     });
     expect(imported).not.toHaveProperty('importedFrom');
-    const importedBytes = JSON.stringify(imported);
+    const importedBytes = JSON.stringify(writeRetainedV1(imported));
     writeFileSync(path, importedBytes);
 
     let caught: unknown;

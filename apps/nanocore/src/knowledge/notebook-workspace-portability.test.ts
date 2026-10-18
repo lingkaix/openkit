@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -303,7 +304,10 @@ describe('canonical Notebook Workspace portability', () => {
       query: 'Exact portable note',
       limit: 1,
       pinnedReferences: [
-        { scopeId: `page/workspace/${f.workspace.id}`, objectId: 'notes/portable' },
+        {
+          scopeId: `page/workspace/${f.workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspace.id } })}`,
+          objectId: 'notes/portable',
+        },
       ],
       access: {
         store: f.store,
@@ -359,7 +363,7 @@ describe('canonical Notebook Workspace portability', () => {
       selected: [
         {
           reference: {
-            scopeId: `page/workspace/${imported.workspace.id}`,
+            scopeId: `page/workspace/${imported.workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot: target.dataRoot, scope: { kind: 'workspace', workspaceId: imported.workspace.id } })}`,
             objectId: 'notes/portable',
           },
           revision,

@@ -1321,6 +1321,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const workspaceRoots = materializeWorkspaceRoots({
       config: {
+        schemaVersion: 1,
         id: 'ws_00000000-0000-7000-8000-000000000001',
         name: 'Demo',
         workspace: {

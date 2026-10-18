@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { stableJson } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   verifyWorkspaceExportTree,
@@ -502,7 +503,11 @@ describe('Light App definition catalog', () => {
         workerContextPackageFiles: new Map(),
         workspaceConfig: JSON.stringify({
           schemaVersion: 1,
-          workspace: { name: 'Definition templates', defaultAgentId: null },
+          workspace: {
+            name: 'Definition templates',
+            defaultAgentId: null,
+            defaultKnowledgeBaseId: allocateEntityId('kb'),
+          },
         }),
         workspaceSchema: null,
       },
