@@ -37,6 +37,7 @@ describe('createProviderDiagnostics', () => {
     writeFileSync(
       join(providersRoot, 'required-extension.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: 1,
         displayName: 'Required Extension',
         extensions: {
           vendorFeature: { required: true },

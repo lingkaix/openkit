@@ -967,6 +967,7 @@ function writeAvailabilitySupply(fixture: ProviderSubscriptionFixture): void {
   writeFileSync(
     join(configRoot, 'providers', 'bound.provider.jsonc'),
     JSON.stringify({
+      schemaVersion: 1,
       id: 'bound',
       displayName: 'Bound',
       kind: 'oauth',
@@ -978,6 +979,7 @@ function writeAvailabilitySupply(fixture: ProviderSubscriptionFixture): void {
   writeFileSync(
     join(configRoot, 'providers', 'independent.provider.jsonc'),
     JSON.stringify({
+      schemaVersion: 1,
       id: 'independent',
       displayName: 'Independent',
       kind: 'local',
@@ -1174,6 +1176,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       writeFileSync(
         join(configRoot, 'providers', 'bound.provider.jsonc'),
         JSON.stringify({
+          schemaVersion: 1,
           id: 'bound',
           displayName: 'Bound',
           kind: 'oauth',
