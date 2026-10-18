@@ -441,6 +441,31 @@ describe('captured pending MCP schema identity at grant', () => {
     expectNoExecution(f);
   });
 
+  it('preserves a settled Tool success when completed Policy observation fails', async () => {
+    const f = fixture('tracking', false, true);
+    const review = f.reviewPolicy();
+    let observedCall: unknown;
+    const observe = vi.fn(async () => {
+      observedCall = f.db.sqlite
+        .prepare('SELECT status, completed_at FROM capability_calls WHERE call_id = ?')
+        .get(executionCallIdForRequest(f.record.requestId));
+      throw new Error('Required observation evidence is unavailable.');
+    });
+    const result = await f.grant(undefined, async () => ({ ...(await review()), observe }));
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observedCall).toEqual({ status: 'succeeded', completed_at: expect.any(String) });
+    expect(result).toMatchObject({
+      disposition: 'approved-executed',
+      dispositionReason: 'policy-observation-unavailable',
+      claim: 'finished',
+      heldResult: { content: [{ type: 'text', text: 'approved result' }], isError: false },
+    });
+    expect(f.callTool).toHaveBeenCalledTimes(1);
+    expect(f.db.sqlite.prepare('SELECT status FROM capability_calls').all()).toEqual([
+      { status: 'succeeded' },
+    ]);
+  });
+
   it('keeps the derived execution decision and consumes finite uses only on preparation', async () => {
     const f = fixture('tracking', false, true);
     const statement = { id: 'once-review', digest: `sha256:${'c'.repeat(64)}` };
