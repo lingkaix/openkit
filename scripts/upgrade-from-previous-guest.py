@@ -324,9 +324,10 @@ class Upgrade:
                 and not app["HostConfig"].get("AutoRemove")
                 and app["HostConfig"].get("RestartPolicy", {}).get("Name", "no") in ("", "no"),
                 "app_security_or_restart_policy_unexpected")
-        retained = [Path(self.input["dataRoot"]).resolve()] + [Path(p).resolve() for p in self.layout["retainedPaths"]]
-        require(all(not m["RW"] or any(Path(m["Source"]).resolve().is_relative_to(p) for p in retained)
-                    for m in mounts), "mutable_app_mount_not_retained")
+        for mount in mounts:
+            source = Path(mount["Source"]).resolve(strict=True)
+            require(any((p.is_dir() and source.is_relative_to(p)) or (p.is_file() and source == p)
+                        for p in self.sources), "app_mount_not_retained")
         reserved = json.dumps({"name": ["^/" + APP + "-(reader|previous-retained)$"]})
         require(not b.docker("/containers/json?all=1&filters=" + urllib.parse.quote(reserved)),
                 "reserved_fixture_container_already_exists")

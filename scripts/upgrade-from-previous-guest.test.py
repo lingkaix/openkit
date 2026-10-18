@@ -34,6 +34,7 @@ class StandIn(DRIVER.Boundary):
         self.reader = None
         self.live_app_reads = 0
         self.change_live_app = False
+        self.key_mount = None
         self.carrier = {"Id": "carrier", "State": {"Running": True, "Pid": 123}}
 
     def namespace(self, pid):
@@ -94,7 +95,7 @@ class StandIn(DRIVER.Boundary):
                     "Config": {"Env": ["PRIVATE=never-print", "BAKED=" + self.current]},
                     "HostConfig": {"NetworkMode": "container:lrt-p14-network"},
                     "Mounts": [{"Destination": "/data/openkit", "Source": self.input["dataRoot"],
-                                "Type": "bind", "RW": True}]}
+                                "Type": "bind", "RW": True}] + ([self.key_mount] if self.key_mount else [])}
         if "/stop?" in path:
             self.events.append("app-stop")
             self.running = False
@@ -333,6 +334,16 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             DRIVER.run_upgrade(self.input, self.boundary)
         self.assertEqual(self.boundary.events, [])
+
+    def test_unretained_readonly_fixture_key_blocks_before_stop(self):
+        """A private read-only Vault key still requires complete retained custody."""
+        key = Path(self.input["preparedLayout"]["privateRoot"]) / "fixture-vault-key"
+        key.write_bytes(b"synthetic-fixture-key")
+        self.boundary.key_mount = {"Destination": "/p14-key", "Source": str(key), "Type": "bind", "RW": False}
+        result = DRIVER.run_upgrade(self.input, self.boundary)
+        self.assertFalse(result["passed"])
+        self.assertNotIn("host-stop", self.boundary.events)
+        self.assertNotIn("candidate-mutation", self.boundary.events)
 
 
 if __name__ == "__main__":
