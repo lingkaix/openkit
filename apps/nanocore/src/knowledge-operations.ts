@@ -1719,10 +1719,7 @@ export function createKnowledgeOperationImplementations(
           },
         });
         return ListKnowledgeEntriesResponseSchema.parse({
-          knowledgeBaseId: readDefaultKnowledgeBaseId({
-            dataRoot,
-            scope: { kind: 'workspace', workspaceId },
-          }),
+          knowledgeBaseId: snapshot.knowledgeBaseId,
           notebookRevision: snapshot.notebookRevision,
           items: snapshot.pages.map(({ path, id, content }) => ({
             ...parseOwnedKnowledgeEntry(path, id, content),

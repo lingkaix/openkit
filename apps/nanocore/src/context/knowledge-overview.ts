@@ -87,7 +87,7 @@ export function prepareKnowledgeOverview(input: KnowledgeOverviewInput): Prepare
         scope === 'server'
           ? { kind: 'server' as const }
           : { kind: 'workspace' as const, workspaceId: input.workspaceId };
-      const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
+      const knowledgeBaseId = selected.knowledgeBaseId;
       const page = selected.pages[0];
       if (!page) throw new Error('Knowledge overview unavailable.');
       const source = Buffer.from(redactInternalAgentText(page.content));
