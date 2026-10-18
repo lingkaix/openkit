@@ -14,7 +14,6 @@ import {
   KnowledgeObservationSchema,
   KnowledgeRetrievalTraceSchema,
   type ProductRetrievalTrace,
-  RuntimeEvidenceRecordSchema,
   StagedWorkspaceReviewReaderSchema,
   StagedWorkspaceReviewSchema,
   WorkerOutputManifestReaderSchema,
@@ -128,6 +127,7 @@ import {
   StoredTaskTerminalFactV1Schema,
 } from '../runtime/goal-retained-v1.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
+import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import {
   createWorkerRuntimeProvenanceBundleId,
   remintWorkerRuntimeProvenanceIndex,
@@ -191,7 +191,7 @@ type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
 type AuditEvent = import('zod').infer<typeof AuditEventSchema>;
 type EvidenceBundleRecord = z.infer<typeof EvidenceBundleRecordSchema>;
-type RuntimeEvidenceRecord = z.infer<typeof RuntimeEvidenceRecordSchema>;
+type RuntimeEvidenceRecord = z.infer<typeof StoredRuntimeEvidenceV1Schema>;
 type UsageRecord = import('zod').infer<typeof UsageRecordSchema>;
 type WorkspaceInputSnapshot = z.infer<typeof WorkspaceInputSnapshotSchema>;
 type WorkspaceMaterializationRecord = z.infer<typeof WorkspaceMaterializationRecordSchema>;
@@ -240,10 +240,7 @@ const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.safeExtend
     EvidenceBundleRecordSchema.shape.redactedEvidenceRefs.element.strip()
   ),
 }).strip();
-const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.safeExtend({
-  uploadManifest: z.array(RuntimeEvidenceRecordSchema.shape.uploadManifest.element.strip()),
-  downloadManifest: z.array(RuntimeEvidenceRecordSchema.shape.downloadManifest.element.strip()),
-}).strip();
+
 const ImportedUsageRecordSchema = UsageRecordSchema.strip();
 const ImportedKnowledgeObservationSchema = KnowledgeObservationSchema.strip();
 const ImportedKnowledgeClaimSchema = KnowledgeClaimSchema.strip();
@@ -2025,7 +2022,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
   const exportedRuntimeEvidence = readOptionalImportJsonl(
     context.files,
     'records/runtime-evidence.jsonl'
-  ).map((record) => ImportedRuntimeEvidenceRecordSchema.parse(record));
+  ).map((record) => StoredRuntimeEvidenceV1Schema.parse(record));
   if (
     new Set(exportedEvidenceBundles.map((bundle) => bundle.id)).size !==
     exportedEvidenceBundles.length
@@ -2297,7 +2294,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         .map((id) => rawProvenancePackageIds.get(id))
         .find((id) => id !== undefined);
 
-    return RuntimeEvidenceRecordSchema.parse({
+    return StoredRuntimeEvidenceV1Schema.parse({
       ...parsed,
       ...(targetProvenancePackageId
         ? { id: createWorkerRuntimeProvenanceEvidenceId(targetProvenancePackageId) }

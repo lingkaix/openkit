@@ -4,11 +4,13 @@ import {
   RuntimeEvidenceRecordSchema,
   type WorkspaceMaterializationRecord,
 } from '@openkit/app-api-schemas';
-
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import type { WorkspaceDb } from '../storage/db.js';
+import { StoredRuntimeEvidenceV1Schema } from './runtime-evidence-v1.js';
 import type { WorkerCheckpointRecord } from './worker-checkpoints.js';
 
 interface RuntimeEvidenceRow {
+  readonly schemaVersion: unknown;
   readonly runtime_evidence_id: string;
   readonly workspace_id: string;
   readonly thread_id: string | null;
@@ -46,8 +48,6 @@ interface RuntimeEvidenceRow {
   readonly completed_at: string | null;
   readonly collected_at: string | null;
 }
-
-const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.strip();
 
 /** Input for one automatic worker runtime provenance evidence record. */
 export interface RecordWorkerRuntimeProvenanceEvidenceInput {
@@ -362,7 +362,7 @@ export function listWorkspaceRuntimeEvidence(
   return (
     workspaceDb.sqlite
       .prepare(
-        `SELECT *
+        `SELECT schema_version AS schemaVersion, *
         FROM runtime_evidence
         WHERE workspace_id = ?
         ORDER BY created_at, runtime_evidence_id`
@@ -382,7 +382,7 @@ export function importWorkspaceRuntimeEvidence(
   records: readonly RuntimeEvidenceRecord[]
 ): void {
   for (const record of records) {
-    insertRuntimeEvidence(workspaceDb, ImportedRuntimeEvidenceRecordSchema.parse(record));
+    insertRuntimeEvidence(workspaceDb, StoredRuntimeEvidenceV1Schema.parse(record));
   }
 }
 
@@ -472,7 +472,8 @@ function checkpointFailureSummary(diagnosticsSummary: string | null): string | n
 }
 
 function runtimeEvidenceFromRow(row: RuntimeEvidenceRow): RuntimeEvidenceRecord {
-  return RuntimeEvidenceRecordSchema.parse({
+  readRetainedV1(row, () => undefined);
+  return StoredRuntimeEvidenceV1Schema.parse({
     id: row.runtime_evidence_id,
     workspaceId: row.workspace_id,
     threadId: row.thread_id,
@@ -514,10 +515,13 @@ function runtimeEvidenceFromRow(row: RuntimeEvidenceRow): RuntimeEvidenceRecord 
 
 function insertRuntimeEvidence(
   workspaceDb: WorkspaceDb,
-  record: RuntimeEvidenceRecord
+  input: RuntimeEvidenceRecord
 ): RuntimeEvidenceRecord {
+  const record = StoredRuntimeEvidenceV1Schema.parse(input);
   const existingRow = workspaceDb.sqlite
-    .prepare('SELECT * FROM runtime_evidence WHERE runtime_evidence_id = ?')
+    .prepare(
+      'SELECT schema_version AS schemaVersion, * FROM runtime_evidence WHERE runtime_evidence_id = ?'
+    )
     .get(record.id) as RuntimeEvidenceRow | undefined;
   if (existingRow) {
     const existing = runtimeEvidenceFromRow(existingRow);
@@ -529,6 +533,7 @@ function insertRuntimeEvidence(
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO runtime_evidence (
+        schema_version,
         runtime_evidence_id,
         workspace_id,
         thread_id,
@@ -565,9 +570,10 @@ function insertRuntimeEvidence(
         started_at,
         completed_at,
         collected_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       record.id,
       record.workspaceId,
       record.threadId,
