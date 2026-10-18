@@ -56,12 +56,9 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     const stage = { observe: 'completed', advise: 'propose', transform: 'propose', gate: 'decide' };
     if (statement.stage !== stage[statement.mode])
       throw new Error('Policy mode is at the wrong stage.');
-    // I16 has no retained replacement body owner. Do not claim a completed
-    // transformation from a digest-only summary or expose argument bodies.
-    if (
-      statement.mode === 'transform' ||
-      (statement.mode === 'advise' && statement.state === 'active')
-    )
+    // I16 has no resolvable safe output owner for advice or replacement bodies.
+    // Refuse both active and shadow admission before any proposal can be disclosed.
+    if (statement.mode === 'transform' || statement.mode === 'advise')
       throw new Error('I16 safe participant output reference is unavailable.');
     if (statement.mode === 'observe' && statement.lifetime.uses !== undefined)
       throw new Error('Finite-use completed observation is unavailable.');

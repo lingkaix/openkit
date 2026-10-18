@@ -155,12 +155,14 @@ describe('native Policy statement owner', () => {
   });
 
   it('refuses active advice and transform without a safe participant-output owner', () => {
-    for (const mode of ['advise', 'transform'] as const)
-      expect(() =>
-        validatePolicyDocument({
-          schemaVersion: 1,
-          statements: [{ ...binding, mode, stage: 'propose' }],
-        })
-      ).toThrow(/safe participant output reference/);
+    for (const mode of ['advise', 'transform'] as const) {
+      for (const state of ['active', 'shadow'] as const)
+        expect(() =>
+          validatePolicyDocument({
+            schemaVersion: 1,
+            statements: [{ ...binding, mode, state, stage: 'propose' }],
+          })
+        ).toThrow(/safe participant output reference/);
+    }
   });
 });
