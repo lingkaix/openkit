@@ -67,6 +67,7 @@ import {
   deriveEntityId,
   type EntityKind,
   ItemSchema,
+  KnowledgeBaseIdSchema,
   KnowledgeEntrySchema,
   MaterialIdSchema,
   PermissionDecisionIdSchema,
@@ -85,6 +86,7 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
@@ -568,6 +570,8 @@ export interface ReadWorkspaceImportSnapshotInput {
 
 /** Importable record snapshot extracted from one workspace export. */
 export interface WorkspaceImportSnapshot {
+  /** One new default base, retained in the imported scope configuration and every remapped reference. */
+  defaultKnowledgeBaseId: string;
   /** Request-local completion under the existing initialized staging root; never serialized or a read grant. */
   finalizeNotebookKnowledge?: (binding: {
     notebookRevision: string;
@@ -804,6 +808,10 @@ interface ImportRemintContext {
   report: WorkspaceImportDryRunReport;
   /** Workspace id assigned to reconstructed records. */
   targetWorkspaceId: string;
+  /** Exact archived default base; imports never infer another base from a matching page name. */
+  sourceKnowledgeBaseId: string;
+  /** Independent target base allocated once for this fresh imported scope. */
+  targetKnowledgeBaseId: string;
   /** Current target Server identity, required when the export contains retrieval traces. */
   targetServerId?: string;
   /** Parsed source Material owners. */
@@ -923,6 +931,14 @@ export function readWorkspaceImportSnapshot(
     manifestDigest: input.verified.manifestDigest,
     report,
     targetWorkspaceId: input.targetWorkspaceId,
+    sourceKnowledgeBaseId: KnowledgeBaseIdSchema.parse(
+      WorkspaceConfigSchema.parse(
+        parseJsoncObject(
+          requiredExportFile(input.verified.fileContents, 'workspace-files/config/workspace.jsonc')
+        )
+      ).workspace.defaultKnowledgeBaseId
+    ),
+    targetKnowledgeBaseId: allocateEntityId('kb'),
     ...(input.targetServerId ? { targetServerId: input.targetServerId } : {}),
     sourceWorkspaceMaterials,
     sourceWorkspaceMaterialRevisions,
@@ -1056,6 +1072,7 @@ export function readWorkspaceImportSnapshot(
     }
   }
   const knowledgeReferenceReplacements = [
+    [context.sourceKnowledgeBaseId, context.targetKnowledgeBaseId] as const,
     ...context.contextPackageReferences,
     ...context.turnIds,
     ...context.itemIds,
@@ -1145,6 +1162,7 @@ export function readWorkspaceImportSnapshot(
 
   return {
     artifactPayloadFiles,
+    defaultKnowledgeBaseId: context.targetKnowledgeBaseId,
     finalizeNotebookKnowledge: (binding) => {
       workResources.finalizeNotebookKnowledge(binding);
       agentEnvironmentPackageSnapshots.splice(
@@ -4189,6 +4207,7 @@ function portableReferenceReplacements(
 ): readonly (readonly [string, string])[] {
   const replacementMap = new Map<string, string>([
     [context.report.exportedWorkspaceId, context.targetWorkspaceId],
+    [context.sourceKnowledgeBaseId, context.targetKnowledgeBaseId],
   ]);
   for (const idMap of [
     context.contextPackageReferences,
@@ -4220,10 +4239,13 @@ function remintImportedPageScope(scopeId: string, context: ImportRemintContext):
     throw new Error('Portable retrieval trace source scope is invalid.');
   }
   if (scope.kind === 'workspace') {
-    if (scope.workspaceId !== context.report.exportedWorkspaceId) {
+    if (
+      scope.workspaceId !== context.report.exportedWorkspaceId ||
+      scope.knowledgeBaseId !== context.sourceKnowledgeBaseId
+    ) {
       throw new Error('Portable retrieval trace belongs to another Workspace source.');
     }
-    return `page/workspace/${context.targetWorkspaceId}`;
+    return `page/workspace/${context.targetWorkspaceId}/${context.targetKnowledgeBaseId}`;
   }
   return scopeId;
 }
@@ -4330,15 +4352,19 @@ function readRetrievalTraceImportState(
     }
     const targetSourceScope = remintImportedPageScope(sourceTrace.sourceScope, context);
     const userSelection = sourceTrace.retrievalParameters.sourceScope === 'user';
-    const expectedSourceScope =
-      sourceTrace.retrievalParameters.sourceScope === 'workspace'
-        ? `page/workspace/${context.report.exportedWorkspaceId}`
+    const pageOwner = parseReferenceScope(sourceTrace.sourceScope);
+    const validSourceOwner =
+      pageOwner?.family === 'page' &&
+      (sourceTrace.retrievalParameters.sourceScope === 'workspace'
+        ? pageOwner.kind === 'workspace' &&
+          pageOwner.workspaceId === context.report.exportedWorkspaceId &&
+          pageOwner.knowledgeBaseId === context.sourceKnowledgeBaseId
         : userSelection
-          ? sourceTrace.queryContext.actor.kind === 'user'
-            ? `page/user/${sourceTrace.queryContext.actor.id}`
-            : null
-          : 'page/server';
-    if (sourceTrace.sourceScope !== expectedSourceScope) {
+          ? pageOwner.kind === 'user' &&
+            sourceTrace.queryContext.actor.kind === 'user' &&
+            pageOwner.userId === sourceTrace.queryContext.actor.id
+          : pageOwner.kind === 'server');
+    if (!validSourceOwner) {
       throw new Error('Portable retrieval trace source selection is contradictory.');
     }
     if (
@@ -4462,7 +4488,7 @@ function readRetrievalTraceImportState(
         ...sourceTrace.queryContext,
         // User and Server selections keep their originating authority; import cannot turn them into local grants.
         serverId:
-          userSelection || sourceTrace.sourceScope === 'page/server'
+          userSelection || pageOwner?.kind === 'server'
             ? sourceTrace.queryContext.serverId
             : context.targetServerId,
         workspaceId: context.targetWorkspaceId,
@@ -4536,6 +4562,8 @@ function remintImportedNotebookPages(
     pages,
     sourceWorkspaceId: context.report.exportedWorkspaceId,
     targetWorkspaceId: context.targetWorkspaceId,
+    sourceKnowledgeBaseId: context.sourceKnowledgeBaseId,
+    targetKnowledgeBaseId: context.targetKnowledgeBaseId,
     rewriteReferences: (references) =>
       rewritePortableReferences(references, portableReferenceReplacements(context)),
   });
@@ -4657,7 +4685,12 @@ function readPortableFileStateFromExport(
     const workspacePath = exportPath.slice('workspace-files/'.length);
     assertPortableWorkspaceFilePath(workspacePath);
     if (workspacePath === 'config/workspace.jsonc') {
-      workspaceConfig = content;
+      workspaceConfig = applyEdits(
+        content,
+        modify(content, ['workspace', 'defaultKnowledgeBaseId'], context.targetKnowledgeBaseId, {
+          formattingOptions: { insertSpaces: true, tabSize: 2 },
+        })
+      );
     } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
     } else if (workspacePath.startsWith('knowledge/pages/')) {
