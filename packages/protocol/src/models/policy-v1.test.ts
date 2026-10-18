@@ -125,10 +125,13 @@ describe('retained Policy version-one contracts', () => {
       mount: 'work',
       pathPrefix: 'inputs/images',
       mode: 'read-only',
-      audience: principal,
-      expiresAt: '2026-10-18T12:00:00Z',
     };
     expect(PolicyGrantV1Schema.safeParse(lease).success).toBe(true);
+    expect(PolicyGrantV1Schema.safeParse({ ...lease, pathPrefix: '' }).success).toBe(true);
+    expect(PolicyGrantV1Schema.safeParse({ ...lease, audience: principal }).success).toBe(false);
+    expect(
+      PolicyGrantV1Schema.safeParse({ ...lease, expiresAt: '2026-10-18T12:00:00Z' }).success
+    ).toBe(false);
     expect(PolicyGrantV1Schema.safeParse({ ...lease, pathPrefix: '../private' }).success).toBe(
       false
     );

@@ -911,12 +911,17 @@ describe('central Workspace operation authorizer', () => {
       expect(check).toThrow(callbackError);
     capture.mockClear();
     const table = token ? 'openkit_access_tokens' : 'workspace_members';
-    fixture.coreDb.sqlite.exec(`ALTER TABLE ${table} RENAME TO unreadable_authority`);
+    const readError = new Error(`Authority read unavailable: ${table}`);
+    const prepare = fixture.coreDb.sqlite.prepare.bind(fixture.coreDb.sqlite);
+    const unavailable = vi.spyOn(fixture.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+      if (sql.includes(table)) throw readError;
+      return prepare(sql);
+    });
     try {
       for (const check of evaluate()) expect(check()).toBeNull();
-      for (const check of evaluate(strict)) expect(check).toThrow(`no such table: ${table}`);
+      for (const check of evaluate(strict)) expect(check).toThrow(readError);
     } finally {
-      fixture.coreDb.sqlite.exec(`ALTER TABLE unreadable_authority RENAME TO ${table}`);
+      unavailable.mockRestore();
     }
     if (token) {
       revokeOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId);

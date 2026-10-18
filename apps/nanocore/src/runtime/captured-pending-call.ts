@@ -334,7 +334,7 @@ function readCapturedMediationSource(
     source.ownerScope !== 'workspace' ||
     source.workspaceId !== record.workspaceId ||
     source.action !== 'tool.use' ||
-    source.result !== 'require_escalation' ||
+    !['require_escalation', 'require_approval'].includes(source.result) ||
     source.mediation.role !== 'final' ||
     source.mediation.point !== 'mcp.call-tool@decide' ||
     source.mediation.kernel?.effect !== 'allow' ||

@@ -210,14 +210,13 @@ describe('administration catalog configuration', () => {
           id: 'storage-lease',
           kind: 'permission' as const,
           effect: 'allow' as const,
+          lifetime: { ...fields.lifetime, notAfter: '2999-01-01T00:00:00Z' },
           grant: {
             kind: 'storage-lease' as const,
             knowledgeBaseId: 'registered-kb',
             mount: 'work',
             pathPrefix: 'inputs',
             mode: 'read-only' as const,
-            audience: principal,
-            expiresAt: '2999-01-01T00:00:00Z',
           },
         },
         {
@@ -255,6 +254,14 @@ describe('administration catalog configuration', () => {
       diff: { added: ['tool-rule', 'storage-lease', 'agent-worker'], changed: [], removed: [] },
     });
     expect(candidate.after.statements[2].creator).toEqual(principal);
+    expect(candidate.after.statements[1].grant).toEqual({
+      kind: 'storage-lease',
+      knowledgeBaseId: 'registered-kb',
+      mount: 'work',
+      pathPrefix: 'inputs',
+      mode: 'read-only',
+    });
+    expect(candidate.after.statements[1].lifetime.notAfter).toBe('2999-01-01T00:00:00Z');
     expect(
       candidate.after.statements.every(
         (statement: { state: string }) => statement.state === 'inactive'

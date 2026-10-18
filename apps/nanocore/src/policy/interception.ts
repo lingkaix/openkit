@@ -46,6 +46,8 @@ export interface InterceptionInput {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
   readonly authorizationRevision: string;
+  /** Existing catalog condition, pinned by the proposal's catalog revision. */
+  readonly requiresHumanApproval?: boolean;
   /** Exact human response context supplied only by the existing captured approval owner. */
   readonly humanApproval?: {
     readonly requestId: string;
@@ -93,6 +95,12 @@ export class PolicyInterception {
     const advice: unknown[] = [];
     const results: PermissionDecisionResult[] = [];
     const used: PolicyBindingV1[] = [];
+    const humanApproved =
+      input.humanApproval &&
+      input.humanApproval.binding.proposalDigest === proposalDigest &&
+      input.humanApproval.binding.policyRevision === policyRevision &&
+      input.humanApproval.binding.authorizationRevision === input.authorizationRevision;
+    if (input.requiresHumanApproval && !humanApproved) results.push('require_approval');
     for (const mode of ['transform', 'advise', 'gate'] as const) {
       for (const binding of bindings.filter((value) => value.mode === mode)) {
         if (
@@ -107,11 +115,6 @@ export class PolicyInterception {
         invocations.push(evaluated.reference);
         if (binding.state === 'shadow') continue;
         used.push(binding);
-        const humanApproved =
-          input.humanApproval &&
-          input.humanApproval.binding.proposalDigest === proposalDigest &&
-          input.humanApproval.binding.policyRevision === policyRevision &&
-          input.humanApproval.binding.authorizationRevision === input.authorizationRevision;
         results.push(
           evaluated.result === 'require_escalation' && humanApproved ? 'allow' : evaluated.result
         );
@@ -150,6 +153,7 @@ export class PolicyInterception {
       ...decisionInput(input, policyRevision),
       decisionId,
       result,
+      ...(result === 'require_approval' ? { requiredApprovalKind: 'permission' } : {}),
       reasonCode:
         result === 'deny'
           ? kernel?.effect === 'allow' || kernel?.reasons.some(({ code }) => code === 'restriction')

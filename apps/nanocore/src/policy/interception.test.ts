@@ -259,6 +259,40 @@ describe('bounded native Policy pipeline', () => {
     });
   });
 
+  it('rechecks the existing catalog approval against the exact logical proposal and revisions', async () => {
+    const input = { ...fixture([]), requiresHumanApproval: true };
+    const pipeline = new PolicyInterception();
+    const pending = await pipeline.decide(input);
+    expect(pending.result).toBe('require_approval');
+    const approved = {
+      ...input,
+      humanApproval: {
+        requestId: 'ap_catalog_fixture',
+        sourceDecisionId: pending.decisionId,
+        deciderId: userId,
+        binding: {
+          proposalDigest: pending.proposalDigest,
+          policyRevision: pending.policyRevision,
+          authorizationRevision: pending.authorizationRevision,
+        },
+      },
+    };
+    expect((await pipeline.decide(approved)).result).toBe('allow');
+    expect(
+      (await pipeline.decide({ ...approved, authorizationRevision: policyDigest('changed') }))
+        .result
+    ).toBe('require_approval');
+    expect(
+      listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
+        (row) => row.decisionId === pending.decisionId
+      )
+    ).toMatchObject({
+      result: 'require_approval',
+      requiredApprovalKind: 'permission',
+      mediation: { kernel: { effect: 'allow' } },
+    });
+  });
+
   it('retains shadow denials and failed observations without changing the Kernel allow', async () => {
     const input = fixture([
       { ...binding('shadow'), state: 'shadow' },

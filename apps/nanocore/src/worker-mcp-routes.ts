@@ -1291,6 +1291,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   ) {
     assertValidMcpToolArguments(currentSnapshot!.tools, input.toolName, input.arguments);
     try {
+      // Returning an existing request releases no effect; its human response reruns Policy.
       const duplicate = preflightPendingToolRequest(input.workspaceDb.sqlite, pendingInput);
       if (duplicate) return pendingToolResult('pending-approval', duplicate.requestId);
     } catch (error) {
@@ -1396,53 +1397,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       throw new WorkerControlGatewayError('mcp-tool-not-found', 'MCP tool is unavailable.', 404);
     }
     if (approvalRequired) {
-      if (!currentSnapshot) {
+      if (!currentSnapshot)
         throw new WorkerControlGatewayError(
           'mcp-schema-drift',
           'MCP tool schema is unavailable.',
           409
         );
-      }
-      stampCapabilityCallSchemaSnapshot({
-        callId: call.id,
-        schemaSnapshotId: currentSnapshot.schemaSnapshotId,
-        workspaceDb: input.workspaceDb,
-      });
       assertValidMcpToolArguments(currentSnapshot.tools, input.toolName, input.arguments);
-      const raised = raiseRecordedPendingRequest(
-        input.input.store,
-        input.workspaceDb.sqlite,
-        pendingInput!
-      );
-      const requestItemExists = input.input.store
-        .listAllItems()
-        .some((item) => item.id === raised.requestItemId);
-      if (!requestItemExists) {
-        input.input.store.createItem({
-          id: raised.requestItemId,
-          workspaceId: raised.workspaceId,
-          threadId: raised.threadId,
-          turnId: raised.raisingTurnId,
-          status: 'completed',
-          createdAt: now,
-          completedAt: now,
-          type: 'approval-request',
-          approvalRequestId: raised.requestId,
-          title,
-          description,
-          kind: 'permission',
-        });
-      }
-      publishTerminalItem = false;
-      finishCapabilityCall({
-        callId: call.id,
-        errorCode: 'mcp-denied',
-        status: 'denied',
-        workspaceDb: input.workspaceDb,
-      });
-      terminalCommitted = true;
-      status = 'declined';
-      return pendingToolResult('pending-approval', raised.requestId);
     }
     policyInput = mcpInterceptionInput(input, call);
     const policyDecision = await input.interception.decide(policyInput);
@@ -1810,7 +1771,7 @@ export async function reviewCapturedMcpPolicy(input: {
   if (!row) return null;
   const source = readPermissionDecisionRowV1(row);
   if (
-    source.result !== 'require_escalation' ||
+    !['require_escalation', 'require_approval'].includes(source.result) ||
     source.mediation?.role !== 'final' ||
     source.mediation.operation !== 'mcp.call-tool'
   )
@@ -2012,6 +1973,7 @@ function mcpInterceptionInput(
     document,
     proposal,
     authorizationRevision,
+    requiresHumanApproval: input.resolved.approvalRequiredTools.includes(input.toolName),
     authorCurrent,
     anchorCurrent,
     participantAuthorized: (binding) =>

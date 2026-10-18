@@ -205,9 +205,6 @@ export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
           'Lease prefix must be a normalized relative path.'
         ),
       mode: z.enum(['read-only', 'staged-write']),
-      audience: PolicyPrincipalV1Schema,
-      /** The earliest of lease expiry, statement lifetime and current issuer authority applies. */
-      expiresAt: z.iso.datetime({ offset: true }),
     })
     .strict(),
 ]);
