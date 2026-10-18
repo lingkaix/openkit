@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { type ActorRef, WorkspaceIdSchema } from '@openkit/protocol';
+import { type ActorRef, KnowledgeBaseIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { FsStore } from '../lib/store.js';
@@ -82,6 +83,11 @@ export function prepareKnowledgeOverview(input: KnowledgeOverviewInput): Prepare
     };
     try {
       const selected = admitted();
+      const ownerScope =
+        scope === 'server'
+          ? { kind: 'server' as const }
+          : { kind: 'workspace' as const, workspaceId: input.workspaceId };
+      const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
       const page = selected.pages[0];
       if (!page) throw new Error('Knowledge overview unavailable.');
       const source = Buffer.from(redactInternalAgentText(page.content));
@@ -90,11 +96,15 @@ export function prepareKnowledgeOverview(input: KnowledgeOverviewInput): Prepare
       const content = source.subarray(0, end).toString('utf8');
       checks.push(() => {
         const current = admitted(selected.notebookRevision);
-        if (current.pages[0]?.contentDigest !== page.contentDigest)
+        if (
+          readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope }) !== knowledgeBaseId ||
+          current.pages[0]?.contentDigest !== page.contentDigest
+        )
           throw new Error('Knowledge overview is no longer available.');
       });
       return {
         scope,
+        knowledgeBaseId,
         path: 'index.md',
         notebookRevision: selected.notebookRevision,
         contentDigest: page.contentDigest,
@@ -142,8 +152,15 @@ export function assertPortableKnowledgeOverview(text: string): void {
         typeof entry.scope === 'string' &&
         entry.scope.startsWith('workspace:') &&
         WorkspaceIdSchema.safeParse(entry.scope.slice('workspace:'.length)).success
-      )
+      ) {
+        if (
+          !('unavailable' in entry && entry.unavailable === true) &&
+          (!('knowledgeBaseId' in entry) ||
+            !KnowledgeBaseIdSchema.safeParse(entry.knowledgeBaseId).success)
+        )
+          throw new Error();
         continue;
+      }
       if (
         entry.scope === 'server' &&
         'unavailable' in entry &&
@@ -156,4 +173,46 @@ export function assertPortableKnowledgeOverview(text: string): void {
   } catch {
     throw new Error('Knowledge overview is not portable in a Workspace bundle.');
   }
+}
+
+/** Rebinds only owned overview metadata after the exact target index is published; preview bytes stay unchanged. */
+export function remintPortableKnowledgeOverview(input: {
+  readonly text: string;
+  readonly sourceWorkspaceId: string;
+  readonly sourceKnowledgeBaseId: string;
+  readonly targetWorkspaceId: string;
+  readonly targetKnowledgeBaseId: string;
+  readonly notebookRevision: string;
+  readonly indexContentDigest: string;
+}): string {
+  assertPortableKnowledgeOverview(input.text);
+  const projection = JSON.parse(
+    input.text.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
+  ) as {
+    overviews: Record<string, unknown>[];
+  };
+  const overviews = projection.overviews.map((entry) => {
+    if (entry.scope === 'server') return entry;
+    if (entry.scope !== `workspace:${input.sourceWorkspaceId}`)
+      throw new Error('Portable overview belongs to another Workspace.');
+    const scope = `workspace:${input.targetWorkspaceId}`;
+    if (entry.unavailable === true) return { scope, unavailable: true };
+    if (
+      entry.knowledgeBaseId !== input.sourceKnowledgeBaseId ||
+      entry.contentDigest !== input.indexContentDigest
+    )
+      throw new Error(
+        'Portable Knowledge overview requires unavailable historical notebook closure.'
+      );
+    return {
+      ...entry,
+      scope,
+      knowledgeBaseId: input.targetKnowledgeBaseId,
+      notebookRevision: input.notebookRevision,
+    };
+  });
+  const encoded = JSON.stringify({ ...projection, overviews })
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
+  return `<knowledge_overviews>${encoded}</knowledge_overviews>`;
 }

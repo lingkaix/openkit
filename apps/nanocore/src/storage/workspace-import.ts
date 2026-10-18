@@ -104,6 +104,7 @@ import {
   reconstructImportedWorkspaceCatalog,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { remintPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { PDF_TEXT_LAYER_LIMITS } from '../context/pdf-text-layer.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
@@ -2886,8 +2887,10 @@ function readWorkResourceImportState(
         };
       }
     );
+    const sourceKnowledgeOverview = context.files.get(`${sourcePackageRoot}/knowledge-overview.md`);
     const sourcePackage = createWorkerContextPackageFiles({
       sourceFiles,
+      knowledgeOverview: sourceKnowledgeOverview,
       contextBudgetTokens: sourceManifest.contextBudgetTokens,
       includedItemIds: sourceTrace.includedItemIds,
       knowledgeSelections,
@@ -3029,8 +3032,30 @@ function readWorkResourceImportState(
       notebookRevision: string;
       nativeKnowledgePages: ReadonlyMap<string, string>;
     }) => {
+      if (sourceKnowledgeOverview !== undefined && !binding)
+        throw new Error('Portable Knowledge overview requires the published target Notebook.');
       const targetPackage = createWorkerContextPackageFiles({
         sourceFiles: targetSourceFiles,
+        knowledgeOverview:
+          sourceKnowledgeOverview === undefined
+            ? undefined
+            : remintPortableKnowledgeOverview({
+                text: sourceKnowledgeOverview,
+                sourceWorkspaceId: context.report.exportedWorkspaceId,
+                sourceKnowledgeBaseId: context.sourceKnowledgeBaseId,
+                targetWorkspaceId: context.targetWorkspaceId,
+                targetKnowledgeBaseId: context.targetKnowledgeBaseId,
+                notebookRevision: binding!.notebookRevision,
+                indexContentDigest: `sha256:${createHash('sha256')
+                  .update(
+                    requiredMapValue(
+                      binding!.nativeKnowledgePages,
+                      'knowledge/pages/index.md',
+                      'Notebook index'
+                    )
+                  )
+                  .digest('hex')}`,
+              }),
         contextBudgetTokens: sourceManifest.contextBudgetTokens,
         includedItemIds: sourceTrace.includedItemIds.map((id) =>
           requiredMapValue(context.itemIds, id, 'included Item')
@@ -3275,7 +3300,10 @@ function readWorkResourceImportState(
           workspaceId: context.targetWorkspaceId,
         });
     };
-    if (sourceTrace.knowledgeSelections.some((entry) => entry.projection)) {
+    if (
+      sourceKnowledgeOverview !== undefined ||
+      sourceTrace.knowledgeSelections.some((entry) => entry.projection)
+    ) {
       notebookFinalizers.push((binding) => finalizeTargetPackage(binding));
     } else finalizeTargetPackage();
   }
