@@ -497,13 +497,42 @@ export async function runPhase(phase, input) {
         'utf8'
       )
     );
-    if (phase === 'worker')
+    const { captureIdleNativeBinding, checkIdleNativeBinding } = await import(
+      './upgrade-from-previous-sql-corpus.mjs'
+    );
+    if (phase === 'worker') {
       assert.deepEqual(baseline.candidate, input.candidate, 'Candidate artifact pins changed.');
-    return checkWorker({
+      await checkIdleNativeBinding(input, baseline.idleNativeBinding);
+    }
+    const worker = await checkWorker({
       ...input,
       workspaceId: baseline.selectors.workspaceId,
       token: process.env.OPENKIT_UPGRADE_ADMIN_TOKEN,
     });
+    try {
+      if (phase === 'worker-before') {
+        const idleNativeBinding = await captureIdleNativeBinding(input, worker);
+        await writeFile(
+          `${input.baseline}.selectors.json`,
+          `${JSON.stringify({ ...baseline, idleNativeBinding }, null, 2)}\n`,
+          { mode: 0o600 }
+        );
+        return { ...worker, idleNativeBindingCaptured: true };
+      }
+      return {
+        ...worker,
+        ...(await checkIdleNativeBinding(input, baseline.idleNativeBinding, true)),
+      };
+    } catch (error) {
+      // The successful submission remains inspectable if the subsequent corpus check fails.
+      if (error instanceof Error)
+        error.admittedTurn = {
+          workspaceId: worker.workspaceId,
+          threadId: worker.threadId,
+          turnId: worker.turnId,
+        };
+      throw error;
+    }
   }
   const required = retainedFamilies(await readFile(join(input.checkout, REGISTER), 'utf8'));
   if (phase === 'seed') {
@@ -520,7 +549,13 @@ export async function runPhase(phase, input) {
     return { phase, workspaceId: selectors.workspaceId, passed: true };
   }
   if (phase === 'snapshot') {
-    const { selectors } = JSON.parse(await readFile(`${input.baseline}.selectors.json`, 'utf8'));
+    const { selectors, idleNativeBinding } = JSON.parse(
+      await readFile(`${input.baseline}.selectors.json`, 'utf8')
+    );
+    if (idleNativeBinding) {
+      const { checkIdleNativeBinding } = await import('./upgrade-from-previous-sql-corpus.mjs');
+      await checkIdleNativeBinding(input, idleNativeBinding);
+    }
     const observed = await collect(input, selectors);
     const families = summarizeFamilies(observed, required);
     const externalSelections = Object.fromEntries(
@@ -528,7 +563,7 @@ export async function runPhase(phase, input) {
     );
     await writeFile(
       input.baseline,
-      `${JSON.stringify({ previous: input.previous, candidate: input.candidate, selectors, externalSelections, families }, null, 2)}\n`,
+      `${JSON.stringify({ previous: input.previous, candidate: input.candidate, selectors, idleNativeBinding, externalSelections, families }, null, 2)}\n`,
       { mode: 0o600, flag: 'wx' }
     );
     return { phase, families: Object.keys(families).length, passed: true };
@@ -537,6 +572,10 @@ export async function runPhase(phase, input) {
   const baseline = JSON.parse(await readFile(input.baseline, 'utf8'));
   assert.deepEqual(baseline.previous, input.previous, 'Previous artifact pins changed.');
   assert.deepEqual(baseline.candidate, input.candidate, 'Candidate artifact pins changed.');
+  if (baseline.idleNativeBinding) {
+    const { checkIdleNativeBinding } = await import('./upgrade-from-previous-sql-corpus.mjs');
+    await checkIdleNativeBinding(input, baseline.idleNativeBinding);
+  }
   const families = compareFamilies(
     baseline.families,
     await collect(
