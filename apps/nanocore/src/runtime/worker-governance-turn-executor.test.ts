@@ -11796,9 +11796,9 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
       if (fault === 'foreign-thread')
         db.sqlite
           .prepare(
-            "UPDATE workspace_snapshot_cursors SET baseline_identity_json=json_set(baseline_identity_json, '$.threadId', 'foreign-thread')"
+            "UPDATE workspace_snapshot_cursors SET baseline_identity_json=json_set(baseline_identity_json, '$.threadId', ?)"
           )
-          .run();
+          .run(testEntityId('th', 'foreign-thread'));
       if (fault === 'foreign-slot')
         db.sqlite.prepare("UPDATE workspace_snapshot_cursors SET work_slot='foreign-slot'").run();
       if (fault === 'corrupt-cursor')
