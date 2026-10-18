@@ -25,6 +25,7 @@ export const ENTITY_KINDS = [
   'use',
   'aud',
   'dep',
+  'kb',
   'ks',
   'ko',
   'kc',
