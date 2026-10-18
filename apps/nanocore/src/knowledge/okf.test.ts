@@ -350,8 +350,11 @@ describe('knowledgeReferenceErrors', () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) throw new Error('Invalid reference fixture.');
     return knowledgeReferenceErrors(
-      parsed.document, new Map(), new Set([objectId]),
-      new Set(verified ? [reference] : []), scopeId
+      parsed.document,
+      new Map(),
+      new Set([objectId]),
+      new Set(verified ? [reference] : []),
+      scopeId
     );
   }
 

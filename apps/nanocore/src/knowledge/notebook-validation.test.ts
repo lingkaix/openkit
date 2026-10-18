@@ -62,14 +62,21 @@ function validate(base: Record<string, string>, candidate: Record<string, string
 
 describe('Notebook final immutable tree validation', () => {
   it('accepts canonical page references in the exact local base', () => {
-    const referrer = page('a').replace('source_refs: []', `source_refs: ["openkit:${pageScopeId}/b"]`);
+    const referrer = page('a').replace(
+      'source_refs: []',
+      `source_refs: ["openkit:${pageScopeId}/b"]`
+    );
     expect(validate({}, { 'a.md': referrer, 'b.md': page('b') }).errors).toEqual([]);
   });
 
   it('rejects removal of a page named by an unchanged canonical source reference', () => {
-    const referrer = page('a').replace('source_refs: []', `source_refs: ["openkit:${pageScopeId}/b"]`);
-    expect(validate({ 'a.md': referrer, 'b.md': page('b') }, { 'a.md': referrer }).errors)
-      .toContainEqual({ pageId: 'a', code: 'notebook.unresolved_page_reference' });
+    const referrer = page('a').replace(
+      'source_refs: []',
+      `source_refs: ["openkit:${pageScopeId}/b"]`
+    );
+    expect(
+      validate({ 'a.md': referrer, 'b.md': page('b') }, { 'a.md': referrer }).errors
+    ).toContainEqual({ pageId: 'a', code: 'notebook.unresolved_page_reference' });
   });
 
   it('rejects foreign-base and legacy source references despite a matching local path', () => {
@@ -78,8 +85,10 @@ describe('Notebook final immutable tree validation', () => {
       'knowledge:b',
     ]) {
       const referrer = page('a').replace('source_refs: []', `source_refs: ["${reference}"]`);
-      expect(validate({}, { 'a.md': referrer, 'b.md': page('b') }).errors)
-        .toContainEqual({ pageId: 'a', code: 'notebook.invalid_page' });
+      expect(validate({}, { 'a.md': referrer, 'b.md': page('b') }).errors).toContainEqual({
+        pageId: 'a',
+        code: 'notebook.invalid_page',
+      });
     }
   });
 
