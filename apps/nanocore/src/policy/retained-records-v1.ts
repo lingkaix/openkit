@@ -19,6 +19,23 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
+// Historical descriptions accept harmless annotations; authority admission remains strict.
+const historicalSubject = PolicyDecisionV1Schema.shape.subject
+  .safeExtend({
+    process: PolicyDecisionV1Schema.shape.subject.shape.process.unwrap().strip().nullable(),
+  })
+  .strip();
+const historicalInvocation = PolicyInvocationV1Schema.safeExtend({
+  binding: PolicyInvocationV1Schema.shape.binding.strip(),
+  participant: PolicyInvocationV1Schema.shape.participant.strip(),
+  subject: historicalSubject,
+}).strip();
+const historicalDecision = PolicyDecisionV1Schema.safeExtend({
+  subject: historicalSubject,
+  binding: PolicyInvocationV1Schema.shape.binding.strip().optional(),
+  kernel: PolicyDecisionV1Schema.shape.kernel.unwrap().unwrap().strip().nullable().optional(),
+}).strip();
+
 // These retained cores are independent of current wire models. Extend version 1 only
 // additively; a changed required meaning needs its own accepted format transition.
 const actorV1 = z.union([
@@ -78,7 +95,7 @@ export const AuditEventRetainedV1Schema = z.object({
   resource: z.string().min(1).nullable(),
   resourceRevision: z.number().int().positive().nullable(),
   notebookAdmission: notebookAdmissionV1.optional(),
-  policyInvocation: PolicyInvocationV1Schema.optional(),
+  policyInvocation: historicalInvocation.optional(),
   policyWriteOutcome: PolicyWriteOutcomeV1Schema.optional(),
   outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled', 'unknown']),
   severity: z.enum(['info', 'warning', 'error']),
@@ -110,7 +127,7 @@ export const PermissionDecisionRetainedV1Schema = z
     ]),
     reasonCode: z.string().min(1),
     enforcementPoint: z.string().min(1),
-    mediation: PolicyDecisionV1Schema.optional(),
+    mediation: historicalDecision.optional(),
     requiredApprovalKind: z.string().min(1).nullable(),
     approvalId: z.string().min(1).nullable(),
     auditEventId: AuditEventIdSchema.nullable(),
@@ -119,14 +136,6 @@ export const PermissionDecisionRetainedV1Schema = z
   .superRefine((decision, context) => {
     if (decision.mediation) {
       const mediation = decision.mediation;
-      if (
-        decision.enforcementPoint !== mediation.point ||
-        decision.policySnapshotId !== mediation.policyRevision
-      )
-        context.addIssue({
-          code: 'custom',
-          message: 'PermissionDecision mediation identity is inconsistent.',
-        });
       if (mediation.role === 'gate' && decision.approvalId)
         context.addIssue({
           code: 'custom',
@@ -215,24 +224,65 @@ export function readPermissionDecisionRowV1(
 ): z.infer<typeof PermissionDecisionRetainedV1Schema> {
   const row = input as Record<string, unknown>;
   return readRetainedV1({ schemaVersion: row?.schema_version }, () => {
+    const mediation =
+      row.mediation_json != null
+        ? historicalDecision.parse(JSON.parse(String(row.mediation_json)))
+        : undefined;
     return PermissionDecisionRetainedV1Schema.parse({
       decisionId: row.decision_id,
       ownerScope: row.owner_scope,
       workspaceId: row.workspace_id,
       policyEngineVersion: row.policy_engine_version,
       policySnapshotId: row.policy_snapshot_id,
-      subjectSummary: JSON.parse(String(row.subject_summary_json)),
+      subjectSummary: mediation
+        ? projectPolicySubject(mediation)
+        : JSON.parse(String(row.subject_summary_json)),
       action: row.action,
       resourceSummary: JSON.parse(String(row.resource_summary_json)),
       contextSummary: JSON.parse(String(row.context_summary_json)),
       result: row.result,
       reasonCode: row.reason_code,
-      enforcementPoint: row.enforcement_point,
-      ...(row.mediation_json != null ? { mediation: JSON.parse(String(row.mediation_json)) } : {}),
+      enforcementPoint: mediation
+        ? `${mediation.operation}@${mediation.stage}`
+        : row.enforcement_point,
+      ...(mediation ? { mediation } : {}),
       requiredApprovalKind: row.required_approval_kind,
       approvalId: row.approval_id,
       auditEventId: row.audit_event_id,
       createdAt: row.created_at,
     });
   });
+}
+
+/** Subject summaries are a read projection of the retained decision subject. */
+export function projectPolicySubject(mediation: z.infer<typeof PolicyDecisionV1Schema>) {
+  return {
+    principal: mediation.subject.principal,
+    actor: mediation.subject.actor,
+    process: mediation.subject.process,
+    onBehalfOf: mediation.subject.onBehalfOf,
+    credentialKind: mediation.subject.credentialKind,
+    responsibleHumanId: mediation.subject.responsibleHumanId,
+  };
+}
+
+/** Portable mediated records omit derived presentation fields; specialized records retain theirs. */
+export function retainPermissionDecision(input: Record<string, unknown>): Record<string, unknown> {
+  if (!input.mediation) return input;
+  const { subjectSummary: _subject, enforcementPoint: _point, ...retained } = input;
+  return retained;
+}
+
+/** Rebuilds same-release read projections from the one retained mediation owner. */
+export function projectPermissionDecision(input: unknown): unknown {
+  if (!input || typeof input !== 'object') return input;
+  const record = input as Record<string, unknown>;
+  if (!record.mediation) return record;
+  const mediation = PolicyDecisionV1Schema.parse(record.mediation);
+  return {
+    ...record,
+    mediation,
+    subjectSummary: projectPolicySubject(mediation),
+    enforcementPoint: `${mediation.operation}@${mediation.stage}`,
+  };
 }

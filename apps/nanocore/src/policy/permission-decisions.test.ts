@@ -27,6 +27,7 @@ import {
   recordPermissionDecision,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
+import { retainPermissionDecision } from './retained-records-v1.js';
 
 describe('permission decision recorder', () => {
   it('roundtrips mediation and atomically consumes only final Workspace allows', () => {
@@ -44,8 +45,6 @@ describe('permission decision recorder', () => {
     const mediation: PolicyDecisionV1 = {
       operation: 'mcp.call-tool',
       stage: 'decide',
-      point: 'mcp.call-tool@decide',
-      policyRevision: digest,
       authorizationRevision: digest,
       proposalDigest: digest,
       role: 'final',
@@ -72,13 +71,12 @@ describe('permission decision recorder', () => {
       resourceSummary: {},
       contextSummary: { threadId, turnId, capabilityCallId },
       reasonCode: 'granted',
-      enforcementPoint: mediation.point,
+      enforcementPoint: 'mcp.call-tool@decide',
     };
     const policyInvocation: PolicyInvocationV1 = {
       binding: statement,
       operation: mediation.operation,
       stage: mediation.stage,
-      point: mediation.point,
       mode: 'gate',
       policyRevision: digest,
       authorizationRevision: digest,
@@ -174,14 +172,25 @@ describe('permission decision recorder', () => {
           ...final,
           decisionId: allocateEntityId('pd'),
           policySnapshotId: nextRevision,
-          mediation: { ...final.mediation, policyRevision: nextRevision },
+          mediation: final.mediation,
         })
       ).toThrow('Policy statement use limit is exhausted.');
       expect(listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)).toEqual(
         decisions
       );
       expect(listWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual(audits);
-      importWorkspacePermissionDecisions(importedDb, decisions);
+      const raw = workspaceDb.sqlite
+        .prepare('SELECT * FROM permission_decisions WHERE decision_id=?')
+        .get(final.decisionId) as Record<string, unknown>;
+      expect(raw.subject_summary_json).toBe('null');
+      expect(raw.enforcement_point).toBe('');
+      expect(raw.policy_snapshot_id).toBe(digest);
+      expect(JSON.parse(String(raw.mediation_json))).not.toHaveProperty('point');
+      expect(JSON.parse(String(raw.mediation_json))).not.toHaveProperty('policyRevision');
+      const portable = decisions.map((decision) => retainPermissionDecision({ ...decision }));
+      expect(portable[0]).not.toHaveProperty('subjectSummary');
+      expect(portable[0]).not.toHaveProperty('enforcementPoint');
+      importWorkspacePermissionDecisions(importedDb, portable);
       expect(listExportableWorkspacePermissionDecisions(importedDb, workspaceId)).toEqual(
         decisions
       );

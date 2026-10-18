@@ -65,6 +65,44 @@ describe('independent version-one Policy and Audit decoders', () => {
     expect(() => readPermissionDecisionRowV1({ ...decisionRow, result: 'unsupported' })).toThrow();
   });
 
+  it('ignores nested invocation annotations while refusing unknown required meanings', () => {
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const invocation = {
+      binding: { id: 'gate', digest, note: 'annotation' },
+      operation: 'mcp.call-tool',
+      stage: 'decide',
+      mode: 'gate',
+      policyRevision: digest,
+      authorizationRevision: digest,
+      proposalDigest: digest,
+      subject: {
+        principal: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        onBehalfOf: null,
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        process: null,
+        credentialKind: 'local',
+        responsibleHumanId: 'usr_00000000-0000-7000-8000-000000000001',
+        note: 'annotation',
+      },
+      participant: { id: 'test', version: digest, note: 'annotation' },
+      inputDigest: digest,
+      outputDigest: null,
+      outcome: 'error',
+      startedAt: decisionRow.created_at,
+      completedAt: decisionRow.created_at,
+      capabilityCallId: null,
+      note: 'annotation',
+    };
+    const read = (value: unknown) =>
+      readAuditEventRowV1({ ...auditRow, policy_invocation_json: JSON.stringify(value) })
+        .policyInvocation;
+    expect(read(invocation)).not.toHaveProperty('note');
+    expect(read(invocation)?.participant).not.toHaveProperty('note');
+    expect(read(invocation)?.subject).not.toHaveProperty('note');
+    expect(() => read({ ...invocation, mode: 'unknown' })).toThrow();
+    expect(() => read({ ...invocation, outcome: 'unknown' })).toThrow();
+  });
+
   it('refuses missing and unknown markers before decoding either family JSON', () => {
     for (const schema_version of [undefined, 2]) {
       expect(() =>

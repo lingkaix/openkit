@@ -1813,7 +1813,7 @@ export async function reviewCapturedMcpPolicy(input: {
   );
   if (
     policyProposalDigest(proposalInput.proposal) !== source.mediation.proposalDigest ||
-    policyDigest(proposalInput.document) !== source.mediation.policyRevision ||
+    policyDigest(proposalInput.document) !== source.policySnapshotId ||
     proposalInput.authorizationRevision !== source.mediation.authorizationRevision ||
     policyDigest(proposalInput.proposal.subject) !== policyDigest(source.mediation.subject)
   )
@@ -1826,7 +1826,7 @@ export async function reviewCapturedMcpPolicy(input: {
       deciderId: input.actor.userId,
       binding: {
         proposalDigest: source.mediation.proposalDigest,
-        policyRevision: source.mediation.policyRevision,
+        policyRevision: source.policySnapshotId,
         authorizationRevision: source.mediation.authorizationRevision,
       },
     },

@@ -27,6 +27,7 @@ import {
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
+import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
@@ -789,7 +790,7 @@ export function writeWorkspaceExportTree(
         input.permissionDecisions.map((decision) => {
           if (!isRecord(decision))
             throw new TypeError('PermissionDecision export requires an object record.');
-          return writeRetainedV1(decision);
+          return writeRetainedV1(retainPermissionDecision(decision));
         })
       );
     }
