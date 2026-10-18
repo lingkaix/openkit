@@ -20,6 +20,9 @@ Ablation: existing owners supply scope, permission, communication and retained-d
 
 - [Storage](../core/storage.md), [Knowledge](../core/knowledge.md), and [Communication](../core/communication.md).
 - [Permissions](../core/permissions.md), [Contract Evolution](../core/contract-evolution.md), and [Vault](../core/vault.md).
+- [Storage Layout](20260703-storage_layout_record_ownership.md), [Schema Evolution](20260703-schema_evolution_record_envelope.md), [Policy Enforcement](20260703-policy_enforcement_mapping.md).
+- [Knowledge Store](20260703-knowledge_store_implementation.md), [Notebook](20260909-knowledge_notebook_editing.md), [Context](20260703-worker_context_package.md), [Session Materialization](20260704-session_static_workspace_materialization.md).
+- [Retrieval Kernel](20261014-retrieval_kernel.md), [Backup/Export](20260704-workspace_backup_export_import.md), [Work Data Retention](20260921-work_data_retention_format.md).
 
 ## Layers And Shared References
 
@@ -119,9 +122,15 @@ Storage's rebuildable mount index covers every file with path, size, modificatio
 
 ## Embedded File References
 
-Ablation: page-embedded files need the engineer's pending URI/URL contract.
+Ablation: portable owner URIs and authorized byte URLs need separate publication and delivery rules.
 
-The URI/URL mechanism for embedded files, such as images, is pending. This placeholder selects no scheme, endpoint or fallback; existing digest identity, current disclosure and unavailable-content rules still apply.
+Owners define file URIs. Knowledge Markdown embeds relative `raw/<mount>/<path>` paths, for example `![](raw/local/image.png)`, for ordinary Markdown rendering after export. At publication, discover every embedded file, reject paths outside the Knowledge Base's mounts and auto-admit any missing SourceSummary pointer in the same commit under current Source admission. Record each embedded file's exact digest in existing commit `sourceReferences`, using digest-qualified Source references resolved through that revision's pointers. Body embeds follow the current version; historical page revisions use their recorded digest or show unavailable. Evidence citations stay pinned in `source_refs` as `source:<id>@<digest>`. Raw-file renames/moves rewrite referencing pages through existing validation/review, without changing historical bytes.
+
+Storage owns URL delivery: bounded proxy streaming for local bytes or a short-lived presigned redirect for S3-like backends, with HTTP Range, sniffed media type as Content-Type and digest as ETag for immutable caching. It never decides who receives a URL. An authenticated NanoCore route checks the reader's audience/sensitivity under Policy and audits issuance. Byte URLs bind the authorized content identity; URLs and caches preserve current disclosure requirements, because content identity does not confer access.
+
+Web rendering resolves stored relative paths through that route without rewriting stored Markdown. Models receive bytes through existing vision paths, not URLs. The server never fetches external HTTP(S) images, and Web does not automatically load them. The same owner-URI/Storage-URL/NanoCore-authorization split applies to Artifacts and other owners. Freeze the relative raw-path convention and embedded-digest commit evidence; the App API route is additive.
+
+The S3-compatible facade extension point and URI/URL use by Workers, agents and future sharing remain pending. This paragraph reserves space without choosing their contract. Portable Markdown resolution against the canonical package paths also requires clarification; no path projection is selected here.
 
 ## Worker Access
 
@@ -211,7 +220,7 @@ Ablation: classify retained transitions without implementing every future capabi
 | Class | Work and owner |
 | --- | --- |
 | MIGRATION | Knowledge Source text-only bindings become managed raw/mount references, and external registry records become Notebook SourceSummary pointers. Context's required-original-copy closure changes when its owner later adopts references; settle that contract now without forcing immediate adoption. L-AK Knowledge; L-AW file/Context contracts. |
-| ADDITIVE | Knowledge Base/default IDs, content refs, mount declarations, representation lineage, Knowledge package v1, content refs on retrieval trace hits, and a storage-lease kind in existing Policy grants. L-AW storage; L-AK Knowledge; existing Policy owner; L-RT Derivation/Gateway; retrieval owner. |
+| ADDITIVE | Knowledge Base/default IDs, content refs, mount declarations, representation lineage, Knowledge package v1, content refs on retrieval trace hits, a storage-lease kind in existing Policy grants, relative raw-path embeds and embedded-digest commit evidence; the authorized byte route is additive. L-AW storage; L-AK Knowledge; existing Policy owner; L-RT Derivation/Gateway; retrieval owner. |
 | Implementation-only | Initial local Storage backend/Knowledge integration and later adapter adoption; move existing PDF, ZIP and vision processors into Derivation without changing their output authority. Remote stores, ASR, vectors and video capabilities remain later work. |
 
 Register required semantics through existing format/envelope owners before writers or imports activate them. Unknown descriptive additions are ignored; unknown core values, major versions and required semantics fail closed. Do not add pre-v0.1.0 conversion migrations, legacy readers or dual writes. Resets need existing explicit operator authorization; stable continuity follows Core Contract Evolution.
@@ -235,11 +244,3 @@ The indexable unit is a derivative with source locator and lineage. Retrieval ow
 Storage change feeds drive Derivation and indexing. Queries use indexes, never live Storage scans. Large unprocessed mounts first get a cheap metadata index; content indexing follows demand or Policy/budget. Every hit and retained hit trace carries its original `contentRef`, derivative identity/range and source locator where applicable. Resolve content through Storage under current caller grants, not by substituting index text for an original.
 
 All access is NanoCore-mediated: Worker MCP or Knowledge Manager tools call NanoCore, which calls the engine. No sandbox directly accesses the engine. Results are filtered before disclosure by served Knowledge scopes, agent audience or Worker lease. Knowledge questions go to the Knowledge Manager; Workers may directly search work files on their leased mounts through their mediated tool.
-
-## Related Owners
-
-Ablation: each participant retains one record/publication authority instead of another shared family.
-
-- [Storage Layout](20260703-storage_layout_record_ownership.md), [Schema Evolution](20260703-schema_evolution_record_envelope.md), [Policy Enforcement](20260703-policy_enforcement_mapping.md).
-- [Knowledge Store](20260703-knowledge_store_implementation.md), [Notebook](20260909-knowledge_notebook_editing.md), [Context](20260703-worker_context_package.md), [Session Materialization](20260704-session_static_workspace_materialization.md).
-- [Retrieval Kernel](20261014-retrieval_kernel.md), [Backup/Export](20260704-workspace_backup_export_import.md), [Work Data Retention](20260921-work_data_retention_format.md).

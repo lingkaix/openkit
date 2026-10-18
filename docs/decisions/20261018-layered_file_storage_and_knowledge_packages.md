@@ -21,7 +21,7 @@ Keep backup/restore, Workspace export and Knowledge package interchange separate
 
 References record the observed digest and locator. Changed, deleted or inaccessible content can remain unavailable while its metadata survives. Do not make extra copies of originals or derivatives solely to guarantee later resolution. Complete retention remains a later user-enabled option.
 
-Derivatives carry source, recipe, version, provider/model, parameter and source-coordinate lineage. Separate Derivation owns bounded extraction/conversion; retrieval owns indexing and embeddings. Both use Gateway interception for model calls. NanoCore mediates Worker tools; leased filesystem views use host-side mounts, never sandbox FUSE. Leases reuse Policy grants and audit per lease, not per byte.
+Owners define file URIs; Storage delivers URLs; NanoCore authorizes and audits issuance. Knowledge pages retain relative raw paths and commit-pinned embedded digests. Derivatives carry source, recipe, version, provider/model, parameter and source-coordinate lineage. Separate Derivation owns bounded extraction/conversion; retrieval owns indexing and embeddings. Both use Gateway interception for model calls. NanoCore mediates Worker tools; leased filesystem views use host-side mounts, never sandbox FUSE. Leases reuse Policy grants and audit per lease, not per byte.
 
 ## Reason
 
