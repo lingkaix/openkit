@@ -110,23 +110,27 @@ export function pinKnowledgeManagerExecution(
       JSON.stringify(pinned.knowledge) !== JSON.stringify(input.inputs))
   )
     throw new Error('Knowledge Manager admitted inputs changed.');
+  const limits = selection.profile?.limits ?? {
+    maxModelTurns: 8,
+    maxToolCalls: 24,
+    deadlineMs: 120_000,
+  };
   dependencies.store.updateTurn(turn.id, {
     internalExecution: {
       roleId: 'knowledge-manager',
       logicalModelId: selection.logicalModel.id,
       contextStrategy: 'compaction',
       threshold,
+      profileId:
+        pinned?.profileId !== undefined ? pinned.profileId : (selection.profile?.id ?? null),
+      limits: pinned?.limits ?? { ...limits },
       knowledge: input.inputs,
     },
   });
   return {
     selection,
     threshold,
-    limits: selection.profile?.limits ?? {
-      maxModelTurns: 8,
-      maxToolCalls: 24,
-      deadlineMs: 120_000,
-    },
+    limits,
   };
 }
 
