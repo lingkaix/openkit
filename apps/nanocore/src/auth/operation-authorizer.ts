@@ -64,6 +64,12 @@ const GatewayWorkspaceAttributionSchema = z
 /** Current eligibility cause; ownership remains a separate registry identity. */
 export type WorkspaceAuthority = 'member' | 'administrator';
 
+/** Opt-in failure handling for governed effects that must distinguish unreadable authority from refusal. */
+export interface WorkspaceAuthorityOptions {
+  /** Propagates resolver failures; omitting the options keeps the existing transient refusal. */
+  readonly dependencyFailure: 'throw';
+}
+
 /** Authorized Workspace context exposed to one guarded handler. */
 export type WorkspaceAccess =
   | {
@@ -277,7 +283,9 @@ export function isWorkspaceOperationAuthorized(
  * @param operation Concrete product operation, including unknown values that must fail closed.
  * @param effectAuthority Whether the caller's existing effect-specific authority remains valid.
  * @param requestActor Optional authenticating request actor; a presented usable server-admin bearer grants administrator eligibility without membership.
+ * @param options Optional propagation of dependency failures instead of a transient refusal.
  * @returns The current effective Workspace eligibility, or null when any authority component denies the effect.
+ * @throws The original dependency error when strict failure handling is requested.
  */
 export function currentWorkspaceAuthority(
   coreDb: CoreDb,
@@ -285,7 +293,8 @@ export function currentWorkspaceAuthority(
   actor: ActorRef,
   operation: string,
   effectAuthority: boolean,
-  requestActor?: Actor
+  requestActor?: Actor,
+  options?: WorkspaceAuthorityOptions
 ): WorkspaceAuthority | null {
   try {
     if (!effectAuthority) {
@@ -314,7 +323,8 @@ export function currentWorkspaceAuthority(
       return null;
     }
     return 'member';
-  } catch {
+  } catch (error) {
+    if (options?.dependencyFailure === 'throw') throw error;
     return null;
   }
 }
@@ -326,7 +336,9 @@ export function currentWorkspaceAuthority(
  * @param admission Exact originating admission context.
  * @param operation Product operation being attempted now.
  * @param effectAuthority Caller-owned effect authority.
+ * @param options Optional propagation of Workspace authority dependency failures.
  * @returns Current Workspace eligibility, or null if a recorded token is no longer usable.
+ * @throws The original Workspace authority dependency error when strict failure handling is requested.
  */
 export function currentSchedulerAdmissionWorkspaceAuthority(
   coreDb: CoreDb,
@@ -335,7 +347,8 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
     'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
   >,
   operation: string,
-  effectAuthority: boolean
+  effectAuthority: boolean,
+  options?: WorkspaceAuthorityOptions
 ): WorkspaceAuthority | null {
   if (admission.serverAdminTokenId === null) {
     return currentWorkspaceAuthority(
@@ -343,7 +356,9 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
       admission.workspaceId,
       admission.triggerActor,
       operation,
-      effectAuthority
+      effectAuthority,
+      undefined,
+      options
     );
   }
   if (admission.serverAdminTokenId.length === 0 || admission.triggerActor.kind !== 'user') {
@@ -361,7 +376,8 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
     admission.triggerActor,
     operation,
     effectAuthority,
-    requestActor
+    requestActor,
+    options
   );
 }
 
@@ -372,19 +388,28 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
  * @param lineage Worker package lineage and its immutable trigger actor.
  * @param operation Product operation being attempted now.
  * @param effectAuthority Caller-owned effect authority.
+ * @param options Optional propagation of Workspace authority dependency failures.
  * @returns Current Workspace eligibility, or null when lineage or current authority is invalid.
+ * @throws The original Workspace authority dependency error when strict failure handling is requested.
  */
 export function currentWorkerLineageWorkspaceAuthority(
   coreDb: CoreDb,
   lineage: SchedulerExecutionLineage & { readonly triggerActor: ActorRef },
   operation: string,
-  effectAuthority: boolean
+  effectAuthority: boolean,
+  options?: WorkspaceAuthorityOptions
 ): WorkspaceAuthority | null {
   const admission = findSchedulerAdmissionForWorkerLineage(coreDb, lineage);
   if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
     return null;
   }
-  return currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, operation, effectAuthority);
+  return currentSchedulerAdmissionWorkspaceAuthority(
+    coreDb,
+    admission,
+    operation,
+    effectAuthority,
+    options
+  );
 }
 
 /**

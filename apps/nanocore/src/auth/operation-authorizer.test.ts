@@ -707,6 +707,113 @@ describe('central Workspace operation authorizer', () => {
     ).toBeNull();
   });
 
+  it.each([
+    'member',
+    'administrator',
+  ] as const)('propagates unreadable %s authority only when strict dependency failures are requested', (authority) => {
+    const actor = {
+      kind: 'user' as const,
+      id:
+        authority === 'member'
+          ? 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8'
+          : 'usr_00000000-0000-7000-8000-000000000001',
+    };
+    const token =
+      authority === 'administrator'
+        ? createOpenKitAccessTokenRecord(fixture.coreDb, {
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            ownerUserId: actor.id,
+            scope: 'server-admin',
+            workspaceIds: [],
+          }).record
+        : null;
+    const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'queue_strict_authority',
+      triggerActor: actor,
+      serverAdminTokenId: token?.tokenId ?? null,
+      workspaceId: fixture.workspace.id,
+      threadId: fixture.turn.threadId,
+      turnId: fixture.turn.id,
+      turnInput: 'Check current tool authority',
+      requestedAgentId: 'agent_worker',
+    });
+    recordTestExecutionAttempt(fixture.coreDb, {
+      entry,
+      attemptId: testEntityId('attempt', 'strict_authority'),
+      agentSessionId: testEntityId('as', 'strict_authority'),
+      inputRef: 'snapshot_strict_authority',
+      bindingRef: 'binding_strict_authority',
+      sessionCompatibilityKey: 'sha256:strict-authority',
+      now: () => new Date().toISOString(),
+    });
+    const lineage = {
+      workspaceId: entry.workspaceId,
+      threadId: entry.threadId,
+      turnId: entry.turnId,
+      agentSessionId: testEntityId('as', 'strict_authority'),
+      packageSnapshotId: 'snapshot_strict_authority',
+      triggerActor: actor,
+    };
+    const requestActor = token
+      ? {
+          kind: 'token' as const,
+          tokenId: token.tokenId,
+          tokenScope: 'server-admin' as const,
+          userId: actor.id,
+        }
+      : undefined;
+    const strict = { dependencyFailure: 'throw' as const };
+    const evaluate = (options?: typeof strict) => [
+      () =>
+        currentWorkspaceAuthority(
+          fixture.coreDb,
+          entry.workspaceId,
+          actor,
+          'tool.use',
+          true,
+          requestActor,
+          options
+        ),
+      () =>
+        currentSchedulerAdmissionWorkspaceAuthority(
+          fixture.coreDb,
+          entry,
+          'tool.use',
+          true,
+          options
+        ),
+      () =>
+        currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true, options),
+    ];
+    for (const check of evaluate(strict)) expect(check()).toBe(authority);
+    const table = token ? 'openkit_access_tokens' : 'workspace_members';
+    fixture.coreDb.sqlite.exec(`ALTER TABLE ${table} RENAME TO unreadable_authority`);
+    try {
+      for (const check of evaluate()) expect(check()).toBeNull();
+      for (const check of evaluate(strict)) expect(check).toThrow(`no such table: ${table}`);
+    } finally {
+      fixture.coreDb.sqlite.exec(`ALTER TABLE unreadable_authority RENAME TO ${table}`);
+    }
+    if (token) {
+      revokeOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId);
+    } else {
+      fixture.coreDb.sqlite
+        .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .run(entry.workspaceId, actor.id);
+    }
+    for (const check of evaluate(strict)) expect(check()).toBeNull();
+    expect(
+      currentWorkerLineageWorkspaceAuthority(
+        fixture.coreDb,
+        { ...lineage, packageSnapshotId: 'missing_snapshot' },
+        'tool.use',
+        true,
+        strict
+      )
+    ).toBeNull();
+  });
+
   it('derives collection candidates from active Core memberships before loading content', async () => {
     const response = await fixture.app.request(...operationRequest('workspace.list', {}));
     const access = (await response.json()) as { items: { workspace: { id: string } }[] };
