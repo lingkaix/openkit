@@ -53,6 +53,7 @@ import {
   type TurnStatus,
 } from '@openkit/protocol';
 import { resolveDataRoot } from '../config/data-root.js';
+import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
@@ -144,6 +145,7 @@ import {
   type WorkspaceFileRecords,
   writeFileAtomic,
   writeWorkspaceFileRecords,
+  writeWorkspaceMetadata,
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
@@ -1502,6 +1504,7 @@ export class FsStore {
    * Publishes one new workspace with its migrated database through a same-filesystem staging root.
    *
    * @param records Complete canonical records to publish.
+   * @param knowledgeBaseId Fresh or already-reminted default identity supplied by native creation/import.
    * @param stageWorkspace Optional side-effect writer that runs under the staging root.
    * @param notebookInitialization Actual native creation attribution, required for file-backed publication.
    * @param initialNotebookFiles Exact admitted root tree; retained imports must not be regenerated from entry projections.
@@ -1509,6 +1512,7 @@ export class FsStore {
    */
   private persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
+    knowledgeBaseId: string,
     stageWorkspace?: (stage: ImportWorkspaceStage) => void,
     notebookInitialization?: NotebookInitialization,
     initialNotebookFiles?: Readonly<Record<string, string>>,
@@ -1544,6 +1548,14 @@ export class FsStore {
 
     try {
       rmSync(stagingRoot, { recursive: true, force: true });
+      writeWorkspaceMetadata(stagingRoot, records.workspace, false);
+      initializeDefaultKnowledgeBaseId({
+        dataRoot: this.dataRoot,
+        workspaceRoot: stagingRoot,
+        scope: { kind: 'workspace', workspaceId },
+        knowledgeBaseId,
+      });
+      const pageScopeId = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
       const workspaceDb = openWorkspaceDbAtRoot({
         dataRoot: this.dataRoot,
         workspaceId,
@@ -1559,12 +1571,16 @@ export class FsStore {
           initialization: notebookInitialization,
           files: initialNotebookFiles ?? {},
           revalidate: () => ({
+            pageScopeId,
             scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
             reviewRequiredPageIds: [],
             registeredSources: new Map(
               records.knowledgeSources.map((source) => [source.id, source.contentDigest])
             ),
-            resolvedReferences: importedWorkspaceNotebookReferences(initialNotebookFiles ?? {}),
+            resolvedReferences: importedWorkspaceNotebookReferences(
+              initialNotebookFiles ?? {},
+              pageScopeId
+            ),
           }),
         });
       } finally {
@@ -2173,11 +2189,16 @@ export class FsStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    this.persistNewWorkspaceAtomically(emptyWorkspaceFileRecords(workspace), undefined, {
-      requestId: uuidv5(`openkit:personal-workspace-initialize:${workspaceId}`),
-      producer: { kind: 'user', id: userId },
-      instructionReference: `personal-workspace-initialize:${workspaceId}`,
-    });
+    this.persistNewWorkspaceAtomically(
+      emptyWorkspaceFileRecords(workspace),
+      allocateEntityId('kb'),
+      undefined,
+      {
+        requestId: uuidv5(`openkit:personal-workspace-initialize:${workspaceId}`),
+        producer: { kind: 'user', id: userId },
+        instructionReference: `personal-workspace-initialize:${workspaceId}`,
+      }
+    );
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, createWorkspaceResources());
     return workspace;
@@ -2205,6 +2226,7 @@ export class FsStore {
     const resources = createWorkspaceResources();
     this.persistNewWorkspaceAtomically(
       emptyWorkspaceFileRecords(workspace),
+      allocateEntityId('kb'),
       undefined,
       notebookInitialization ?? {
         requestId: randomUUID(),
@@ -2226,6 +2248,8 @@ export class FsStore {
    */
   public importWorkspaceSnapshot(input: {
     workspace: WorkspaceRecord;
+    /** Already reminted target binding from the verified import; synthetic imports allocate a fresh base. */
+    defaultKnowledgeBaseId?: string;
     threads: readonly Thread[];
     turns: readonly Turn[];
     knowledge: readonly KnowledgeEntry[];
@@ -2338,6 +2362,7 @@ export class FsStore {
 
     this.persistNewWorkspaceAtomically(
       records,
+      input.defaultKnowledgeBaseId ?? allocateEntityId('kb'),
       (stage) => {
         this.writeKnowledgeSourceMaterialsToRoot(
           stage.workspaceRoot,
