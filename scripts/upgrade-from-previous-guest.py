@@ -372,6 +372,18 @@ class Upgrade:
         self.result[revision + "WorkerPlatformImage"] = observed
         self.note(revision + "_worker_image_imported")
 
+    def inspect_previous_image(self, revision):
+        """Require the previous image metadata to remain usable through the exact Host reader."""
+        require(self.stopped, "image_metadata_read_requires_stop")
+        output = self.boundary.run([
+            "systemd-run", "-M", GUEST, "--wait", "--pipe", "--collect",
+            "/opt/published-nanohost", "image", "list",
+        ])
+        expected = "digest=" + self.input["previous"]["workerPlatformImage"]
+        rows = [line.split() for line in output.splitlines() if expected in line.split()]
+        require(len(rows) == 1 and "status=usable" in rows[0], "previous_image_metadata_not_usable")
+        self.note(revision + "_reader_previous_image_usable")
+
     def operation(self, name):
         """Read one authenticated public fixture operation."""
         status, body = self.boundary.http(self.input["origin"], "/api/app/operations/" + name,
@@ -588,10 +600,12 @@ def run_upgrade(input, boundary=None):
         job.phase("worker-before", "previous")
         job.stop()
         job.phase("operator-read-before", "previous")
+        job.inspect_previous_image("previous")
         job.phase("snapshot", "previous")
         job.retain(sources)
         job.replace()
         job.import_worker("candidate")
+        job.inspect_previous_image("candidate")
         job.start("candidate")
         job.stop()
         job.phase("operator-read", "candidate")

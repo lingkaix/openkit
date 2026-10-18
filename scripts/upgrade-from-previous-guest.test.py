@@ -30,6 +30,7 @@ class StandIn(DRIVER.Boundary):
         self.id = "old-container"
         self.bad_proof = False
         self.failed_worker = None
+        self.downgrade_prior_image = False
         self.reader = None
         self.carrier = {"Id": "carrier", "State": {"Running": True, "Pid": 123}}
 
@@ -133,6 +134,10 @@ class StandIn(DRIVER.Boundary):
         if args[0] == "systemd-run":
             if "import" in args:
                 return self.input[self.current]["workerPlatformImage"]
+            if args[-2:] == ["image", "list"]:
+                self.events.append(self.current + "-previous-image-read")
+                status = "incomplete" if self.downgrade_prior_image and self.current == "candidate" else "usable"
+                return "digest=" + self.input["previous"]["workerPlatformImage"] + " size=9 status=" + status
             self.events.append("kernel-proof")
             return json.dumps({"positiveKernelObservation": True, "hostDomainEmpty": not self.bad_proof})
         phase = self.reader["Cmd"][-2] if args[0] == "docker" else args[-2]
@@ -290,6 +295,16 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(self.boundary.running)
         self.assertTrue((Path(self.input["retainedRoot"]) / "whole-state/recovery.json").exists())
         self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_candidate_reader_cannot_downgrade_previous_image_metadata(self):
+        """Raw retained bytes cannot mask an unusable old image metadata entry."""
+        self.boundary.downgrade_prior_image = True
+        result = DRIVER.run_upgrade(self.input, self.boundary)
+        self.assertFalse(result["passed"])
+        self.assertIn("previous_reader_previous_image_usable", result["steps"])
+        self.assertIn("candidate-previous-image-read", self.boundary.events)
+        self.assertNotIn("candidate-app-start", self.boundary.events)
+        self.assertNotIn("compare", self.boundary.events)
 
 
 if __name__ == "__main__":
