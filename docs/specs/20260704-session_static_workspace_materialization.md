@@ -131,7 +131,7 @@ An Agent write MUST check only its own selections against current authored catal
 
 ### Leased Storage Projection
 
-[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns later Storage adoption and reference formats. The existing Workspace/Artifact planes admit NanoCore-mediated MCP access or a leased read-only backend subpath mounted host-side by NanoHost. Writes stage for NanoCore commit; no sandbox FUSE or direct retrieval-engine route is introduced. Implementing host mounts needs explicit engineer approval.
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns later Storage adoption and reference formats. The existing Workspace/Artifact planes admit NanoCore-mediated MCP access or a leased read-only backend subpath mounted host-side by NanoHost. Writes stage for NanoCore commit; no sandbox FUSE or direct retrieval-engine route is introduced. The engineer approved host-side leased mounts for implementation after v0.1.0; this documentation change performs no host action.
 
 Policy owns grant scope/expiry; runtime removes or fences revoked exposure without deleting retained work. Disposable running-Turn snapshots preserve current readiness proof, not historical retention copies. Context/source owners activate their retained-reference transition together; the current eager input-transfer and Turn cleanup rules remain the pre-adoption baseline.
 

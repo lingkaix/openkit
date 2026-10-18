@@ -23,7 +23,7 @@ Only documentation and its generated index change. L-AW owns this documentation 
 
 ## Method And Acceptance
 
-One decision record, at most60 lines; one mechanism specification, at most250 lines; owner amendments, at most15 lines each. Each specification section states its ablation. Register the new specification in the generated documentation index.
+One decision record, at most 60 lines; one mechanism specification, at most 250 lines; owner amendments, at most 15 lines each. Each specification section states its ablation. Register the new specification in the generated documentation index.
 
 One Astra Consultant scrutinizes the actual draft. A fresh Sol Reviewer independently checks the final diff against approved intent and surrounding owners. Run repository documentation checks and the required static local gate on the committed head. Express land under the shared window, release it, and watch the containing main CI.
 
@@ -40,3 +40,11 @@ Source: coordinator steering after the first draft. The engineer is refining the
 ## Intent Revision 3
 
 Source: coordinator addenda05:53Z and05:58Z, both engineer-approved. Storage owns location in its own asynchronous/streaming TypeScript package; Knowledge raw is a mount namespace, leases reuse Policy grants, and Worker access stays in existing planes. Separate Derivation owns conversion; retrieval owns indexing/embeddings and indexable-unit consumption. Knowledge/local Storage integration precedes Artifact/Turn/Context adoption. Add mount/lease/content-ref and trace-hit formats; keep this landing documentation-only. Resume the same Astra scrutiny, obtain fresh Sol review, gate and express.
+
+## Intent Revision 4
+
+Source: approved coordinator addendum06:10Z. References carry Knowledge Base IDs; each scope retains one fixed default ID, with one Knowledge Base per scope in v0.1.0. Minimal local package import/export plus a round-trip test is pre-v0.1.0 implementation scope. Import targets a new or empty Workspace Knowledge Base and fresh bare Notebook. Published Git tree paths match package paths; raw bytes never enter Git. Host-side leased mounts are approved for implementation after v0.1.0. Raw-file Git tracking remains a reserved placeholder pending the engineer's decision. The old queued c1c gate was cancelled before slot acquisition; no product failure or gate pass is claimed.
+
+## Intent Revision 5
+
+Source: approved coordinator addendum 06:16Z. One small OKF SourceSummary pointer per admitted Source lives in Notebook Git at `sources/<source-id>.md`; retire the external registry, keep original bytes outside Git, and resolve logical raw paths through mount declarations. Changed originals update one pointer/commit; historical digest pins become unavailable when matching bytes disappear. Storage's rebuildable mount index covers all files; Git pointers cover only admitted Sources. Amend Source governance and Notebook ownership to make this transition explicit. The embedded-file URI/URL contract remains a placeholder pending the engineer's final input. Scrutiny also requires a bootstrap-only empty import target and complete remapped Source graph admission before Notebook publication; no new transaction or receipt is introduced.

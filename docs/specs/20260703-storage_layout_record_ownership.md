@@ -18,7 +18,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 
 [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns content references and Knowledge mount declarations. The `raw/<mount>/<path>` namespace maps through Storage; the default mount uses the physical Knowledge Base `raw/` directory. This target replaces text-only captured-material bindings and copying solely for reference retention when the Source owner activates the new format.
 
-Existing sibling Source registry/derived metadata remains its single authority for Knowledge, Context, evidence and Artifacts. Its old captured-text paths below describe the pre-transition implementation. Notebook Git authority, other product records, restricted evidence and retained working volumes keep their existing owners. Storage owns location only; Derivation owns processing and retrieval owns indexes/embeddings.
+Admitted SourceSummary pointers at Notebook `sources/<source-id>.md` replace the external `sources/registry/` authority for Knowledge, Context, evidence and Artifacts. The old sibling registry/material paths below describe only the pre-transition implementation; raw bytes stay outside Git and derivative/index metadata is rebuildable. Notebook Git authority, other product records, restricted evidence and retained working volumes keep their existing owners. Storage owns location only; Derivation owns processing and retrieval owns indexes/embeddings.
 
 ## Owns
 

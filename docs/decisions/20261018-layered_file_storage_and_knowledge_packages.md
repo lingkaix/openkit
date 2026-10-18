@@ -7,15 +7,15 @@ decider: Engineer
 
 ## Decision
 
-The engineer approved this direction on 2026-10-18. Version 0.1.0 freezes retained formats; later releases add storage and media capabilities.
+The engineer approved this direction on 2026-10-18. Version 0.1.0 freezes retained formats and implements minimal local Knowledge package export/import with a round-trip test. Later releases add history selection, remote mounts and further storage/media capabilities.
 
-Separate content identity, byte locations, owner attachments, derivatives, indexes and Knowledge entries. SHA-256 identifies content, not its owner or access authority. Locations can change without changing content identity. Knowledge entries retain their own identities.
+Separate content identity, byte locations, owner attachments, derivatives, indexes and Knowledge entries. SHA-256 identifies content, not its owner or access authority. Locations can change without changing content identity. Knowledge entries retain their own identities. References carry a Knowledge Base ID; each scope retains a fixed default ID, with one Knowledge Base per scope in v0.1.0.
 
 Use one separate TypeScript Storage package with an asynchronous, streaming, process-agnostic contract. It owns location and byte operations, not meaning, Policy, retrieval or processing. Local storage and Knowledge Source integration come first; Artifact, Turn and Context adoption follows later. Vault retains backend credentials.
 
-A Knowledge Base uses OKF pages, schema, navigation, log and a `raw/<mount>/<path>` namespace. Its default mount is the physical local `raw/` folder. Other roots can remain references; the existing Source registry retains authority. The Knowledge Manager maintains interpretation and chooses media recipes through a Skill.
+A Knowledge Base uses OKF pages, schema, navigation, log and a `raw/<mount>/<path>` namespace. Its default mount is the physical local `raw/` folder. Other roots can remain references. Admitted Sources become Notebook-owned OKF SourceSummary pointer pages; the external Source registry is retired. A rebuildable Storage mount index covers unadmitted files. The Knowledge Manager maintains interpretation and chooses media recipes through a Skill. Pointers contain logical mount paths, never backend locations; raw bytes remain outside Git.
 
-The canonical Knowledge Base layout and Knowledge package layout coincide wherever possible. Export packs the admitted files and adds a manifest. Import validates, remints owned identities and verifies digests. Backup copies the same canonical files unchanged. The specification identifies each necessary difference, including local Git publication state and remote references.
+The canonical Knowledge Base layout and Knowledge package layout coincide wherever possible. Export packs the admitted files and adds a manifest. Import targets a new or empty Workspace Knowledge Base, commits into a fresh bare Notebook, remints owned identities and verifies digests. Raw bytes never enter Git; published-tree paths match package paths. Backup copies the same canonical files unchanged. The specification identifies each necessary difference, including local Git publication state and remote references.
 
 Keep backup/restore, Workspace export and Knowledge package interchange separate. A Knowledge package supports import and export. Workspace export serves external use without a lossless round-trip promise.
 

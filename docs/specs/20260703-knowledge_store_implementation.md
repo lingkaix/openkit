@@ -42,9 +42,9 @@ kind: mechanism
 
 ## Shared Source References
 
-[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns the shared raw namespace, mounts and interchange contract. Existing scope roots, Source IDs and sibling registry/derived metadata remain authoritative. On activation, Sources can bind binary originals through Storage instead of requiring captured UTF-8 `content.txt`; the older text-material paths below are the current implementation projection.
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns the shared raw namespace, mounts and interchange contract. Existing scope roots retain a fixed default Knowledge Base ID; references bind it explicitly. Existing Source IDs remain; Notebook SourceSummary pointers replace the external registry as Source authority. Version 0.1.0 import targets a new or empty Workspace Knowledge Base; additional Knowledge Bases per scope are later additive work. On activation, Sources can bind binary originals through Storage instead of requiring captured UTF-8 `content.txt`; the older text-material paths below are the current implementation projection.
 
-The default mount's physical `raw/` directory belongs to the Knowledge Base; additional mounts travel as references. Package manifests project the admitted shared Source records without creating another registry. The existing Notebook publisher remains the page authority. Derivation performs conversions, retrieval owns indexes/embeddings, and the Knowledge Manager chooses recipes through a media-handling Skill.
+The default mount's physical `raw/` directory belongs to the Knowledge Base; additional mounts travel as references. Packages preserve the published `sources/<source-id>.md` pointers without creating another registry. The existing Notebook publisher owns pages and Source pointers; old sibling registry/material rules below remain implementation projections until cutover. Derivation performs conversions, retrieval owns indexes/embeddings, and the Knowledge Manager chooses recipes through a media-handling Skill.
 
 ## Summary
 

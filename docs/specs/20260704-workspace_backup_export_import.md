@@ -15,7 +15,7 @@ The predecessor Goal tables and the two Goal steering tables leave both the port
 
 ## Knowledge Packages And File-Preserving Backup
 
-[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns standalone Knowledge Base interchange. Its package shares canonical `raw/`, OKF page, schema, index and log paths; its manifest projects the admitted records from the existing sibling Source registry. Export packs admitted files plus a manifest; import validates, remints owned identities and verifies digests. That contract gives Workspace export no new round-trip obligation.
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns standalone Knowledge Base interchange. Its package shares canonical `raw/`, OKF page, schema, index and log paths; its published `sources/` pointer pages preserve Source authority and its manifest carries derivative metadata. Export packs admitted files plus a manifest; import validates, remints owned identities and verifies digests. That contract gives Workspace export no new round-trip obligation.
 
 Backup copies the same canonical Knowledge Base files unchanged within its declared consistent snapshot, including local Notebook history. Backup performs no interchange conversion or identity remapping. Remote references remain metadata unless backup explicitly covers their external bytes. The package specification names each necessary layout difference; backup/restore retains its existing integrity, security and restore-performance owner.
 
