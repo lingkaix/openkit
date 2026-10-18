@@ -991,6 +991,7 @@ function createWorkResourceLineageExportInput(
       {
         content: knowledgeContent,
         contentDigest: knowledgeContentDigest,
+        knowledgeBaseId: source.knowledgeBaseId,
         knowledgePageId,
         notebookRevision,
         ...(knowledgeExcerpt
@@ -2535,7 +2536,10 @@ describe('workspace auxiliary lineage reminting', () => {
     const sourceManifestPath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/package.json`;
     const sourceManifestText = verified.fileContents.get(sourceManifestPath)!;
     expect(JSON.parse(sourceManifestText).knowledgeSelections).toEqual([
-      expect.objectContaining({ notebookRevision: sourceRevision }),
+      expect.objectContaining({
+        knowledgeBaseId: source.knowledgeBaseId,
+        notebookRevision: sourceRevision,
+      }),
     ]);
     const imported = readWorkspaceImportSnapshot({
       verified,
@@ -2561,6 +2565,7 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(trace.requestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
     expect(trace.knowledgeSelections).toEqual([
       expect.objectContaining({
+        knowledgeBaseId: imported.defaultKnowledgeBaseId,
         knowledgePageId: 'knowledge_portable_source',
         contentDigest: `sha256:${createHash('sha256').update(targetPage).digest('hex')}`,
       }),
@@ -2746,6 +2751,7 @@ describe('workspace auxiliary lineage reminting', () => {
       },
       knowledgeSelections: [
         {
+          knowledgeBaseId: imported.defaultKnowledgeBaseId,
           contentDigest: `sha256:${createHash('sha256')
             .update(targetKnowledgeContent)
             .digest('hex')}`,
