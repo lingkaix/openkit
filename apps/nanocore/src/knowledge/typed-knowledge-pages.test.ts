@@ -75,51 +75,70 @@ describe('Governed typed Knowledge Page publication', () => {
     expect(result.publication.errors).toEqual([]);
   });
 
-  it.each(['Rule', 'Effect', 'Objective'])(
-    'refuses a %s with missing or malformed applicability even under an authored schema',
-    (type) => {
-      const schema = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
-        /allowed_types: .*/,
-        `allowed_types: [${type}]`
+  it.each([
+    'Rule',
+    'Effect',
+    'Objective',
+  ])('refuses %s pages with missing or malformed applicability even under an authored schema', (type) => {
+    const schema = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
+      /allowed_types: .*/,
+      `allowed_types: [${type}]`
+    );
+    for (const applies_to of [undefined, null, [], '', 'tool:invoice.check', [1], [''], ['  ']]) {
+      const result = candidate(
+        { type, applies_to, basis: 'Observed outcomes.', last_checked_at: '2026-10-18T00:00:00Z' },
+        schema
       );
-      for (const applies_to of [undefined, null, [], '', 'tool:invoice.check', [1], [''], ['  ']]) {
-        const result = candidate(
-          { type, applies_to, basis: 'Observed outcomes.', last_checked_at: '2026-10-18T00:00:00Z' },
-          schema
-        );
-        expect(result.report.errors).toContainEqual(
-          expect.objectContaining({ code: 'scope_schema.invalid_applies_to', field: 'applies_to' })
-        );
-        expect(result.publication.errors).toEqual([
-          { pageId: 'domain', code: 'notebook.invalid_page' },
-        ]);
-      }
+      expect(result.report.errors).toContainEqual(
+        expect.objectContaining({ code: 'scope_schema.invalid_applies_to', field: 'applies_to' })
+      );
+      expect(result.publication.errors).toEqual([
+        { pageId: 'domain', code: 'notebook.invalid_page' },
+      ]);
     }
-  );
+  });
 
-  it.each([undefined, null, '', '  ', 1, [], {}])('refuses an Effect without a basis: %j', (basis) => {
+  it.each(
+    [undefined, null, '', '  ', 1, [], {}].map((value) => [value])
+  )('refuses an Effect without a basis: %j', (basis) => {
     const result = candidate({ type: 'Effect', basis, last_checked_at: '2026-10-18T00:00:00Z' });
     expect(result.report.errors).toContainEqual(
       expect.objectContaining({ code: 'scope_schema.invalid_effect_basis', field: 'basis' })
     );
-    expect(result.publication.errors).toEqual([{ pageId: 'domain', code: 'notebook.invalid_page' }]);
+    expect(result.publication.errors).toEqual([
+      { pageId: 'domain', code: 'notebook.invalid_page' },
+    ]);
   });
 
-  it.each([undefined, null, '', 1, '2026-10-18', '2026-10-18T01:00:00', 'invalid'])(
-    'refuses an Effect without an offset timestamp for its last check: %j',
-    (last_checked_at) => {
-      const result = candidate({ type: 'Effect', basis: 'Observed outcomes.', last_checked_at });
-      expect(result.report.errors).toContainEqual(
-        expect.objectContaining({ code: 'scope_schema.invalid_effect_last_check', field: 'last_checked_at' })
-      );
-      expect(result.publication.errors).toEqual([{ pageId: 'domain', code: 'notebook.invalid_page' }]);
-    }
-  );
+  it.each([
+    undefined,
+    null,
+    '',
+    1,
+    '2026-10-18',
+    '2026-10-18T01:00:00',
+    'invalid',
+  ])('refuses an Effect without an offset timestamp for its last check: %j', (last_checked_at) => {
+    const result = candidate({ type: 'Effect', basis: 'Observed outcomes.', last_checked_at });
+    expect(result.report.errors).toContainEqual(
+      expect.objectContaining({
+        code: 'scope_schema.invalid_effect_last_check',
+        field: 'last_checked_at',
+      })
+    );
+    expect(result.publication.errors).toEqual([
+      { pageId: 'domain', code: 'notebook.invalid_page' },
+    ]);
+  });
 
   it('preserves descriptive extensions and common governance through an edit', () => {
     const extension = { labels: ['regional'], annotation: { retained: true } };
     const original = candidate({ type: 'Objective', extension });
-    const edited = updateOkfFrontmatter({ path, content: original.content, updates: { title: 'Updated' } });
+    const edited = updateOkfFrontmatter({
+      path,
+      content: original.content,
+      updates: { title: 'Updated' },
+    });
     const parsed = parseOkfDocument({ path, content: edited });
     expect(parsed.ok).toBe(true);
     expect(parsed.document?.frontmatter).toMatchObject({
@@ -136,19 +155,42 @@ describe('Governed typed Knowledge Page publication', () => {
   });
 
   it('refuses Procedure publication with a Skill-owner diagnostic, including a custom schema bypass', () => {
-    const custom = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(/allowed_types: .*/, 'allowed_types: [Procedure]');
+    const custom = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
+      /allowed_types: .*/,
+      'allowed_types: [Procedure]'
+    );
     expect(parseScopeKnowledgeSchema(custom)).toMatchObject({
       ok: false,
-      errors: [expect.objectContaining({ code: 'scope_schema.procedure_owned_by_skill', field: 'allowed_types', message: expect.stringContaining('Skill') })],
+      errors: [
+        expect.objectContaining({
+          code: 'scope_schema.procedure_owned_by_skill',
+          field: 'allowed_types',
+          message: expect.stringContaining('Skill'),
+        }),
+      ],
     });
     for (const schema of [undefined, custom]) {
       const result = candidate({ type: 'Procedure' }, schema);
-      expect(result.report.errors).toContainEqual(expect.objectContaining({ code: 'scope_schema.procedure_owned_by_skill', message: expect.stringContaining('Skill') }));
-      expect(result.publication.errors).toEqual([{ pageId: 'domain', code: 'notebook.invalid_page' }]);
+      expect(result.report.errors).toContainEqual(
+        expect.objectContaining({
+          code: 'scope_schema.procedure_owned_by_skill',
+          message: expect.stringContaining('Skill'),
+        })
+      );
+      expect(result.publication.errors).toEqual([
+        { pageId: 'domain', code: 'notebook.invalid_page' },
+      ]);
       const parsed = parseOkfDocument({ path, content: result.content });
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) throw new Error('External OKF Procedure must remain parseable.');
-      expect(validateScopeKnowledgeSchema(parsed.document, { ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA, allowedTypes: ['Procedure'] }).errors).toContainEqual(expect.objectContaining({ code: 'scope_schema.procedure_owned_by_skill', field: 'type' }));
+      expect(
+        validateScopeKnowledgeSchema(parsed.document, {
+          ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+          allowedTypes: ['Procedure'],
+        }).errors
+      ).toContainEqual(
+        expect.objectContaining({ code: 'scope_schema.procedure_owned_by_skill', field: 'type' })
+      );
     }
   });
 

@@ -51,13 +51,14 @@ const OPENKIT_BASE_TYPES = new Set([
   'Topic',
   'Observation',
   'Claim',
-  'Procedure',
   'Decision',
   'Lesson',
   'Proposal',
   'Index',
   'Log',
 ]);
+// These domain types use the same governance boundary, not a new portable OKF base.
+const OPENKIT_DOMAIN_TYPES = new Set(['Rule', 'Effect', 'Objective']);
 const DEFAULT_STATUS_VALUES = ['draft', 'active', 'archived', 'superseded', 'invalid', 'deleted'];
 const STANDARD_STATUS_BY_OPENKIT_STATUS = {
   active: 'stable',
@@ -93,7 +94,7 @@ const DEFAULT_FRESHNESS_VALUES = [
 export const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT = [
   `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
   'status: "active"',
-  `allowed_types: ${JSON.stringify([...OPENKIT_BASE_TYPES])}`,
+  `allowed_types: ${JSON.stringify([...OPENKIT_BASE_TYPES, ...OPENKIT_DOMAIN_TYPES])}`,
   `allowed_statuses: ${JSON.stringify(DEFAULT_STATUS_VALUES)}`,
   `allowed_review_states: ${JSON.stringify(DEFAULT_REVIEW_STATE_VALUES)}`,
   `allowed_sensitivities: ${JSON.stringify(DEFAULT_SENSITIVITY_VALUES)}`,
@@ -190,7 +191,7 @@ export type ParseScopeKnowledgeSchemaResult =
 /** Default active constraints for governed notebook pages. */
 export const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA: ScopeKnowledgeSchema = {
   schemaVersion: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
-  allowedTypes: [...OPENKIT_BASE_TYPES],
+  allowedTypes: [...OPENKIT_BASE_TYPES, ...OPENKIT_DOMAIN_TYPES],
   allowedStatuses: DEFAULT_STATUS_VALUES,
   allowedReviewStates: DEFAULT_REVIEW_STATE_VALUES,
   allowedSensitivities: DEFAULT_SENSITIVITY_VALUES,
@@ -416,6 +417,14 @@ export function parseScopeKnowledgeSchema(content: string): ParseScopeKnowledgeS
     allowedFreshness: readStringList(fields, 'allowed_freshness', errors),
   };
 
+  if (schema.allowedTypes.includes('Procedure')) {
+    errors.push({
+      code: 'scope_schema.procedure_owned_by_skill',
+      field: 'allowed_types',
+      message: 'Reusable procedures belong in Skills; ScopeSchema cannot admit Procedure pages.',
+    });
+  }
+
   for (const [field, values] of [
     ['allowed_types', schema.allowedTypes],
     ['allowed_statuses', schema.allowedStatuses],
@@ -472,6 +481,49 @@ export function validateScopeKnowledgeSchema(
   }
 
   const errors: KnowledgeValidationError[] = [];
+
+  if (document.frontmatter.type === 'Procedure') {
+    errors.push({
+      code: 'scope_schema.procedure_owned_by_skill',
+      field: 'type',
+      message:
+        'Reusable procedures belong in Skills; retain only descriptive context and Skill references in Knowledge.',
+    });
+  }
+
+  if (
+    typeof document.frontmatter.type === 'string' &&
+    OPENKIT_DOMAIN_TYPES.has(document.frontmatter.type)
+  ) {
+    const appliesTo = document.frontmatter.applies_to;
+    if (!Array.isArray(appliesTo) || appliesTo.length === 0 || !appliesTo.every(nonEmptyString)) {
+      errors.push({
+        code: 'scope_schema.invalid_applies_to',
+        field: 'applies_to',
+        message:
+          'Rule, Effect and Objective pages require applies_to as a nonempty list of tool or work-step identifiers.',
+      });
+    }
+  }
+
+  if (document.frontmatter.type === 'Effect') {
+    if (!nonEmptyString(document.frontmatter.basis)) {
+      errors.push({
+        code: 'scope_schema.invalid_effect_basis',
+        field: 'basis',
+        message: 'Effect pages require a nonempty descriptive basis.',
+      });
+    }
+    const lastCheckedAt = document.frontmatter.last_checked_at;
+    if (!nonEmptyString(lastCheckedAt) || !isMachineReadableTimestamp(lastCheckedAt)) {
+      errors.push({
+        code: 'scope_schema.invalid_effect_last_check',
+        field: 'last_checked_at',
+        message:
+          'Effect pages require last_checked_at as a machine-readable timestamp with an explicit offset.',
+      });
+    }
+  }
 
   expectAllowedValue(
     document,
