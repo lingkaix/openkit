@@ -1744,7 +1744,7 @@ function readTurnMcpToolSchemaSnapshot(input: {
   const scope = input.environmentPackage.scope;
   const bound = input.workspaceDb.sqlite
     .prepare(`
-    SELECT schema_snapshot_id FROM capability_calls
+    SELECT schema_version AS schemaVersion, schema_snapshot_id FROM capability_calls
     WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
       AND agent_session_id = ? AND package_snapshot_id = ?
       AND family = 'mcp' AND provider_ref = ?
@@ -1759,8 +1759,9 @@ function readTurnMcpToolSchemaSnapshot(input: {
       scope.agentSessionId,
       input.environmentPackage.snapshotId,
       input.selected.id
-    ) as { schema_snapshot_id: string } | undefined;
+    ) as { schemaVersion: unknown; schema_snapshot_id: string } | undefined;
   if (!bound) return null;
+  readRetainedV1(bound, () => bound);
   const snapshot = readCurrentMcpToolSchemaSnapshot({
     catalogEntryId: input.selected.id,
     pinnedSchemaSnapshotId: bound.schema_snapshot_id,

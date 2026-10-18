@@ -1731,6 +1731,31 @@ describe('worker MCP routes', () => {
             new Set([`mcpsnap_echo_${mcpToolSchemaContentDigest(expected)}`])
           );
         }
+        const prior = db.sqlite
+          .prepare(
+            "SELECT call_id FROM capability_calls WHERE turn_id = ? AND family = 'mcp' AND schema_snapshot_id IS NOT NULL ORDER BY started_at, call_id LIMIT 1"
+          )
+          .get(environmentPackage.scope.turnId) as { call_id: string };
+        db.sqlite
+          .prepare(
+            'UPDATE capability_calls SET schema_version = 2, extensions_json = ? WHERE call_id = ?'
+          )
+          .run('{', prior.call_id);
+        const retainedCall = db.sqlite
+          .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
+          .get(prior.call_id);
+        const retainedSchemas = db.sqlite
+          .prepare('SELECT * FROM mcp_tool_schema_snapshots ORDER BY snapshot_id')
+          .all();
+        const contacts = vi.mocked(workerMcpGateway.listTools).mock.calls.length;
+        expect(await request('tools/list')).toHaveProperty('error');
+        expect(workerMcpGateway.listTools).toHaveBeenCalledTimes(contacts);
+        expect(
+          db.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(prior.call_id)
+        ).toEqual(retainedCall);
+        expect(
+          db.sqlite.prepare('SELECT * FROM mcp_tool_schema_snapshots ORDER BY snapshot_id').all()
+        ).toEqual(retainedSchemas);
       } finally {
         db.sqlite.close();
       }
