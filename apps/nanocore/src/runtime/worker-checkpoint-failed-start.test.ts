@@ -349,6 +349,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
     }
   });
 
+  // Real database setup, restart and byte comparisons share this fixture budget, not a product deadline.
   it.each([
     { entry: 'conversation', provenance: false },
     { entry: 'direct', provenance: false },
@@ -480,7 +481,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
     } finally {
       f.cleanup();
     }
-  });
+  }, 60_000);
 
   it.each(
     (['conversation', 'direct'] as const).flatMap((entry) =>
