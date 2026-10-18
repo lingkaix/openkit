@@ -46,4 +46,4 @@ Retain Turns, native Skill consumption, AEP Skill digests and selection sources,
 
 ## Return a truthful handoff
 
-Report prepared, submitted, adopted, applied and observed outcomes separately: retained setup outputs, omitted Light Apps and reasons, source references, costly-rule checks, human decisions, selected digests, actual work evidence and gaps. Record missing product capabilities for the rc.12 list; do not implement them. Stop only affected actions and continue other authorized work. Never complete the Goal for its responsible person.
+Report prepared, submitted, adopted, applied and observed outcomes separately: retained setup outputs, omitted Light Apps and reasons, source references, costly-rule checks, human decisions, selected digests, actual work evidence and gaps. Report missing product capabilities to the human or coordinator; do not implement them to complete onboarding. Stop only affected actions and continue other authorized work. Never complete the Goal for its responsible person.

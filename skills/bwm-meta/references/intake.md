@@ -34,7 +34,7 @@ When the KM reports insufficient evidence, a failed run or unavailable grounding
 
 Identify distinct work roles and their responsibility boundaries. Put procedures and rules needed during most executions in the role's pinned Skill. Put a rule whose error is costly there too: the Skill is pushed to every run, while Knowledge requires retrieval and can be missed. Reference material, lookup facts, long-tail information and source documents belong in the Knowledge Base. Preserve source-linked Knowledge explanations of costly rules without making retrieval their only delivery path.
 
-For every costly rule, identify the decision point, the Skill carrying it and an independent check: an approval-required tool rule, human approval, validator or available agent gate under Policy. Confirm what that check actually enforces. A structural validator does not verify a business judgement, and Skill text cannot enforce itself. Keep the Skill, proposed Policy/tool rules and Knowledge Rule/Effect references consistent. If the system cannot express the needed check, record that product gap for rc.12 and leave the affected action blocked.
+For every costly rule, identify the decision point, the Skill carrying it and an independent check: an approval-required tool rule, human approval, validator or available agent gate under Policy. Confirm what that check actually enforces. A structural validator does not verify a business judgement, and Skill text cannot enforce itself. Keep the Skill, proposed Policy/tool rules and Knowledge Rule/Effect references consistent. If the system cannot express the needed check, report that product gap to the human or coordinator and leave the affected action blocked.
 
 ## Extract only what the work needs
 
