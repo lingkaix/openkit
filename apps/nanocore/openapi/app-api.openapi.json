@@ -3989,6 +3989,115 @@
         }
       }
     },
+    "/api/app/operations/workspace.resource-access-request": {
+      "post": {
+        "operationId": "workspace.resource-access-request",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Request a named Workspace Thread access change without changing its assignments.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.resource-access-request.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request a named Workspace Thread access change without changing its assignments.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.resource-access-request.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/workspace.resource-access-apply": {
+      "post": {
+        "operationId": "workspace.resource-access-apply",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Apply an approved Workspace resource Policy change with distinct current human confirmation.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.resource-access-apply.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Apply an approved Workspace resource Policy change with distinct current human confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.resource-access-apply.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/workspace.export": {
       "post": {
         "operationId": "workspace.export",
@@ -33918,6 +34027,686 @@
           "skills",
           "agents",
           "models"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.resource-access-request.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "change": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "object",
+                "properties": {
+                  "family": {
+                    "type": "string",
+                    "const": "thread"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "family",
+                  "id"
+                ],
+                "additionalProperties": false
+              },
+              "replacement": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "resource": {
+                        "type": "object",
+                        "properties": {
+                          "family": {
+                            "type": "string",
+                            "const": "thread"
+                          },
+                          "id": {
+                            "type": "string",
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          }
+                        },
+                        "required": [
+                          "family",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "grants": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subject": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "agent"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "agentId": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId",
+                                    "agentId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "operations": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "api.call",
+                                  "administration.configuration.apply",
+                                  "approval.respond",
+                                  "artifact.read",
+                                  "artifact.write",
+                                  "audit.read",
+                                  "deployment.recover",
+                                  "invitation.respond",
+                                  "knowledge.propose",
+                                  "knowledge.read",
+                                  "knowledge.write",
+                                  "llm.gateway.use",
+                                  "membership.manage",
+                                  "network.egress",
+                                  "review.apply",
+                                  "runtime.launch",
+                                  "thread.read",
+                                  "tool.grant",
+                                  "tool.use",
+                                  "turn.run",
+                                  "vault.admin",
+                                  "vault.use",
+                                  "workspace.configure",
+                                  "workspace.export",
+                                  "workspace.leave",
+                                  "workspace.lifecycle",
+                                  "workspace.read",
+                                  "workspace.write"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "subject",
+                            "operations"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "prohibitions": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subject": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "agent"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "agentId": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId",
+                                    "agentId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "operations": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "api.call",
+                                  "administration.configuration.apply",
+                                  "approval.respond",
+                                  "artifact.read",
+                                  "artifact.write",
+                                  "audit.read",
+                                  "deployment.recover",
+                                  "invitation.respond",
+                                  "knowledge.propose",
+                                  "knowledge.read",
+                                  "knowledge.write",
+                                  "llm.gateway.use",
+                                  "membership.manage",
+                                  "network.egress",
+                                  "review.apply",
+                                  "runtime.launch",
+                                  "thread.read",
+                                  "tool.grant",
+                                  "tool.use",
+                                  "turn.run",
+                                  "vault.admin",
+                                  "vault.use",
+                                  "workspace.configure",
+                                  "workspace.export",
+                                  "workspace.leave",
+                                  "workspace.lifecycle",
+                                  "workspace.read",
+                                  "workspace.write"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "subject",
+                            "operations"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "resource",
+                      "grants",
+                      "prohibitions"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "resource",
+              "replacement"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "change"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.resource-access-request.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "turnId": {
+            "type": "string",
+            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "permission",
+              "destructive-action"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "granted",
+              "denied",
+              "expired",
+              "superseded",
+              "withdrawn"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resolvedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "change": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "object",
+                "properties": {
+                  "family": {
+                    "type": "string",
+                    "const": "thread"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "family",
+                  "id"
+                ],
+                "additionalProperties": false
+              },
+              "replacement": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "resource": {
+                        "type": "object",
+                        "properties": {
+                          "family": {
+                            "type": "string",
+                            "const": "thread"
+                          },
+                          "id": {
+                            "type": "string",
+                            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          }
+                        },
+                        "required": [
+                          "family",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "grants": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subject": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "agent"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "agentId": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId",
+                                    "agentId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "operations": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "api.call",
+                                  "administration.configuration.apply",
+                                  "approval.respond",
+                                  "artifact.read",
+                                  "artifact.write",
+                                  "audit.read",
+                                  "deployment.recover",
+                                  "invitation.respond",
+                                  "knowledge.propose",
+                                  "knowledge.read",
+                                  "knowledge.write",
+                                  "llm.gateway.use",
+                                  "membership.manage",
+                                  "network.egress",
+                                  "review.apply",
+                                  "runtime.launch",
+                                  "thread.read",
+                                  "tool.grant",
+                                  "tool.use",
+                                  "turn.run",
+                                  "vault.admin",
+                                  "vault.use",
+                                  "workspace.configure",
+                                  "workspace.export",
+                                  "workspace.leave",
+                                  "workspace.lifecycle",
+                                  "workspace.read",
+                                  "workspace.write"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "subject",
+                            "operations"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "prohibitions": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subject": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "agent"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "agentId": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId",
+                                    "agentId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "operations": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "api.call",
+                                  "administration.configuration.apply",
+                                  "approval.respond",
+                                  "artifact.read",
+                                  "artifact.write",
+                                  "audit.read",
+                                  "deployment.recover",
+                                  "invitation.respond",
+                                  "knowledge.propose",
+                                  "knowledge.read",
+                                  "knowledge.write",
+                                  "llm.gateway.use",
+                                  "membership.manage",
+                                  "network.egress",
+                                  "review.apply",
+                                  "runtime.launch",
+                                  "thread.read",
+                                  "tool.grant",
+                                  "tool.use",
+                                  "turn.run",
+                                  "vault.admin",
+                                  "vault.use",
+                                  "workspace.configure",
+                                  "workspace.export",
+                                  "workspace.leave",
+                                  "workspace.lifecycle",
+                                  "workspace.read",
+                                  "workspace.write"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "subject",
+                            "operations"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "resource",
+                      "grants",
+                      "prohibitions"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "expectedRevision": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "resource",
+              "replacement",
+              "expectedRevision"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "workspaceId",
+          "threadId",
+          "turnId",
+          "kind",
+          "status",
+          "title",
+          "description",
+          "createdAt",
+          "resolvedAt",
+          "change"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.resource-access-apply.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "approvalRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confirmation": {
+            "type": "string",
+            "const": "APPLY WORKSPACE RESOURCE POLICY"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "approvalRequestId",
+          "confirmation"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.resource-access-apply.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "approvalRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "savedRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reloadStatus": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "dry-run",
+              "rejected",
+              "failed"
+            ]
+          }
+        },
+        "required": [
+          "approvalRequestId",
+          "workspaceId",
+          "threadId",
+          "savedRevision",
+          "reloadStatus"
         ],
         "additionalProperties": false
       },
@@ -116426,5 +117215,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:14e9d99d0feeeb935f02e3f774a0cd04164cf45221d7d51ff3aecff85319483b"
+  "x-openkit-source-digest": "sha256:861b27450cd8816dd265671e7591fe6cb73fc5d5a455cb671f14388948da5064"
 }

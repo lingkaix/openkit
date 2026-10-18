@@ -280,3 +280,18 @@ it('rejects a bootstrap-secret credential mixed with another credential during c
     })
   ).toHaveProperty('bootstrap.consume');
 });
+
+it('publishes the named-resource request and distinct confirmed apply contracts', () => {
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-request'].policyOperation).toBe(
+    'workspace.write'
+  );
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-apply'].policyOperation).toBe(
+    'workspace.configure'
+  );
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-apply'].inputSchema.shape).toHaveProperty(
+    'approvalRequestId'
+  );
+  expect(
+    OPERATION_DEFINITIONS['workspace.resource-access-apply'].inputSchema.shape
+  ).not.toHaveProperty('requestId');
+});

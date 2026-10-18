@@ -43,7 +43,7 @@ export const WorkspaceResourcePolicyRequestSchema = ApprovalRequestSchema.extend
   change: WorkspaceResourcePolicyChangeSchema,
 });
 
-/** Workspace-scoped Policy administration; definitions remain inactive until the canonical table join. */
+/** Workspace-scoped Policy administration through the canonical operation table. */
 export const RESOURCE_POLICY_OPERATION_DEFINITIONS = {
   'workspace.resource-access-request': {
     binding: 'json',
