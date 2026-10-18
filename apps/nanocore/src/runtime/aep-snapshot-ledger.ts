@@ -11,19 +11,42 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import {
-  AgentEnvironmentPackageSnapshotRecordSchema,
-  type AgentEnvironmentPackageSnapshotRecord as AppApiAgentEnvironmentPackageSnapshotRecord,
-} from '@openkit/app-api-schemas';
+import type { AgentEnvironmentPackageSnapshotRecord as AppApiAgentEnvironmentPackageSnapshotRecord } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
   RetainedAgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
-import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  readRetainedV1,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
+
+/** Fixed outer v1 metadata; the embedded versioned AEP retains its own safety and digest checks. */
+const StoredAgentEnvironmentSnapshotV1Schema = z
+  .object({
+    snapshotId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    turnId: TurnIdSchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
+    agentId: z.string().min(1),
+    packageId: z.string().min(1),
+    runtimeKind: z.string().min(1),
+    backendKind: z.string().min(1),
+    contentDigest: z.string().min(1),
+    snapshot: z.record(z.string(), z.any()),
+    createdAt: TimestampSchema,
+  })
+  .strip();
 
 /** Durable Workspace-owned AEP snapshot record with its validated known-field V4 view. */
 export type AgentEnvironmentPackageSnapshotRecord = Omit<
@@ -419,7 +442,7 @@ function validateSnapshotRecord(
     candidate &&
     typeof candidate === 'object' &&
     Object.getOwnPropertyDescriptor(candidate, 'retainedSnapshot')?.enumerable === false;
-  const parsed = AgentEnvironmentPackageSnapshotRecordSchema.parse(
+  const parsed = StoredAgentEnvironmentSnapshotV1Schema.parse(
     hasRetainedSnapshot ? { ...candidate, snapshot: candidate.retainedSnapshot } : value
   );
   // Retained identity covers the stored value; normalization may discard ignored extensions.

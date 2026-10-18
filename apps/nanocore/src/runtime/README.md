@@ -323,3 +323,5 @@ Native Worker entry points supply their known cause through the existing Turn `t
 Turn feedback checks the shared retained v1 marker before its fixed native history decoder. New files and updates publish v1 explicitly; unsupported versions remain unchanged. Current API fields are projected separately, and safe root/history annotations survive native updates.
 
 Runtime JSON-bearing SQL records use the shared retained row marker before their existing native decoders, replay checks and reachable payload replacement. The marker does not change lifecycle or grant new authority. AEP snapshot files carry an outer v1 marker independently of embedded AEP v4. Normalized provenance rows also carry v1; raw runtime streams and their existing manifests remain unchanged.
+
+AEP snapshot files use the shared retained v1 header and a fixed native outer metadata decoder. The embedded versioned AEP keeps its existing redaction, native-environment, lineage and original-byte digest checks; App API object schemas do not select retained file meaning.

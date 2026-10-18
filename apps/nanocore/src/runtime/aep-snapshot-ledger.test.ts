@@ -174,7 +174,10 @@ describe('AEP snapshot ledger', () => {
     const db = createWorkspaceDb();
     const environmentPackage = createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(db, { environmentPackage });
+      recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
       const path = snapshotPath(db, environmentPackage);
       for (const marker of [{}, { schemaVersion: 2 }]) {
         const invalid = JSON.stringify({ ...marker, snapshot: 'invalid' });
@@ -182,9 +185,12 @@ describe('AEP snapshot ledger', () => {
         expect(() =>
           requireAgentEnvironmentPackageSnapshot(db, db.workspaceId, environmentPackage.snapshotId)
         ).toThrow('Unsupported retained record format.');
-        expect(() => recordAgentEnvironmentPackageSnapshot(db, { environmentPackage })).toThrow(
-          'Unsupported retained record format.'
-        );
+        expect(() =>
+          recordAgentEnvironmentPackageSnapshot(db, {
+            environmentPackage,
+            createdAt: '2026-07-06T00:00:01.000Z',
+          })
+        ).toThrow('Unsupported retained record format.');
         expect(readFileSync(path, 'utf8')).toBe(invalid);
       }
     } finally {
@@ -1221,6 +1227,7 @@ describe('AEP snapshot ledger', () => {
       legacyScope.userId = 'usr_00000000-0000-7000-8000-000000000001';
       const legacyRecord = {
         ...record,
+        schemaVersion: 1,
         snapshot: { ...record.snapshot, schemaVersion: 1, scope: legacyScope },
       };
       legacyRecord.contentDigest = snapshotDigest(legacyRecord.snapshot);
