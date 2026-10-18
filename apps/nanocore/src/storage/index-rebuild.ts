@@ -944,8 +944,12 @@ async function retrieveNotebookSelection(
     }
     const reviewState = stringFrontmatterField(document, 'review_state');
 
+    // Apply conflict exclusion to active facts while preserving explicit non-active inspection.
     if (
       validation.errors.length > 0 ||
+      (stringFrontmatterField(document, 'openkit_status') === 'active' &&
+        ['Claim', 'Observation'].includes(stringFrontmatterField(document, 'type') ?? '') &&
+        stringFrontmatterField(document, 'conflict_status') === 'unresolved') ||
       !states.includes(
         stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
       ) ||

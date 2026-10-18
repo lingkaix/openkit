@@ -103,7 +103,10 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       ]);
       for (const pinnedReferences of [[], [reference]]) {
         const trace = await retrieveWorkspaceKnowledge({
-          ...retrievalInput(fixture, 'conflict-selection-marker'),
+          ...retrievalInput(
+            fixture,
+            pinnedReferences.length ? 'unmatched-conflict-lookup' : 'conflict-selection-marker'
+          ),
           pinnedReferences,
         });
         if (conflict_status === 'unresolved') {
@@ -114,6 +117,29 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
           expect(trace.excluded).toEqual([]);
         }
       }
+    }
+    if (type === 'Claim') {
+      // Current authorized inspection of non-active facts remains available.
+      await publishPages(fixture, [
+        {
+          path: `${page.id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${page.id}.md`,
+            content: readPage(fixture, page.id),
+            updates: {
+              openkit_status: 'archived',
+              status: 'deprecated',
+              conflict_status: 'unresolved',
+            },
+          }),
+        },
+      ]);
+      const inspected = await retrieveWorkspaceKnowledge({
+        ...retrievalInput(fixture, 'conflict-selection-marker'),
+        states: ['archived'],
+      });
+      expect(inspected.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+      expect(inspected.excluded).toEqual([]);
     }
   });
 
