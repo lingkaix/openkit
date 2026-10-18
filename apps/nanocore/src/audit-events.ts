@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  AuditAuthenticationSchema,
   type AuditEvent,
   AuditEventSchema,
   allocateEntityId,
@@ -36,6 +37,8 @@ export interface RecordServerAuditEventInput {
   requestId?: string | null;
   /** Exact authenticated actor reference when available. */
   actor?: AuditEvent['actor'];
+  /** Allowlisted non-secret authentication method and credential record id. */
+  authentication?: AuditEvent['authentication'];
   /** Exact affected subject reference when available. */
   subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
@@ -92,6 +95,8 @@ export interface RecordWorkspaceAuditEventInput {
   requestId?: string | null;
   /** Exact authenticated actor reference when available. */
   actor?: AuditEvent['actor'];
+  /** Allowlisted non-secret authentication method and credential record id. */
+  authentication?: AuditEvent['authentication'];
   /** Exact affected subject reference when available. */
   subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
@@ -270,6 +275,7 @@ export function listSqliteAuditEvents(
         vault_grant_id,
         request_id,
         actor_json,
+        authentication_json,
         subject_json,
         agent_id,
         agent_session_id,
@@ -329,6 +335,7 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         vault_grant_id,
         request_id,
         actor_json,
+        authentication_json,
         subject_json,
         agent_id,
         agent_session_id,
@@ -403,6 +410,7 @@ function recordAuditEvent(
     vaultGrantId: input.vaultGrantId ?? null,
     requestId: protocolRequestIdOrNull(input.requestId),
     actor: input.actor ?? null,
+    ...(input.authentication ? { authentication: input.authentication } : {}),
     subject: input.subject ?? null,
     agentId: input.agentId ?? null,
     agentSessionId: input.agentSessionId ?? null,
@@ -445,6 +453,7 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         vault_grant_id,
         request_id,
         actor_json,
+        authentication_json,
         subject_json,
         agent_id,
         agent_session_id,
@@ -459,7 +468,7 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         error_code,
         created_at,
         occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.id,
@@ -473,6 +482,7 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
       event.vaultGrantId,
       event.requestId,
       event.actor === null ? null : JSON.stringify(event.actor),
+      event.authentication === undefined ? null : JSON.stringify(event.authentication),
       event.subject === null ? null : JSON.stringify(event.subject),
       event.agentId,
       event.agentSessionId,
@@ -508,6 +518,13 @@ function auditEventFromRow(row: unknown): AuditEvent {
     actor: event.actor_json
       ? ActorRefReaderSchema.parse(JSON.parse(String(event.actor_json)))
       : null,
+    ...(event.authentication_json
+      ? {
+          authentication: AuditAuthenticationSchema.strip().parse(
+            JSON.parse(String(event.authentication_json))
+          ),
+        }
+      : {}),
     subject: event.subject_json
       ? ActorRefReaderSchema.parse(JSON.parse(String(event.subject_json)))
       : null,
@@ -535,7 +552,9 @@ function auditEventFromRow(row: unknown): AuditEvent {
  * @param value Value to inspect recursively.
  */
 function assertNoUnsafeAuditValue(value: unknown): void {
-  if (findUnsafeAuditKey(value)) {
+  const { authentication, ...other } = value as Record<string, unknown>;
+  if (authentication !== undefined) AuditAuthenticationSchema.parse(authentication);
+  if (findUnsafeAuditKey(other)) {
     throw new Error('Audit event values must be redacted before recording.');
   }
 }

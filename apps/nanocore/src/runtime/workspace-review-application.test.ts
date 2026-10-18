@@ -448,6 +448,16 @@ describe('workspace review application', () => {
         workspaceDb,
         workspaceId,
       });
+      const attribution = workspaceDb.sqlite
+        .prepare(
+          "SELECT actor_json FROM audit_events WHERE action IN ('workspace.apply.finish', 'workspace.review.decide') ORDER BY action"
+        )
+        .all() as Array<{ actor_json: string }>;
+      expect(attribution).toHaveLength(2);
+      expect(attribution.map((row) => JSON.parse(row.actor_json))).toEqual([
+        LOCAL_AUTHORITY_ACTOR,
+        LOCAL_AUTHORITY_ACTOR,
+      ]);
 
       expect(existsSync(rollbackRoot)).toBe(false);
     } finally {

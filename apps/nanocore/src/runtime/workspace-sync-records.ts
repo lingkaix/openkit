@@ -28,6 +28,7 @@ import {
   workspaceSyncReviewPatchBytes,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import type { ActorRef, AuditEvent } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
@@ -49,6 +50,10 @@ export interface RecordWorkspaceSyncReviewInput {
 
 /** Durable workspace synchronization review decision persistence input. */
 export interface UpdateWorkspaceSyncReviewDecisionInput {
+  /** Actual command actor when supplied by the current command owner. */
+  readonly actor?: ActorRef;
+  /** Existing non-secret authentication facts when the command has a public requester. */
+  readonly authentication?: AuditEvent['authentication'];
   /** Workspace that owns the staged review. */
   readonly workspaceId: string;
   /** Staged review id to resolve. */
@@ -501,6 +506,8 @@ export function updateWorkspaceSyncReviewDecision(
 
   recordWorkspaceAuditEvent({
     action: 'workspace.review.decide',
+    actor: input.actor ?? null,
+    ...(input.authentication ? { authentication: input.authentication } : {}),
     category: 'artifact',
     now: new Date(input.updatedAt),
     outcome: 'succeeded',

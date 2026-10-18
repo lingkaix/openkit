@@ -37,6 +37,7 @@ describe('storage layout report', () => {
         'core_0002_durable_recurring_schedules',
         'core_0003_notebook_admission',
         'core_0004_equal_workspace_members',
+        'core_0005_audit_authentication',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -48,6 +49,7 @@ describe('storage layout report', () => {
                 'user_0000_setup',
                 'user_0001_thread_read_receipts',
                 'user_0002_notebook_admission',
+                'user_0003_audit_authentication',
               ],
             }),
           },
@@ -64,6 +66,7 @@ describe('storage layout report', () => {
               'workspace_0001_assistant_handoff',
               'workspace_0002_notebook_admission',
               'workspace_0003_exact_review_feedback',
+              'workspace_0004_audit_authentication',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

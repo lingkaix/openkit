@@ -36,6 +36,13 @@
       "when": 1792211494178,
       "tag": "0004_equal_workspace_members",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792285339687,
+      "tag": "0005_audit_authentication",
+      "breakpoints": true
     }
   ]
 }

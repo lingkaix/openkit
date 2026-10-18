@@ -3,6 +3,7 @@ import {
   WorkspaceApplyResultReaderSchema,
   WorkspaceApplyResultSchema,
 } from '@openkit/app-api-schemas';
+import type { ActorRef, AuditEvent } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
@@ -13,6 +14,10 @@ import type { WorkspaceDb } from '../storage/db.js';
  * Input used to persist one review-gated workspace apply result.
  */
 export interface RecordWorkspaceApplyResultInput {
+  /** Actual command actor when supplied by the current command owner. */
+  readonly actor?: ActorRef;
+  /** Existing non-secret authentication facts when the command has a public requester. */
+  readonly authentication?: AuditEvent['authentication'];
   /** Public workspace apply result. */
   readonly result: WorkspaceApplyResult;
   /** Request id that created the apply result. */
@@ -98,6 +103,8 @@ export function recordWorkspaceApplyResult(
   if (inserted.changes > 0) {
     recordWorkspaceAuditEvent({
       action: 'workspace.apply.finish',
+      actor: input.actor ?? null,
+      ...(input.authentication ? { authentication: input.authentication } : {}),
       category: 'artifact',
       errorCode: result.status === 'blocked' ? 'workspace_apply_blocked' : null,
       now: new Date(result.appliedAt),

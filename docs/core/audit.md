@@ -76,7 +76,7 @@ Minimum stable areas include:
 - `protocolVersion`
 - workspace ID
 - stable actor reference when an actor exists
-- redacted authenticated credential and channel summary when applicable
+- non-secret authenticated credential kind and credential record id when available
 - subject reference when the affected subject differs from the actor
 - `category`
 - action
@@ -108,7 +108,7 @@ An execution substrate's private epoch identity, process identifiers, roots, soc
 
 Audit should store references, summaries, hashes, stable IDs, or redacted excerpts where needed.
 
-An audit actor uses the `ActorRef` semantics from `docs/core/identity.md`. Display names and email addresses may appear only as redacted point-in-time summaries; they are not durable actor identifiers. Credential summaries may identify credential kind, stable credential record ID, and channel, but never secret material, authorization headers, cookies, token hashes, or invitation secrets.
+An audit actor uses the `ActorRef` semantics from `docs/core/identity.md`. Display names and email addresses may appear only as redacted point-in-time summaries; they are not durable actor identifiers. The optional `authentication` summary retains `credentialKind` (`local`, `session` or `token`) and a nullable `credentialId`. The id identifies the presented access Token or canonical authentication Session record. If session authentication supplies no canonical Session record id, an available resolved administrative Token id is retained; otherwise the id is null. A local identity uses null. Actor identity does not replace credential identity: incident review must still identify actions made through a revoked credential. The summary contains no entry channel, secret material, authorization headers, cookies, Token hashes, or invitation secrets. Historical credential identity grants no authority and remains historical during Workspace export and import.
 
 ## Source Of Truth
 

@@ -1,9 +1,11 @@
 import { z } from 'zod';
 
 import {
+  AccessTokenIdSchema,
   AgentIdSchema,
   AgentSessionIdSchema,
   AuditEventIdSchema,
+  AuthenticationSessionIdSchema,
   CapabilityCallIdSchema,
   ItemIdSchema,
   PermissionDecisionIdSchema,
@@ -22,6 +24,14 @@ import { KnowledgeNotebookAdmissionSchema } from './knowledge-notebook.js';
  */
 export const AuditSeveritySchema = z.enum(['info', 'warning', 'error']);
 
+/** Non-secret authentication facts retained for credential incident attribution. */
+export const AuditAuthenticationSchema = z
+  .object({
+    credentialKind: z.enum(['local', 'session', 'token']),
+    credentialId: z.union([AccessTokenIdSchema, AuthenticationSessionIdSchema]).nullable(),
+  })
+  .strict();
+
 /**
  * Product-visible audit event without secret or adapter-native payloads.
  */
@@ -38,6 +48,7 @@ export const AuditEventSchema = z
     vaultGrantId: VaultGrantIdSchema.nullable().default(null),
     requestId: RequestIdSchema.nullable().default(null),
     actor: ActorRefSchema.nullable().default(null),
+    authentication: AuditAuthenticationSchema.optional(),
     subject: ActorRefSchema.nullable().default(null),
     agentId: AgentIdSchema.nullable().default(null),
     agentSessionId: AgentSessionIdSchema.nullable().default(null),

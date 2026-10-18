@@ -210,7 +210,7 @@ The `openkit.gateway/routeLineage` namespace is optional descriptive evidence, n
 - event category
 - severity
 - stable `ActorRef` when an actor exists
-- redacted credential kind, credential record id, and channel summary when applicable
+- optional `authentication` with closed `credentialKind` (`local`, `session`, `token`) and nullable access Token or authentication Session `credentialId`, never a channel or credential material
 - subject reference when the affected subject differs from the actor
 - positive resource revision when the audited lifecycle mutation uses compare-and-swap
 - workspace id when applicable
@@ -235,6 +235,10 @@ The `openkit.gateway/routeLineage` namespace is optional descriptive evidence, n
 Audit events are immutable.
 
 The actor and subject fields are nullable `ActorRef` values. The actor is the authenticated principal that issued the lifecycle command. The subject is the affected invitee, member, disabled user, or new owner when that principal differs from the actor. Ordinary ownership transfer records the former owner as actor and the new owner as subject; administrator transfer-to-self records the administrator as actor and the former owner as subject. Invitee terminal actions and administrator add-self recovery leave the subject null when actor and subject are the same principal.
+
+Authentication attribution records the credential used by the initiating actor, not the credential being issued, revoked or rotated. Session authentication retains its canonical Session record id when supplied. Otherwise it retains an available resolved administrative Token id; with neither record, and for a local actor, it uses null. Unknown credential kinds and malformed credential ids refuse new records. Stored descriptive additions may be ignored, but cannot change known attribution facts. Workspace portability preserves these facts as historical source identities; it never binds an imported credential or confers current authority. SQLite stores the allowlisted summary in `audit_events.authentication_json` in the existing Core, User, Workspace or App Audit home. No separate credential history is created.
+
+Workspace MCP create, version selection, binding mutation and Plugin import retain the actual command actor, available authentication summary, request, selected entry/version reference, resulting catalog revision and outcome in the existing Workspace Audit family. Declarations, endpoint locators, binding contents and imported source bytes do not enter Audit. A refused catalog mutation does not emit a successful mutation event. Token lifecycle Audit names the initiating actor and authenticating Token independently from its target Token.
 
 ## UsageRecord
 

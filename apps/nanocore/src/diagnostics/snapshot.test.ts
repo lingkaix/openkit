@@ -60,6 +60,7 @@ describe('createDiagnosticsSnapshot', () => {
           'core_0002_durable_recurring_schedules',
           'core_0003_notebook_admission',
           'core_0004_equal_workspace_members',
+          'core_0005_audit_authentication',
         ],
       },
       mode: 'local',

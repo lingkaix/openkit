@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  importWorkspaceAuditEvents,
   listPortableWorkspaceAuditEvents,
   listServerAuditEvents,
   listWorkspaceAuditEvents,
@@ -26,6 +27,64 @@ function createDataRoot(): string {
 }
 
 describe('workspace audit events', () => {
+  it('retains authentication attribution through storage and Workspace history import', () => {
+    const dataRoot = createDataRoot();
+    const sourceId = testEntityId('ws', 'audit-auth-source');
+    const targetId = testEntityId('ws', 'audit-auth-target');
+    const coreDb = openCoreDb(dataRoot);
+    const source = openWorkspaceDb(dataRoot, sourceId);
+    const target = openWorkspaceDb(dataRoot, targetId);
+    try {
+      applyMigrations(coreDb);
+      applyScopedMigrations(source);
+      applyScopedMigrations(target);
+      const authentication = {
+        credentialKind: 'token' as const,
+        credentialId: testEntityId('tok', 'audit-presented'),
+      };
+      const facts = {
+        actor: { kind: 'user' as const, id: testEntityId('usr', 'audit-initiator') },
+        authentication,
+        action: 'catalog.mcp-create',
+        outcome: 'succeeded' as const,
+        resource: 'mcp:harmless-stub',
+        summary: 'MCP configuration created.',
+      };
+      const server = recordServerAuditEvent({ ...facts, coreDb });
+      expect(listServerAuditEvents(coreDb)).toEqual([server]);
+      const original = recordWorkspaceAuditEvent({
+        ...facts,
+        workspaceDb: source,
+        workspaceId: sourceId,
+      });
+      const portable = listPortableWorkspaceAuditEvents(source, sourceId);
+      expect(portable).toEqual([original]);
+      importWorkspaceAuditEvents({
+        workspaceDb: target,
+        sourceWorkspaceId: sourceId,
+        targetWorkspaceId: targetId,
+        events: portable,
+      });
+      expect(listWorkspaceAuditEvents(target, targetId)).toEqual([
+        { ...original, workspaceId: targetId },
+      ]);
+      expect(() =>
+        recordWorkspaceAuditEvent({
+          ...facts,
+          workspaceDb: source,
+          workspaceId: sourceId,
+          authentication: { ...authentication, token: 'secret-sentinel' } as typeof authentication,
+        })
+      ).toThrow();
+      expect(listWorkspaceAuditEvents(source, sourceId)).toEqual([original]);
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('joins Core-homed Workspace Audit only after exact Workspace selection', () => {
     const dataRoot = createDataRoot();
     const workspaceId = testEntityId('ws', 'audit-selected-workspace');

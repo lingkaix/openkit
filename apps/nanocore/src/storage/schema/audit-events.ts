@@ -41,6 +41,8 @@ export const auditEvents = sqliteTable(
     requestId: text('request_id'),
     /** Exact JSON-encoded actor reference when retained by the owning database. */
     actorJson: text('actor_json'),
+    /** Allowlisted authentication kind and non-secret credential record id. */
+    authenticationJson: text('authentication_json'),
     /** Exact JSON-encoded subject reference when retained by the owning database. */
     subjectJson: text('subject_json'),
     /** Agent lineage when available. */
