@@ -125,6 +125,17 @@ describe('governed Claim and reusable Observation fields', () => {
     expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
   });
 
+  it('keeps subject-bound review and freshness without inventing an actual conflict', () => {
+    const content = page('Observation', {
+      subject_refs: [subjectUri], review_state: 'needs-review', freshness: 'stale',
+    });
+    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+    expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
+    expect(parsed.document.frontmatter.subject_refs).toEqual([subjectUri]);
+  });
+
   it('does not assign core assessment meaning to an Observation confidence annotation', () => {
     expect(validate(page('Observation', { confidence: 'author annotation' }))).toMatchObject({
       conformance: 'scope-schema-valid', errors: [],
