@@ -336,21 +336,26 @@ describe('administration catalog configuration', () => {
     ]);
     const publish = f.store.createArtifact.bind(f.store);
     // Author descriptive additions before the real immutable v1 publisher receives its bytes.
-    const publication = vi.spyOn(f.store, 'createArtifact').mockImplementation((artifact, payload) => {
-      if (artifact.id !== outcomeId || artifact.content.format !== 'json')
-        return publish(artifact, payload);
-      const result = JSON.parse(artifact.content.body);
-      const bytes = JSON.stringify({
-        ...result,
-        annotation: 'outcome',
-        candidate: { ...result.candidate, annotation: 'reference' },
+    const publication = vi
+      .spyOn(f.store, 'createArtifact')
+      .mockImplementation((artifact, payload) => {
+        if (artifact.id !== outcomeId || artifact.content.format !== 'json')
+          return publish(artifact, payload);
+        const result = JSON.parse(artifact.content.body);
+        const bytes = JSON.stringify({
+          ...result,
+          annotation: 'outcome',
+          candidate: { ...result.candidate, annotation: 'reference' },
+        });
+        return publish(
+          {
+            ...artifact,
+            content: { format: 'json', body: bytes },
+            contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          },
+          payload
+        );
       });
-      return publish({
-        ...artifact,
-        content: { format: 'json', body: bytes },
-        contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-      }, payload);
-    });
     const result = await f.service.apply(request).finally(() => publication.mockRestore());
     const outcome = f.store.getArtifact(f.workspaceId, outcomeId);
     expect(outcome.content.format).toBe('json');
@@ -374,7 +379,8 @@ describe('administration catalog configuration', () => {
     expect(await service.apply(request)).toEqual(result);
     expect(f.reload).toHaveBeenCalledTimes(1);
     expect(reopened.getArtifactVersion(f.workspaceId, outcome.id, 1).artifact.content).toEqual({
-      format: 'json', body: bytes,
+      format: 'json',
+      body: bytes,
     });
     expect(await service.apply(request)).toEqual(result);
     expect(f.reload).toHaveBeenCalledTimes(1);
