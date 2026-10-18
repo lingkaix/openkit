@@ -186,13 +186,10 @@ export function parseKnowledgePackageManifest(input: unknown): KnowledgePackageM
       throw new Error('Additional mount bytes cannot travel in a Knowledge package.');
   }
   const inventory = new Map(manifest.contentInventory.map((file) => [file.path, file]));
-  for (const file of manifest.contentInventory) {
-    const segments = file.path.split('/');
-    for (let length = 1; length < segments.length; length += 1) {
-      if (inventory.has(segments.slice(0, length).join('/')))
-        throw new Error('Knowledge package file and directory paths collide.');
-    }
-  }
+  // A trailing slash sorts each parent directly before its descendants without rebuilding prefixes.
+  const directoryKeys = manifest.contentInventory.map((file) => `${file.path}/`).sort();
+  if (directoryKeys.some((key, index) => index > 0 && key.startsWith(directoryKeys[index - 1]!)))
+    throw new Error('Knowledge package file and directory paths collide.');
   const outputs = new Set<string>();
   for (const representation of manifest.representations) {
     const source = parseReferenceUri(representation.sourceReference)!;
