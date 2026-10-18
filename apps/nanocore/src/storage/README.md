@@ -169,3 +169,5 @@ Workspace Runtime Evidence uses a shared SQL marker and a fixed native v1 payloa
 Recurring Schedule, Occurrence and expired-range SQL owners check the row marker before reading their fixed v1 payloads. Portable export and same-deployment deletion evidence check the same marker before capturing JSON. External event admissions also check the owning Schedule marker before using its Workspace lineage. Cadence arithmetic and nominal identities stay unchanged.
 
 Query-owned retrieval trace files carry the shared retained v1 marker. Native addressed and Turn-inventory readers check it before the fixed decoder in `retrieval-trace-retained-v1.ts`; current query admission remains separate. Content references use the sole Protocol codec, and descriptive additions do not change source-family or query-owner authority. Portable file integration remains a separate owner join.
+
+Knowledge index writers and retrieval readers verify canonical page pins against the same pinned Notebook tree and retained Knowledge Base scope. Static index comparison uses that same page-reference proof; current audience and publication checks remain separate retrieval admission.
