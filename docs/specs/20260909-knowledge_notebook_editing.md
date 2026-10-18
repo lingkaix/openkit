@@ -95,6 +95,22 @@ If the base changed, return `409 conflict` with the current revision and retaine
 
 Restart reads the published ref and immutable tree plus existing command/Proposal/Review/Audit owners. It does not resume an editing session, rerun dreaming or infer that an unpublished object became active. Published history, retained proposal candidates and backup roots must be protected from garbage collection. Git is local and shares the existing single-process data-root deployment constraint; no distributed Git writer or remote synchronization is introduced.
 
+## Typed Domain Pages
+
+Rule, Effect and business Objective are official governed ScopeSchema domain types. Each requires nonempty `applies_to` containing declared tool or work-step identifiers. Effect additionally requires a nonempty descriptive `basis` and `last_checked_at` using the existing explicit-offset timestamp rules. Writers preserve supplied values and MUST NOT fabricate a basis or check time. Existing scope, Source, sensitivity, audience, Review, freshness and publication checks apply; unknown descriptive extensions remain intact. These types add no universal external OKF base, required envelope feature, Goal lifecycle or permission authority.
+
+Without `applies_to`, retrieval cannot identify the tools or work steps for which the page declares applicability.
+
+Without `basis`, an Effect omits the stated evidence or reasoning behind its outcome assessment.
+
+Without `last_checked_at`, an Effect cannot state when its outcome assessment was last checked.
+
+Without request and trace `types`, callers cannot restrict selection to declared page types, and the trace cannot reproduce that restriction.
+
+Without request and trace `appliesTo`, callers cannot restrict selection to exact declared applicability, and the trace cannot reproduce that restriction.
+
+Native retrieval and the KM search Tool accept optional nonempty `types` and `appliesTo` lists. Each list uses any-match; supplied lists intersect. Type selection compares exact governed type names under the current ScopeSchema. Applicability compares exact `applies_to` identifiers only on valid Rule, Effect or Objective pages; other metadata stays descriptive. No prose inference, prefix match or permission follows from a match. The existing retrieval loop applies these selectors after its safety and freshness gates and before budget selection, including for pins. Mismatches use the existing `policy_excluded` disposition. Existing trace parameters retain supplied sorted duplicate-free lists, while absent filters add no keys and preserve unfiltered request identity and projections. This feature adds no selector, ranker, index, store or trace owner. Types, required fields and activating retrieval land together as one additive feature after the pre-reset cut.
+
 ## Retrieval, Notebook UI And Restoration
 
 S61 owns indexing, state-filtered search and deterministic ranking for these notebook revisions. The notebook requires active-only default retrieval and explicit authorized inspection of other supported states through that existing owner. Publication provenance replaces the former requirement to reconstruct a human Proposal/Review tuple for every Agent-edited page. Before returning content, recheck exact scope, source permissions, suppression, sensitivity, freshness and applicable policy at the pinned revision. A valid active page can carry unresolved uncertainty explicitly; the retrieval owner preserves its existing conflict exclusions and diagnostics and must not present uncertainty as settled truth. `review_state: delegated` records an ordinary authorized Agent edit; it does not mean human-reviewed or AI-proven. Exact human acceptance remains `accepted`, direct human editing remains `user-authored`; an edit cannot inherit old content-bound acceptance or assessment.

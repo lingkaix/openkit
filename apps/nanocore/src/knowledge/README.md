@@ -37,6 +37,8 @@ This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-pro
 
 `knowledge-meaning-reference.ts` supplies Light App discovery with one native pinned-page read over the existing Workspace/Server admission, retained KB binding and published Git history. It returns exact content/digest/revision or a uniform unavailable result. Current schema, Source audience, sensitivity and Review eligibility remain mandatory; delegated labels require the actual producing commit authority. The lookup inspects at most 100 published records, never unpublished candidates or a materialized fallback. User Memory and not-yet-activated raw resolution are unavailable to shared Light App discovery. It adds no retained projection or operation.
 
+`okf.ts` admits Rule, Effect and Objective as governed domain types with declared `applies_to`; Effect also requires descriptive `basis` and an actual supplied `last_checked_at`. The common publisher retains exact metadata and descriptive extensions. Native retrieval and the KM search Tool accept optional `types` and `appliesTo` lists, with any-match within each and intersection across lists. Applicability uses exact identifiers on these domain types only. Current eligibility and pins remain governed, and absent filters preserve the existing request/trace shape. See [Typed Domain Pages](../../../../docs/specs/20260909-knowledge_notebook_editing.md#typed-domain-pages).
+
 ## Verification
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge` and the affected Knowledge Store tests.
