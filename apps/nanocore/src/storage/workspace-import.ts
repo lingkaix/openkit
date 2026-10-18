@@ -46,7 +46,6 @@ import {
   ArtifactIdSchema,
   ArtifactSchema,
   AuditEventIdSchema,
-  AuditEventSchema,
   allocateEntityId,
   CapabilityCallIdSchema,
   CapabilityCallSchema,
@@ -116,6 +115,11 @@ import {
 import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
+import {
+  AuditEventRetainedV1Schema,
+  PermissionDecisionRetainedV1Schema,
+  projectPermissionDecision,
+} from '../policy/retained-records-v1.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import {
   StoredGoalCardTaskV1Schema,
@@ -193,7 +197,7 @@ type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
-type AuditEvent = import('zod').infer<typeof AuditEventSchema>;
+type AuditEvent = import('zod').infer<typeof AuditEventRetainedV1Schema>;
 type EvidenceBundleRecord = z.infer<typeof EvidenceBundleRecordSchema>;
 type RuntimeEvidenceRecord = z.infer<typeof StoredRuntimeEvidenceV1Schema>;
 type UsageRecord = import('zod').infer<typeof UsageRecordSchema>;
@@ -357,34 +361,10 @@ const ExportedWorkspaceApplyResultSchema = StoredWorkspaceApplyResultV1Schema.ex
 
 type ExportedWorkspaceApplyResult = z.infer<typeof ExportedWorkspaceApplyResultSchema>;
 
-const ExportedWorkspacePermissionDecisionSchema = z
-  .object({
-    action: z.string().min(1),
-    approvalId: z.string().min(1).nullable(),
-    auditEventId: AuditEventIdSchema.nullable(),
-    contextSummary: z.unknown(),
-    createdAt: z.string().datetime(),
-    decisionId: PermissionDecisionIdSchema,
-    enforcementPoint: z.string().min(1),
-    ownerScope: z.literal('workspace'),
-    policyEngineVersion: z.string().min(1),
-    policySnapshotId: z.string().min(1),
-    reasonCode: z.string().min(1),
-    requiredApprovalKind: z.string().min(1).nullable(),
-    resourceSummary: z.unknown(),
-    result: z.enum([
-      'allow',
-      'deny',
-      'require_approval',
-      'require_escalation',
-      'defer',
-      'not_applicable',
-      'error',
-    ]),
-    subjectSummary: z.unknown(),
-    workspaceId: WorkspaceIdSchema,
-  })
-  .strict();
+const ExportedWorkspacePermissionDecisionSchema = PermissionDecisionRetainedV1Schema.safeExtend({
+  ownerScope: z.literal('workspace'),
+  workspaceId: WorkspaceIdSchema,
+});
 
 type ExportedWorkspacePermissionDecision = z.infer<
   typeof ExportedWorkspacePermissionDecisionSchema
@@ -1954,9 +1934,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
   context.vaultGrantIds = vaultGrantIds;
   const auditEvents = readOptionalImportJsonl(context.files, 'records/audit-events.jsonl').map(
     (record) => {
-      const parsed = AuditEventSchema.parse(record);
+      const parsed = readRetainedV1(record, (value) => AuditEventRetainedV1Schema.parse(value));
 
-      return AuditEventSchema.parse({
+      return AuditEventRetainedV1Schema.parse({
         ...parsed,
         threadId: parsed.threadId ? requiredMapValue(threadIds, parsed.threadId, 'thread') : null,
         turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
@@ -2400,7 +2380,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     context.files,
     'records/permission-decisions.jsonl'
   ).map((record) => {
-    const parsed = ExportedWorkspacePermissionDecisionSchema.parse(record);
+    const parsed = readRetainedV1(record, (value) =>
+      ExportedWorkspacePermissionDecisionSchema.parse(projectPermissionDecision(value))
+    );
 
     return ExportedWorkspacePermissionDecisionSchema.parse({
       ...parsed,

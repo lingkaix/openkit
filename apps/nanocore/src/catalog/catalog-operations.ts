@@ -16,6 +16,7 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
@@ -229,9 +230,10 @@ export function createCatalogOperationImplementations(
   ) => {
     const admitted = workspaceDb.sqlite
       .prepare(
-        'SELECT actor_json AS actor FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ?'
+        'SELECT *, actor_json AS actor FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ?'
       )
       .all(input.workspaceId, input.requestId, `${operation}.admit`) as { actor: string | null }[];
+    for (const row of admitted) readAuditEventRowV1(row);
     if (
       loadWorkspaceResourceCatalog(root(), input.workspaceId).revision !== input.expectedRevision
     ) {

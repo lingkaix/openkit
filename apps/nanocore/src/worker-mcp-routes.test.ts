@@ -30,13 +30,17 @@ import {
   parseWorkspaceMcpServerCatalog,
   resolveWorkspaceMcpServer,
 } from '@openkit/config-schema';
-import { deriveEntityId } from '@openkit/protocol';
+import { deriveEntityId, PolicyDocumentV1Schema } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createDefaultWorkerControlGateway } from './app.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { listWorkspaceAuditEvents } from './audit-events.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
@@ -53,6 +57,10 @@ import {
 import { retainWorkObservationBody } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
+import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './policy/configuration.js';
+import { PolicyInterception } from './policy/interception.js';
+import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest, preparePolicyDocument } from './policy/statements.js';
 import { ProviderRegistry } from './providers/registry.js';
 import * as snapshotLedger from './runtime/aep-snapshot-ledger.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -85,7 +93,7 @@ import {
   type NanoHostSessionEffectRequest,
 } from './runtime/nanohost-session-dispatch.js';
 import { approvalCardCopy, projectApprovalEffect } from './runtime/pending-request-disclosure.js';
-import { readPendingRequest } from './runtime/pending-requests.js';
+import { listThreadPendingRequests, readPendingRequest } from './runtime/pending-requests.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -171,6 +179,513 @@ function recordMcpWorkerLineage(
 }
 
 describe('worker MCP routes', () => {
+  it('mediates seeded I16 calls through admitted Policy before credentials and upstream effects', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-i16-route-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+    const turn = store.createTurn(
+      workspaceId,
+      'th_00000000-0000-7000-8000-000000000001',
+      'Call mediated echo',
+      { kind: 'user', id: userId }
+    );
+    const agentSessionId = testEntityId('as', 'i16_route');
+    store.createAgentSession({
+      id: agentSessionId,
+      agentId: 'agent_codex_host',
+      workspaceId,
+      threadId: turn.threadId,
+      status: 'busy',
+      message: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    store.updateTurn(turn.id, { agentSessionId, agentId: 'agent_codex_host', status: 'running' });
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }).record;
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server/vault'),
+    });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
+    const referenceId = testEntityId('vault', 'i16_route');
+    vaultUnlockState.backend().store({
+      material: 'synthetic-i16-fixture-credential',
+      metadata: { ownerScope: 'workspace', workspaceId },
+      referenceId,
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: `encrypted-file://workspace/${referenceId}`,
+      displayName: 'I16 fixture',
+      ownerScope: 'workspace',
+      referenceId,
+      secretKind: 'http-bearer',
+      workspaceId,
+    });
+    const grant = createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['gateway-only'],
+      grantId: testEntityId('grant', 'i16_route'),
+      lifetime: 'workspace',
+      ownerScope: 'workspace',
+      targetCapabilityId: null,
+      vaultReferenceId: referenceId,
+      workspaceId,
+    });
+    const catalog = {
+      schemaVersion: 1 as const,
+      servers: [
+        {
+          id: 'echo',
+          enabled: true,
+          allowedTools: ['echo'],
+          deniedTools: [],
+          approvalRequiredTools: [] as string[],
+          credentialBindings: [
+            {
+              presentation: 'bearer' as const,
+              sink: { kind: 'header' as const, name: 'authorization' },
+              slot: 'auth',
+              vaultGrantId: grant.grantId,
+            },
+          ],
+          schemaPolicy: 'tracking' as const,
+          pinnedSchemaSnapshotId: null,
+          timeoutMs: 2000,
+          transport: { kind: 'http' as const, endpoint: 'https://i16.invalid/mcp' },
+        },
+      ],
+    };
+    catalog.servers.push({
+      ...catalog.servers[0]!,
+      id: 'echo-approval',
+      approvalRequiredTools: ['echo'],
+    });
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSessionId,
+      agentSetup: createTestAgentSetup({ mcpIds: ['echo', 'echo-approval'] }),
+      backend: { kind: 'openshell' },
+      createdAt: new Date().toISOString(),
+      requestId: 'req_i16_route',
+      triggerActor: turn.triggerActor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceMcpServerCatalog: catalog,
+      workspaceRoots: [],
+    });
+    recordMcpWorkerLineage(coreDb, environmentPackage, token.tokenId);
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(workspaceDb);
+    const tools = [
+      {
+        name: 'echo',
+        inputSchema: {
+          type: 'object' as const,
+          properties: { message: { type: 'string' } },
+          required: ['message'],
+          additionalProperties: false,
+        },
+      },
+    ];
+    const gateway: WorkerMcpGateway = {
+      listTools: vi.fn(async () => ({ serverVersion: 'i16-fixture', tools })),
+      callTool: vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'completed' }] })),
+      close: vi.fn(async () => {}),
+      closeServer: vi.fn(async () => {}),
+      closeServerIfIdle: vi.fn(async () => {}),
+      closeWorkspace: vi.fn(async () => {}),
+      getServerHealth: () => 'ready',
+    };
+    const participantVersion = `sha256:${'1'.repeat(64)}`;
+    let gate: 'allow' | 'deny' = 'allow';
+    let hold: Promise<void> | undefined;
+    let entered = () => {};
+    const invoke = vi.fn(
+      async ({
+        proposal,
+      }: Parameters<
+        NonNullable<ConstructorParameters<typeof PolicyInterception>[0]>['invoke']
+      >[0]) => {
+        expect(proposal).not.toHaveProperty('arguments');
+        entered();
+        if (hold) await hold;
+        return { decision: gate };
+      }
+    );
+    const interception = new PolicyInterception({
+      id: 'i16-fixture',
+      version: participantVersion,
+      invoke,
+    });
+    const principal = { kind: 'human' as const, id: userId };
+    const scope = {
+      subjects: [principal],
+      actions: ['tool.use'],
+      resources: ['echo', 'echo-approval'].map((serverId) => ({
+        kind: 'mcp-tool' as const,
+        workspaceId,
+        serverId,
+        toolName: 'echo',
+      })),
+    };
+    let document = EMPTY_POLICY_DOCUMENT;
+    const admit = (version = participantVersion, failure?: 'error') => {
+      const prepared = preparePolicyDocument({
+        current: document,
+        userId,
+        now: new Date().toISOString(),
+        proposed: PolicyDocumentV1Schema.parse({
+          schemaVersion: 1,
+          statements: [
+            {
+              id: 'i16-gate',
+              kind: 'binding',
+              author: principal,
+              authority: { kind: 'human', userId },
+              authoredAt: new Date().toISOString(),
+              scope,
+              lifetime: {
+                anchor: {
+                  owner: { kind: 'workspace', workspaceId },
+                  kind: 'workspace',
+                  id: workspaceId,
+                },
+              },
+              state: 'active',
+              operation: 'mcp.call-tool',
+              stage: 'decide',
+
+              mode: 'gate',
+              participant: { kind: 'deterministic', id: 'i16-fixture', version },
+
+              inputDisclosure: scope,
+
+              order: 0,
+              timeoutMs: 10000,
+              ...(failure ? { failure } : {}),
+              circuit: { failures: 1, recoveryAfterMs: 1 },
+            },
+          ],
+        }),
+      });
+      recordPolicyWriteDecision({
+        coreDb,
+        actor: { kind: 'local', userId },
+        candidate: {
+          artifactId: testEntityId('ar', 'i16_policy'),
+          contentDigest: policyDigest(prepared.document),
+        },
+        proposal: {
+          schemaVersion: 1,
+          proposer: principal,
+          rationale: 'Exercise admitted native I16 mediation.',
+          baseRevision: policyDigest(document),
+          proposed: prepared.document,
+          diff: prepared.diff,
+          classification: prepared.classification,
+          validation: 'valid',
+        },
+        requestId: 'req_i16_policy',
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
+      document = prepared.document;
+      expect(readAdmittedPolicyDocument(coreDb, document)).toEqual(document);
+    };
+    admit();
+    const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
+    const app = new Hono();
+    registerWorkerMcpRoutes({
+      app,
+      coreDb,
+      store,
+      interception,
+      vaultUnlockState,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workerControlGateway: {
+        authenticatePackageToken: vi.fn(() => environmentPackage),
+      } as unknown as WorkerControlGateway,
+      workerMcpGateway: gateway,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          agentManifests: [],
+          openKitConfig: {
+            ...baseConfig.openKitConfig,
+            policy: { ...baseConfig.openKitConfig.policy, mediation: document },
+          },
+          workspaceMcpServerCatalogs: [
+            { catalog, path: join(dataRoot, 'catalog.json'), workspaceId },
+          ],
+        }),
+    });
+    const client = new Client({ name: 'i16-route', version: '1.0.0' });
+    const approvalClient = new Client({ name: 'i16-approval-route', version: '1.0.0' });
+    const transport = (serverId: string) =>
+      new StreamableHTTPClientTransport(
+        new URL(`http://nanocore.test/api/worker-capabilities/mcp/${serverId}`),
+        {
+          fetch: (request, init) => app.fetch(new Request(request, init)),
+          requestInit: { headers: { authorization: 'Bearer fixture-package' } },
+        }
+      );
+    const credentialRead = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+    const canary = 'I16_ARGUMENT_BODY_CANARY';
+    const call = () => client.callTool({ name: 'echo', arguments: { message: canary } });
+    const approvalCall = () =>
+      approvalClient.callTool({ name: 'echo', arguments: { message: canary } });
+    const decisions = () =>
+      listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId).filter(
+        (row) => row.mediation?.operation === 'mcp.call-tool'
+      );
+    const boundaryCounts = () => ({
+      list: vi.mocked(gateway.listTools).mock.calls.length,
+      call: vi.mocked(gateway.callTool).mock.calls.length,
+      credential: credentialRead.mock.calls.length,
+      plans: coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get(),
+      receipts: coreDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+        .get(),
+    });
+    const assertRecords = (
+      start: number,
+      result: string,
+      outcome: string,
+      options: { kernel?: 'allow' | null; serverId?: string; gateResult?: string } = {}
+    ) => {
+      const kernel = options.kernel === undefined ? 'allow' : options.kernel;
+      const serverId = options.serverId ?? 'echo';
+      const rows = decisions().slice(start);
+      expect(rows).toHaveLength(2);
+      const binding = document.statements.find((statement) => statement.kind === 'binding');
+      expect(binding).toBeDefined();
+      const bindingRef = { id: binding!.id, digest: policyDigest(binding) };
+      const gateRow = rows.find((row) => row.mediation?.role === 'gate')!;
+      const final = rows.find((row) => row.mediation?.role === 'final')!;
+      expect(gateRow.result).toBe(options.gateResult ?? result);
+      const context = final.contextSummary as { capabilityCallId: string };
+      const expectedSubject = {
+        principal,
+        onBehalfOf: null,
+        actor: { kind: 'agent', id: environmentPackage.agent.agentId, responsibleUserId: userId },
+        process: { workspaceId, threadId: turn.threadId, turnId: turn.id },
+        credentialKind: 'worker-package',
+        responsibleHumanId: userId,
+      };
+      expect(final).toMatchObject({
+        result,
+        enforcementPoint: 'mcp.call-tool@decide',
+        policySnapshotId: policyDigest(document),
+        contextSummary: {
+          capabilityCallId: context.capabilityCallId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          catalogRevision: resolveWorkspaceMcpServer({ catalog, serverId }).catalogDigest,
+        },
+        mediation: {
+          subject: expectedSubject,
+          kernel: kernel ? { effect: kernel } : null,
+          invocations: [{ kind: 'decision', id: gateRow.decisionId }],
+        },
+      });
+      expect(final.mediation?.proposalDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(final.mediation?.authorizationRevision).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(gateRow.mediation).toMatchObject({
+        binding: bindingRef,
+
+        subject: expectedSubject,
+        proposalDigest: final.mediation?.proposalDigest,
+        authorizationRevision: final.mediation?.authorizationRevision,
+      });
+      const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
+      expect(audits.find((event) => event.id === gateRow.auditEventId)).toMatchObject({
+        permissionDecisionId: gateRow.decisionId,
+        capabilityCallId: context.capabilityCallId,
+        policyInvocation: {
+          mode: 'gate',
+          outcome,
+          binding: bindingRef,
+          participant: { id: binding!.participant.id, version: binding!.participant.version },
+          subject: expectedSubject,
+          capabilityCallId: context.capabilityCallId,
+          proposalDigest: final.mediation?.proposalDigest,
+          authorizationRevision: final.mediation?.authorizationRevision,
+        },
+      });
+      expect(audits.find((event) => event.id === final.auditEventId)).toMatchObject({
+        permissionDecisionId: final.decisionId,
+        capabilityCallId: context.capabilityCallId,
+      });
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            'SELECT package_snapshot_id, provider_ref, service_ref FROM capability_calls WHERE call_id = ?'
+          )
+          .get(context.capabilityCallId)
+      ).toEqual({
+        package_snapshot_id: environmentPackage.snapshotId,
+        provider_ref: serverId,
+        service_ref: 'mcp-tool:echo',
+      });
+      return final;
+    };
+    try {
+      await client.connect(transport('echo'));
+      await approvalClient.connect(transport('echo-approval'));
+      await client.listTools();
+      await approvalClient.listTools();
+      const seeded = workspaceDb.sqlite
+        .prepare(
+          "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo'"
+        )
+        .get(turn.id, environmentPackage.snapshotId) as { schema_snapshot_id: string };
+      expect(seeded.schema_snapshot_id).toEqual(expect.any(String));
+      const approvalSchema = workspaceDb.sqlite
+        .prepare(
+          "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo-approval'"
+        )
+        .get(turn.id, environmentPackage.snapshotId) as { schema_snapshot_id: string };
+      expect(approvalSchema.schema_snapshot_id).toEqual(expect.any(String));
+      expect(invoke).not.toHaveBeenCalled();
+      expect(await call()).toMatchObject({ content: [{ text: 'completed' }] });
+      assertRecords(0, 'allow', 'completed');
+      expect(gateway.callTool).toHaveBeenCalledTimes(1);
+      expect(credentialRead).toHaveBeenCalled();
+      const allowedBoundary = boundaryCounts();
+      gate = 'deny';
+      let start = decisions().length;
+      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+      assertRecords(start, 'deny', 'completed');
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      const absentVersion = `sha256:${'2'.repeat(64)}`;
+      admit(absentVersion, 'error');
+      start = decisions().length;
+      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-policy-unavailable' } });
+      const unavailable = assertRecords(start, 'error', 'unavailable');
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      admit(absentVersion);
+      start = decisions().length;
+      const pendingResult = await call();
+      expect(pendingResult).toMatchObject({
+        isError: true,
+        structuredContent: { status: 'pending-approval' },
+      });
+      const escalation = assertRecords(start, 'require_escalation', 'unavailable');
+      expect(escalation.decisionId).not.toBe(unavailable.decisionId);
+      const pending = listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId);
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        state: 'pending',
+        kind: 'approval',
+        requesterKind: 'worker',
+        responsibleUserId: userId,
+        schemaSnapshotId: seeded.schema_snapshot_id,
+        policyDecisionId: escalation.decisionId,
+        canonicalArgumentsJson: JSON.stringify({ message: canary }),
+        packageDigest: environmentPackage.snapshotId,
+      });
+      expect(store.getTurnById(turn.id).items).toContainEqual(
+        expect.objectContaining({
+          type: 'approval-request',
+          approvalRequestId: pending[0]!.requestId,
+        })
+      );
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      admit();
+      gate = 'allow';
+      start = decisions().length;
+      const invokedBeforeEvidenceFailure = invoke.mock.calls.length;
+      workspaceDb.sqlite.exec(
+        "CREATE TRIGGER fail_i16_evidence BEFORE INSERT ON audit_events WHEN NEW.policy_invocation_json IS NOT NULL BEGIN SELECT RAISE(ABORT, 'I16 required Audit unavailable'); END"
+      );
+      try {
+        await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
+      } finally {
+        workspaceDb.sqlite.exec('DROP TRIGGER fail_i16_evidence');
+      }
+      expect(invoke).toHaveBeenCalledTimes(invokedBeforeEvidenceFailure + 1);
+      expect(decisions()).toHaveLength(start);
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      gate = 'deny';
+      start = decisions().length;
+      await expect(approvalCall()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+      assertRecords(start, 'deny', 'completed', { serverId: 'echo-approval' });
+      expect(
+        listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)
+      ).toHaveLength(1);
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      gate = 'allow';
+      start = decisions().length;
+      expect(await approvalCall()).toMatchObject({
+        isError: true,
+        structuredContent: { status: 'pending-approval' },
+      });
+      const catalogApproval = assertRecords(start, 'require_approval', 'completed', {
+        serverId: 'echo-approval',
+        gateResult: 'allow',
+      });
+      expect(catalogApproval.requiredApprovalKind).toBe('permission');
+      const afterCatalogApproval = listThreadPendingRequests(
+        workspaceDb.sqlite,
+        workspaceId,
+        turn.threadId
+      );
+      expect(afterCatalogApproval).toHaveLength(2);
+      expect(
+        afterCatalogApproval.find((request) => request.serverId === 'echo-approval')
+      ).toMatchObject({
+        state: 'pending',
+        policyDecisionId: catalogApproval.decisionId,
+        schemaSnapshotId: approvalSchema.schema_snapshot_id,
+        packageDigest: environmentPackage.snapshotId,
+      });
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      let release!: () => void;
+      hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const participantEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      start = decisions().length;
+      const held = call();
+      const refused = expect(held).rejects.toMatchObject({
+        data: { code: 'mcp-policy-unavailable' },
+      });
+      await participantEntered;
+      revokeOpenKitAccessTokenRecord(coreDb, token.tokenId);
+      release();
+      await refused;
+      assertRecords(start, 'error', 'error', { kernel: null, gateResult: 'require_escalation' });
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      expect(JSON.stringify(invoke.mock.calls)).not.toContain(canary);
+      expect(
+        JSON.stringify(workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all())
+      ).not.toContain(canary);
+      expect(
+        JSON.stringify(coreDb.sqlite.prepare('SELECT * FROM audit_events').all())
+      ).not.toContain(canary);
+    } finally {
+      credentialRead.mockRestore();
+      await client.close();
+      await approvalClient.close();
+      await gateway.close();
+      vaultUnlockState.lock();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     'abort',
     'expiry',
@@ -2045,6 +2560,17 @@ describe('worker MCP routes', () => {
     });
     expect(JSON.stringify(environmentPackage)).not.toContain('pending-secret-canary');
     recordMcpWorkerLineage(coreDb, environmentPackage);
+    // Production retains the dispatched package before a later captured human response reads it.
+    const packageDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+    try {
+      applyScopedMigrations(packageDb);
+      recordAgentEnvironmentPackageSnapshot(packageDb, {
+        environmentPackage,
+        createdAt: new Date().toISOString(),
+      });
+    } finally {
+      packageDb.sqlite.close();
+    }
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       gatewayConfig: createTestGatewayConfig(),
       providerRegistry: new ProviderRegistry([

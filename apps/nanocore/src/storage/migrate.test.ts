@@ -193,6 +193,44 @@ function listColumnNames(
 
 describe('database setup', () => {
   it.each([
+    'core',
+    'workspace',
+    'user',
+    'app',
+  ] as const)('requires an explicit Audit and Policy retained version in a fresh %s database', (scope) => {
+    const sqlite = new Database(':memory:');
+    try {
+      applyNativeScopeMigrations(sqlite, scope);
+      const tables =
+        scope === 'core' || scope === 'workspace'
+          ? ['audit_events', 'permission_decisions']
+          : ['audit_events'];
+      for (const table of tables) {
+        const columns = sqlite.pragma(`table_info(${table})`) as Array<{
+          name: string;
+          notnull: number;
+          dflt_value: unknown;
+        }>;
+        expect(columns.find(({ name }) => name === 'schema_version')).toMatchObject({
+          notnull: 1,
+          dflt_value: null,
+        });
+      }
+      // A reset-format row must carry its writer's version; SQL cannot infer it.
+      expect(() =>
+        sqlite
+          .prepare(
+            `INSERT INTO audit_events (audit_event_id, category, action, outcome, severity, summary, created_at, occurred_at)
+           VALUES ('unversioned-fixture', 'system', 'test', 'succeeded', 'info', 'test', 'now', 'now')`
+          )
+          .run()
+      ).toThrow(/schema_version/);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it.each([
     5, 7, 8,
   ])('extends Core before migration %s without changing retained users', (cutoff) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-channel-migration-'));
@@ -260,7 +298,8 @@ describe('database setup', () => {
         '0006_external_trigger_admissions.sql',
         '0007_discord_capture_origin.sql',
         '0008_server_capability_usage.sql',
-        '0009_retained_record_formats.sql',
+        '0009_policy_audit_v1.sql',
+        '0010_retained_record_formats.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -278,7 +317,8 @@ describe('database setup', () => {
         'core_0006_external_trigger_admissions',
         'core_0007_discord_capture_origin',
         'core_0008_server_capability_usage',
-        'core_0009_retained_record_formats',
+        'core_0009_policy_audit_v1',
+        'core_0010_retained_record_formats',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -672,7 +712,8 @@ describe('database setup', () => {
         'user_0000_setup',
         'user_0001_thread_read_receipts',
         'user_0002_notebook_admission',
-        'user_0003_retained_record_formats',
+        'user_0003_policy_audit_v1',
+        'user_0004_retained_record_formats',
       ]);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
@@ -685,7 +726,8 @@ describe('database setup', () => {
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
-        'workspace_0004_retained_record_formats',
+        'workspace_0004_policy_audit_v1',
+        'workspace_0005_retained_record_formats',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1064,7 +1106,8 @@ describe('native Drizzle migrate', () => {
         'workspace_0001_assistant_handoff',
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
-        'workspace_0004_retained_record_formats',
+        'workspace_0004_policy_audit_v1',
+        'workspace_0005_retained_record_formats',
       ]);
     } finally {
       db.sqlite.close();

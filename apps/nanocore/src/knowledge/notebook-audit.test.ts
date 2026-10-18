@@ -141,10 +141,15 @@ describe('notebook publication admission in the existing Audit owners', () => {
         }
       ).count
     );
-    applyNativeScopeMigrations(sqlite, scope, current);
-    applyNativeScopeMigrations(sqlite, scope, current);
+    // This regression owns the Notebook migration, not later reset-format cutovers.
+    const notebookJournal = { ...journal, entries: journal.entries.slice(0, admissionIndex + 1) };
+    for (const entry of notebookJournal.entries)
+      copyFileSync(join(current, `${entry.tag}.sql`), join(predecessor, `${entry.tag}.sql`));
+    writeFileSync(join(predecessor, 'meta', '_journal.json'), JSON.stringify(notebookJournal));
+    applyNativeScopeMigrations(sqlite, scope, predecessor);
+    applyNativeScopeMigrations(sqlite, scope, predecessor);
     expect(sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get()).toEqual({
-      count: previousCount + journal.entries.length - admissionIndex,
+      count: previousCount + 1,
     });
     const after = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
     if (scope === 'user') expect(after[0]?.schema_version).toBe(1);

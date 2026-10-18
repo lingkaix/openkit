@@ -515,3 +515,13 @@ describe('server config schema', () => {
     );
   });
 });
+
+it('retains the authored Policy collection without conflating its format with a revision', () => {
+  const mediation = { schemaVersion: 1, statements: [] };
+  expect(OpenKitConfigSchema.parse({ policy: { mediation } }).policy?.mediation).toEqual(mediation);
+  expect(
+    OpenKitConfigSchema.safeParse({
+      policy: { mediation: { ...mediation, revision: 'mutable-label' } },
+    }).success
+  ).toBe(false);
+});

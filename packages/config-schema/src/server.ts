@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import {
   DeploymentIdSchema,
   KnowledgeBaseIdSchema,
+  PolicyDocumentV1Schema,
   RETAINED_FORMAT_VERSION,
   UserIdSchema,
 } from '@openkit/protocol';
@@ -346,6 +347,7 @@ export const OpenKitConfigSchema = z
     mode: CoreModeSchema.optional(),
     policy: z
       .object({
+        mediation: PolicyDocumentV1Schema.optional(),
         workerGitReadMaintenance: z
           .array(WorkerGitReadMaintenanceAssignmentSchema)
           .refine(

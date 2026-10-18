@@ -14,6 +14,7 @@ import {
   KnowledgeEntrySchema,
   readRetainedV1,
   ThreadSchema,
+  TurnSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -25,6 +26,8 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
+import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
@@ -608,7 +611,13 @@ export function writeWorkspaceExportTree(
       }
     }
     if (input.auditEvents?.length) {
-      writeJsonl(join(recordsRoot, 'audit-events.jsonl'), input.auditEvents);
+      writeJsonl(
+        join(recordsRoot, 'audit-events.jsonl'),
+        input.auditEvents.map((event) => {
+          if (!isRecord(event)) throw new TypeError('Audit export requires an object record.');
+          return writeRetainedV1(event);
+        })
+      );
     }
     if (input.capabilityCalls?.length) {
       writeJsonl(join(recordsRoot, 'capability-calls.jsonl'), input.capabilityCalls);
@@ -764,7 +773,14 @@ export function writeWorkspaceExportTree(
       );
     }
     if (input.permissionDecisions?.length) {
-      writeJsonl(join(recordsRoot, 'permission-decisions.jsonl'), input.permissionDecisions);
+      writeJsonl(
+        join(recordsRoot, 'permission-decisions.jsonl'),
+        input.permissionDecisions.map((decision) => {
+          if (!isRecord(decision))
+            throw new TypeError('PermissionDecision export requires an object record.');
+          return writeRetainedV1(retainPermissionDecision(decision));
+        })
+      );
     }
     if (input.goalState) writeJson(join(recordsRoot, 'goal-state.json'), input.goalState);
     if (input.workerCheckpoints?.length) {
