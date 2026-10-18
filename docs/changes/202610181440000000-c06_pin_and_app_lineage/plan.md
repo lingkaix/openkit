@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 ---
 # Skill Pin And Light App Execution Lineage
 
@@ -33,3 +33,9 @@ Kernel context uses trusted Worker or internal invocation lineage and validates 
 ## Verification And Landing
 
 Write regressions before production edits. The cheap baseline pin-schema probe must show that existing pins parse while the proposed pinAuditRef is refused as unknown. Native tests exercise repeated pins, exact actor/request joins, read projection, replay and clear. Kernel tests inspect actual app Audit rows for trusted execution and absence for human presentation actions. Run complete affected module directories, changed package suites and shared inventories through the exact local gate; generate and check OpenAPI/CLI projections. Independent Sol review names the final head and checks each field necessity above. Land additively by express on green main, then watch the containing main CI. This change performs no host, reset or release action.
+
+## Implementation Summary And Verification Evidence
+
+A13 is implemented in the existing catalog schema, native pin publisher and read summary. The optional pinAuditRef references the actual preceding command admission Audit and is never supplied by the public pin request. Native repeated-pin/replay/clear and read tests pass 9/9; the config Skill schema tests pass 4/4. The first native run found an incorrect test-only SQL column name, corrected to audit_event_id with no production correction. The baseline direct Zod probe refused the new field while admitting an existing pin. Named logs are in the external lane checkpoint.
+
+A15 was merged from its separate lane/go-c06-a15 branch by git merge. It uses existing Kernel command context and app Audit fields, verifies actual trusted invocation lineage and retains presentation Item identity separately. No Audit schema or migration changed. Focused native proof and the final exact gate/review are pending at this authored head; no completed gate or live effect is claimed. L-RT owns the separately coordinated AEP consumer and no-private-procedure-copy regression. C03/C04 are excluded from this additive landing.
