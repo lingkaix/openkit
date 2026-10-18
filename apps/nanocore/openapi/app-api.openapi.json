@@ -9395,7 +9395,7 @@
         "tags": [
           "goal"
         ],
-        "summary": "Propose exact immutable Plan bytes and raise their Pending Request.",
+        "summary": "Propose exact immutable Plan bytes and a typed domain in one Pending Request.",
         "security": [
           {
             "bearerAuth": []
@@ -9427,7 +9427,7 @@
         },
         "responses": {
           "200": {
-            "description": "Propose exact immutable Plan bytes and raise their Pending Request.",
+            "description": "Propose exact immutable Plan bytes and a typed domain in one Pending Request.",
             "content": {
               "application/json": {
                 "schema": {
@@ -68140,6 +68140,297 @@
               "boundaries"
             ],
             "additionalProperties": false
+          },
+          "goalDomain": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scope": {
+                "type": "object",
+                "properties": {
+                  "subjects": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "human"
+                            },
+                            "id": {
+                              "type": "string",
+                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "agent"
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "actions": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "resources": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "container"
+                            },
+                            "container": {
+                              "type": "object",
+                              "properties": {
+                                "owner": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "server"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "workspace"
+                                        },
+                                        "workspaceId": {
+                                          "type": "string",
+                                          "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "workspaceId"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "user"
+                                        },
+                                        "userId": {
+                                          "type": "string",
+                                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "userId"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "owner",
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "container"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "mcp-tool"
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "serverId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "toolName": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "workspaceId",
+                            "serverId",
+                            "toolName"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "subjects",
+                  "actions",
+                  "resources"
+                ],
+                "additionalProperties": false
+              },
+              "lifetime": {
+                "type": "object",
+                "properties": {
+                  "anchor": {
+                    "type": "object",
+                    "properties": {
+                      "owner": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "server"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "workspace"
+                              },
+                              "workspaceId": {
+                                "type": "string",
+                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "workspaceId"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "user"
+                              },
+                              "userId": {
+                                "type": "string",
+                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "userId"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "kind": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "owner",
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "notAfter": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                  },
+                  "uses": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "anchor"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "scope",
+              "lifetime"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -68147,7 +68438,8 @@
           "threadId",
           "goalId",
           "expectedRevision",
-          "commitment"
+          "commitment",
+          "goalDomain"
         ],
         "additionalProperties": false
       },
@@ -124316,5 +124608,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:eddfa8509fb59007cdd33c62c2b385882147f00da8ca176b1cb05525d7415b13"
+  "x-openkit-source-digest": "sha256:11503b9ef7501dd53594b134beb0fd65d2d2ddb9565ebf557a01635d65c2f970"
 }

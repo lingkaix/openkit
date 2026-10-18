@@ -398,6 +398,7 @@ it.each([
       expect(startWorker).not.toHaveBeenCalled();
       return;
     }
+    expect(linked.tasks, JSON.stringify(result)).toHaveLength(1);
     const retrievalTraceRoot = join(
       root,
       'workspaces',
