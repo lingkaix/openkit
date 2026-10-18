@@ -15,13 +15,18 @@ import {
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
-import { CaptureCoverageBindingSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
 // These payloads fix retained v1 meaning. Current wire objects project from admitted records;
 // they do not select stored fields or vocabularies. Native I/O checks the marker before decoding.
 const Sha256DigestV1Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const CanonicalTimestampV1Schema = z.string().datetime();
+const StoredCaptureCoverageV1Schema = z
+  .object({
+    scope: z.enum(['server', 'workspace', 'task']),
+    value: z.enum(['off', 'on']),
+  })
+  .strict();
 const ArtifactMediaTypeV1Schema = z
   .string()
   .max(255)
@@ -232,7 +237,7 @@ export const StoredTurnPayloadV1Shape = {
   completedAt: TimestampSchema.nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
   status: z.enum(['pending', 'running', 'completed', 'interrupted', 'cancelled', 'failed']),
-  captureCoverage: CaptureCoverageBindingSchema.optional(),
+  captureCoverage: StoredCaptureCoverageV1Schema.optional(),
   requiredFeatures: z
     .array(
       z.literal('openkit.work-observations.v1', {
