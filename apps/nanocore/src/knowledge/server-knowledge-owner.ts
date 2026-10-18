@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
@@ -215,6 +216,7 @@ export async function registerServerKnowledgeSource(
   if (!parsed.success || Buffer.from(parsed.data.content).toString('utf8') !== parsed.data.content)
     throw new OperationError('invalid_request', 'Invalid literal Source request.', 400);
   const command = parsed.data;
+  initializeDefaultKnowledgeBaseId({ dataRoot: input.coreDb.dataRoot, scope: { kind: 'server' } });
   sourceRoot(input, true);
   return runIdempotentCommand({
     store: input.store,
