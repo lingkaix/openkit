@@ -123,6 +123,30 @@ it('captures the exact typed Goal domain and Plan in one human approval preview'
         actor: context.actor,
       })
     ).toEqual(preview);
+    const decided = await executeGoalOperation(
+      'goal.plan.approve',
+      {
+        workspaceId: workspace.id,
+        threadId: goal.threadId,
+        goalId: goal.goalId,
+        requestId: randomUUID(),
+        pendingRequestId: request.requestId,
+        decision: 'granted',
+      },
+      context,
+      store,
+      db
+    );
+    const resolved = readPendingRequest(db.sqlite, request.requestId)!;
+    expect(resolved).toMatchObject({
+      state: 'resolved',
+      resolution: 'granted',
+      claim: 'unclaimed',
+      decidingActor: { kind: 'user', id: context.actor.userId },
+      decidingActorContext: context.actor,
+    });
+    expect(resolved.governedIntent).toEqual(request.governedIntent);
+    expect(decided.goal!.activePlanVersionId).toBeNull();
   } finally {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });

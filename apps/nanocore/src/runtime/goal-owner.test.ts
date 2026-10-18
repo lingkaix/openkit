@@ -900,6 +900,12 @@ describe('Public Goal command publication', () => {
       };
       const proposed = await executeGoalOperation('goal.plan.propose', input, caller, store, db);
       const request = readPendingRequest(db.sqlite, proposed.versions[0]!.pendingRequestId)!;
+      expect(request.governedIntent?.goalDomain).toMatchObject({
+        statement: {
+          author: { kind: 'human', id: caller.actor.userId },
+          authority: { kind: 'human', userId: caller.actor.userId },
+        },
+      });
       expect(request).toMatchObject({
         requesterKind: 'coordinator',
         agentId: 'goal-coordinator',
