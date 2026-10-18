@@ -12,8 +12,6 @@ Ablation: shared file contracts must not create competing product authorities.
 
 This specification owns shared content references, the Storage boundary, Knowledge mounts, derivative interchange and Knowledge packages. The [approved decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) records the reason. Existing Artifact, Source, Notebook, Material, Policy and evidence identities remain; the Source pointer transition below amends Source storage and update semantics. No second version, attachment, grant or receipt family is introduced. Existing scope configuration retains a fixed `defaultKnowledgeBaseId`, allocated once through the identifier owner. Version 0.1.0 has one Knowledge Base per scope; additional Knowledge Bases per scope are additive.
 
-Version 0.1.0 freezes these formats and includes minimal local Knowledge package export/import with a round-trip test. Storage's initial implementation covers its contract, local backend and Knowledge Sources/raw namespace first. Artifacts, Turn inputs and Context packages adopt it later. This documentation change implements none of those capabilities.
-
 ## Core References
 
 Ablation: existing owners supply scope, permission, communication and retained-data constraints.
@@ -130,7 +128,15 @@ Storage owns URL delivery: bounded proxy streaming for local bytes or a short-li
 
 Web rendering resolves stored relative paths through that route without rewriting stored Markdown. Models receive bytes through existing vision paths, not URLs. The server never fetches external HTTP(S) images, and Web does not automatically load them. The same owner-URI/Storage-URL/NanoCore-authorization split applies to Artifacts and other owners. Freeze the relative raw-path convention and embedded-digest commit evidence; the App API route is additive.
 
-The S3-compatible facade extension point and URI/URL use by Workers, agents and future sharing remain pending. This paragraph reserves space without choosing their contract.
+## Byte Facade And Consumer Extensions
+
+Ablation: one later byte interface serves different consumers without persisting transport credentials or adding access authority.
+
+After v0.1.0, Storage exposes an S3-compatible subset: GetObject, HeadObject, ListObjectsV2, staged PutObject, multipart upload and presigned GET/PUT; exclude bucket management, ACL and lifecycle APIs. Map bucket/key to owner mount/path, IAM policy to the Policy Kernel decision, STS temporary credentials/session policy to the existing access lease, and presigned URLs to short-lived per-object URLs issued after authorization. ETag is the digest; support Range and pointer-history versions. The [approved decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) accepts that presigned URLs cannot be revoked before expiry: use minutes-long expiry and signing-key rotation for emergency revocation. A library spike precedes implementation; libraries must be Apache-2.0 compatible, with no AGPL. Version 0.1.0 uses NanoCore's proxy route; render-time rewriting makes the later switch a retained-data-neutral implementation change.
+
+Workers receive URIs in tool results and bytes through lease-derived S3 temporary credentials injected outside model context or leased read-only bind mounts. A sandbox-local endpoint at the [Capability Mediation Boundary](../core/communication.md#capability-mediation-boundary) turns URIs into signed fetches for tools such as FFmpeg; staged writes publish as Artifacts through NanoCore. Internal agents receive URIs and use internal Storage reads. External agents through Server MCP receive URIs, small content as MCP resources within the authenticated session, or short presigned URLs scoped to that agent for large content through its transport outside model context. Channels carry App links only, never presigned URLs, because unfurling would copy bytes outside access checks. Future conversation sharing is a Policy grant over a snapshot; embedded files resolve per request under that grant, so revocation is immediate. Artifact downloads, chat attachments, Light App file fields, Generative UI images, Decision Trace/Audit content references and Knowledge packages converge on this mechanism.
+
+Before the format freeze, file references shown to models or stored in retained records are URIs, never transport URLs or credentials. A URI grants no access; authorize every fetch at fetch time. An issued presigned URL exercises its already authorized narrow grant until expiry; sharing uses request-time checks rather than handing out such URLs. L-ID owns the URI extension to [Core Protocol Scope-Qualified Object References](../core/protocol.md#scope-qualified-object-references); page-relative raw paths are the Knowledge-local short form. L-GA owns the existing Policy access-lease format's mapping to STS session policy: actions, resource prefix, expiry and conditions. These format dependencies precede activation; the facade and consumer capabilities remain post-v0.1.0 implementation work.
 
 ## Worker Access
 
@@ -229,9 +235,9 @@ Acceptance observes one-to-one published-tree/package paths and justified differ
 
 ## Current Implementation Projection
 
-Ablation: accepted architecture must not be reported as completed code or an already writable format.
+Ablation: accepted contracts must remain distinct from implementation status.
 
-Storage package/local integration and these format extensions are not implemented by this documentation landing. Sources currently use an external registry and captured sibling text materials; the pointer cutover is not implemented. Context packages copy originals and require retained paths. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain the starting owners. No backend, host mount or media/model capability is activated here.
+Storage package/local integration and these format extensions are not implemented by this documentation landing. Sources currently use an external registry and captured sibling text materials; the pointer cutover is not implemented. Context packages copy originals and require retained paths. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain the starting owners. No backend, host mount or media/model capability is activated here. Initial Storage implementation covers its contract, local backend and Knowledge Sources/raw namespace first; Artifact, Turn and Context adoption follows later.
 
 ## Derivation And Retrieval Interface
 
@@ -239,8 +245,6 @@ Ablation: extraction, indexing and byte location need distinct owners with one i
 
 A separate Derivation module owns extraction/conversion: FFmpeg segmentation/keyframes/transcoding, ASR, PDF.js, OCR, ZIP extraction and thumbnails. It is neither Storage nor NanoCore processing. Input is an opaque content handle plus recipe/parameters; output derivatives are written through Storage with the lineage above. Each job runs in a bounded process or sandbox without secrets. Model calls use the Gateway under Policy. Derivation may be co-deployed with retrieval; PDF text, ZIP cache and vision view are its first processors.
 
-The indexable unit is a derivative with source locator and lineage. Retrieval owns indexing and embeddings, including multimodal embeddings, their model/space identity, Gateway vector calls at index/query time, index construction, fusion, scoped filtering and citable hits. Derivation does not become a second semantic retrieval engine.
-
-Storage change feeds drive Derivation and indexing. Queries use indexes, never live Storage scans. Large unprocessed mounts first get a cheap metadata index; content indexing follows demand or Policy/budget. Every hit and retained hit trace carries its original `contentRef`, derivative identity/range and source locator where applicable. Resolve content through Storage under current caller grants, not by substituting index text for an original.
+The indexable unit is a derivative with source locator and lineage. Retrieval owns indexing and embeddings, including multimodal embeddings, their model/space identity, Gateway vector calls at index/query time, index construction, fusion, scoped filtering and citable hits. Derivation does not become a second semantic retrieval engine. Storage change feeds drive Derivation and indexing. Queries use indexes, never live Storage scans. Large unprocessed mounts first get a cheap metadata index; content indexing follows demand or Policy/budget. Every hit and retained hit trace carries its original `contentRef`, derivative identity/range and source locator where applicable. Resolve content through Storage under current caller grants, not by substituting index text for an original.
 
 All access is NanoCore-mediated: Worker MCP or Knowledge Manager tools call NanoCore, which calls the engine. No sandbox directly accesses the engine. Results are filtered before disclosure by served Knowledge scopes, agent audience or Worker lease. Knowledge questions go to the Knowledge Manager; Workers may directly search work files on their leased mounts through their mediated tool.

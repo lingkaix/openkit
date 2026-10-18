@@ -14,7 +14,7 @@ Personal scope and Thread visibility project through the same Policy Kernel. `20
 
 A storage access lease is a kind of existing Policy grant. Its payload binds `knowledgeBaseId`, `mount`, normalized mount-relative `pathPrefix`, `mode: read-only | staged-write`, and canonical-timestamp `expiresAt`, plus existing subject, issuer, owner/audience and decision lineage. Unknown required lease semantics fail closed. Supervising agents set leases only within current delegation; Storage makes no access decision.
 
-[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns the location boundary. Audit lease issue/change/revocation/expiry, not each byte. Expiry/revocation blocks new access and requires removal or fencing of continued mounted exposure through runtime enforcement. Staged-write grants neither commit nor in-place overwrite; NanoCore intercepts those effects under current Policy. No new grant record family is introduced.
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns the location boundary. Audit lease issue/change/revocation/expiry, not each byte. Expiry/revocation blocks new access and requires removal or fencing of continued mounted exposure through runtime enforcement. Staged-write grants neither commit nor in-place overwrite; NanoCore intercepts those effects under current Policy. No new grant record family is introduced. Before the format freeze, its owning Policy implementation maps leases to STS session policy actions, resource prefix, expiry and conditions.
 
 ## Summary
 

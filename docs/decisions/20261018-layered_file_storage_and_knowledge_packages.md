@@ -23,6 +23,8 @@ References record the observed digest and locator. Changed, deleted or inaccessi
 
 Owners define file URIs; Storage delivers URLs; NanoCore authorizes and audits issuance. Knowledge pages retain RFC 3986 paths relative to each page directory and commit-pinned embedded digests. Derivatives carry source, recipe, version, provider/model, parameter and source-coordinate lineage. Separate Derivation owns bounded extraction/conversion; retrieval owns indexing and embeddings. Both use Gateway interception for model calls. NanoCore mediates Worker tools; leased filesystem views use host-side mounts, never sandbox FUSE. Leases reuse Policy grants and audit per lease, not per byte.
 
+The post-v0.1.0 S3-compatible byte facade and consumer adapters reuse Policy grants. File references in model input and retained records are URIs, never transport URLs or credentials. The engineer accepts that issued presigned grants cannot be revoked before expiry: use minutes-long expiry, with signing-key rotation for emergency revocation. Sharing instead checks its grant per request and revokes immediately.
+
 ## Reason
 
 Large recordings and other non-text sources can cost more to retain than their later value. Separate metadata and references preserve useful understanding without promising that every source remains available.
