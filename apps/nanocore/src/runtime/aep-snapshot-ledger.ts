@@ -376,12 +376,17 @@ function readSnapshotRecord(
     throw new Error(`Agent environment package snapshot is not a regular file: ${snapshotId}`);
   }
   let record: AgentEnvironmentPackageSnapshotReadRecord;
+  // Marker refusal is a retained decode failure, with the same private cause as malformed JSON.
   try {
     record = readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
       validateSnapshotRecord(workspaceDb, value)
     );
   } catch (cause) {
-    if (cause instanceof SyntaxError || cause instanceof z.ZodError) {
+    if (
+      cause instanceof SyntaxError ||
+      cause instanceof z.ZodError ||
+      cause instanceof TypeError
+    ) {
       throw new AgentEnvironmentSnapshotReadError(cause);
     }
     throw cause;
