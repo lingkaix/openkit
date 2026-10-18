@@ -17,7 +17,9 @@ const temporaryRoots: string[] = [];
 const limits = { maxEntries: 32, maxBytes: 64 * 1024 };
 
 afterEach(async () => {
-  await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
+  );
 });
 
 /** Returns an isolated parent whose full contents are removed after the test. */
@@ -92,7 +94,8 @@ describe('Knowledge package v1 format', () => {
   it('refuses changed, missing, undeclared and incorrectly sized bytes', async () => {
     for (const fault of ['changed', 'missing', 'undeclared', 'length'] as const) {
       const directory = await writeFixture();
-      if (fault === 'changed') await writeFile(join(directory, 'raw/original.bin'), Buffer.alloc(12));
+      if (fault === 'changed')
+        await writeFile(join(directory, 'raw/original.bin'), Buffer.alloc(12));
       if (fault === 'missing') await rm(join(directory, 'raw/original.bin'));
       if (fault === 'undeclared') await writeFile(join(directory, 'raw/extra.bin'), 'extra');
       if (fault === 'length') {
@@ -170,7 +173,10 @@ describe('Knowledge package v1 format', () => {
     await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow();
     const duplicate = await packageInput(join(await temporaryRoot(), 'package'));
     await expect(
-      writeKnowledgePackageFormat({ ...duplicate, files: [duplicate.files[0]!, duplicate.files[0]!] })
+      writeKnowledgePackageFormat({
+        ...duplicate,
+        files: [duplicate.files[0]!, duplicate.files[0]!],
+      })
     ).rejects.toThrow();
   });
 
@@ -192,9 +198,7 @@ describe('Knowledge package v1 format', () => {
     await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow();
     const hardLinked = await writeFixture();
     await link(join(hardLinked, 'raw/original.bin'), join(await temporaryRoot(), 'hard-link'));
-    await expect(
-      verifyKnowledgePackageFormat({ directory: hardLinked, limits })
-    ).rejects.toThrow();
+    await expect(verifyKnowledgePackageFormat({ directory: hardLinked, limits })).rejects.toThrow();
   });
 
   it('counts directory entries and all bytes including the manifest at exact small quota boundaries', async () => {
@@ -215,7 +219,10 @@ describe('Knowledge package v1 format', () => {
       await expect(writeKnowledgePackageFormat({ ...input, limits: quota })).rejects.toThrow();
       expect(existsSync(input.directory)).toBe(false);
     }
-    await rewriteManifest(directory, (manifest) => ({ ...manifest, description: 'x'.repeat(1_048_576) }));
+    await rewriteManifest(directory, (manifest) => ({
+      ...manifest,
+      description: 'x'.repeat(1_048_576),
+    }));
     await expect(
       verifyKnowledgePackageFormat({ directory, limits: { maxEntries: 32, maxBytes: 2_000_000 } })
     ).rejects.toThrow();
@@ -303,7 +310,11 @@ describe('Knowledge package v1 format', () => {
       contentRef: {
         knowledgeBaseId,
         contentDigest: output.contentDigest,
-        locator: { ownerScope: { kind: 'server' as const }, mount: 'local', path: 'derived/text.md' },
+        locator: {
+          ownerScope: { kind: 'server' as const },
+          mount: 'local',
+          path: 'derived/text.md',
+        },
         range: null,
         availability: 'unavailable' as const,
       },
@@ -312,9 +323,9 @@ describe('Knowledge package v1 format', () => {
       coverage: 'incomplete' as const,
     };
     const omitted = await writeFixture({ representations: [representation] });
-    expect((await verifyKnowledgePackageFormat({ directory: omitted, limits })).representations).toEqual([
-      representation,
-    ]);
+    expect(
+      (await verifyKnowledgePackageFormat({ directory: omitted, limits })).representations
+    ).toEqual([representation]);
     const included = {
       ...representation,
       path: 'derived/text.md',
@@ -341,7 +352,10 @@ describe('Knowledge package v1 format', () => {
     const verified = await verifyKnowledgePackageFormat({ directory: input.directory, limits });
     expect(verified.representations).toEqual([included]);
     expect(Object.hasOwn(verified.representations[0]!.recipe.parameters, '__proto__')).toBe(true);
-    expect(verified.representations[0]!.recipe.parameters.__proto__).toEqual({ mode: 'kept' });
+    expect(
+      Object.getOwnPropertyDescriptor(verified.representations[0]!.recipe.parameters, '__proto__')
+        ?.value
+    ).toEqual({ mode: 'kept' });
     for (const changed of [
       { ...representation, contentRef: included.contentRef },
       { ...included, byteLength: output.byteLength + 1 },
@@ -353,7 +367,9 @@ describe('Knowledge package v1 format', () => {
         ...manifest,
         representations: [changed],
       }));
-      await expect(verifyKnowledgePackageFormat({ directory: input.directory, limits })).rejects.toThrow();
+      await expect(
+        verifyKnowledgePackageFormat({ directory: input.directory, limits })
+      ).rejects.toThrow();
     }
   });
 });
