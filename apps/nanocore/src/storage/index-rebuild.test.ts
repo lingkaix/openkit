@@ -748,14 +748,8 @@ describe('workspace derived index rebuild', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval trace recovery', notebookInitialization());
     const thread = store.createThread(workspace.id, 'Retrieval owner');
-    const traceRoot = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'retrieval-traces'
-    );
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+    const traceRoot = join(workspaceRoot, 'threads', thread.id, 'retrieval-traces');
     mkdirSync(traceRoot, { recursive: true });
     const interruptedPath = join(traceRoot, '.krt_00000000-0000-7b84-9036-54ad1961c1f0.tmp');
     writeFileSync(interruptedPath, '{"interrupted":true');
