@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { cp, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -285,7 +286,17 @@ describe('Knowledge package v1 format', () => {
         original.contentDigest
       ),
       sourceLocator: { kind: 'bytes' as const, start: 0, end: 12 },
-      recipe: { id: 'fixture-text', version: '1', parameters: { preserveWhitespace: true } },
+      recipe: {
+        id: 'fixture-text',
+        version: '1',
+        parameters: {
+          // JSON parsing creates an own data key instead of changing the object prototype.
+          ...JSON.parse('{"__proto__":{"mode":"kept"}}'),
+          preserveWhitespace: true,
+          '2': 'two',
+          '10': { '2': 'nested-two', '10': 'nested-ten' },
+        },
+      },
       provider: null,
       model: null,
       embeddingSpace: null,
@@ -314,8 +325,23 @@ describe('Knowledge package v1 format', () => {
       metadata: { ...input.metadata, representations: [included] },
       files: [...input.files, { ...output, path: included.path }],
     });
+    const serialized = await readFile(join(input.directory, 'manifest.json'), 'utf8');
+    expect(serialized).toContain(`        "parameters": {
+          "10": {
+            "10": "nested-ten",
+            "2": "nested-two"
+          },
+          "2": "two",
+          "__proto__": {
+            "mode": "kept"
+          },
+          "preserveWhitespace": true
+        }`);
+    expect(serialized.match(/"__proto__":/g)).toHaveLength(1);
     const verified = await verifyKnowledgePackageFormat({ directory: input.directory, limits });
     expect(verified.representations).toEqual([included]);
+    expect(Object.hasOwn(verified.representations[0]!.recipe.parameters, '__proto__')).toBe(true);
+    expect(verified.representations[0]!.recipe.parameters.__proto__).toEqual({ mode: 'kept' });
     for (const changed of [
       { ...representation, contentRef: included.contentRef },
       { ...included, byteLength: output.byteLength + 1 },
