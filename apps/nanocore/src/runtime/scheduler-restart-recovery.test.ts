@@ -551,15 +551,27 @@ function terminalizeRecoveryCostFixture(f: FailedStartFixture): void {
   });
 }
 
+/** Hashes the same ordered JSON array without retaining every history row and its full JSON string together. */
+function recoveryAttemptDigest(coreDb: ReturnType<typeof openCoreDb>): string {
+  const hash = createHash('sha256').update('[');
+  let first = true;
+  for (const row of coreDb.sqlite
+    .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+    .iterate()) {
+    if (!first) hash.update(',');
+    hash.update(JSON.stringify(row));
+    first = false;
+  }
+  return hash.update(']').digest('hex');
+}
+
 /** Includes every generic and native attempt byte while keeping large-history failure output bounded. */
 function recoveryProofSnapshot(f: FailedStartFixture) {
   return {
     turn: f.store.getTurnById(f.turnId),
     session: f.store.getAgentSession(f.agentSessionId),
     events: f.store.getTurnEvents(f.turnId),
-    attempts: createHash('sha256')
-      .update(JSON.stringify(observeExecutionAttempts(f.coreDb)))
-      .digest('hex'),
+    attempts: recoveryAttemptDigest(f.coreDb),
     backends: f.coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions ORDER BY rowid').all(),
     bindings: f.coreDb.sqlite
       .prepare('SELECT * FROM agent_session_runtime_bindings ORDER BY rowid')
@@ -673,6 +685,11 @@ describe('failed-start busy-history proof cost (#164)', () => {
       terminalizeRecoveryCostFixture(f);
       seedRecoveryBusyHistory(f, siblings);
       const before = recoveryProofSnapshot(f);
+      expect(before.attempts).toBe(
+        createHash('sha256')
+          .update(JSON.stringify(observeExecutionAttempts(f.coreDb)))
+          .digest('hex')
+      );
       const recovery = recoveryCostInput(f);
       const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
@@ -719,7 +736,8 @@ describe('failed-start busy-history proof cost (#164)', () => {
       )!;
       expect(observation.reads, JSON.stringify(observation)).toBeLessThanOrEqual(fixed.reads + 5);
     }
-  });
+    // The SQL-count oracle is unchanged; this budget also covers three durable fixtures and history snapshots.
+  }, 60_000);
 
   it.each([
     ['phase-open', 'phase', 'open'],
