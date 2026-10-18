@@ -56,7 +56,7 @@ const WorkspaceSnapshotV1Schema = z.object({
 });
 
 /** Event snapshots include full Items under their existing attributable Turn. */
-const TurnSnapshotV1Schema = z
+export const StoredTurnSnapshotV1Schema = z
   .object(StoredTurnPayloadV1Shape)
   .omit({ captureCoverage: true, requiredFeatures: true })
   .extend({ items: z.array(StoredItemPayloadV1Schema) })
@@ -77,7 +77,7 @@ const TurnSnapshotV1Schema = z
   });
 
 /** Event history keeps the published inline body rather than the disk-only descriptor. */
-const ArtifactSnapshotV1Schema = z
+export const StoredArtifactSnapshotV1Schema = z
   .object({
     ...StoredArtifactPayloadV1Shape,
     content: z.discriminatedUnion('format', [
@@ -226,7 +226,7 @@ const TurnStartedEventSchema = z.object({
  */
 const TurnUpdatedEventSchema = z.object({
   type: z.literal('turn-updated'),
-  turn: TurnSnapshotV1Schema,
+  turn: StoredTurnSnapshotV1Schema,
 });
 
 /**
@@ -496,7 +496,7 @@ const AgentSessionUpdatedEventSchema = z.object({
  */
 const ArtifactCreatedEventSchema = z.object({
   type: z.literal('artifact-created'),
-  artifact: ArtifactSnapshotV1Schema,
+  artifact: StoredArtifactSnapshotV1Schema,
 });
 
 /**
@@ -504,7 +504,7 @@ const ArtifactCreatedEventSchema = z.object({
  */
 const ArtifactUpdatedEventSchema = z.object({
   type: z.literal('artifact-updated'),
-  artifact: ArtifactSnapshotV1Schema,
+  artifact: StoredArtifactSnapshotV1Schema,
 });
 
 /**
@@ -513,7 +513,7 @@ const ArtifactUpdatedEventSchema = z.object({
 const TurnCompletedEventSchema = z.object({
   type: z.literal('turn-completed'),
   stopReason: StopReasonSchema,
-  turn: TurnSnapshotV1Schema,
+  turn: StoredTurnSnapshotV1Schema,
 });
 
 /**
@@ -570,8 +570,7 @@ const SseEventNameSchema = z.enum([
 /**
  * Explicit SSE envelope shared by all stream events.
  */
-export const StoredEventV1Schema = z.object({
-  schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
+export const StoredEventPayloadV1Schema = z.object({
   protocolVersion: z.string().min(1),
   event: SseEventNameSchema,
   sequence: z.number().int().nonnegative(),
@@ -581,4 +580,9 @@ export const StoredEventV1Schema = z.object({
   threadId: ThreadIdSchema.optional(),
   turnId: TurnIdSchema.optional(),
   data: ServerEventSchema,
+});
+
+/** Retained log rows add the storage marker; in-memory snapshots use the fixed payload schema. */
+export const StoredEventV1Schema = StoredEventPayloadV1Schema.extend({
+  schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
 });
