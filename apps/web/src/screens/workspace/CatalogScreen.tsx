@@ -32,6 +32,7 @@ import {
 import { LightAppDefinitions } from './LightAppDefinitions';
 import { SharedMcpPanel } from './SharedMcpPanel';
 import { SkillHistory } from './SkillHistory';
+import { WorkspaceMcpRules } from './WorkspaceMcpRules';
 
 /**
  * Workspace Skill, MCP, and Agent Plugin catalog (product workflow, not an API console).
@@ -54,7 +55,8 @@ export function CatalogScreen() {
   const updateBinding = useUpdateMcpBinding();
   const importPlugin = useImportPlugin();
   const { checking, failed: disconnected } = useConnection();
-  const writeBlocked = checking || disconnected || !workspaceId || catalog.isFetching;
+  const writeBlocked =
+    checking || disconnected || !workspaceId || catalog.isFetching || catalog.isError;
   const [skillName, setSkillName] = useState('');
   const [skillSource, setSkillSource] = useState('');
   const [skillSourceName, setSkillSourceName] = useState('');
@@ -588,7 +590,7 @@ export function CatalogScreen() {
             </p>
             {summary?.mcp.length ? (
               summary.mcp.map((server) => (
-                <div key={server.id} className="flex flex-col gap-2">
+                <div key={`${workspaceId}:${server.id}`} className="flex flex-col gap-2">
                   <ListRow>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-fg-strong">{server.displayName}</p>
@@ -601,8 +603,8 @@ export function CatalogScreen() {
                       isDisabled={writeBlocked || updateBinding.isPending}
                       onPress={() => {
                         if (!workspaceId) return;
-                        void updateBinding.mutateAsync({
-                          allowedTools: server.allowedTools.length ? server.allowedTools : ['echo'],
+                        updateBinding.mutate({
+                          allowedTools: server.allowedTools,
                           approvalRequiredTools: server.approvalRequiredTools,
                           bindingRevision: server.bindingRevision,
                           deniedTools: server.deniedTools,
@@ -618,6 +620,21 @@ export function CatalogScreen() {
                       {server.enabled ? 'Disable' : 'Enable'}
                     </Button>
                   </ListRow>
+                  <WorkspaceMcpRules
+                    workspaceId={workspaceId}
+                    revision={revision}
+                    server={server}
+                    blocked={
+                      writeBlocked ||
+                      catalog.isError ||
+                      updateBinding.isPending ||
+                      updateBinding.isError
+                    }
+                    refreshBlocked={
+                      checking || disconnected || catalog.isFetching || updateBinding.isPending
+                    }
+                    onRefresh={async () => (await catalog.refetch()).isSuccess}
+                  />
                   {(server.versions ?? []).map((version) => (
                     <Button
                       key={version.digest}
@@ -745,6 +762,19 @@ export function CatalogScreen() {
                 <ErrorBanner
                   message={mutationMessage(updateBinding.error, "Couldn't update that MCP server.")}
                 />
+              ) : null}
+              {updateBinding.isError || catalog.isError ? (
+                <Button
+                  size="sm"
+                  isDisabled={
+                    checking || disconnected || catalog.isFetching || updateBinding.isPending
+                  }
+                  onPress={async () => {
+                    if ((await catalog.refetch()).isSuccess) updateBinding.reset();
+                  }}
+                >
+                  Refresh MCP bindings
+                </Button>
               ) : null}
               {selectMcp.isError ? (
                 <ErrorBanner

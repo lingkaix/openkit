@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "6",
+      "when": 1792246083724,
+      "tag": "0005_channel_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
       "when": 1792269395784,
-      "tag": "0005_server_capability_usage",
+      "tag": "0006_server_capability_usage",
       "breakpoints": true
     }
   ]
