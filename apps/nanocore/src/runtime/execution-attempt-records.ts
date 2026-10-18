@@ -2,9 +2,11 @@ import {
   AgentSessionIdSchema,
   allocateEntityId,
   ExecutionAttemptIdSchema,
+  readRetainedV1,
   ThreadIdSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
@@ -49,7 +51,7 @@ const AttemptSchema = z.object({
 /** Generic durable attempt projection deliberately excludes NanoHost proof fields. */
 export type SchedulerExecutionAttemptRecord = z.infer<typeof AttemptSchema>;
 
-const attemptSelect = `SELECT attempt_id AS attemptId, queue_entry_id AS queueEntryId,
+const attemptSelect = `SELECT schema_version AS schemaVersion, attempt_id AS attemptId, queue_entry_id AS queueEntryId,
   backend_id AS backendId, workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
   agent_session_id AS agentSessionId, preparation_input_json AS preparationInputJson,
   input_ref AS inputRef, binding_ref AS bindingRef, phase, disposition, operation_id AS operationId,
@@ -61,8 +63,9 @@ export function requireSchedulerExecutionAttempt(
   coreDb: CoreDb,
   attemptId: string
 ): SchedulerExecutionAttemptRecord {
-  return AttemptSchema.parse(
-    coreDb.sqlite.prepare(`${attemptSelect} WHERE attempt_id = ?`).get(attemptId)
+  return readRetainedV1(
+    coreDb.sqlite.prepare(`${attemptSelect} WHERE attempt_id = ?`).get(attemptId),
+    (value) => AttemptSchema.parse(value)
   );
 }
 
@@ -76,7 +79,7 @@ export function listSchedulerExecutionAttemptsForTurn(
       `${attemptSelect} WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? ORDER BY rowid`
     )
     .all(input.workspaceId, input.threadId, input.turnId)
-    .map((row) => AttemptSchema.parse(row));
+    .map((row) => readRetainedV1(row, (value) => AttemptSchema.parse(value)));
 }
 
 /** Lists every retained owner of one Turn id so exclusion checks cannot hide conflicting scope. */
@@ -87,7 +90,7 @@ export function listSchedulerExecutionAttemptsByTurnId(
   return coreDb.sqlite
     .prepare(`${attemptSelect} WHERE turn_id = ? ORDER BY rowid`)
     .all(turnId)
-    .map((row) => AttemptSchema.parse(row));
+    .map((row) => readRetainedV1(row, (value) => AttemptSchema.parse(value)));
 }
 
 /** Closed busy refusals contain no execution and cannot compete with the later original-Turn attempt. */
@@ -107,7 +110,7 @@ export function listOpenSchedulerExecutionAttempts(
   return coreDb.sqlite
     .prepare(`${attemptSelect} WHERE phase <> 'closed' ORDER BY rowid`)
     .all()
-    .map((row) => AttemptSchema.parse(row));
+    .map((row) => readRetainedV1(row, (value) => AttemptSchema.parse(value)));
 }
 
 /** Acquires only the selected entry's product boundaries, before any preparation effect. */
@@ -135,8 +138,8 @@ export function createSchedulerExecutionAttempt(
       coreDb.sqlite
         .prepare(`INSERT INTO scheduler_execution_attempts
       (attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
-       preparation_input_json, phase, disposition, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 'not_accepted', ?, ?)`)
+       preparation_input_json, phase, disposition, created_at, updated_at, schema_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 'not_accepted', ?, ?, ?)`)
         .run(
           attemptId,
           entry.queueEntryId,
@@ -146,7 +149,8 @@ export function createSchedulerExecutionAttempt(
           entry.turnId,
           JSON.stringify(input.preparationInput),
           timestamp,
-          timestamp
+          timestamp,
+          writeRetainedV1({}).schemaVersion
         );
       const acquired = coreDb.sqlite
         .prepare(
@@ -341,6 +345,7 @@ export function markSchedulerExecutionAttemptClosing(
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
+  requireSchedulerExecutionAttempt(coreDb, input.attemptId);
   coreDb.sqlite
     .prepare(
       `UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = COALESCE(terminal_cause, ?), outcome_ref = COALESCE(outcome_ref, ?), updated_at = ? WHERE attempt_id = ? AND phase <> 'closed'`
@@ -373,6 +378,7 @@ export function closeSchedulerExecutionAttemptWithoutEffects(
       if (attempt.phase === 'closed') return attempt;
       if (attempt.disposition === 'accepted')
         throw new Error('Accepted effects require the proved release fence.');
+      if (input.requeue) requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
       const timestamp = input.now?.() ?? new Date().toISOString();
       coreDb.sqlite
         .prepare(

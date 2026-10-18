@@ -6,7 +6,12 @@ import type {
   WorkspaceDataSourceCatalog,
   WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { allocateEntityId, responsibleUserIdForActor, type TurnSchema } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  readRetainedV1,
+  responsibleUserIdForActor,
+  type TurnSchema,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
@@ -295,13 +300,12 @@ function schedulerEntryPublicationComplete(
       | { goalId: string | null; taskId: string | null }
       | undefined;
     if (checkpoint?.goalId && checkpoint.taskId) return true;
-    return Boolean(
-      workspaceDb.sqlite
-        .prepare(
-          "SELECT 1 FROM pending_requests WHERE workspace_id = ? AND thread_id = ? AND delivery_turn_id = ? AND delivery_cause = 'outcome' LIMIT 1"
-        )
-        .get(entry.workspaceId, entry.threadId, entry.turnId)
-    );
+    const outcome = workspaceDb.sqlite
+      .prepare(
+        "SELECT schema_version AS schemaVersion FROM pending_requests WHERE workspace_id = ? AND thread_id = ? AND delivery_turn_id = ? AND delivery_cause = 'outcome' LIMIT 1"
+      )
+      .get(entry.workspaceId, entry.threadId, entry.turnId);
+    return outcome ? readRetainedV1(outcome, () => true) : false;
   } finally {
     workspaceDb.sqlite.close();
   }
