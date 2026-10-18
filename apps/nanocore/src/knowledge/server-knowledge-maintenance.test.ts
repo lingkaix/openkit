@@ -228,7 +228,7 @@ it.each([
     { kind: 'server' }
   );
   f.run.mockImplementationOnce(async (run) => {
-    const script = `${changesTarget ? `cat > target.md <<'TARGET'\n${authoredTarget}\nTARGET\n` : ''}cat > citing.md <<'PAGE'\n${citing}\nPAGE`;
+    const script = `${changesTarget ? `cat > target.md <<'TARGET'\n${authoredTarget}TARGET\n` : ''}cat > citing.md <<'PAGE'\n${citing}\nPAGE`;
     for (const [name, args] of [
       ['knowledge.notebook-workspace.update', { script }],
       ['knowledge.notebook.update', { summary: 'Compare admitted Server page bytes.' }],
