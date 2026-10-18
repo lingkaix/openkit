@@ -36,11 +36,15 @@ The primary owns owner text, integration and held paths after release. A separat
 
 The coordinator released P18 Producer, Text and Vision together on main `9a22e82b6cb5ffc6740b8ffd6b6bd0d503cbee2a`. Join main normally and complete Landing 1 publication, all-version portability and historical Context admission first. Independent Sol review covers the join delta. The exact local gate covers complete test directories of touched modules and Web e2e; express landing requires green main. End the work session after Landing 1 lands or report a blocker. Storage Layout and naming-held paths remain reserved to L-ID until its landing.
 
+## Intent Revision 4
+
+The coordinator released the naming-held paths on main `fe05c77bf` on 2026-10-18. Merge main normally into both evaluation branches, complete the released Storage Layout and generated CLI seams, and apply Express rule 8 only to actual incoming overlap. The large Landing 1 cut requires one exact branch CI after independent review and its local gate. Landing 1 precedes Landing 2 and the native-resume fix.
+
 ## Current Checkpoint
 
-Landing 1 stays separate at `96686f56e5d6c0c433efac92da804d081fd17408`, with the completed P18 publication, immutable history transfer and historical Context join. Naming still holds Storage Layout and generated CLI. Landing 2 normally merges that head into its own branch; Landing 2 ancestry must never enter Landing 1.
+Landing 2 normally joins Landing 1 `3d0e249a980a4cc574c412ab7de0848c417cc5ea`, including the released naming main, immutable version correction and retained Storage Layout. Landing 2 ancestry stays out of Landing 1. The external lane checkpoint records exact heads, reviews and observed gates.
 
-Landing 2 adds target-owned attributable judgements, candidate sets and selection, exact UTF-16 Material range corrections, portable retained records and explicit selected-version next-Turn inputs. Review the complete Landing 2 delta against the fixed Landing 1 head and check complete non-held module suites before naming. After naming, complete the remaining owner and generated joins, delta review and regate, then land Landing 1 before Landing 2 on green main. No complete gate or landing is claimed here. The external lane checkpoint records exact heads and observed evidence.
+Landing 2 adds target-owned attributable judgements, candidate sets and selection, exact UTF-16 Material range corrections, portable retained records and explicit selected-version next-Turn inputs. Its naming join aligns the Workspace SQLite owner and generated projections. Independent delta review, the complete applicable module gate and large-branch CI remain required before landing after Landing 1. No complete gate or landing is claimed here.
 
 ## Effect Boundary
 

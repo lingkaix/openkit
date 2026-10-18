@@ -114,7 +114,7 @@ describe('Vault grant narrowing', () => {
         constraints: {
           targetAgentId: agentId,
           targetAgentSessionId: agentSessionId,
-          targetCapabilityId: 'mcp.call_tool',
+          targetCapabilityId: 'mcp.call-tool',
           allowedInjectionPaths: ['gateway-only'],
           expiresAt: '2099-01-01T00:00:00.000Z',
         },
@@ -129,7 +129,7 @@ describe('Vault grant narrowing', () => {
         policyDecisionId: original.policyDecisionId,
         targetAgentId: agentId,
         targetAgentSessionId: agentSessionId,
-        targetCapabilityId: 'mcp.call_tool',
+        targetCapabilityId: 'mcp.call-tool',
         allowedInjectionPaths: ['gateway-only'],
       });
       const input = {
@@ -138,13 +138,13 @@ describe('Vault grant narrowing', () => {
           scope: { workspaceId, agentSessionId },
           agent: { agentId },
         },
-        operation: 'mcp.call_tool' as const,
+        operation: 'mcp.call-tool' as const,
       };
       expect(() => assertCurrentMcpVaultAuthority(input, result.revokedGrant, reference)).toThrow();
       expect(() => assertCurrentMcpVaultAuthority(input, result.grant, reference)).not.toThrow();
       expect(() =>
         assertCurrentMcpVaultAuthority(
-          { ...input, operation: 'mcp.list_tools' },
+          { ...input, operation: 'mcp.list-tools' },
           result.grant,
           reference
         )

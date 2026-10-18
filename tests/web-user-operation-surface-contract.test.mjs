@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 320;
+const EXPECTED_CATALOG_SIZE = 325;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 242;
+const EXPECTED_INCLUDED_SIZE = 247;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -306,6 +306,13 @@ const WEB_OPERATION_GROUPS = {
     'workspace.deleted-recover': { disposition: 'roadmap', roadmap: 'R049' },
     'workspace.invitation-revoke': { disposition: 'live', surface: 'Account' },
     'workspace.ownership-transfer': { disposition: 'live', surface: 'Account' },
+  },
+  Channels: {
+    'channel.discord.status': { disposition: 'live', surface: 'Channels' },
+    'channel.discord.pair': { disposition: 'live', surface: 'Channels' },
+    'channel.discord.revoke': { disposition: 'live', surface: 'Channels' },
+    'notification.list': { disposition: 'live', surface: 'Channels' },
+    'notification.send': { disposition: 'workflow', surface: 'Channels' },
   },
   'My admin access': {
     'token.my-admin-list': { disposition: 'live', surface: 'My admin access' },

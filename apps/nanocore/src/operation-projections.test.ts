@@ -305,7 +305,10 @@ describe('shared family contract', () => {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'call', arguments: { operation: 'kernel.records.create', input } },
+          params: {
+            name: 'openkit_call',
+            arguments: { operation: 'kernel.records.create', input },
+          },
         }),
       });
       const envelope = (await remote.json()) as {
@@ -1781,17 +1784,17 @@ describe('Goal definition projections', () => {
               .filter(([, definition]) =>
                 (definition.credentials as readonly string[]).includes('coordinator')
               )
-              .map(([id]) => operationToolName(id)),
+              .map(([id]) => id),
             ...[
               'thread.items',
               'artifact.read',
               'turn.read',
               'evidence.runtime-list',
               'agent.list',
-            ].map(operationToolName),
+            ],
           ].sort()
         );
-        const read = await tools.find((tool) => tool.name === 'goal_read')!.execute({});
+        const read = await tools.find((tool) => tool.name === 'goal.read')!.execute({});
         expect(read.isError).not.toBe(true);
         expect(JSON.parse((read.content[0] as { text: string }).text).goal.goalId).toBe(
           goal.goalId

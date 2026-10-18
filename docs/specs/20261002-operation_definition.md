@@ -12,7 +12,7 @@ updated: "2026-10-03"
 - The declarative definition of each public operation, the exact implementation join, and the derivation of its projections.
 - The release-authored internal-only `skill.read` operation for the #144 selected-Skills family.
 - What a definition table may hold, the closed trusted resolvers and the behaviors they preserve, trusted invocation inputs, and the native invocation seam.
-- Canonical operation names, derived transport spelling, and the semantic lifecycle of an operation, including the rules reserved for a later data-defined source.
+- Canonical operation and release-owned agent-facing Tool IDs, their derived model spelling across surfaces, and the semantic lifecycle of an operation, including the rules reserved for a later data-defined source.
 - Projection rules for remote MCP, internal Tools, worker Tools, the operator CLI, and the JSON product route, including what stays at other owners' boundaries.
 - The acceptance criteria for the first implementation slice.
 
@@ -125,9 +125,38 @@ A successful invocation returns one validated output. A classified failure retur
 
 ## Names
 
-One canonical dotted semantic id names the operation for discovery, invocation, client typing, and evidence. HTTP placement and a collision-checked transport spelling are derived from that id. They are not a second name an author maintains.
+Every release-owned agent-facing operation and Tool has one canonical ID of the form `<namespace>.<segment>(.<segment>)*`. Each segment begins with a lowercase ASCII letter and contains lowercase ASCII letters or digits, with single hyphens joining words. Empty words, uppercase letters, colons and underscores are invalid. The first segment identifies the owning Core aspect or its governed resource family; the Agent Interface's own Tools use `openkit`. This rule covers public and internal-only operations, internal-role Tools, built-in Worker MCP Tools, Server MCP Tools and the three built-in `mcp.*` capability route IDs. It does not rename third-party Tools, MCP protocol methods, native opaque identifiers or accounting-only labels. The engineer's ruling and rationale are recorded in [Agent-Facing Naming](../decisions/20261017-agent_facing_naming.md).
 
-Existing settled semantic ids stay unless a rename is required. Before a rename, retained references that cite the id are disposed of explicitly. Those references include captured Pending bindings, evidence, and audit. An alias that keeps the old id callable under a new meaning is not a rename.
+The model-visible name replaces every dot with an underscore and changes nothing else. Hyphens remain hyphens. The same canonical Tool has the same model-visible name on every supplied surface. A Tool that projects an operation uses that operation's actual ID, with no separately authored alias. A standalone closure retains its own owner-defined contract; a similar public operation does not make it the same operation. One canonical ID must not name different input, output, authority or effect contracts.
+
+The projected name is at most 40 ASCII characters. The complete release-owned set must be unique after model projection and after additionally folding hyphens to underscores. Repeated appearances of the same canonical contract across surfaces are permitted. A repository check enumerates the current composed definitions and actual owned Tool declarations, including newly added entries, rather than a frozen name list or count. Provider dispatch also checks the supplied canonical set before inference. A third-party name forwarded as private execution evidence stays opaque and is not a new release-owned canonical ID.
+
+Internal execution, usage and evidence use the canonical ID. Transport dispatch retains an exact name-to-ID map; parsing a name never grants authority. The projection is reversible as a spelling transformation because canonical IDs contain no underscores: replacing underscores with dots recovers the ID. This does not recover a contract, actor or permission. The extra hyphen folding is only a collision check, never the actual transport projection or its inverse.
+
+The Agent Interface's discovery, description, guidance and invocation Tools have canonical IDs `openkit.search`, `openkit.describe`, `openkit.guide` and `openkit.call`, and model names `openkit_search`, `openkit_describe`, `openkit_guide` and `openkit_call`. `openkit_call` accepts the exact canonical operation ID. Worker's seven Work-owned built-ins use `work.input.request`, `work.peer.list`, `work.peer.read`, `work.source.read`, `work.source.search`, `work.source.view` and `work.artifact.submit` under their existing Work owners. The standalone directory-bound Retrieval Kernel MCP search uses `retrieval.search`; it is distinct from operation discovery and governed Knowledge retrieval. The Coordinator's Goal-constrained ordinary Task admission closure is `goal.task.dispatch`, distinct from the Assistant's human-confirmed `task.start` handoff. The private finite delegated configuration Tool is `administration.configuration.dispatch`, distinct from the human-confirmed public `administration.configuration-apply` operation. Its Policy action and command receipt identity remain with their existing owner. No naming change alters their schemas, admission, effects or publication owners.
+
+Existing settled IDs stay unless this rule requires a rename. Before v0.1.0, old retained references are disposed of through the authorized reset under [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md); no alias or legacy reader is added. After that continuity boundary, any affected retained reference follows its owner's accepted continuity design. Names never manufacture authority from old evidence.
+
+### Compatibility details and limits
+
+These are external interoperability facts and explicit limits, checked against the linked official documentation on 2026-10-17. A provider or harness may change its contract independently. The 40-character limit is OpenKit policy; it is not a claimed universal provider limit.
+
+| Surface | Verified documented name rule | Limit or qualification |
+| --- | --- | --- |
+| OpenAI Chat Completions function Tool | ASCII letters, digits, underscores and hyphens, at most 64 characters. | Dots and colons are outside that set. This citation verifies Chat Completions, not every OpenAI Tool type or Responses deployment. [API reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create). |
+| Anthropic user-defined client Tool | Pattern `^[a-zA-Z0-9_-]{1,128}$`. | Current official documentation states 128, not 64. Dots and colons are excluded. [Define tools](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools). |
+| xAI function Tool | The official guide documents named function Tools and shows working naming examples. | A normative character pattern and maximum length were not verified in that guide. OpenAI-compatible request syntax is not proof of identical name validation. [Function calling](https://docs.x.ai/developers/tools/function-calling). |
+| Gemini on Vertex AI | Starts with a letter or underscore; ASCII letters, digits, underscores, dots and hyphens; at most 64 characters. | This is the documented Vertex surface, not a claim about every Gemini SDK or endpoint. [Function calling reference](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/function-calling). |
+| Amazon Bedrock Runtime Converse ToolSpecification | Pattern `[a-zA-Z0-9_-]+`, length 1 to 64. | This is the Runtime API. The separate Bedrock Agent ToolSpecification admits `[a-zA-Z][a-zA-Z0-9_]*`, so the chosen hyphen spelling is not portable to that separate interface without an independently owned adapter. [Runtime reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html), [Agent reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_agent_ToolSpecification.html). |
+| MCP Tool names | Guidance recommends 1 to 128 characters, case sensitivity and ASCII letters, digits, underscores, hyphens or dots; uniqueness is within a server. | These are MCP SHOULD rules. MCP's dot allowance does not make dots portable across model providers; colons are outside its recommended set. [MCP specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names). |
+
+Dots and colons therefore are not portable model-facing separators across the verified interfaces. Canonical dotted IDs stay inside OpenKit; the dots-only projection uses the common underscore/hyphen alphabet. This does not claim support for every provider interface, especially the separate Bedrock Agent API above or the unverified xAI limits.
+
+Harnesses can prefix or sanitize names. Claude Code documents full names such as `mcp__<server>__<tool>` and drops Tools whose full names exceed 128 characters. [Claude Code MCP guidance](https://code.claude.com/docs/en/mcp). The engineer observed the server label `claude.ai Claude Docs` presented as `claude_ai_Claude_Docs`; the exact general sanitizing algorithm is unverified in the cited documentation. OpenKit must not assume that a raw server label survives unchanged. The example prefix `mcp__openkit-work__` has 19 characters, so a 40-character Tool produces 59 characters and leaves five under a 64-character limit. A longer harness prefix can still exceed a provider limit; the budget leaves room, not an unconditional guarantee.
+
+Code-execution agents can expose Tools as language functions. Anthropic documents one such TypeScript wrapper approach. [Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp). Hyphens are not Python or ECMAScript identifier characters, so a wrapper must transform the name or use a quoted or indirect lookup. [Python lexical reference](https://docs.python.org/3/reference/lexical_analysis.html#names-identifiers-and-keywords), [ECMAScript lexical grammar](https://tc39.es/ecma262/multipage/ecmascript-language-lexical-grammar.html#sec-names-and-keywords). Folding hyphens to underscores is the case OpenKit's extra uniqueness check protects. That exact transformation is not verified as a universal behavior of code-execution agents, and OpenKit does not change its wire spelling to match an assumed wrapper.
+
+A model can misspell mixed separators. No provider documentation establishes a misspelling rate or guarantees correction. The existing Gateway projection maps exact supplied names back to canonical IDs; an unadmitted canonical spelling or invalid function spelling is returned through its reserved `openkit_unavailable_tool` correction path. A subsequent corrected model call costs one additional round; recovery is conditional on the model actually choosing a supplied Tool. The sentinel is not a registered executable Tool, alias or authority. Naming adds no fuzzy dispatch or automatic retry.
 
 ## Lifecycle
 
@@ -141,7 +170,7 @@ Deprecation and retirement are release decisions. Blocking is a deployment decis
 
 ## Data-Defined Sources
 
-A data-defined operation source is reserved and is not built. No dynamic source, registry state, universal id grammar, or generic execution engine is added.
+A data-defined operation source is reserved and is not built. No dynamic source, registry state or generic execution engine is added.
 
 A future admitted source may project this specification's browser-safe operation vocabulary from records and immutable component versions that an existing domain already owns. The first candidate is the Generative Kernel's fixed operation. [Generative Kernel Data and Operations](20260908-generative_kernel_data_operations.md) keeps that operation's proposal, validation, activation, retirement, immutable versions, and execution classes. [Agent Plugin Packaging and Worker Supply](20260907-agent_plugin_packaging_and_worker_supply.md) keeps binding admission. This specification does not restate those classes.
 
@@ -155,7 +184,7 @@ Until a source is admitted, the creation, update, termination, retry, and recove
 
 ## Remote MCP Projection
 
-`search`, `describe`, and `guide` are side-effect free. Their read-only hints are truthful. Invocation is one `call`. The call's annotations are truthful for that operation, including its mutation posture.
+`openkit_search`, `openkit_describe`, and `openkit_guide` are side-effect free. Their read-only hints are truthful. Invocation is one `openkit_call`. The call's annotations are truthful for that operation, including its mutation posture.
 
 Search tokenizes ids and descriptions, ranks a query that matches multiple terms, and tolerates word order. It returns bounded results and indicates when more exist. The bound is a current default of the implementation, chosen so a result stays small enough for a client to read, and this specification does not fix the number. Search returns operation metadata only. It is not a permission decision.
 
