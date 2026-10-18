@@ -8,11 +8,16 @@ import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
+  acceptSchedulerExecutionObservation,
+  bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
   listOpenSchedulerExecutionAttempts,
   markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 
 /** Creates one current admitted attempt without launching a Worker. */
@@ -56,6 +61,30 @@ it('writes v1 attempts and reads their exact preparation bytes without rewriting
 
 it('refuses unknown attempt versions before recovery reads or lifecycle mutation', () => {
   const { db, attempt } = fixture();
+  bindSchedulerExecutionAttemptSession(db, {
+    attemptId: attempt.attemptId,
+    agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
+  });
+  finalizeSchedulerExecutionAttemptInput(db, {
+    attemptId: attempt.attemptId,
+    inputRef: 'input-format',
+    bindingRef: 'binding-format',
+  });
+  const submitted = recordSchedulerExecutionOperation(db, {
+    attemptId: attempt.attemptId,
+    operationId: 'operation-format',
+    submission: true,
+  });
+  const correlation = schedulerExecutionCorrelation(submitted);
+  expect(
+    acceptSchedulerExecutionObservation(db, {
+      ...correlation,
+      disposition: 'unknown',
+      execution: 'unknown',
+      outcomeRef: null,
+      fenceRef: null,
+    })
+  ).toMatchObject({ disposition: 'unknown' });
   db.sqlite.exec(
     "UPDATE scheduler_execution_attempts SET schema_version = 2, preparation_input_json = '{'"
   );
@@ -66,6 +95,15 @@ it('refuses unknown attempt versions before recovery reads or lifecycle mutation
   expect(() => requireSchedulerExecutionAttempt(db, attempt.attemptId)).toThrow(
     'Unsupported retained record format.'
   );
+  expect(() =>
+    acceptSchedulerExecutionObservation(db, {
+      ...correlation,
+      disposition: 'accepted',
+      execution: 'terminal',
+      outcomeRef: 'outcome-format',
+      fenceRef: 'fence-format',
+    })
+  ).toThrow('Unsupported retained record format.');
   expect(() => listOpenSchedulerExecutionAttempts(db)).toThrow(
     'Unsupported retained record format.'
   );

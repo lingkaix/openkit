@@ -293,7 +293,7 @@ export function acceptSchedulerExecutionObservation(
     .prepare(`${attemptSelect} WHERE attempt_id = ?`)
     .get(observation.attemptId);
   if (!found) return null;
-  const attempt = AttemptSchema.parse(found);
+  const attempt = readRetainedV1(found, (value) => AttemptSchema.parse(value));
   if (
     attempt.backendId !== observation.backendId ||
     attempt.bindingRef !== observation.bindingRef ||
