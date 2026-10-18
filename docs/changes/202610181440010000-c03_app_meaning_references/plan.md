@@ -10,6 +10,8 @@ The coordinator approved C03 on 2026-10-18 at 14:40Z. Each live and catalog defi
 
 ## Owners And Write Boundary
 
+[Generative Apps](../../core/generative-apps.md), [Kernel Operations](../../specs/20260908-generative_kernel_data_operations.md) and [Information Consolidation](../../specs/20261018-nanocore_interception_and_information_consolidation.md) own the accepted boundaries.
+
 L-GO owns Generative Apps, structural definition/catalog admission and discovery. L-AK agreed the seam by message at 14:40Z and alone writes Knowledge owner/receiver/validator paths. L-ID owns the shared exact reference codec and identifiers. L-RT owns runtime projection; its separate additive C06 work includes the single C04 no-private-procedure-copy regression. The C04 Knowledge validator is not implemented on this branch. L-GO does not edit those lanes' paths or the mediation Audit/Policy schemas.
 
 ## Inventory And Necessity
