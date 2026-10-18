@@ -6,13 +6,20 @@ import {
   resolveWorkspaceMcpServer,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
+import { allocateEntityId, deriveEntityId, type PolicyDecisionV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  listExportableWorkspacePermissionDecisions,
+  readPolicyStatementUseCount,
+  recordProductPermissionDecision,
+} from '../policy/permission-decisions.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import * as workerMcpRoutes from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
@@ -29,7 +36,7 @@ import {
   recordMcpToolSchemaSnapshot,
 } from './mcp-tool-schema-snapshots.js';
 import { raiseRecordedPendingRequest, respondRecordedApproval } from './pending-request-flow.js';
-import { readPendingRequest } from './pending-requests.js';
+import { executionCallIdForRequest, readPendingRequest } from './pending-requests.js';
 import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
 
 /** Upstream Tool fixture with retained input schema and independent top-level metadata. */
@@ -62,10 +69,15 @@ function tools(): Tool[] {
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  vi.restoreAllMocks();
 });
 
 /** Composes retained snapshots, current grant evaluation, and the real synchronous claim owner. */
-function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialRequired = false) {
+function fixture(
+  schemaPolicy: 'tracking' | 'pinned' = 'tracking',
+  credentialRequired = false,
+  mediated = false
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-captured-schema-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -94,7 +106,7 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
         enabled: true,
         allowedTools: ['echo', 'allowed-other'],
         deniedTools: ['excluded-other'],
-        approvalRequiredTools: ['echo'],
+        approvalRequiredTools: mediated ? [] : ['echo'],
         credentialBindings: credentialRequired
           ? [
               {
@@ -159,6 +171,53 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
     createdAt: turn.startedAt,
     completedAt: turn.startedAt,
   });
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const sourceMediation: PolicyDecisionV1 = {
+    operation: 'mcp.call-tool',
+    stage: 'decide',
+    point: 'mcp.call-tool@decide',
+    policyRevision: digest,
+    authorizationRevision: digest,
+    proposalDigest: digest,
+    role: 'final',
+    kernel: { effect: 'allow', reason: 'granted' },
+    subject: {
+      principal: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      onBehalfOf: null,
+      actor: {
+        kind: 'agent',
+        id: 'agent_demo',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      },
+      process: { workspaceId: turn.workspaceId, threadId: turn.threadId, turnId: turn.id },
+      credentialKind: 'worker-package',
+      responsibleHumanId: 'usr_00000000-0000-7000-8000-000000000001',
+    },
+    invocations: [],
+    consumedStatements: [],
+  };
+  const sourceDecisionId = mediated ? allocateEntityId('pd') : null;
+  const decisionBase = {
+    workspaceDb: db,
+    workspaceId: turn.workspaceId,
+    ownerScope: 'workspace' as const,
+    policyEngineVersion: 'fixture:v1',
+    policySnapshotId: digest,
+    subjectSummary: {},
+    resourceSummary: { serverId: 'echo-server', toolName: 'echo' },
+    action: 'tool.use',
+    reasonCode: 'granted',
+    enforcementPoint: sourceMediation.point,
+    auditActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
+  };
+  if (sourceDecisionId)
+    recordProductPermissionDecision({
+      ...decisionBase,
+      decisionId: sourceDecisionId,
+      result: 'require_escalation',
+      mediation: sourceMediation,
+      contextSummary: { threadId: turn.threadId, turnId: turn.id },
+    });
   const record = raiseRecordedPendingRequest(store, db.sqlite, {
     requestId: 'ap_captured',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -177,7 +236,7 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
       canonicalArgumentsJson: JSON.stringify({ message: 'approved' }),
       argumentsDigest: mcpToolArgumentsContentDigest({ message: 'approved' }),
       packageDigest: null,
-      policyDecisionId: null,
+      policyDecisionId: sourceDecisionId,
       authorizationContext: {
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
@@ -185,7 +244,7 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
         agentId: 'agent_demo',
         responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         packageDigest: null,
-        policyDecisionId: null,
+        policyDecisionId: sourceDecisionId,
       },
     },
     approval: {
@@ -209,7 +268,10 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
     closeWorkspace: vi.fn().mockResolvedValue(undefined),
     getServerHealth: () => 'ready',
   };
-  const grant = (afterPreparation?: () => void | Promise<void>) => {
+  const grant = (
+    afterPreparation?: () => void | Promise<void>,
+    reviewPolicy?: Parameters<typeof prepareCapturedPendingCall>[0]['reviewPolicy']
+  ) => {
     let prepared: PreparedCapturedPendingCall | undefined;
     let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
     return respondRecordedApproval({
@@ -225,7 +287,8 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
       dependencies: { coreDb, openWorkspace: (id) => openWorkspaceDb(dataRoot, id) },
       prepare: async () => {
         prepared = await prepareCapturedPendingCall({
-          actor: { userId: 'user_local' },
+          actor: { userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          ...(reviewPolicy ? { reviewPolicy } : {}),
           record,
           catalog,
           coreDb,
@@ -248,7 +311,8 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
         executionCall = admitCapturedPendingCall(
           record,
           db,
-          '00000000-0000-4000-8000-000000000117'
+          '00000000-0000-4000-8000-000000000117',
+          prepared
         );
       },
       execute: (claimed) =>
@@ -270,6 +334,33 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
     retain,
     grant,
     callTool,
+    sourceDecisionId,
+    sourceMediation,
+    reviewPolicy:
+      (current: () => boolean = () => true, changes: Partial<PolicyDecisionV1> = {}) =>
+      async () => {
+        const decisionId = allocateEntityId('pd');
+        const mediation = { ...sourceMediation, ...changes };
+        recordProductPermissionDecision({
+          ...decisionBase,
+          policySnapshotId: mediation.policyRevision,
+          decisionId,
+          result: 'allow',
+          mediation,
+          contextSummary: {
+            humanApprovalRequestId: record.requestId,
+            approvalSourceDecisionId: sourceDecisionId,
+            humanApprovalDeciderId: 'usr_00000000-0000-7000-8000-000000000001',
+            capabilityCallId: executionCallIdForRequest(record.requestId),
+            threadId: record.threadId,
+            turnId: record.raisingTurnId,
+          },
+          ...(mediation.consumedStatements.length
+            ? { uses: mediation.consumedStatements.map((statement) => ({ statement, limit: 1 })) }
+            : {}),
+        });
+        return { decisionId, current };
+      },
     setCatalog: (next: WorkspaceMcpServerCatalog) => {
       catalog = next;
     },
@@ -299,6 +390,87 @@ function expectNoExecution(f: ReturnType<typeof fixture>) {
 }
 
 describe('captured pending MCP schema identity at grant', () => {
+  it('blocks a mediated source without a reviewer before credential resolution', async () => {
+    const f = fixture('tracking', true, true);
+    const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+    expect(await f.grant()).toMatchObject({
+      disposition: 'denied-not-executed',
+      dispositionReason: 'policy-changed',
+    });
+    expect(credentials).not.toHaveBeenCalled();
+    expectNoExecution(f);
+  });
+
+  it('rejects changed mediation pins before credentials or execution', async () => {
+    const f = fixture('tracking', false, true);
+    const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+    expect(
+      await f.grant(
+        undefined,
+        f.reviewPolicy(() => true, { proposalDigest: `sha256:${'b'.repeat(64)}` })
+      )
+    ).toMatchObject({ disposition: 'denied-not-executed', dispositionReason: 'policy-changed' });
+    expect(credentials).not.toHaveBeenCalled();
+    expectNoExecution(f);
+  });
+
+  it('checks the source marker before decoded mediation and reviewer contact', async () => {
+    const f = fixture('tracking', false, true);
+    const review = vi.fn(f.reviewPolicy());
+    f.db.sqlite
+      .prepare(
+        "UPDATE permission_decisions SET schema_version = 2, mediation_json = 'not JSON' WHERE decision_id = ?"
+      )
+      .run(f.sourceDecisionId);
+    await expect(f.grant(undefined, review)).rejects.toThrow('Unsupported retained record format.');
+    expect(review).not.toHaveBeenCalled();
+    expectNoExecution(f);
+  });
+
+  it('rechecks current mediation inside the claim before starting a CapabilityCall', async () => {
+    const f = fixture('tracking', false, true);
+    const current = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    await expect(f.grant(undefined, f.reviewPolicy(current))).rejects.toMatchObject({
+      code: 'policy-changed',
+    });
+    expect(current).toHaveBeenCalledTimes(3);
+    expectNoExecution(f);
+  });
+
+  it('keeps the derived execution decision and consumes finite uses only on preparation', async () => {
+    const f = fixture('tracking', false, true);
+    const statement = { id: 'once-review', digest: `sha256:${'c'.repeat(64)}` };
+    expect(
+      await f.grant(
+        undefined,
+        f.reviewPolicy(() => true, { consumedStatements: [statement] })
+      )
+    ).toMatchObject({ disposition: 'approved-executed', claim: 'finished' });
+    expect(f.callTool).toHaveBeenCalledTimes(1);
+    const decisions = listExportableWorkspacePermissionDecisions(f.db, f.record.workspaceId);
+    expect(decisions).toHaveLength(3);
+    const execution = decisions.find(
+      ({ decisionId }) =>
+        decisionId === deriveEntityId('pd', ['pending_execution', f.record.requestId])
+    );
+    const preparation = decisions.find(
+      ({ decisionId }) => decisionId !== f.sourceDecisionId && decisionId !== execution?.decisionId
+    );
+    expect(execution).toMatchObject({
+      approvalId: f.record.requestId,
+      mediation: { ...f.sourceMediation, consumedStatements: [] },
+      contextSummary: {
+        originEvaluationDecisionId: preparation?.decisionId,
+        capabilityCallId: executionCallIdForRequest(f.record.requestId),
+      },
+    });
+    expect(readPolicyStatementUseCount(f.db, statement)).toBe(1);
+  });
+
   it.each([
     'unchanged',
     'allowed-other',
