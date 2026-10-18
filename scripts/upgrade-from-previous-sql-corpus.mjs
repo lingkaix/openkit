@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -32,11 +33,19 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'Light App immutable definitions',
   'Light App local recovery snapshots',
   'Native migration journals',
+  'Restricted evidence bytes',
+  'AEP snapshot',
+  'Context Package trace',
+  'Context Package files',
+  'Work observation log',
+  'Runtime provenance and admitted raw streams',
 ]);
 
 /** Loads product code only from the explicit previous or candidate package root. */
 async function owners(appRoot) {
   const load = (name) => import(pathToFileURL(join(appRoot, 'dist', `${name}.js`)).href);
+  const loadPackage = (name) =>
+    import(pathToFileURL(createRequire(join(appRoot, 'package.json')).resolve(name)).href);
   const [
     db,
     migrate,
@@ -161,6 +170,7 @@ async function owners(appRoot) {
     ui,
     usage,
     load,
+    loadPackage,
   };
 }
 
@@ -257,8 +267,18 @@ function fileBytes(dataRoot, path) {
   return { path: relative(dataRoot, path), byteLength: bytes.length, sha256: digest(bytes) };
 }
 
+/** Selects durable target identity while boot owns generation, readiness and observation time. */
+function retainedRuntimeTarget(target) {
+  required(target, 'Runtime targets and binding/control graph');
+  return {
+    targetId: target.targetId,
+    identityId: target.identityId,
+    deploymentId: target.deploymentId,
+  };
+}
+
 /** Seeds current SQLite families with the previous revision's real producers and stopped writers. */
-export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
+export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, selectors }) {
   const o = await owners(appRoot);
   const { workspaceId, threadId, turnId } = selectors;
   const core = o.db.openCoreDb(dataRoot);
@@ -268,7 +288,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
   const sql = {
     userId,
     agentSessionId: id('as', 'session'),
-    artifactId: selectors.artifactId ?? id('ar', 'review-artifact'),
+    artifactId: required(selectors.inlineArtifactId, 'B01 inline Artifact'),
   };
   try {
     o.migrate.applyScopedMigrations(user);
@@ -444,23 +464,28 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
       prompt: 'Keep this schedule paused.',
       intervalSeconds: 60,
     }).id;
-    sql.runtimeTargetId = 'upgrade-corpus-target';
-    const target = o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
-      targetId: sql.runtimeTargetId,
-      deploymentId: 'upgrade-corpus',
-      identityId: 'upgrade-corpus',
-      observedAt: NOW,
-    });
+    const targetIds = core.sqlite.prepare('SELECT target_id FROM nanohost_runtime_targets').all();
+    if (targetIds.length > 1) throw new Error('NanoHost requires one configured RuntimeTarget.');
+    sql.runtimeTargetId = targetIds[0]?.target_id ?? 'upgrade-corpus-target';
+    const target =
+      targetIds.length === 1
+        ? o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId)
+        : o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+            targetId: sql.runtimeTargetId,
+            deploymentId: 'upgrade-corpus',
+            identityId: 'upgrade-corpus',
+            observedAt: NOW,
+          });
     o.targets.upsertNanoHostRuntimeTarget(core, {
       ...target,
-      physicalEpoch: 'a'.repeat(64),
+      physicalEpoch: target.physicalEpoch ?? 'a'.repeat(64),
       freshEmpty: true,
       ready: true,
       predecessorFenced: true,
-      observedAt: NOW,
+      observedAt: new Date().toISOString(),
     });
     const binding = o.bindings.createWorkerStorageBinding(core, {
-      deploymentId: 'upgrade-corpus',
+      deploymentId: target.deploymentId,
       runtimeTargetId: sql.runtimeTargetId,
       workspaceId,
       now: NOW,
@@ -487,7 +512,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
         agentSessionId: sql.agentSessionId,
         backendKind: 'openshell',
         backendSessionId: 'upgrade-corpus-session',
-        deploymentId: 'upgrade-corpus',
+        deploymentId: target.deploymentId,
         packageSnapshotId: 'aepsnap_upgrade-corpus',
         runtimeTargetId: sql.runtimeTargetId,
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/upgrade-corpus',
@@ -545,7 +570,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
       targetId: sql.runtimeTargetId,
       closedGeneration: target.connectionGeneration,
       authoritativeGeneration: null,
-      observedAt: NOW,
+      observedAt: new Date().toISOString(),
     });
     const call = o.usage.startCapabilityCall({
       workspaceDb: workspace,
@@ -612,24 +637,6 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
       throw new Error('B01 Turn must have its real request Item before SQL corpus seeding.');
     }
     o.reads.advanceThreadReadReceipt(user, workspaceId, threadId, [sql.readItemId]);
-    sql.pendingRequestId = '00000000-0000-4000-8000-000000000901';
-    o.pending.raisePendingRequest(workspace.sqlite, {
-      requestId: sql.pendingRequestId,
-      workspaceId,
-      threadId,
-      raisingTurnId: turnId,
-      requestItemId: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
-      kind: 'approval',
-      requesterKind: 'person',
-      responsibleUserId: userId,
-      governedIntent: { operation: 'synthetic-corpus', content: 'Synthetic retained decision.' },
-      approval: {
-        kind: 'permission',
-        title: 'Synthetic corpus',
-        description: 'Retained approval fixture.',
-      },
-      now: NOW,
-    });
     o.checkpoints.upsertWorkerCheckpoint(workspace, {
       workspaceId,
       threadId,
@@ -668,29 +675,6 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
       requestId: 'upgrade-corpus-binding',
       expectedCurrentRevisionId: sql.materialRevisionId,
     });
-    const review = o.reviews.createArtifactReview(workspace, {
-      artifactId: sql.artifactId,
-      artifactVersion: 1,
-      contentDigest: `sha256:${digest(content)}`,
-      sourceThreadId: threadId,
-      sourceTurnId: turnId,
-      sourceAgentId: 'agent_codex_host',
-      materialProposal: null,
-      createdAt: NOW,
-    });
-    sql.reviewId = review.reviewId;
-    o.reviews.decideArtifactReview(workspace, {
-      actorId: userId,
-      actor,
-      artifactContent: content,
-      artifactId: sql.artifactId,
-      artifactMediaType: 'text/plain',
-      artifactVersion: 1,
-      decidedAt: NOW,
-      decision: 'accepted',
-      feedback: 'Synthetic retained acceptance.',
-      requestId: 'upgrade-corpus-review',
-    });
     const goal = await o.goals.executeGoalOperation(
       'goal.create',
       {
@@ -704,41 +688,6 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
     );
     sql.goalId = goal.goal.goalId;
     sql.goalThreadId = goal.goal.threadId;
-    sql.evidenceBundleId = 'evb_upgrade-corpus';
-    o.evidence.recordWorkspaceEvidenceBundle(workspace, {
-      id: sql.evidenceBundleId,
-      workspaceId,
-      threadId,
-      turnId,
-      goalId: null,
-      agentSessionId: sql.agentSessionId,
-      backendType: 'openshell',
-      sourceKind: 'worker-turn',
-      summary: 'Synthetic retained evidence.',
-      rawEvidenceRefs: [],
-      redactedEvidenceRefs: [],
-      contentDigests: [`sha256:${digest('Synthetic retained evidence.\n')}`],
-      retentionClass: 'turn-evidence',
-      sensitivityClass: 'product-safe',
-      importStatus: 'promoted',
-      requiredFeatures: ['evidence.bundle.v1'],
-      createdAt: NOW,
-    });
-    sql.runtimeEvidenceId = o.runtimeEvidence.recordWorkerRuntimeProvenanceEvidence(workspace, {
-      packageSnapshotId: 'aepsnap_upgrade-corpus',
-      workspaceId,
-      threadId,
-      turnId,
-      agentSessionId: sql.agentSessionId,
-      backendType: 'openshell',
-      backendVersion: 'synthetic',
-      placement: 'local',
-      summary: 'Synthetic retained runtime evidence.',
-      evidenceBundleIds: [sql.evidenceBundleId],
-      contentDigests: [`sha256:${digest('Synthetic retained evidence.\n')}`],
-      outcome: 'succeeded',
-      collectedAt: NOW,
-    }).id;
     sql.setupId = 'ras_upgrade-corpus';
     o.setup.recordResolvedAgentSetup(workspace, {
       recordId: sql.setupId,
@@ -823,45 +772,710 @@ export async function seedSqlCorpus({ appRoot, dataRoot, userId, selectors }) {
     } finally {
       appHandle.sqlite.close();
     }
-    const presentation = await o.ui.publishGenerativePresentation(
-      {
-        ...kernelContext,
-        workspaceDb: workspace,
-        requestId: '00000000-0000-4000-8000-000000000905',
-      },
-      {
-        threadId,
-        turnId,
-        title: 'Synthetic continuity',
-        fallbackText: content,
-        source: { kind: 'answer', text: content },
-        actions: [],
-        messages: [
-          {
-            version: 'v0.9',
-            createSurface: {
-              surfaceId: 'upgrade-corpus',
-              catalogId: 'urn:openkit:a2ui:catalog:native:v1',
-              sendDataModel: false,
-            },
-          },
-          {
-            version: 'v0.9',
-            updateComponents: {
-              surfaceId: 'upgrade-corpus',
-              components: [{ id: 'root', component: 'Text', text: { path: '/text' } }],
-            },
-          },
-        ],
-      }
-    );
-    sql.presentationId = presentation.id;
+    await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot);
     return { sql };
   } finally {
     workspace.sqlite.close();
     user.sqlite.close();
     core.sqlite.close();
   }
+}
+
+/** Seeds correlated AEP, Context Package, and original evidence through their product owners. */
+async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) {
+  const [
+    aep,
+    resolver,
+    images,
+    imagePreparation,
+    hashing,
+    context,
+    contextAuthorities,
+    fileAdmission,
+    provenance,
+    preparation,
+  ] = await Promise.all(
+    [
+      'runtime/aep-snapshot-ledger',
+      'runtime/agent-environment',
+      'runtime/worker-image-settlements',
+      'worker-environments/worker-environment-preparation',
+      'runtime/idempotent-command',
+      'context/worker-context-package',
+      'context/worker-context-authorities',
+      'storage/artifacts/file-admission',
+      'runtime/worker-runtime-provenance',
+      'runtime/nanohost-attempt-records',
+    ].map(o.load)
+  );
+  const actor = { kind: 'user', id: sql.userId };
+  const workspaceId = workspace.workspaceId;
+  const threadId = sql.goalThreadId;
+  const requestId = 'upgrade-corpus-context';
+  const workerRequest = JSON.stringify({
+    schemaVersion: 1,
+    objective: 'Read the synthetic retained material.',
+    acceptanceCriteria: ['Keep the synthetic content exact.'],
+    contextRefs: [{ kind: 'workspace', id: workspaceId }],
+    resources: [],
+    expectedArtifacts: [],
+    constraints: { maxContextTokens: 4096, maxWorkerIterations: 1 },
+    verification: [{ kind: 'manual', description: 'Read the synthetic corpus.' }],
+    reviewPolicy: {
+      required: false,
+      reviewers: ['human'],
+      instructions: 'Synthetic fixture only.',
+    },
+    escalationConditions: [],
+    reviewContext: null,
+  });
+  const turn = store.createTurn(workspaceId, threadId, workerRequest, actor, null, {
+    captureCoverage: { scope: 'server', value: 'on' },
+  });
+  sql.contextTurnId = turn.id;
+  sql.contextAgentSessionId = id('as', 'context-session');
+  const requestItemId = id('it', 'context-request');
+  store.createItem({
+    id: requestItemId,
+    workspaceId,
+    threadId,
+    turnId: turn.id,
+    type: 'user-message',
+    text: workerRequest,
+    actor,
+    status: 'completed',
+    createdAt: turn.startedAt,
+    completedAt: turn.startedAt,
+  });
+  const artifact = store.getArtifact(workspaceId, sql.artifactId);
+  if (artifact.content.format === 'file')
+    throw new Error('Artifact Review corpus requires the retained inline Artifact.');
+  store.assertArtifactContent(artifact);
+  const content = artifact.content.body;
+  sql.artifactVersion = artifact.version;
+  const review = o.reviews.createArtifactReview(workspace, {
+    artifactId: sql.artifactId,
+    artifactVersion: artifact.version,
+    contentDigest: artifact.contentDigest,
+    sourceThreadId: artifact.threadId,
+    sourceTurnId: artifact.turnId,
+    sourceAgentId: artifact.turnId ? (store.getTurnById(artifact.turnId).agentId ?? null) : null,
+    materialProposal: null,
+    createdAt: turn.startedAt,
+  });
+  sql.reviewId = review.reviewId;
+  o.reviews.decideArtifactReview(workspace, {
+    actorId: sql.userId,
+    actor,
+    artifactContent: content,
+    artifactId: sql.artifactId,
+    artifactMediaType:
+      artifact.content.format === 'markdown'
+        ? 'text/markdown'
+        : artifact.content.format === 'json'
+          ? 'application/json'
+          : 'text/plain',
+    artifactVersion: artifact.version,
+    decidedAt: turn.startedAt,
+    decision: 'accepted',
+    feedback: 'Synthetic retained acceptance.',
+    requestId: 'upgrade-corpus-review',
+  });
+  const pendingFlow = await o.load('runtime/pending-request-flow');
+  sql.pendingRequestId = '00000000-0000-4000-8000-000000000901';
+  pendingFlow.raiseRecordedPendingRequest(store, workspace.sqlite, {
+    requestId: sql.pendingRequestId,
+    workspaceId,
+    threadId,
+    raisingTurnId: turn.id,
+    requestItemId: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
+    kind: 'approval',
+    requesterKind: 'person',
+    responsibleUserId: sql.userId,
+    governedIntent: { operation: 'synthetic-corpus', content: 'Synthetic retained decision.' },
+    approval: {
+      kind: 'permission',
+      title: 'Synthetic corpus',
+      description: 'Retained approval fixture.',
+    },
+    now: turn.startedAt,
+  });
+  store.createItem({
+    id: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
+    workspaceId,
+    threadId,
+    turnId: turn.id,
+    type: 'approval-request',
+    approvalRequestId: sql.pendingRequestId,
+    kind: 'permission',
+    title: 'Synthetic corpus',
+    description: 'Retained approval fixture.',
+    status: 'completed',
+    createdAt: turn.startedAt,
+    completedAt: turn.startedAt,
+  });
+  const presentation = await o.ui.publishGenerativePresentation(
+    {
+      store,
+      inflightCommands: new WeakMap(),
+      dataRoot: workspace.dataRoot,
+      workspaceId,
+      actor,
+      workspaceDb: workspace,
+      requestId: '00000000-0000-4000-8000-000000000905',
+    },
+    {
+      threadId,
+      turnId: turn.id,
+      title: 'Synthetic continuity',
+      fallbackText: content,
+      source: { kind: 'answer', text: content },
+      actions: [],
+      messages: [
+        {
+          version: 'v0.9',
+          createSurface: {
+            surfaceId: 'upgrade-corpus',
+            catalogId: 'urn:openkit:a2ui:catalog:native:v1',
+            sendDataModel: false,
+          },
+        },
+        {
+          version: 'v0.9',
+          updateComponents: {
+            surfaceId: 'upgrade-corpus',
+            components: [{ id: 'root', component: 'Text', text: { path: '/text' } }],
+          },
+        },
+      ],
+    }
+  );
+  sql.presentationId = presentation.id;
+  store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
+  const setup = syntheticAgentSetup();
+  const image = imagePreparation.materializeRuntimeImage(setup.manifest.runtime.image);
+  const inputDigest = hashing.commandInputHash(image);
+  const candidate = {
+    authoredArtifactId: id('ar', 'image-evidence'),
+    authoredArtifactVersion: 1,
+    authoredContentDigest: inputDigest,
+    inputDigest,
+  };
+  const imageDigest = `sha256:${'a'.repeat(64)}`;
+  images.writeWorkerImageSettlement(core, {
+    ...candidate,
+    requestId: digest('upgrade-corpus-image'),
+    operation: 'image.acquire',
+    outcome: { kind: 'success', imageDigest },
+  });
+  images.admitWorkerImageEnvironment(core, candidate, {
+    imageDigest,
+    defaultsDigest: `sha256:${digest('{}')}`,
+    values: {},
+  });
+  const files = context.createWorkerContextPackageFiles({
+    workspaceId,
+    threadId,
+    turnId: turn.id,
+    workerRequestItemId: requestItemId,
+    workerRequestBytes: workerRequest,
+    includedItemIds: [requestItemId],
+    contextBudgetTokens: 4096,
+    materialSelections: [],
+  });
+  const unresolved = resolver.resolveAgentEnvironmentPackage({
+    coreDb: core,
+    captureCoverage: { scope: 'server', value: 'on' },
+    agentSetup: setup,
+    agentSessionId: sql.contextAgentSessionId,
+    triggerActor: actor,
+    backend: { kind: 'openshell' },
+    requestId,
+    turn: store.getTurn(workspaceId, threadId, turn.id),
+    turnInput: workerRequest,
+    workspaceCwd: '/workspace',
+    workspaceRoots: [],
+  });
+  const environmentPackage = {
+    ...unresolved,
+    scope: { ...unresolved.scope, itemId: requestItemId },
+    workspace: {
+      ...unresolved.workspace,
+      inputs: [
+        context.buildWorkerContextPackageWorkspaceInput({
+          agentSessionId: sql.contextAgentSessionId,
+          threadId,
+          turnId: turn.id,
+          packageRootDigest: files.packageRootDigest,
+        }),
+      ],
+    },
+  };
+  sql.aepSnapshotId = aep.recordAgentEnvironmentPackageSnapshot(workspace, {
+    environmentPackage,
+    createdAt: turn.startedAt,
+  }).snapshotId;
+  store.createAgentSession({
+    id: sql.contextAgentSessionId,
+    workspaceId,
+    threadId,
+    agentId: 'agent_codex_host',
+    status: 'closed',
+    message: 'Synthetic retained session.',
+    createdAt: turn.startedAt,
+    updatedAt: turn.startedAt,
+    environmentPackageSnapshotId: sql.aepSnapshotId,
+    stale: true,
+  });
+  const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
+    backendId: 'nanohost',
+    queueEntryId: 'upgrade-corpus-context-queue',
+    requestId,
+    workspaceId,
+    threadId,
+    turnId: turn.id,
+    turnInput: workerRequest,
+    requestedAgentId: 'agent_codex_host',
+    triggerActor: actor,
+    now: () => turn.startedAt,
+  });
+  const attemptId = id('attempt', 'context-attempt');
+  o.attempts.createSchedulerExecutionAttempt(core, {
+    entry,
+    attemptId,
+    preparationInput: { admission: entry },
+    now: () => turn.startedAt,
+  });
+  o.attempts.bindSchedulerExecutionAttemptSession(core, {
+    attemptId,
+    agentSessionId: sql.contextAgentSessionId,
+    now: () => turn.startedAt,
+  });
+  preparation.bindNanoHostAttemptPreparation(core, {
+    attemptId,
+    agentSessionId: sql.contextAgentSessionId,
+    inputRef: sql.aepSnapshotId,
+    bindingRef: 'upgrade-corpus-context-binding',
+    sessionCompatibilityKey: 'upgrade-corpus-context',
+    now: () => turn.startedAt,
+  });
+  const target = o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
+  o.targets.upsertNanoHostRuntimeTarget(core, {
+    ...target,
+    physicalEpoch: 'a'.repeat(64),
+    freshEmpty: true,
+    ready: true,
+    predecessorFenced: true,
+    observedAt: new Date().toISOString(),
+  });
+  o.backend.recordWorkerBackendSessionMaterializing(core, {
+    backendLineage: { kind: 'reference', imageRef: setup.manifest.runtime.image.ref },
+    backendVersion: 'synthetic',
+    sandboxBindingRef: 'upgrade-corpus-context-binding',
+    identity: {
+      agentSessionId: sql.contextAgentSessionId,
+      backendKind: 'openshell',
+      backendSessionId: 'upgrade-corpus-context-session',
+      deploymentId: target.deploymentId,
+      packageSnapshotId: sql.aepSnapshotId,
+      runtimeTargetId: target.targetId,
+      stagingDirectoryRef: 'server/runtime/worker-backend-sessions/upgrade-corpus-context',
+      transientProviderInstanceId: null,
+    },
+    lineage: { workspaceId, threadId, turnId: turn.id },
+    now: () => turn.startedAt,
+  });
+  const trace = context.createWorkerContextPackageTrace({
+    agentSessionId: sql.contextAgentSessionId,
+    packageSnapshotId: sql.aepSnapshotId,
+    requestId,
+    goalId: sql.goalId,
+    taskId: 'task_upgrade-corpus',
+    packageFiles: files,
+    excludedItems: [],
+  });
+  const materializer = await o.load('runtime/workspace-materializer');
+  const [snapshot] = materializer.buildWorkspaceInputSnapshots({
+    environmentPackage,
+    backendCapabilities: environmentPackage.backend.requiredCapabilities,
+    backendKind: 'openshell',
+    createdAt: turn.startedAt,
+  });
+  const [materialization] = materializer.buildWorkspaceMaterializationRecords({
+    inputSnapshots: [snapshot],
+    createdAt: turn.startedAt,
+    materialization: {
+      backendKind: 'openshell',
+      backendStatus: { health: 'ready', version: 'synthetic' },
+      packageSnapshotId: sql.aepSnapshotId,
+      requiredCapabilities: environmentPackage.backend.requiredCapabilities,
+      sandbox: { name: 'upgrade-corpus-context-session', state: 'created' },
+      workspaceInputs: [
+        {
+          id: environmentPackage.workspace.inputs[0].id,
+          target: environmentPackage.workspace.inputs[0].target,
+        },
+      ],
+    },
+  });
+  o.sync.recordWorkspaceBackendHandoff(workspace, [snapshot], [materialization]);
+  o.backend.markWorkerBackendWorkspaceHandoffComplete(core, {
+    attemptId,
+    now: () => turn.startedAt,
+  });
+  const workspaceRoot = join(workspace.dataRoot, 'workspaces', workspaceId);
+  await context.writeWorkerContextPackageFiles(workspaceRoot, files, {
+    admission: new fileAdmission.FileStorageAdmission(workspaceRoot, () => 0n),
+  });
+  const authorities = contextAuthorities.createWorkerContextPackageAuthorityReader({
+    coreDb: core,
+    workspaceDb: workspace,
+    store,
+  });
+  context.writeWorkerContextPackageTrace({ authorities, trace, workspaceRoot });
+  sql.aepSnapshotPath = relative(
+    workspace.dataRoot,
+    join(
+      workspaceRoot,
+      'runtime',
+      'agent-sessions',
+      sql.contextAgentSessionId,
+      'aep-snapshots',
+      `${sql.aepSnapshotId}.json`
+    )
+  );
+  sql.contextTracePath = relative(
+    workspace.dataRoot,
+    join(workspaceRoot, 'threads', threadId, 'turns', turn.id, 'context-package.json')
+  );
+  sql.contextFilePaths = ['package.json', ...files.fileInventory.map((file) => file.path)].map(
+    (path) =>
+      relative(
+        workspace.dataRoot,
+        join(workspaceRoot, 'threads', threadId, 'turns', turn.id, 'context-package', path)
+      )
+  );
+  // Metadata is synthetic. No backend was called, and no physical effect needs a release fence.
+  o.attempts.closeSchedulerExecutionAttemptWithoutEffects(core, {
+    attemptId,
+    noOutstandingEffects: true,
+    cause: 'synthetic-corpus',
+    now: () => turn.startedAt,
+  });
+  for (const [fromState, toState] of [
+    ['materializing', 'cleanup-pending'],
+    ['cleanup-pending', 'physical-cleaned'],
+    ['physical-cleaned', 'cleaned'],
+  ]) {
+    o.backend.transitionWorkerBackendSessionState(core, {
+      attemptId,
+      fromState,
+      toState,
+      now: () => turn.startedAt,
+    });
+  }
+  o.targets.recordNanoHostRuntimeTargetConnectionClose(core, {
+    targetId: target.targetId,
+    closedGeneration: target.connectionGeneration,
+    authoritativeGeneration: null,
+    observedAt: new Date().toISOString(),
+  });
+  store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
+  const lineage = {
+    agentSessionId: sql.contextAgentSessionId,
+    packageSnapshotId: sql.aepSnapshotId,
+    requestId,
+    workspaceId,
+    threadId,
+    turnId: turn.id,
+  };
+  const nativeSessionId = '019f0000-0000-7000-8000-000000000010';
+  const nativeThreadId = '019f0000-0000-7000-8000-000000000001';
+  const sessionFrame = Buffer.from(
+    `${JSON.stringify({
+      timestamp: NOW,
+      type: 'session_meta',
+      payload: {
+        session_id: nativeSessionId,
+        id: nativeThreadId,
+        timestamp: NOW,
+        cwd: '/workspace/synthetic',
+        originator: 'codex_exec',
+        cli_version: '0.153.4',
+        source: 'exec',
+      },
+    })}\n`
+  );
+  const threadFrame = Buffer.from(
+    `${JSON.stringify({ type: 'thread.started', thread_id: nativeThreadId })}\n`
+  );
+  const raw = Buffer.concat([sessionFrame, threadFrame]);
+  const nativeIndex = [
+    {
+      schemaVersion: 1,
+      lineage,
+      runtimeFamily: 'codex',
+      adapterVersion: '0.153.4',
+      streamRef: 'stream-0000.jsonl',
+      frameSequence: 0,
+      byteOffset: 0,
+      byteLength: sessionFrame.length,
+      frameSha256: `sha256:${digest(sessionFrame)}`,
+      eventKind: 'session_meta',
+      parseStatus: 'parsed',
+      nativeSessionId,
+      nativeThreadId,
+    },
+    {
+      schemaVersion: 1,
+      lineage,
+      runtimeFamily: 'codex',
+      adapterVersion: '0.153.4',
+      streamRef: 'stream-0000.jsonl',
+      frameSequence: 1,
+      byteOffset: sessionFrame.length,
+      byteLength: threadFrame.length,
+      frameSha256: `sha256:${digest(threadFrame)}`,
+      eventKind: 'thread.started',
+      parseStatus: 'parsed',
+      nativeThreadId,
+    },
+  ];
+  const manifest = {
+    schemaVersion: 1,
+    lineage,
+    runtimeFamily: 'codex',
+    adapterVersion: '0.153.4',
+    primaryStreamRef: 'stream-0000.jsonl',
+    captureStatus: 'complete',
+    streams: [
+      {
+        streamRef: 'stream-0000.jsonl',
+        sourceKind: 'primary',
+        bytes: raw.length,
+        sha256: `sha256:${digest(raw)}`,
+        frameCount: 2,
+        captureStatus: 'complete',
+        stableTerminal: true,
+      },
+    ],
+  };
+  const captureRoot = join(retainedRoot, 'synthetic-runtime-capture');
+  mkdirSync(captureRoot, { recursive: true });
+  writeFileSync(join(captureRoot, 'raw-streams.json'), `${JSON.stringify(manifest)}\n`);
+  writeFileSync(
+    join(captureRoot, 'native-origin-index.jsonl'),
+    `${nativeIndex.map((entry) => JSON.stringify(entry)).join('\n')}\n`
+  );
+  writeFileSync(join(captureRoot, 'stream-0000.jsonl'), raw);
+  const imported = await provenance.importWorkerRuntimeProvenance({
+    backend: { kind: 'openshell', placement: 'local', version: 'synthetic' },
+    collectedAt: NOW,
+    environmentPackage,
+    workspaceDb: workspace,
+    workspaceRoot,
+    capture: {
+      streamManifestPath: join(captureRoot, 'raw-streams.json'),
+      nativeOriginIndexPath: join(captureRoot, 'native-origin-index.jsonl'),
+      rawStreamsRoot: captureRoot,
+    },
+  });
+  if (!imported.complete) throw new Error('Synthetic runtime provenance failed product admission.');
+  sql.rawProvenanceBundleId = imported.rawBundleId;
+  sql.provenanceIndexBundleId = imported.indexBundleId;
+  sql.provenanceRuntimeEvidenceId = imported.runtimeEvidenceId;
+  sql.evidenceBundleId = imported.indexBundleId;
+  sql.runtimeEvidenceId = imported.runtimeEvidenceId;
+  sql.provenancePaths = [
+    'raw-streams.json',
+    'native-origin-index.jsonl',
+    'raw/stream-0000.jsonl',
+  ].map((path) =>
+    relative(
+      workspace.dataRoot,
+      join(workspaceRoot, 'evidence', 'backend', imported.rawBundleId, path)
+    )
+  );
+  sql.provenanceIndexPath = relative(
+    workspace.dataRoot,
+    join(workspaceRoot, 'evidence', 'bundles', imported.indexBundleId, 'runtime-origin-index.jsonl')
+  );
+  const goal = o.goals.readGoalView(store, workspace, sql.goalId);
+  await o.goals.executeGoalOperation(
+    'goal.cancel',
+    {
+      workspaceId,
+      threadId,
+      goalId: sql.goalId,
+      requestId: '00000000-0000-4000-8000-000000000906',
+      expectedRevision: goal.goal.changeRevision,
+      reason: 'Synthetic retained history; no work is requested.',
+    },
+    { actor: { kind: 'local', userId: sql.userId } },
+    store,
+    workspace
+  );
+  pendingFlow.archiveThreadWithCloseout(
+    store,
+    {
+      openWorkspace: (selectedWorkspaceId) =>
+        o.db.openWorkspaceDb(workspace.dataRoot, selectedWorkspaceId),
+    },
+    workspaceId,
+    threadId,
+    actor
+  );
+  const body = Buffer.from('Synthetic restricted evidence body.\n');
+  const observations = await o.load('storage/work-observations');
+  observations.appendWorkObservation(workspace, {
+    threadId,
+    turnId: turn.id,
+    observation: {
+      id: 'upgrade-corpus-model',
+      type: 'model.observed',
+      ts: NOW,
+      obs: 'gateway',
+      ret: 'turn-evidence',
+      payload: {
+        attempt: 0,
+        direction: 'response',
+        event: 'text_end',
+        runtimeOriginRef: null,
+        content: { state: 'expected' },
+      },
+    },
+    bodies: [
+      { id: 'response', bytes: body, mediaType: 'text/plain', boundary: 'synthetic-model-output' },
+    ],
+  });
+  sql.restrictedBody = {
+    bundleId: o.evidence.workObservationBodyBundleId(
+      workspaceId,
+      threadId,
+      turn.id,
+      'upgrade-corpus-model',
+      'response'
+    ),
+    threadId,
+    turnId: turn.id,
+    createdAt: NOW,
+    sha256: digest(body),
+  };
+  sql.restrictedBodyPath = relative(
+    workspace.dataRoot,
+    join(workspaceRoot, 'evidence', 'backend', sql.restrictedBody.bundleId, 'raw', 'content')
+  );
+  sql.observationsPath = relative(
+    workspace.dataRoot,
+    join(workspaceRoot, 'threads', threadId, 'turns', turn.id, 'observations.jsonl')
+  );
+  const tools = [{ name: 'synthetic_inspect', inputSchema: { type: 'object', properties: {} } }];
+  sql.mcpSchemaSnapshotId = 'mcp_upgrade-corpus';
+  o.mcp.importMcpToolSchemaSnapshots(workspace, [
+    {
+      capturedAt: NOW,
+      catalogEntryId: 'synthetic-mcp',
+      contentDigest: o.mcp.mcpToolSchemaContentDigest(tools),
+      schemaSnapshotId: sql.mcpSchemaSnapshotId,
+      serverVersion: 'synthetic',
+      source: 'aep',
+      sourceRef: null,
+      tools,
+      workspaceId,
+    },
+  ]);
+}
+
+/** Reopens linked file owners and checks exact original bytes before returning safe facts. */
+async function readLinkedEvidence(o, core, workspace, store, sql) {
+  const [aep, context, contextAuthorities, provenance] = await Promise.all(
+    [
+      'runtime/aep-snapshot-ledger',
+      'context/worker-context-package',
+      'context/worker-context-authorities',
+      'runtime/worker-runtime-provenance',
+    ].map(o.load)
+  );
+  const dataRoot = workspace.dataRoot;
+  const workspaceId = workspace.workspaceId;
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  const snapshot = aep.requireAgentEnvironmentPackageSnapshot(
+    workspace,
+    workspaceId,
+    sql.aepSnapshotId
+  );
+  const authorities = contextAuthorities.createWorkerContextPackageAuthorityReader({
+    coreDb: core,
+    workspaceDb: workspace,
+    store,
+  });
+  const trace = context.readWorkerContextPackageTrace({
+    authorities,
+    workspaceId,
+    threadId: sql.goalThreadId,
+    turnId: sql.contextTurnId,
+    workspaceRoot,
+  });
+  const body = required(
+    o.evidence.readWorkObservationBody(workspace, sql.restrictedBody),
+    'Restricted evidence bytes'
+  );
+  const evidence = o.evidence.listStoredWorkspaceEvidenceBundles(workspace, workspaceId);
+  const rawBundle = required(
+    evidence.find((row) => row.id === sql.rawProvenanceBundleId),
+    'Runtime provenance original manifest'
+  );
+  const indexBundle = required(
+    evidence.find((row) => row.id === sql.provenanceIndexBundleId),
+    'Runtime provenance normalized index'
+  );
+  const rawBytes = sql.provenancePaths.map((path) => fileBytes(dataRoot, join(dataRoot, path)));
+  for (const bytes of rawBytes) {
+    if (!rawBundle.contentDigests.includes(`sha256:${bytes.sha256}`)) {
+      throw new Error('Runtime provenance original digest does not match its EvidenceBundle.');
+    }
+  }
+  const indexBytes = fileBytes(dataRoot, join(dataRoot, sql.provenanceIndexPath));
+  if (!indexBundle.contentDigests.includes(`sha256:${indexBytes.sha256}`)) {
+    throw new Error(
+      'Runtime provenance normalized index digest does not match its EvidenceBundle.'
+    );
+  }
+  const workerProtocol = await o.loadPackage('@openkit/worker-protocol');
+  const manifest = workerProtocol.WorkerRuntimeRawStreamManifestReaderSchema.parse(
+    JSON.parse(readFileSync(join(dataRoot, sql.provenancePaths[0]), 'utf8'))
+  );
+  const nativeEntries = readFileSync(join(dataRoot, sql.provenancePaths[1]), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) =>
+      workerProtocol.WorkerRuntimeNativeOriginIndexEntryReaderSchema.parse(JSON.parse(line))
+    );
+  if (manifest.streams.length !== 1 || manifest.streams[0].frameCount !== nativeEntries.length) {
+    throw new Error('Runtime provenance manifest and native index disagree.');
+  }
+  const normalized = readFileSync(join(dataRoot, sql.provenanceIndexPath), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => provenance.WorkerRuntimeOriginIndexRowSchema.parse(JSON.parse(line)));
+  const observations = await o.load('storage/work-observations');
+  const workObservations = observations.readWorkObservations(workspace, {
+    threadId: sql.goalThreadId,
+    turnId: sql.contextTurnId,
+  });
+  return {
+    manifest,
+    nativeEntryCount: nativeEntries.length,
+    workObservations,
+    snapshot,
+    trace,
+    body: { sha256: digest(body), byteLength: body.length },
+    rawBundle,
+    indexBundle,
+    normalized,
+    rawBytes,
+    indexBytes,
+  };
 }
 
 /** Reads every selected SQL record with the selected revision's product reader. */
@@ -892,6 +1506,19 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
     const metadata = o.kernel.getLightApp(dataRoot, workspaceId, sql.lightAppId);
     const receipt = (handle, key) =>
       o.commands.readCommandRequestRecordsFromSqlite(handle.sqlite).find((row) => row.key === key);
+    const linked = await readLinkedEvidence(o, core, workspace, store, sql);
+    const pending = required(
+      o.pending.readPendingRequest(workspace.sqlite, sql.pendingRequestId),
+      SQL_CORPUS_FAMILIES[12]
+    );
+    const pendingFailure = o.pending.validateCanonicalLoad(
+      pending,
+      store.listThreadTurns(workspaceId, sql.goalThreadId),
+      o.commands.readCommandRequestRecordsFromSqlite(workspace.sqlite)
+    );
+    if (pendingFailure)
+      throw new Error(`Pending request fixture is contradictory: ${pendingFailure.reason}.`);
+
     const token = required(
       o.tokens.listOpenKitAccessTokenRecords(core).find((row) => row.tokenId === sql.tokenId),
       SQL_CORPUS_FAMILIES[0]
@@ -900,6 +1527,17 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
       .prepare('SELECT token_hash FROM openkit_access_tokens WHERE token_id = ?')
       .pluck()
       .get(sql.tokenId);
+    for (const { scope, hashes } of sql.journals) {
+      const handle =
+        scope === 'core' ? core : scope === 'user' ? user : scope === 'workspace' ? workspace : app;
+      const currentHashes = handle.sqlite
+        .prepare('SELECT hash FROM __drizzle_migrations')
+        .all()
+        .map((row) => row.hash);
+      if (hashes.length === 0 || hashes.some((hash) => !currentHashes.includes(hash))) {
+        throw new Error('Native migration journals: selected retained entry is missing.');
+      }
+    }
     return {
       [SQL_CORPUS_FAMILIES[0]]: one(SQL_CORPUS_FAMILIES[0], [
         token,
@@ -912,7 +1550,12 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
         },
       ]),
       [SQL_CORPUS_FAMILIES[1]]: one(SQL_CORPUS_FAMILIES[1], [
-        { defaultTokenId: o.tokens.resolveSessionDeploymentAdminTokenId(core, sql.userId) },
+        {
+          defaultTokenId: required(
+            o.tokens.resolveSessionDeploymentAdminTokenId(core, sql.userId),
+            SQL_CORPUS_FAMILIES[1]
+          ),
+        },
       ]),
       [SQL_CORPUS_FAMILIES[2]]: one(SQL_CORPUS_FAMILIES[2], [
         o.decisions
@@ -939,7 +1582,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
         ).getAutomation(sql.automationId),
       ]),
       [SQL_CORPUS_FAMILIES[6]]: one(SQL_CORPUS_FAMILIES[6], [
-        o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId),
+        retainedRuntimeTarget(o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId)),
         o.bindings.getWorkerStorageBinding(core, { storageRef: sql.storageRef }),
         o.backend.getWorkerBackendSession(core, sql.attemptId),
         o.control.listWorkerControlAcceptedEvents(core, {
@@ -975,7 +1618,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
           .filter((row) => row.capabilityCallId === sql.capabilityCallId),
       ]),
       [SQL_CORPUS_FAMILIES[12]]: one(SQL_CORPUS_FAMILIES[12], [
-        o.pending.readPendingRequest(workspace.sqlite, sql.pendingRequestId),
+        pending,
         receipt(workspace, sql.receiptKeys.workspace),
         o.checkpoints.getWorkerCheckpoint(workspace, workspaceId, threadId, turnId),
       ]),
@@ -985,7 +1628,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
         o.materials.getThreadMaterial(workspace, threadId, sql.materialId),
       ]),
       [SQL_CORPUS_FAMILIES[14]]: one(SQL_CORPUS_FAMILIES[14], [
-        o.reviews.getArtifactReview(workspace, sql.artifactId, 1),
+        o.reviews.getArtifactReview(workspace, sql.artifactId, sql.artifactVersion),
       ]),
       [SQL_CORPUS_FAMILIES[15]]: one(SQL_CORPUS_FAMILIES[15], [
         o.goals.readGoalView(store, workspace, sql.goalId),
@@ -1000,6 +1643,9 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
       ]),
       [SQL_CORPUS_FAMILIES[17]]: one(SQL_CORPUS_FAMILIES[17], [
         o.setup.requireResolvedAgentSetup(workspace, workspaceId, sql.setupId),
+        o.mcp
+          .listExportableMcpToolSchemaSnapshots(workspace, workspaceId)
+          .find((row) => row.schemaSnapshotId === sql.mcpSchemaSnapshotId),
       ]),
       [SQL_CORPUS_FAMILIES[18]]: one(SQL_CORPUS_FAMILIES[18], [
         o.sync
@@ -1069,6 +1715,50 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
             .all()
             .filter((row) => hashes.includes(row.hash)),
         }))
+      ),
+      [SQL_CORPUS_FAMILIES[24]]: one(
+        SQL_CORPUS_FAMILIES[24],
+        [
+          linked.body,
+          linked.rawBundle,
+          linked.indexBundle,
+          required(linked.normalized, 'Runtime provenance normalized index'),
+        ],
+        [
+          fileBytes(dataRoot, join(dataRoot, sql.restrictedBodyPath)),
+          ...linked.rawBytes,
+          linked.indexBytes,
+        ]
+      ),
+      [SQL_CORPUS_FAMILIES[25]]: one(
+        SQL_CORPUS_FAMILIES[25],
+        [linked.snapshot],
+        [fileBytes(dataRoot, join(dataRoot, sql.aepSnapshotPath))]
+      ),
+      [SQL_CORPUS_FAMILIES[26]]: one(
+        SQL_CORPUS_FAMILIES[26],
+        [linked.trace],
+        [fileBytes(dataRoot, join(dataRoot, sql.contextTracePath))]
+      ),
+      [SQL_CORPUS_FAMILIES[27]]: one(
+        SQL_CORPUS_FAMILIES[27],
+        [linked.trace.fileInventory],
+        sql.contextFilePaths.map((path) => fileBytes(dataRoot, join(dataRoot, path)))
+      ),
+      [SQL_CORPUS_FAMILIES[28]]: one(
+        SQL_CORPUS_FAMILIES[28],
+        [required(linked.workObservations, 'Work observation log')],
+        [fileBytes(dataRoot, join(dataRoot, sql.observationsPath))]
+      ),
+      [SQL_CORPUS_FAMILIES[29]]: one(
+        SQL_CORPUS_FAMILIES[29],
+        [
+          linked.rawBundle,
+          linked.indexBundle,
+          { manifest: linked.manifest, nativeEntryCount: linked.nativeEntryCount },
+          required(linked.normalized, 'Runtime provenance and admitted raw streams'),
+        ],
+        [...linked.rawBytes, linked.indexBytes]
       ),
     };
   } finally {
