@@ -52,6 +52,7 @@ describe('storage layout report', () => {
         'core_0006_external_trigger_admissions',
         'core_0007_discord_capture_origin',
         'core_0008_server_capability_usage',
+        'core_0009_retained_record_formats',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -63,6 +64,7 @@ describe('storage layout report', () => {
                 'user_0000_setup',
                 'user_0001_thread_read_receipts',
                 'user_0002_notebook_admission',
+                'user_0003_retained_record_formats',
               ],
             }),
           },
@@ -79,6 +81,7 @@ describe('storage layout report', () => {
               'workspace_0001_assistant_handoff',
               'workspace_0002_notebook_admission',
               'workspace_0003_exact_review_feedback',
+              'workspace_0004_retained_record_formats',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
