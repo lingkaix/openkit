@@ -18,6 +18,8 @@ export type ReferenceScope =
   | { family: 'raw'; kind: 'user'; userId: string; knowledgeBaseId: string }
   | { family: 'raw'; kind: 'workspace'; workspaceId: string; knowledgeBaseId: string }
   | { family: 'raw'; kind: 'server'; knowledgeBaseId: string }
+  | { family: 'skill'; kind: 'server' }
+  | { family: 'skill'; kind: 'workspace'; workspaceId: string }
   | { family: 'artifact' | 'material'; kind: 'workspace'; workspaceId: string }
   | { family: 'input'; kind: 'turn'; workspaceId: string; threadId: string; turnId: string }
   | { family: 'retrieval-trace'; kind: 'thread'; workspaceId: string; threadId: string }
@@ -48,6 +50,11 @@ export function parseReferenceScope(value: string): ReferenceScope | null {
       isKnowledgeBaseId(b)
     )
       return { family, kind, workspaceId: a, knowledgeBaseId: b };
+  }
+  if (family === 'skill') {
+    if (kind === 'server' && parts.length === 2) return { family, kind };
+    if (kind === 'workspace' && parts.length === 3 && a && isWorkspaceId(a))
+      return { family, kind, workspaceId: a };
   }
   if (
     (family === 'artifact' || family === 'material') &&
@@ -95,14 +102,16 @@ export const ScopeQualifiedReferenceSchema = z
   .superRefine(({ scopeId, objectId }, context) => {
     const family = parseReferenceScope(scopeId)?.family;
     const valid =
-      family === 'artifact'
-        ? !objectId.includes('/') && ArtifactIdSchema.safeParse(objectId).success
-        : family === 'material'
-          ? !objectId.includes('/') && MaterialIdSchema.safeParse(objectId).success
-          : family === 'raw'
-            ? isSafeObjectPath(objectId)
-            : family !== 'input' ||
-              (/^(0|[1-9][0-9]*)$/.test(objectId) && Number.isSafeInteger(Number(objectId)));
+      family === 'skill'
+        ? /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\s\S])/.test(objectId)
+        : family === 'artifact'
+          ? !objectId.includes('/') && ArtifactIdSchema.safeParse(objectId).success
+          : family === 'material'
+            ? !objectId.includes('/') && MaterialIdSchema.safeParse(objectId).success
+            : family === 'raw'
+              ? isSafeObjectPath(objectId)
+              : family !== 'input' ||
+                (/^(0|[1-9][0-9]*)$/.test(objectId) && Number.isSafeInteger(Number(objectId)));
     if (!valid)
       context.addIssue({
         code: 'custom',
@@ -110,6 +119,14 @@ export const ScopeQualifiedReferenceSchema = z
         message: 'Invalid object selector for this reference kind.',
       });
   });
+
+/** Scoped catalog entry identity; its URI additionally requires the exact immutable version digest. */
+export const SkillReferenceSchema = ScopeQualifiedReferenceSchema.safeExtend({
+  scopeId: ReferenceScopeIdSchema.refine((value) => parseReferenceScope(value)?.family === 'skill'),
+});
+
+/** Scoped Skill catalog identity; the separate digest selects its exact version. */
+export type SkillReference = z.infer<typeof SkillReferenceSchema>;
 
 /** Page reference keeps page-path validation with the Knowledge owner. */
 export const PageReferenceSchema = ScopeQualifiedReferenceSchema.safeExtend({
@@ -180,9 +197,9 @@ function isSafeObjectPath(value: string): boolean {
 }
 
 /**
- * Formats one canonical local URI; the optional original-content digest remains separate evidence.
+ * Formats one canonical local URI; Skill targets require their exact version digest.
  * @param reference Exact logical scope and unescaped object path; this grants no access.
- * @param contentDigest Optional lowercase SHA-256 evidence in sha256:<hex> form.
+ * @param contentDigest Lowercase SHA-256 evidence in sha256:<hex> form; required for Skills.
  * @returns Canonical openkit URI with one encoded segment per original path segment.
  * @throws Error when the reference, object path or digest is invalid.
  */
@@ -199,6 +216,8 @@ export function formatReferenceUri(
     (typeof contentDigest !== 'string' || !contentDigestPattern.test(contentDigest))
   )
     throw new TypeError('Invalid reference content digest.');
+  if (parseReferenceScope(parsed.scopeId)?.family === 'skill' && contentDigest === undefined)
+    throw new TypeError('A Skill reference requires its exact version digest.');
   const objectPath = parsed.objectId
     .split('/')
     .map((segment) =>
@@ -230,8 +249,8 @@ export function parseReferenceUri(
       path = path.slice(0, pinOffset);
     }
     const parts = path.split('/');
-    // All closed scope forms have three to five segments; object paths can contain any count.
-    const scopeLength = [3, 4, 5].find(
+    // Closed scope forms have two to five segments; object paths can contain any count.
+    const scopeLength = [2, 3, 4, 5].find(
       (length) => parseReferenceScope(parts.slice(0, length).join('/')) !== null
     );
     if (scopeLength === undefined) return null;
