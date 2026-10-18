@@ -2,7 +2,10 @@ import { dirname, join } from 'node:path';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
 import { processVisionView, type VisionCrop, type VisionViewResult } from './vision-view.js';
-import type { WorkerContextPackageSourceFile } from './worker-context-package.js';
+import type {
+  WorkerContextPackageSourceFile,
+  WorkerContextPackageSourceFileInput,
+} from './worker-context-package.js';
 import { workerSourceOriginal } from './worker-source-read.js';
 
 /**
@@ -12,9 +15,8 @@ import { workerSourceOriginal } from './worker-source-read.js';
  */
 export async function viewWorkerSourceSnapshot(input: {
   readonly workspaceRoot: string;
-  readonly threadId: string;
-  readonly turnId: string;
   readonly source: WorkerContextPackageSourceFile;
+  readonly currentSource?: WorkerContextPackageSourceFileInput | undefined;
   readonly assertCurrent: () => void;
   readonly admission: FileStorageAdmission;
   readonly page?: number | undefined;
