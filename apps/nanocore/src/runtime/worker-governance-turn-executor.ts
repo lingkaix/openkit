@@ -2153,6 +2153,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       };
       const materialization = await this.backend.materialize(environmentPackage, {
         beforeMaterialization: publishMaterialization,
+        ...(preparedWorkerContext?.packageFiles.sourceFileInputs
+          ? { contextPackageSources: preparedWorkerContext.packageFiles.sourceFileInputs }
+          : {}),
         ...(this.coreDb?.dataRoot ? { dataRoot: this.coreDb.dataRoot } : {}),
         providerCredentials,
         runtimeEnvCredentials,

@@ -388,7 +388,7 @@ export interface WorkerContextPackageFile {
 
 /** Deterministic package files prepared before AEP resolution. */
 export interface WorkerContextPackageFiles {
-  /** Private stream suppliers retained only until publication; never serialized. */
+  /** Private stream suppliers retained through live materialization; never serialized. */
   readonly sourceFileInputs?: readonly WorkerContextPackageSourceFileInput[];
   /** Qualified exact original sources, separate from delivered representation files. */
   readonly sourceFiles?: readonly WorkerContextPackageSourceFile[] | undefined;
@@ -412,9 +412,9 @@ export interface WorkerContextPackageFiles {
   readonly materialSelections: readonly WorkerContextPackageMaterialSelection[];
   /** Sorted inline deliveries and manifest; original streams use sourceFileInputs. */
   readonly files: readonly WorkerContextPackageFile[];
-  /** Complete sorted inventory including package.json. */
+  /** Retained delivered projections and package.json; live originals remain owner references. */
   readonly fileInventory: readonly WorkerContextPackageFileInventoryEntry[];
-  /** Digest over the complete sorted file inventory. */
+  /** Digest over retained files plus disposable live original imports. */
   readonly packageRootDigest: string;
 }
 
@@ -872,7 +872,12 @@ export function createWorkerContextPackageFiles(
     knowledgeSelections,
     materialSelections,
     ...(sourceFiles.length ? { sourceFiles, sourceFileInputs } : {}),
-    packageRootDigest: sha256(Buffer.from(canonicalJson(fileInventory), 'utf8')),
+    packageRootDigest: sha256(
+      Buffer.from(
+        canonicalJson(workerContextPackageDeliveryInventory(fileInventory, sourceFiles)),
+        'utf8'
+      )
+    ),
     threadId: input.threadId,
     turnId: input.turnId,
     workerRequestDigest: manifest.workerRequestDigest,
@@ -1087,7 +1092,42 @@ async function verifySourceStream(
   signal.throwIfAborted();
 }
 
-/** Builds the exact generated AEP input for one prepared Context Package root. */
+/** Returns the disposable Worker-relative original path from its existing content identity. */
+export function workerContextPackageOriginalPath(contentDigest: string): string {
+  assertSha256(contentDigest, 'Context Package original digest');
+  return `originals/${contentDigest.slice('sha256:'.length)}`;
+}
+
+/**
+ * Derives the complete live input inventory from retained files and existing source identities.
+ * Originals stream directly from their canonical owners; this inventory adds no retained file or record.
+ * @param retained Exact retained preview, descriptor, instruction and manifest inventory.
+ * @param sources Selected originals whose disposable Worker copies share the existing read-only slot.
+ * @returns Sorted live inventory, with identical originals shared by content identity.
+ */
+export function workerContextPackageDeliveryInventory(
+  retained: readonly WorkerContextPackageFileInventoryEntry[],
+  sources: readonly Pick<WorkerContextPackageSourceFile, 'originalDigest' | 'byteLength'>[] = []
+): WorkerContextPackageFileInventoryEntry[] {
+  const retainedPaths = new Set(retained.map((entry) => entry.path));
+  const files = new Map(retained.map((entry) => [entry.path, { ...entry }]));
+  for (const source of sources) {
+    const path = workerContextPackageOriginalPath(source.originalDigest);
+    if (retainedPaths.has(path))
+      throw new Error('Worker Context Package retained path overlaps a live original.');
+    const previous = files.get(path);
+    if (previous && previous.byteLength !== source.byteLength)
+      throw new Error('Worker Context Package original size conflicts with its digest.');
+    files.set(path, {
+      path,
+      byteLength: source.byteLength,
+      contentDigest: source.originalDigest,
+    });
+  }
+  return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/** Builds the exact generated AEP input for one prepared complete live Context input. */
 export function buildWorkerContextPackageWorkspaceInput(input: {
   readonly agentSessionId: string;
   readonly threadId: string;
@@ -1857,7 +1897,12 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
   if (sha256(instructions) !== trace.workerRequestDigest) {
     throw new Error('Worker Context Package instructions digest mismatch.');
   }
-  return sha256(Buffer.from(canonicalJson(trace.fileInventory), 'utf8'));
+  return sha256(
+    Buffer.from(
+      canonicalJson(workerContextPackageDeliveryInventory(trace.fileInventory, trace.sourceFiles)),
+      'utf8'
+    )
+  );
 }
 
 /**
