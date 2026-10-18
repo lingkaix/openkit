@@ -99,7 +99,7 @@ function goalTools(): readonly AgentTool[] {
     sqlite: {
       prepare(sql: string) {
         expect(sql).toMatch(
-          /^SELECT schema_version AS schemaVersion, payload_json FROM goals WHERE goal_id\s*=\s*\?$/
+          /^SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id\s*=\s*\?$/
         );
         return { get: () => undefined };
       },
