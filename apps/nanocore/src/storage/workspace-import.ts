@@ -3817,10 +3817,40 @@ function remintWorkerRequest(text: string, context: ImportRemintContext): string
       ...reference,
       id: rewriteReference(reference.kind, reference.id),
     })),
-    resources: request.resources.map((resource) => ({
-      ...resource,
-      reference: rewriteReference(resource.kind, resource.reference),
-    })),
+    resources: request.resources.map((selection) => {
+      if (selection.kind !== 'policy')
+        return { ...selection, reference: rewriteReference(selection.kind, selection.reference) };
+      const resource = selection.resource;
+      if (resource.kind === 'mcp-tool')
+        return {
+          ...selection,
+          resource: {
+            ...resource,
+            workspaceId: rewriteReference('workspace', resource.workspaceId),
+          },
+        };
+      const container = resource.container;
+      if (container.owner.kind !== 'workspace')
+        throw new Error('Imported Task Policy resource has no Workspace import owner.');
+      const workspaceId = rewriteReference('workspace', container.owner.workspaceId);
+      const id =
+        container.kind === 'workspace' || container.kind === 'thread'
+          ? rewriteReference(container.kind, container.id)
+          : container.kind === 'turn'
+            ? requiredMapValue(context.turnIds, container.id, 'turn')
+            : container.kind === 'goal'
+              ? container.id // Goal import preserves this identity under its reminted Workspace.
+              : null;
+      if (id === null)
+        throw new Error('Imported Task Policy container has no supported import owner.');
+      return {
+        ...selection,
+        resource: {
+          ...resource,
+          container: { ...container, owner: { ...container.owner, workspaceId }, id },
+        },
+      };
+    }),
     reviewContext: request.reviewContext
       ? {
           ...request.reviewContext,

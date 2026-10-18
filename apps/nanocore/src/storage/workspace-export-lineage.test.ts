@@ -831,7 +831,43 @@ function createWorkResourceLineageExportInput(
       escalationConditions: [],
       expectedArtifacts: [{ kind: 'artifact', description: 'Portable proposal.' }],
       objective: 'Produce one portable Material proposal.',
-      resources: [{ kind: 'artifact', reference: source.artifactId, reason: 'Proposal output.' }],
+      resources: [
+        { kind: 'artifact', reference: source.artifactId, reason: 'Proposal output.' },
+        {
+          kind: 'policy',
+          resource: {
+            kind: 'mcp-tool',
+            workspaceId: source.workspaceId,
+            serverId: 'sis',
+            toolName: 'read',
+          },
+          reason: 'Retain the exact Tool selector without an imported grant.',
+        },
+        {
+          kind: 'policy',
+          resource: {
+            kind: 'container',
+            container: {
+              owner: { kind: 'workspace', workspaceId: source.workspaceId },
+              kind: 'thread',
+              id: source.threadId,
+            },
+          },
+          reason: 'Retain the exact Thread selector.',
+        },
+        {
+          kind: 'policy',
+          resource: {
+            kind: 'container',
+            container: {
+              owner: { kind: 'workspace', workspaceId: source.workspaceId },
+              kind: 'turn',
+              id: source.turnId,
+            },
+          },
+          reason: 'Retain the exact Turn selector.',
+        },
+      ],
       reviewContext: null,
       reviewPolicy: {
         instructions: 'Review the exact proposal.',
@@ -2768,6 +2804,43 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(trace.requestId).not.toBe('request_source');
     expect(imported.threads[0]?.preview).toBe(requestText);
     expect(requestText).toContain(targetWorkspaceId);
+    expect(JSON.parse(requestText!).resources).toEqual([
+      { kind: 'artifact', reference: imported.artifacts[0]!.id, reason: 'Proposal output.' },
+      {
+        kind: 'policy',
+        resource: {
+          kind: 'mcp-tool',
+          workspaceId: targetWorkspaceId,
+          serverId: 'sis',
+          toolName: 'read',
+        },
+        reason: 'Retain the exact Tool selector without an imported grant.',
+      },
+      {
+        kind: 'policy',
+        resource: {
+          kind: 'container',
+          container: {
+            owner: { kind: 'workspace', workspaceId: targetWorkspaceId },
+            kind: 'thread',
+            id: imported.threads[0]!.id,
+          },
+        },
+        reason: 'Retain the exact Thread selector.',
+      },
+      {
+        kind: 'policy',
+        resource: {
+          kind: 'container',
+          container: {
+            owner: { kind: 'workspace', workspaceId: targetWorkspaceId },
+            kind: 'turn',
+            id: imported.turns[0]!.id,
+          },
+        },
+        reason: 'Retain the exact Turn selector.',
+      },
+    ]);
     expect(requestText).toContain(imported.threads[0]?.id);
     expect(requestText).not.toContain(source.workspaceId);
     expect(requestText).not.toContain(source.threadId);
