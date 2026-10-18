@@ -1,5 +1,6 @@
 import {
   ActorRefSchema,
+  ContentReferenceSchema,
   ItemIdSchema,
   KnowledgeClaimIdSchema,
   KnowledgeConflictIdSchema,
@@ -422,6 +423,8 @@ export const KnowledgeRetrievalCandidateSchema = z
     contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     score: z.number().finite().nonnegative(),
     sourceReferences: z.array(z.string().min(1)),
+    /** Captured original evidence; omitted when the hit names only Git page bytes. */
+    contentRef: ContentReferenceSchema.optional(),
   })
   .strict();
 
