@@ -77,6 +77,12 @@ export function preparePolicyConfiguration(input: {
   if (prepared.classification === 'unchanged') throw new Error('Policy changes are required.');
   for (const statement of prepared.document.statements) {
     if (statement.kind !== 'delegation' || statement.purpose !== 'goal-domain') continue;
+    const previous = currentDocument.statements.find(({ id }) => id === statement.id);
+    if (previous && policyDigest(previous) === policyDigest(statement)) continue;
+    if (statement.state === 'active')
+      throw new Error('Goal-domain activation requires its jointly approved Goal request.');
+    // A human withdrawal must still work after its Goal or approval has ended.
+    if (previous?.kind === 'delegation' && previous.state === 'active') continue;
     const source = statement.source!;
     const view = readGoalView(
       input.store,

@@ -53,8 +53,19 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       principals.set(statement.principal.id, statement);
     }
     if (statement.state === 'inactive') continue;
-    // This format cut activates only native human-owned I16 bindings. Other forms
-    // remain authored declarations until their current authority consumer exists.
+    // Goal activation is admitted separately against its jointly approved request.
+    // Structural admission alone supplies no Goal authority to a consumer.
+    if (statement.kind === 'delegation' && statement.purpose === 'goal-domain') {
+      const source = statement.source!;
+      const anchor = statement.lifetime.anchor;
+      if (statement.author.kind !== 'human' || statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId || statement.delegate.kind !== 'agent' ||
+        anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== source.workspaceId ||
+        anchor.kind !== 'goal' || anchor.id !== source.goalId)
+        throw new Error('Active Goal domain requires its human author and exact Goal anchor.');
+      continue;
+    }
+    // Other forms stay declarations until their native authority consumer exists.
     if (statement.kind !== 'binding') throw new Error('This Policy form must remain inactive.');
     const definition = OPERATION_REGISTRY[statement.operation as keyof typeof OPERATION_REGISTRY];
     if (!definition || definition.binding !== 'native' || statement.operation !== 'mcp.call-tool')
