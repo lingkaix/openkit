@@ -8,7 +8,7 @@ import {
 
 const actor = { kind: 'local', userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5' } as const;
 const prepareTool: AgentTool = {
-  name: 'worker_environment.prepare',
+  name: 'worker-environment.prepare',
   description: 'Prepare.',
   inputSchema: { type: 'object' },
   execute: async () => ({ content: [] }),
@@ -21,7 +21,7 @@ describe('administration Worker environment Tools', () => {
     const tools = createAdministrationEnvironmentTools({
       actor,
       operations: { list, status },
-      candidateTools: [prepareTool, { ...prepareTool, name: 'worker_environment.recover' }],
+      candidateTools: [prepareTool, { ...prepareTool, name: 'worker-environment.recover' }],
     });
 
     await tools[0].execute(
@@ -50,7 +50,7 @@ describe('administration Worker environment Tools', () => {
         },
         status: vi.fn(),
       },
-      candidateTools: [prepareTool, { ...prepareTool, name: 'worker_environment.recover' }],
+      candidateTools: [prepareTool, { ...prepareTool, name: 'worker-environment.recover' }],
     });
 
     const result = await tools[0].execute(

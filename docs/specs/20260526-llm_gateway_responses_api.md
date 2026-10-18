@@ -5,6 +5,8 @@ kind: boundary
 ---
 # LLM Gateway Responses API
 
+Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
+
 ## Owns
 
 This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the `gateway.jsonc` logical-model catalog, placement and Gateway projection of each logical model's context-management policy, model discovery, derived logical-model capabilities and model family, ordered private route planning, bounded pre-commit retries and failover, optional public cache-scope input, and the common public Gateway error envelope, redaction, and transport behavior. It also owns the routing rule that one route member references one Provider profile and that a subscription-backed Provider profile binds one explicit provider-subscription account slot.

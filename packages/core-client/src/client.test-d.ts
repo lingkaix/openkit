@@ -43,14 +43,14 @@ interface ExpectedProviderSubscriptionOperations {
     accountSlotId: string;
   }): Promise<ProviderSubscriptionAccount>;
   /** Starts device-code login for one provider-scoped account slot. */
-  'provider-subscription.account-login-start'(
+  'provider-subscription.login-start'(
     input: {
       subscriptionProviderId: string;
       accountSlotId: string;
     } & StartProviderSubscriptionAccountLoginRequest
   ): Promise<ProviderSubscriptionAccount>;
   /** Cancels one active provider-scoped login interaction. */
-  'provider-subscription.account-login-cancel'(
+  'provider-subscription.login-cancel'(
     input: {
       subscriptionProviderId: string;
       accountSlotId: string;

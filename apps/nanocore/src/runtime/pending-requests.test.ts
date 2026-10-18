@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -128,7 +129,7 @@ it('permits denial of a person command intent whose exact detail is unavailable'
 /**
  * Opens one local Core app whose workspace database can hold pending requests.
  *
- * @returns App, store, and data root.
+ * @returns App, store, data root, and the actual simulator executor.
  */
 function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-'));
@@ -136,6 +137,8 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
+  const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
+  const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -147,6 +150,7 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
     createTestAgentSetup({ ...(agentId ? { agentId } : {}) }).manifest
   );
   const app = createApp({
+    fileAdmission,
     ...(agentId
       ? {
           agentManifests: [createTestAgentSetup({ agentId }).manifest],
@@ -165,9 +169,9 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
     dataRoot,
     ...(workerMcpGateway ? { workerMcpGateway } : {}),
     store,
-    turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+    turnExecutor: executor,
   });
-  return { app, coreDb, dataRoot, store };
+  return { app, coreDb, dataRoot, executor, store };
 }
 
 /**
@@ -1662,7 +1666,7 @@ describe('pending requests', () => {
     const gateway = createDefaultWorkerMcpGateway();
     const callTool = vi.spyOn(gateway, 'callTool');
     const listTools = vi.spyOn(gateway, 'listTools');
-    const { app, coreDb, store } = openPendingApp('agent_demo', gateway);
+    const { app, coreDb, executor, store } = openPendingApp('agent_demo', gateway);
     const turn = store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -1714,71 +1718,90 @@ describe('pending requests', () => {
       db.sqlite.close();
     }
     store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
-    const response = await app.request(
-      ...operationRequest(
-        'approval.respond',
-        { approvalRequestId: 'ap_supply' },
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            decision: 'granted',
-            requestId: '00000000-0000-4000-8000-000000000701',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: turn.id,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          }),
-        }
-      )
-    );
-    expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ id: 'ap_supply', status: 'granted' });
-    const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const started = Promise.withResolvers<{ turnId: string; completion: Promise<void> }>();
+    const startTurn = executor.startTurn.bind(executor);
+    let completion: Promise<void> | undefined;
+    const execution = vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      completion = startTurn(...args);
+      started.resolve({ turnId: args[1], completion });
+      return completion;
+    });
     try {
-      expect(readPendingRequest(recorded.sqlite, 'ap_supply')).toMatchObject({
-        resolution: 'granted',
-        disposition: 'denied-not-executed',
-        dispositionReason: 'tool-left-supply',
-        claim: 'unclaimed',
+      const response = await app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: 'ap_supply' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              decision: 'granted',
+              requestId: '00000000-0000-4000-8000-000000000701',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: turn.id,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            }),
+          }
+        )
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ id: 'ap_supply', status: 'granted' });
+      const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        expect(readPendingRequest(recorded.sqlite, 'ap_supply')).toMatchObject({
+          resolution: 'granted',
+          disposition: 'denied-not-executed',
+          dispositionReason: 'tool-left-supply',
+          claim: 'unclaimed',
+        });
+        expect(callTool).not.toHaveBeenCalled();
+        expect(listTools).not.toHaveBeenCalled();
+        expect(recorded.sqlite.prepare('SELECT * FROM capability_calls').all()).toEqual([]);
+      } finally {
+        recorded.sqlite.close();
+      }
+      // Admission does not await asynchronous Context Package publication or delivering execution.
+      const observed = await started.promise;
+      expect(observed.turnId).not.toBe(turn.id);
+      await observed.completion;
+      await vi.waitFor(() => {
+        const deliveredTurn = store
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .find((candidate) => candidate.id !== turn.id);
+        expect(deliveredTurn?.status).toBe('completed');
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT phase FROM scheduler_execution_attempts WHERE turn_id = ?')
+            .get(deliveredTurn!.id)
+        ).toEqual({ phase: 'closed' });
       });
-      expect(callTool).not.toHaveBeenCalled();
-      expect(listTools).not.toHaveBeenCalled();
-      expect(recorded.sqlite.prepare('SELECT * FROM capability_calls').all()).toEqual([]);
-    } finally {
-      recorded.sqlite.close();
-    }
-    await vi.waitFor(() => {
-      const deliveredTurn = store
+      const outcome = store
         .listThreadTurns(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
         )
         .find((candidate) => candidate.id !== turn.id);
-      expect(deliveredTurn?.status).toBe('completed');
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT phase FROM scheduler_execution_attempts WHERE turn_id = ?')
-          .get(deliveredTurn!.id)
-      ).toEqual({ phase: 'closed' });
-    });
-    const outcome = store
-      .listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-      .find((candidate) => candidate.id !== turn.id);
-    expect(outcome, outcome?.error?.message).toMatchObject({
-      status: 'completed',
-      triggerSource: { kind: 'approval-resolution' },
-    });
-    const delivered = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    expect(readPendingRequest(delivered.sqlite, 'ap_supply')).toMatchObject({
-      delivery: 'delivered',
-      deliveryTurnId: outcome!.id,
-    });
-    delivered.sqlite.close();
-    expect(outcome?.items.some((item) => item.type === 'status')).toBe(true);
-    coreDb.sqlite.close();
+      expect(outcome?.id).toBe(observed.turnId);
+      expect(execution).toHaveBeenCalledOnce();
+      expect(outcome, outcome?.error?.message).toMatchObject({
+        status: 'completed',
+        triggerSource: { kind: 'approval-resolution' },
+      });
+      const delivered = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      expect(readPendingRequest(delivered.sqlite, 'ap_supply')).toMatchObject({
+        delivery: 'delivered',
+        deliveryTurnId: outcome!.id,
+      });
+      delivered.sqlite.close();
+      expect(outcome?.items.some((item) => item.type === 'status')).toBe(true);
+    } finally {
+      await completion?.catch(() => undefined);
+      execution.mockRestore();
+      coreDb.sqlite.close();
+    }
   });
 
   it('answers once, rejects a changed map and a secret question before a write, and withdraws', async () => {

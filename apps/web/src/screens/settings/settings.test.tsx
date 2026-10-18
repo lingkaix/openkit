@@ -820,8 +820,8 @@ function makeClient(
               accountSlotId: slot,
             })
         ),
-      'provider-subscription.account-login-start': vi.fn(),
-      'provider-subscription.account-login-cancel': vi.fn(),
+      'provider-subscription.login-start': vi.fn(),
+      'provider-subscription.login-cancel': vi.fn(),
       'provider-subscription.account-logout': vi.fn(),
       'provider-subscription.account-quota': vi
         .fn()

@@ -5040,14 +5040,33 @@ export function createTaskStartOperation({
             }
           }
           if (closeout && record.response.kind === 'turn' && record.response.id === turnId) {
-            try {
-              const turn = store.getTurnById(turnId);
-              if (turn.status !== 'pending' && turn.status !== 'running') {
-                joinedCloseout = true;
+            const turn = store.getTurnById(turnId);
+            if (turn.status !== 'pending' && turn.status !== 'running') {
+              joinedCloseout = true;
+              try {
                 await closeout;
+              } catch {
+                if (!coreDb || turn.status !== 'failed')
+                  throw directTaskModeRecoveryError('The original Task worker closeout failed.');
+                const workspaceDb = repositoryWorkspaceDb(workspaceId);
+                try {
+                  const checkpoint = getWorkerCheckpoint(
+                    workspaceDb,
+                    workspaceId,
+                    threadId,
+                    turnId
+                  );
+                  // Only proved execution refusal may reach durable replay after this observer rejects; a started closeout retains its own failure.
+                  if (
+                    checkpoint?.stage !== 'running_worker' ||
+                    checkpoint.stopReason !== null ||
+                    !hasWorkerCheckpointNeverSubmittedProof(coreDb, store, workspaceDb, checkpoint)
+                  )
+                    throw directTaskModeRecoveryError('The original Task worker closeout failed.');
+                } finally {
+                  workspaceDb.sqlite.close();
+                }
               }
-            } catch {
-              throw directTaskModeRecoveryError('The original Task worker closeout failed.');
             }
           }
           return replayTaskModeCommand(
