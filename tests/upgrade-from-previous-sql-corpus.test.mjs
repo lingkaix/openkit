@@ -322,7 +322,32 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   t.after(() => core.sqlite.close());
   const target = targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
   const store = new FsStore({ dataRoot: input.dataRoot });
-  const session = store.getAgentSession(sql.contextAgentSessionId);
+  const predecessor = store.getAgentSession(sql.contextAgentSessionId);
+  const session = store.createAgentSession({
+    ...predecessor,
+    id: 'as_00000000-0000-7000-8000-000000000902',
+    status: 'idle',
+    environmentPackageSnapshotId: 'aepsnap_idle-native-corpus',
+  });
+  store.updateTurn(sql.contextTurnId, { agentSessionId: session.id });
+  const snapshotDb = openWorkspaceDb(input.dataRoot, session.workspaceId);
+  try {
+    const original = aep.requireAgentEnvironmentPackageSnapshot(
+      snapshotDb,
+      session.workspaceId,
+      sql.aepSnapshotId
+    );
+    aep.recordAgentEnvironmentPackageSnapshot(snapshotDb, {
+      environmentPackage: {
+        ...original.snapshot,
+        snapshotId: session.environmentPackageSnapshotId,
+        scope: { ...original.snapshot.scope, agentSessionId: session.id },
+      },
+      createdAt: session.createdAt,
+    });
+  } finally {
+    snapshotDb.sqlite.close();
+  }
   const now = target.observedAt;
   targets.upsertNanoHostRuntimeTarget(core, {
     ...target,
