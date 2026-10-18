@@ -1,3 +1,4 @@
+import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
 import type { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   AcceptWorkspaceInvitationRequestSchema,
@@ -972,10 +973,8 @@ function requireNoLifecycleAudit(
     'request_id = ?',
     'action = ?',
     "outcome = 'succeeded'",
-    "json_extract(actor_json, '$.kind') = 'user'",
-    "json_extract(actor_json, '$.id') = ?",
   ];
-  const values: string[] = [input.requestId, input.action, input.actorId];
+  const values: string[] = [input.requestId, input.action];
   if (input.resource) {
     predicates.push('resource = ?');
     values.push(input.resource);
@@ -984,9 +983,12 @@ function requireNoLifecycleAudit(
     predicates.push('workspace_id = ?');
     values.push(input.workspaceId);
   }
-  const found = coreDb.sqlite
-    .prepare(`SELECT 1 FROM audit_events WHERE ${predicates.join(' AND ')} LIMIT 1`)
-    .get(...values);
+  const rows = coreDb.sqlite
+    .prepare(`SELECT * FROM audit_events WHERE ${predicates.join(' AND ')}`)
+    .all(...values);
+  const found = rows.map(readAuditEventRowV1).some(({ actor }) =>
+    actor?.kind === 'user' && actor.id === input.actorId
+  );
   if (found) {
     throw new OperationError(
       'recovery_required',
