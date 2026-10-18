@@ -1,8 +1,5 @@
-import {
-  type AutomationCadence,
-  AutomationCadenceSchema,
-  type MonthlyUtcSchedule,
-} from '@openkit/app-api-schemas';
+import type { AutomationCadence, MonthlyUtcSchedule } from '@openkit/app-api-schemas';
+import { StoredAutomationCadenceV1Schema } from '../storage/recurring-retained-v1.js';
 
 /** Exact inclusive nominal coverage through one cutoff, with its immediate successor. */
 export interface RecurringNominalPrefix {
@@ -13,7 +10,7 @@ export interface RecurringNominalPrefix {
 
 /** Checks every monthly UTC field; fixed intervals accept any valid initial anchor. */
 export function recurringNominalMatches(cadence: AutomationCadence, instant: number): boolean {
-  const timing = AutomationCadenceSchema.parse(cadence);
+  const timing = StoredAutomationCadenceV1Schema.parse(cadence);
   const date = checkedDate(instant);
   const monthly = timing.monthlyUtc;
   return (
@@ -28,7 +25,7 @@ export function recurringNominalMatches(cadence: AutomationCadence, instant: num
 
 /** Advances the admitted nominal rule, without callback, attempt or completion-time drift. */
 export function advanceRecurringNominal(cadence: AutomationCadence, instant: number): number {
-  const timing = AutomationCadenceSchema.parse(cadence);
+  const timing = StoredAutomationCadenceV1Schema.parse(cadence);
   if (!recurringNominalMatches(timing, instant))
     throw new RangeError('Recurring cursor does not match its monthly UTC rule.');
   return timing.monthlyUtc === undefined
@@ -42,7 +39,7 @@ export function recurringPrefixThrough(
   first: number,
   through: number
 ): RecurringNominalPrefix | null {
-  const timing = AutomationCadenceSchema.parse(cadence);
+  const timing = StoredAutomationCadenceV1Schema.parse(cadence);
   checkedDate(through);
   if (!recurringNominalMatches(timing, first))
     throw new RangeError('Recurring cursor does not match its monthly UTC rule.');
