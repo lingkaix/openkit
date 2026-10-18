@@ -26,6 +26,7 @@ import {
   importWorkspaceCapabilityUsageLedger,
   listWorkspaceCapabilityCalls,
 } from '../capability/usage-ledger.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   createWorkerContextPackageFiles,
@@ -93,6 +94,7 @@ const source = {
   goalId: 'goal_source',
   grantId: 'grant_00000000-0000-71be-bfe5-1605cc1e0b9b',
   itemId: 'it_00000000-0000-7cab-8553-ff29f1f63940',
+  knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000003',
   intentItemId: 'it_00000000-0000-7142-be4d-40072e2d9c43',
   planItemId: 'it_00000000-0000-71d5-ae7d-8065ab8c1eac',
   sessionId: 'as_00000000-0000-7d81-8a02-21a51fa74819',
@@ -337,7 +339,11 @@ function createLineageExportInput(
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
         schemaVersion: 1,
-        workspace: { name: 'Lineage workspace', defaultAgentId: null },
+        workspace: {
+          name: 'Lineage workspace',
+          defaultAgentId: null,
+          defaultKnowledgeBaseId: source.knowledgeBaseId,
+        },
       }),
       workspaceSchema: null,
     },
@@ -1321,14 +1327,14 @@ function createWorkResourceLineageExportInput(
             {
               contentDigest: knowledgeContentDigest,
               reference: {
-                scopeId: `page/workspace/${source.workspaceId}`,
+                scopeId: `page/workspace/${source.workspaceId}/${source.knowledgeBaseId}`,
                 objectId: knowledgePageId,
               },
               revision: notebookRevision,
               sourceReferences: knowledgeSourceRefs,
             },
           ],
-          sourceScope: `page/workspace/${source.workspaceId}`,
+          sourceScope: `page/workspace/${source.workspaceId}/${source.knowledgeBaseId}`,
           traceId: retrievalTraceId,
         },
       ],
@@ -1348,7 +1354,11 @@ function createWorkResourceLineageExportInput(
     ]),
     workspaceConfig: JSON.stringify({
       schemaVersion: 1,
-      workspace: { name: 'Lineage workspace', defaultAgentId: null },
+      workspace: {
+        name: 'Lineage workspace',
+        defaultAgentId: null,
+        defaultKnowledgeBaseId: source.knowledgeBaseId,
+      },
     }),
     workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   };
@@ -2519,6 +2529,9 @@ describe('workspace auxiliary lineage reminting', () => {
     const verified = writeWorkspaceExportTree(input);
     expect(notebook.publishedRevision()).toBe(sourceRevision);
     expect(verified.manifest.knowledgeNotebookRevision).toBe(sourceRevision);
+    expect(
+      parseJsoncObject(verified.fileContents.get('workspace-files/config/workspace.jsonc')!)
+    ).toMatchObject({ workspace: { defaultKnowledgeBaseId: source.knowledgeBaseId } });
     const sourceManifestPath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/package.json`;
     const sourceManifestText = verified.fileContents.get(sourceManifestPath)!;
     expect(JSON.parse(sourceManifestText).knowledgeSelections).toEqual([
@@ -2528,6 +2541,10 @@ describe('workspace auxiliary lineage reminting', () => {
       verified,
       targetWorkspaceId,
       targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
+    });
+    expect(imported.defaultKnowledgeBaseId).not.toBe(source.knowledgeBaseId);
+    expect(parseJsoncObject(imported.portableFileState.workspaceConfig!)).toMatchObject({
+      workspace: { defaultKnowledgeBaseId: imported.defaultKnowledgeBaseId },
     });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-current-notebook-s39-target-'));
     onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
@@ -2708,11 +2725,11 @@ describe('workspace auxiliary lineage reminting', () => {
         threadId: imported.threads[0]?.id,
         turnId: imported.turns[0]?.id,
       },
-      sourceScope: `page/workspace/${targetWorkspaceId}`,
+      sourceScope: `page/workspace/${targetWorkspaceId}/${imported.defaultKnowledgeBaseId}`,
       selected: [
         expect.objectContaining({
           reference: {
-            scopeId: `page/workspace/${targetWorkspaceId}`,
+            scopeId: `page/workspace/${targetWorkspaceId}/${imported.defaultKnowledgeBaseId}`,
             objectId: 'knowledge_portable_source',
           },
         }),
@@ -2821,6 +2838,7 @@ describe('workspace auxiliary lineage reminting', () => {
       retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
         workspaceRoot: stagedRoot,
         workspaceId: targetWorkspaceId,
+        knowledgeBaseId: imported.defaultKnowledgeBaseId,
         traces: imported.portableFileState.retrievalTraceFiles,
       }),
     };
@@ -2857,6 +2875,11 @@ describe('workspace auxiliary lineage reminting', () => {
       verified: reExported,
       targetWorkspaceId: 'ws_00000000-0000-75c2-b6dd-fdd26f61df2a',
       targetServerId: 'server_reimport_target',
+    });
+    expect(reimported.defaultKnowledgeBaseId).not.toBe(imported.defaultKnowledgeBaseId);
+    expect(reimported.defaultKnowledgeBaseId).not.toBe(source.knowledgeBaseId);
+    expect(parseJsoncObject(reimported.portableFileState.workspaceConfig!)).toMatchObject({
+      workspace: { defaultKnowledgeBaseId: reimported.defaultKnowledgeBaseId },
     });
     const reimportedRoot = mkdtempSync(join(tmpdir(), 'openkit-reimported-history-package-'));
     const reimportedNotebook = new KnowledgeNotebook({
