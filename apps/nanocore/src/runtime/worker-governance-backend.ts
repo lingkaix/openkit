@@ -517,12 +517,14 @@ async function prepareWorkerSupplyImports(
       entryId: skill.id,
       workspaceId: environmentPackage.scope.workspaceId,
     });
+    // Pin attribution is retained evidence, not part of immutable Skill content identity.
+    const { pinAuditRef: _pinAuditRef, ...contentLineage } = skill.lineage ?? {};
     if (
       skill.digestFormat !== version.digestFormat ||
       skill.version !== (version.publisherVersion ?? digest) ||
       skill.sourceRef !== `catalog:skill:${skill.id}:${digest}` ||
       !isDeepStrictEqual(skill.inventory, version.inventory) ||
-      !isDeepStrictEqual(skill.lineage, {
+      !isDeepStrictEqual(contentLineage, {
         baseDigest: version.provenance.baseDigest,
         pluginMemberKey: version.provenance.pluginMemberKey,
         pluginVersionDigest: version.provenance.pluginVersionDigest,
