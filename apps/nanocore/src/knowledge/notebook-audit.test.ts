@@ -133,7 +133,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
         );
     }
     const table = scope === 'user' ? 'idempotency_requests' : 'audit_events';
-    const before = sqlite.prepare(`SELECT * FROM ${table}`).all();
+    const before = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
     const previousCount = Number(
       (
         sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get() as {
@@ -147,7 +147,10 @@ describe('notebook publication admission in the existing Audit owners', () => {
       count: previousCount + journal.entries.length - admissionIndex,
     });
     const after = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-    expect(after.map(({ notebook_admission_json: _newField, ...row }) => row)).toEqual(before);
+    // The later optional credential column keeps the original row's authentication unknown.
+    const expected =
+      scope === 'user' ? before : before.map((row) => ({ ...row, authentication_json: null }));
+    expect(after.map(({ notebook_admission_json: _newField, ...row }) => row)).toEqual(expected);
     expect(
       (sqlite.pragma('table_info(audit_events)') as Array<{ name: string }>).map(({ name }) => name)
     ).toContain('notebook_admission_json');
