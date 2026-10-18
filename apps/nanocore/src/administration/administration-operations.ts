@@ -366,6 +366,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                     requiredMessages: [
                       { role: 'user', content: [{ type: 'text', text: request.input }] },
                     ],
+                    profileId: selection.profile?.id ?? null,
                     limits: selection.profile?.limits ?? DEFAULT_LIMITS,
                     signal: context.signal ?? new AbortController().signal,
                     assertCurrent: () => requireCurrentDeploymentAdmin(input.coreDb!, actor),

@@ -148,6 +148,7 @@ function input(
   return {
     store: f.store,
     turn: f.turn,
+    profileId: null,
     systemPrompt: 'Preserve current user constraints and source boundaries.',
     tools: [] as readonly AgentTool[],
     model,
@@ -215,6 +216,8 @@ describe('source-bound internal rolling context', () => {
       logicalModelId: model.logicalModelId,
       contextStrategy: 'rolling',
       threshold: contextLimit - outputReserve,
+      profileId: null,
+      limits,
     });
     expect(request.callProvider).not.toHaveBeenCalled();
     expect(prepared.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
@@ -228,6 +231,34 @@ describe('source-bound internal rolling context', () => {
     expect((await prepareInternalAgentContext(restarted)).messages).toEqual(prepared.messages);
     expect(restarted.callProvider).not.toHaveBeenCalled();
     expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual(before);
+  });
+
+  it('fills missing retained metadata and preserves the original profile and initial limits on later runs', async () => {
+    const f = fixture(0);
+    f.store.updateTurn(f.turn.id, {
+      internalExecution: {
+        roleId: f.turn.agentId!,
+        logicalModelId: model.logicalModelId,
+        contextStrategy: 'rolling',
+        threshold: contextLimit - outputReserve,
+      },
+    });
+    await prepareInternalAgentContext(input(f));
+    expect(f.store.getTurnById(f.turn.id).internalExecution).toMatchObject({
+      profileId: null,
+      limits,
+    });
+    const laterLimits = { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 };
+    const prepared = await prepareInternalAgentContext(
+      input(f, { profileId: 'later-selected-profile', limits: laterLimits })
+    );
+    expect(f.store.getTurnById(f.turn.id).internalExecution).toMatchObject({
+      profileId: null,
+      limits,
+    });
+    expect(prepared.limits.maxModelTurns).toBe(laterLimits.maxModelTurns);
+    expect(prepared.limits.maxToolCalls).toBe(laterLimits.maxToolCalls);
+    expect(prepared.limits.deadlineMs).toBeLessThanOrEqual(laterLimits.deadlineMs);
   });
 
   it('keeps canonical failure outcomes visible beside retained source Items', async () => {

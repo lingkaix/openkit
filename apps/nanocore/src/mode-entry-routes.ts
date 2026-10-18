@@ -3686,6 +3686,7 @@ export function createConversationService({
               ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
               promptCacheScope: { sessionId, workspaceId },
             },
+            profileId: selection.profile?.id ?? null,
             limits: selection.profile?.limits ?? {
               maxModelTurns: 16,
               maxToolCalls: 48,
@@ -4480,6 +4481,7 @@ export function createConversationService({
                   }),
               },
               tools: fixedTools.tools,
+              profileId: selection.profile?.id ?? null,
               limits: selection.profile?.limits ?? {
                 maxModelTurns: 16,
                 maxToolCalls: 48,
