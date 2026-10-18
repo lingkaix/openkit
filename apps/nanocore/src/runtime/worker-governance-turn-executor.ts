@@ -85,6 +85,7 @@ import {
 import {
   consumeQueuedThreadMaterialRevision,
   type QueuedThreadMaterialSelection,
+  readWorkspaceMaterialSensitivity,
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -256,6 +257,8 @@ interface WorkerTurnBackendLifecycle {
 export interface PreparedWorkerTurnContext {
   /** Transient source and audience check before backend disclosure and native submission. */
   readonly assertCurrentKnowledgeOverview: () => void;
+  /** Releases the transient queue check only after strict acceptance and its queue transaction. */
+  readonly markMaterialSelectionAccepted: () => void;
   /** Task diagnostic lineage, absent for an outcome-initiated Turn. */
   readonly checkpoint: WorkerCheckpointRecord | null;
   /** Exact scheduler request identity, including checkpoint-free outcome Turns. */
@@ -565,6 +568,7 @@ export async function prepareWorkerTurnContextPackage(
         503
       );
   };
+  let materialSelectionAccepted = false;
   let sourceFiles: WorkerContextPackageSourceFileInput[];
   try {
     sourceFiles = await prepareTurnFileSourceInputs({
@@ -584,10 +588,12 @@ export async function prepareWorkerTurnContextPackage(
       const assertCurrentMaterial = () => {
         assertCurrentSources();
         if (
-          !isDeepStrictEqual(
-            selectQueuedThreadMaterialRevision(workspaceDb, input.threadId),
-            bindingCandidate
-          )
+          readWorkspaceMaterialSensitivity(workspaceDb, selection.materialId) === 'restricted' ||
+          (!materialSelectionAccepted &&
+            !isDeepStrictEqual(
+              selectQueuedThreadMaterialRevision(workspaceDb, input.threadId),
+              bindingCandidate
+            ))
         )
           throw new TurnStartValidationError(
             'source_unavailable',
@@ -739,6 +745,10 @@ export async function prepareWorkerTurnContextPackage(
   for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);
   return {
     assertCurrentKnowledgeOverview,
+    markMaterialSelectionAccepted: () => {
+      // Acceptance consumes the queue; later queued intent cannot replace this frozen revision.
+      materialSelectionAccepted = true;
+    },
     checkpoint,
     requestId: input.requestId,
     knowledgeExclusions,
@@ -818,6 +828,7 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
     }
   })();
 
+  preparedContext.markMaterialSelectionAccepted();
   return acceptedTrace;
 }
 
