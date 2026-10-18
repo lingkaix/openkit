@@ -330,32 +330,56 @@ describe('administration catalog configuration', () => {
     const f = fixture();
     const proposal = f.service.propose(f.request, f.home);
     const request = f.confirm(proposal);
-    const result = await f.service.apply(request);
-    const outcome = f.store
-      .listArtifacts(f.workspaceId)
-      .find(
-        (artifact) =>
-          artifact.id ===
-          deriveEntityId('ar', ['configuration_result', { userId: f.actor.userId, request }])
-      )!;
-    const root = join(f.dataRoot, 'workspaces', f.workspaceId, 'artifacts', outcome.id);
-    const body = {
+    const outcomeId = deriveEntityId('ar', [
+      'configuration_result',
+      { userId: f.actor.userId, request },
+    ]);
+    const publish = f.store.createArtifact.bind(f.store);
+    // Author descriptive additions before the real immutable v1 publisher receives its bytes.
+    const publication = vi.spyOn(f.store, 'createArtifact').mockImplementation((artifact, payload) => {
+      if (artifact.id !== outcomeId || artifact.content.format !== 'json')
+        return publish(artifact, payload);
+      const result = JSON.parse(artifact.content.body);
+      const bytes = JSON.stringify({
+        ...result,
+        annotation: 'outcome',
+        candidate: { ...result.candidate, annotation: 'reference' },
+      });
+      return publish({
+        ...artifact,
+        content: { format: 'json', body: bytes },
+        contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      }, payload);
+    });
+    const result = await f.service.apply(request).finally(() => publication.mockRestore());
+    const outcome = f.store.getArtifact(f.workspaceId, outcomeId);
+    expect(outcome.content.format).toBe('json');
+    if (outcome.content.format !== 'json') throw new Error('Expected the published JSON outcome.');
+    const bytes = outcome.content.body;
+    expect(JSON.parse(bytes)).toEqual({
       ...result,
       annotation: 'outcome',
       candidate: { ...result.candidate, annotation: 'reference' },
-    };
-    const bytes = JSON.stringify(body);
-    const metadataPath = join(root, 'artifact.json');
-    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
-    metadata.contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    writeFileSync(join(root, 'files/content.json'), bytes);
-    writeFileSync(metadataPath, JSON.stringify(metadata));
+    });
+    const root = join(f.dataRoot, 'workspaces', f.workspaceId, 'artifacts', outcome.id);
+    const versionRoot = join(root, 'versions', '1');
+    const original = readFileSync(join(versionRoot, 'payload'));
+    const descriptor = readFileSync(join(versionRoot, 'version-record.json'));
+    expect(original.toString('utf8')).toBe(bytes);
+    expect(f.store.listArtifactVersions(f.workspaceId, outcome.id)).toMatchObject([
+      { artifactVersion: 1, parentVersion: null, contentDigest: outcome.contentDigest },
+    ]);
     const reopened = new FsStore({ dataRoot: f.dataRoot });
     const service = createAdministrationConfiguration({ ...f, store: reopened });
     expect(await service.apply(request)).toEqual(result);
     expect(f.reload).toHaveBeenCalledTimes(1);
-    expect(readFileSync(join(root, 'files/content.json'), 'utf8')).toBe(bytes);
+    expect(reopened.getArtifactVersion(f.workspaceId, outcome.id, 1).artifact.content).toEqual({
+      format: 'json', body: bytes,
+    });
     expect(await service.apply(request)).toEqual(result);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(versionRoot, 'payload'))).toEqual(original);
+    expect(readFileSync(join(versionRoot, 'version-record.json'))).toEqual(descriptor);
   });
 
   it('retains persisted bytes and reports reload failure without repeating the effect', async () => {
