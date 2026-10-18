@@ -1606,8 +1606,10 @@ export class FsStore {
   ): void {
     let scopeSchemaText: string | undefined;
     let resolvedReferences: ReadonlySet<string> = new Set();
+    let pageScopeId: string | undefined;
 
     try {
+      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
       if (this.dataRoot) {
         const schemaPath = join(
           this.workspaceRootPath(workspaceId),
@@ -1638,7 +1640,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: `knowledge/pages/${candidate.id}.md`,
       content: candidateContent,
-      pageScopeId: this.workspaceKnowledgePageScopeId(workspaceId),
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
@@ -1667,8 +1669,10 @@ export class FsStore {
     verifiedExternalReferences: readonly string[]
   ): KnowledgeEntry | undefined {
     let scopeSchemaText: string | undefined;
+    let pageScopeId: string | undefined;
     try {
       KnowledgeProposalRecordSchema.parse(proposal);
+      pageScopeId = this.workspaceKnowledgePageScopeId(proposal.workspaceId);
       if (this.dataRoot) {
         const schemaPath = join(
           this.workspaceRootPath(proposal.workspaceId),
@@ -1716,7 +1720,7 @@ export class FsStore {
       );
       const result = validateNotebookCandidate({
         ownerScope: proposal.ownerScope,
-        pageScopeId: this.workspaceKnowledgePageScopeId(proposal.workspaceId),
+        ...(pageScopeId === undefined ? {} : { pageScopeId }),
         base,
         candidate: { files },
         scopeSchemaText: scopeSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -1777,7 +1781,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: candidatePath,
       content: proposal.canonicalPageBytes,
-      pageScopeId: this.workspaceKnowledgePageScopeId(proposal.workspaceId),
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       expectedOwnerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
@@ -4250,7 +4254,9 @@ export class FsStore {
 
     let content: string | null;
     let scopeSchemaText: string | undefined;
+    let pageScopeId: string | undefined;
     try {
+      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
       const workspaceRoot = this.workspaceRootPath(workspaceId);
       content = readWorkspaceKnowledgePage(workspaceRoot, knowledgePageId);
       const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
@@ -4293,7 +4299,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path,
       content,
-      pageScopeId: this.workspaceKnowledgePageScopeId(workspaceId),
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
