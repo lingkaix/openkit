@@ -501,6 +501,10 @@ it.each([
     }
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
     expect(startWorker).toHaveBeenCalledOnce();
+    expect(startWorker.mock.calls[0]![0].triggerSource).toEqual({
+      kind: 'handoff',
+      summary: 'Task Worker handoff.',
+    });
     expect(linked.tasks).toMatchObject([
       { cardId: card.cardId, cardRevision: 0, planVersionId: plan.planVersionId, missing: false },
     ]);

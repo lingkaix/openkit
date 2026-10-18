@@ -356,6 +356,8 @@ describe('live Provider readiness composition', () => {
         expectLiveOwners(f.productAdmission.mock.calls.at(-1)![0], f);
         await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
       }
+      if (entry === 'direct-mode')
+        expect(f.productAdmission.mock.calls.at(-1)![0].triggerSource).toBeUndefined();
       expect(f.productAdmission).toHaveBeenCalledTimes(1);
       expectLiveOwners(f.productAdmission.mock.calls[0]![0], f);
       expectLiveOwners(f.resolver.mock.calls.at(-1)![1], f);

@@ -1643,6 +1643,26 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceId: turn.workspaceId,
       workspaceRoots: [],
     });
+    const predecessorPackage = completeNanoHostPackage({
+      agentSetup: createTestAgentSetup(),
+      scope: {
+        agentSessionId: 'as_00000000-0000-7ff2-9481-d757fe7ac840',
+        threadId: turn.threadId,
+        turnId: turn.id,
+        triggerActor: turn.triggerActor,
+        workspaceId: turn.workspaceId,
+      },
+      snapshotId: 'aepsnap-unready-predecessor',
+    });
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, turn.workspaceId);
+    try {
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        environmentPackage: predecessorPackage,
+        createdAt: predecessorPackage.createdAt,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
     const runtime = createConfiguredWorkerLifecycleRuntime({
       coreDb,
       env: {},

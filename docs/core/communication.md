@@ -108,6 +108,8 @@ A delivery attempt records an external transport observation. A definite rejecti
 
 Channel binding proves control of the external account and associates it with one current Core actor. Binding does not retain the actor's credential privileges. Revocation prevents later responses and sends. A channel MUST authenticate its external input before using account identity or event identity.
 
+The existing inbound receipt owns trusted capture origin. External actor identity comes only from authenticated channel input. A native response records the current admitted Core actor and exact source references before dispatch. That responder remains distinct from the requester, responsible user and trigger actor. Origin retention failure prevents dispatch. Duplicate input, restart and rebinding preserve recorded origin; missing historical facts stay unknown. Origin facts confer no authority and prove no decision or execution outcome.
+
 The common channel response boundary admits only exact typed Pending Request responses. A direct approval requires complete effect disclosure and exact disclosure identity. A non-secret answer requires the exact current question identity. Unknown, stale, unauthorized, or unsupported responses MUST leave the request's existing outcome truthful. Channel receipt, delivery, or acknowledgement never proves a request decision.
 
 ## Turn Communication Flow
