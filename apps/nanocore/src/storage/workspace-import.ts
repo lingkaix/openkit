@@ -74,6 +74,7 @@ import {
   parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
+  readRetainedV1,
   SseEventEnvelopeSchema,
   ThreadIdSchema,
   ThreadSchema,
@@ -933,10 +934,11 @@ export function readWorkspaceImportSnapshot(
     report,
     targetWorkspaceId: input.targetWorkspaceId,
     sourceKnowledgeBaseId: KnowledgeBaseIdSchema.parse(
-      WorkspaceConfigSchema.parse(
+      readRetainedV1(
         parseJsoncObject(
           requiredExportFile(input.verified.fileContents, 'workspace-files/config/workspace.jsonc')
-        )
+        ),
+        (record) => WorkspaceConfigSchema.parse(record)
       ).workspace.defaultKnowledgeBaseId
     ),
     targetKnowledgeBaseId: allocateEntityId('kb'),
@@ -1327,11 +1329,12 @@ function readCanonicalImportState(context: ImportRemintContext) {
   const exportedWorkspaceRecord = WorkspaceSystemRecordSchema.parse(
     readImportJson(context.files, 'records/workspace-record.json')
   );
-  const exportedWorkspaceConfig = WorkspaceConfigSchema.parse(
+  const exportedWorkspaceConfig = readRetainedV1(
     parseJsoncObject(
       requiredExportFile(context.files, 'workspace-files/config/workspace.jsonc'),
       'workspace-files/config/workspace.jsonc'
-    )
+    ),
+    (record) => WorkspaceConfigSchema.parse(record)
   );
   if (exportedWorkspaceRecord.id !== report.manifest.workspaceId) {
     throw new Error('Workspace record id does not match the export manifest.');

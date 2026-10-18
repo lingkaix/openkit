@@ -13,6 +13,7 @@ import {
   deriveEntityId,
   ItemSchema,
   KnowledgeEntrySchema,
+  readRetainedV1,
   ThreadSchema,
   TurnSchema,
 } from '@openkit/protocol';
@@ -389,8 +390,9 @@ export function writeWorkspaceExportTree(
   if (!portableFileState?.workspaceConfig) {
     throw new Error('Workspace export requires config/workspace.jsonc.');
   }
-  const workspaceConfig = WorkspaceConfigSchema.parse(
-    parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc')
+  const workspaceConfig = readRetainedV1(
+    parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc'),
+    (record) => WorkspaceConfigSchema.parse(record)
   );
   if (workspaceConfig.workspace.name !== history.workspace.name) {
     throw new Error('Workspace config name does not match the public Workspace projection.');
