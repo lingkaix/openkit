@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readRetainedV1 } from '@openkit/protocol';
 import { MAX_WORKER_RAW_OUTPUT_BYTES } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { StartedCapabilityCall } from '../capability/usage-ledger.js';
@@ -33,6 +34,7 @@ export interface WorkerRawOutputScope {
   readonly turnId: string;
 }
 interface CallRow {
+  schema_version: number;
   call_id: string;
   status: string;
   extensions_json: string | null;
@@ -70,7 +72,7 @@ function components(db: WorkspaceDb, scope: WorkerRawOutputScope): Component[] {
   // an unbounded SQL result. A bounded proof inventory refusal cannot become a clean result.
   let bytes = 0;
   for (const row of db.sqlite
-    .prepare(`SELECT call_id, status,
+    .prepare(`SELECT schema_version, call_id, status,
       CASE WHEN length(CAST(extensions_json AS BLOB)) <= ? THEN extensions_json ELSE NULL END AS extensions_json
       FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
       AND service_ref = 'worker-inference-gateway' AND family = 'llm'`)
@@ -80,6 +82,7 @@ function components(db: WorkspaceDb, scope: WorkerRawOutputScope): Component[] {
       scope.threadId,
       scope.turnId
     ) as Iterable<CallRow>) {
+    readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
     if (!row.extensions_json) throw new WorkerRawOutputAuthorityError();
     bytes += Buffer.byteLength(row.extensions_json);
     if (bytes > 8 * 1024 * 1024) throw new WorkerRawOutputAuthorityError();
@@ -122,8 +125,11 @@ export function initializeWorkerRawOutput(
   db.sqlite
     .transaction(() => {
       const row = db.sqlite
-        .prepare('SELECT call_id, status, extensions_json FROM capability_calls WHERE call_id = ?')
+        .prepare(
+          'SELECT schema_version, call_id, status, extensions_json FROM capability_calls WHERE call_id = ?'
+        )
         .get(call.id) as CallRow | undefined;
+      if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
       if (!row || row.status !== 'running') throw new WorkerRawOutputAuthorityError();
       let extensions: Record<string, unknown>;
       try {

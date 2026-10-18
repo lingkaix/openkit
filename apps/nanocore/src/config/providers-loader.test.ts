@@ -10,8 +10,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ProviderProfileSchema } from '@openkit/config-schema';
-import { isEntityId } from '@openkit/protocol';
+import { AuthoredProviderProfileSchema, ProviderProfileSchema } from '@openkit/config-schema';
+import { isEntityId, RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -104,7 +104,7 @@ describe('loadProviderProfiles', () => {
     const examplePath = join(providersRoot, `${fileName}.example`);
     expect(existsSync(examplePath)).toBe(true);
     expect(existsSync(join(providersRoot, fileName))).toBe(false);
-    const parsed = ProviderProfileSchema.parse(
+    const parsed = AuthoredProviderProfileSchema.parse(
       parseJsoncObject(readFileSync(examplePath, 'utf8'), examplePath)
     );
     expect(parsed.id).toBe(id);
@@ -115,7 +115,7 @@ describe('loadProviderProfiles', () => {
       { id: 'gpt-5.6-luna', input: 0.2, output: 1.2 },
     ];
     expect(parsed.models).toEqual(expected.map((model) => `${prefix}${model.id}`));
-    const registry = new ProviderRegistry([parsed]);
+    const registry = new ProviderRegistry([ProviderProfileSchema.parse(parsed)]);
     expect(() => assertConfiguredModelsHaveKnownContext(registry)).not.toThrow();
     for (const model of expected) {
       const nativeId = `${prefix}${model.id}`;
@@ -167,7 +167,7 @@ describe('loadProviderProfiles', () => {
     expect(readFileSync(examplePath, 'utf8')).toBe('// Operator copy remains unchanged.');
   });
 
-  it('loads the provider templates through ProviderProfileSchema', () => {
+  it('loads the provider templates through AuthoredProviderProfileSchema', () => {
     const { dataRoot, providersRoot } = createProviderRoot();
 
     ensureLayout(dataRoot);
@@ -274,6 +274,7 @@ describe('loadProviderProfiles', () => {
       join(providersRoot, 'openai.provider.jsonc'),
       `{
         // Comments and trailing commas are accepted.
+        "schemaVersion": 1,
         "id": "openai",
         "displayName": "OpenAI",
         "kind": "direct",
@@ -320,6 +321,7 @@ describe('loadProviderProfiles', () => {
     writeFileSync(
       join(providersRoot, `${profile.id}.provider.jsonc`),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         displayName: profile.displayName,
         extensions: {
           openkit: {
@@ -357,6 +359,7 @@ describe('loadProviderProfiles', () => {
     writeFileSync(
       join(providersRoot, 'legacy-openai-codex.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         displayName: 'Legacy OpenAI Codex',
         extensions: {
           openkit: {
@@ -388,6 +391,7 @@ describe('loadProviderProfiles', () => {
     writeFileSync(
       join(providersRoot, 'unsafe.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         id: 'unsafe',
         displayName: 'Unsafe',
         kind: 'direct',
@@ -416,6 +420,7 @@ describe('loadProviderProfiles', () => {
     writeFileSync(
       join(providersRoot, 'extended.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         id: 'extended',
         displayName: 'Extended',
         kind: 'custom',
@@ -445,6 +450,7 @@ describe('loadProviderProfiles', () => {
     writeFileSync(
       join(providersRoot, 'required-extension.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         id: 'required-extension',
         displayName: 'Required Extension',
         kind: 'custom',

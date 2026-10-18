@@ -743,6 +743,14 @@ describe('workspace import route handles', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const input = minimalExportInput(join(dataRoot, 'verified-export'));
+      input.workspace = store.getWorkspace(sourceWorkspaceId);
+      input.portableFileState = {
+        ...input.portableFileState!,
+        workspaceConfig: readFileSync(
+          join(dataRoot, 'workspaces', sourceWorkspaceId, 'config', 'workspace.jsonc'),
+          'utf8'
+        ),
+      };
       input.permissionDecisions = [
         {
           action: 'runtime.launch',
@@ -820,9 +828,14 @@ describe('workspace import route handles', () => {
     mkdirSync(dirname(exportRoot), { recursive: true });
     const verified = writeWorkspaceExportTree({
       ...input,
+      workspace: store.getWorkspace(input.workspace.id),
       sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       portableFileState: {
         ...input.portableFileState!,
+        workspaceConfig: readFileSync(
+          join(dataRoot, 'workspaces', input.workspace.id, 'config', 'workspace.jsonc'),
+          'utf8'
+        ),
         nativeKnowledgePages: new Map([
           ['knowledge/pages/topic/index.md', nestedIndex],
           ['knowledge/pages/topic/log.md', nestedLog],

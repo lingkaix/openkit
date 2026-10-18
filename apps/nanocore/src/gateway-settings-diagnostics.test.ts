@@ -26,6 +26,7 @@ function fixture() {
     JSON.stringify({ schemaVersion: 1, mode: 'local' })
   );
   const profile = {
+    schemaVersion: 1,
     id: 'codex',
     displayName: 'Codex',
     kind: 'oauth',

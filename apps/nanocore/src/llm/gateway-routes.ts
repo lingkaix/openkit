@@ -10,6 +10,7 @@ import {
   REASONING_EFFORT_LEVELS,
   type ReasoningEffort,
   ReasoningEffortSchema,
+  readRetainedV1,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
@@ -2019,13 +2020,17 @@ export function registerWorkerInferenceRoutes({
           requireWorkerRawOutputAvailable(durableCall.workspaceDb, scope);
           const previous = durableCall.workspaceDb.sqlite
             .prepare(
-              "SELECT call_id, status, error_code FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND service_ref = 'worker-inference-gateway' AND call_id <> ? AND (status IN ('running', 'unknown') OR error_code = 'worker_raw_output_unavailable')"
+              "SELECT schema_version, call_id, status, error_code FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND service_ref = 'worker-inference-gateway' AND call_id <> ? AND (status IN ('running', 'unknown') OR error_code = 'worker_raw_output_unavailable')"
             )
             .all(scope.workspaceId, scope.threadId, scope.turnId, durableCall.call.id) as Array<{
+            schema_version: number;
             call_id: string;
             status: string;
             error_code: string | null;
           }>;
+          for (const call of previous) {
+            readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
+          }
           if (
             previous.some((call) => call.status !== 'running' || !rawGroup.calls.has(call.call_id))
           )
@@ -2102,6 +2107,11 @@ export function registerWorkerInferenceRoutes({
                 endpoint,
                 effectiveEffort
               );
+              const retainedCall = durableCall.workspaceDb.sqlite
+                .prepare('SELECT schema_version FROM capability_calls WHERE call_id = ?')
+                .get(durableCall.call.id) as { schema_version: number } | undefined;
+              if (retainedCall)
+                readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
               durableCall.workspaceDb.sqlite
                 .prepare(
                   'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'

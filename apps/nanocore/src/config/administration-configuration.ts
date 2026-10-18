@@ -10,12 +10,18 @@ import {
   ProposeAdministrationConfigurationRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
+  AuthoredProviderProfileSchema,
   GatewayConfigSchema,
   GatewayLogicalModelSchema,
   ProviderModelMetadataSchema,
   ProviderProfileSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 import { recordServerAuditEvent } from '../audit-events.js';
@@ -86,7 +92,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     if (turnId) store.getTurn(workspaceId, threadId, turnId);
   }
 
-  /** Resolves an existing target by registered identity, never by a caller-selected path. */
+  /** Resolves an existing target by registered identity, never by a caller-selected path; retained Provider admission precedes logical projection. */
   function source(targetFamily: 'provider' | 'gateway', targetId: string) {
     const matches = files
       .listFiles()
@@ -96,7 +102,9 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         const parsed = parseJsoncObject(read.content, file.id);
         const value =
           targetFamily === 'provider'
-            ? ProviderProfileSchema.parse(parsed)
+            ? ProviderProfileSchema.parse(
+                readRetainedV1(parsed, (record) => AuthoredProviderProfileSchema.parse(record))
+              )
             : GatewayConfigSchema.parse(parsed);
         const id = targetFamily === 'provider' ? (value as { id: string }).id : 'gateway';
         return id === targetId ? [{ read, value }] : [];
@@ -148,7 +156,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           fail('configuration_dependency_unavailable');
       }
     }
-    const content = `${JSON.stringify(normalized, null, 2)}\n`;
+    const content = `${JSON.stringify(request.targetFamily === 'provider' ? writeRetainedV1(normalized) : normalized, null, 2)}\n`;
     const validation = files.validate({
       files: [{ id: current.read.file.id, content }],
       mode: 'safe',
@@ -408,7 +416,11 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
               const parsed = parseJsoncObject(read.content, file.id);
               return {
                 targetId:
-                  targetFamily === 'gateway' ? 'gateway' : ProviderProfileSchema.parse(parsed).id,
+                  targetFamily === 'gateway'
+                    ? 'gateway'
+                    : readRetainedV1(parsed, (record) =>
+                        AuthoredProviderProfileSchema.parse(record)
+                      ).id,
                 expectedRevision: read.file.revision,
               };
             }),

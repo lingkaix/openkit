@@ -63,6 +63,7 @@ import {
 const KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000001';
 
 /** Fixed timestamp shared by accepted-Turn authority fixtures. */
+const KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000001';
 const TURN_STARTED_AT = '2026-07-18T00:00:00.000Z';
 
 /** Exact structured worker request retained by the same-Turn request Item. */
@@ -1856,7 +1857,7 @@ describe('bounded S39 source representations', () => {
     expect(selected).toMatchObject({ contentDigest: sha256(content), projection });
   });
 
-  it('streams an original larger than 16 MiB into the existing inventory and replays without reopening it', async () => {
+  it('verifies an original larger than 16 MiB without retaining another copy and replays accepted delivery without reopening it', async () => {
     const root = mkdtempSync(join(tmpdir(), 's39-streamed-original-'));
     const sourcePath = join(root, 'original.bin');
     let descriptor: number | undefined;
@@ -1882,6 +1883,8 @@ describe('bounded S39 source representations', () => {
       const held = descriptor;
       const before = fstatSync(held, { bigint: true });
       const delivered = 'Original binary source; text representation unavailable.\n';
+      let streamedBytes = 0;
+      const streamedHash = createHash('sha256');
       const open = vi.fn(async function* (_signal: AbortSignal) {
         const chunk = Buffer.alloc(65_536);
         let offset = 0;
@@ -1895,11 +1898,11 @@ describe('bounded S39 source representations', () => {
           );
           if (!count) throw new Error('Unexpected original EOF.');
           offset += count;
+          streamedBytes += count;
+          streamedHash.update(chunk.subarray(0, count));
           yield chunk.subarray(0, count);
         }
       });
-      const originalSnapshotPath =
-        'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ec/1/payload';
       const sourceFile: WorkerContextPackageSourceFileInput = {
         source: {
           kind: 'artifact',
@@ -1912,7 +1915,6 @@ describe('bounded S39 source representations', () => {
         originalDigest: STREAMED_ORIGINAL_DIGEST,
         byteLength: STREAMED_ORIGINAL_BYTES,
         mediaType: 'application/octet-stream',
-        originalSnapshotPath,
         packagePath: 'sources/ar_00000000-0000-7000-8000-0000000003ec.txt',
         deliveredBytes: Buffer.from(delivered),
         projection: {
@@ -1926,7 +1928,6 @@ describe('bounded S39 source representations', () => {
           byteLength: Buffer.byteLength(delivered),
           truncated: true,
           availability: 'unavailable',
-          originalSnapshotPath,
         },
         open,
         assertUnchanged() {
@@ -1935,7 +1936,7 @@ describe('bounded S39 source representations', () => {
             expect(after[field]).toBe(before[field]);
         },
       };
-      const files = createWorkerContextPackageFiles({
+      const projected = createWorkerContextPackageFiles({
         workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
         threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
         turnId: 'tu_00000000-0000-7000-8000-000000000400',
@@ -1946,40 +1947,41 @@ describe('bounded S39 source representations', () => {
         materialSelections: [],
         sourceFiles: [sourceFile],
       });
-      expect(files.fileInventory).toContainEqual({
-        path: originalSnapshotPath,
-        byteLength: STREAMED_ORIGINAL_BYTES,
-        contentDigest: STREAMED_ORIGINAL_DIGEST,
-      });
+      expect(projected.fileInventory.some((entry) => entry.path.startsWith('originals/'))).toBe(
+        false
+      );
       expect(open).not.toHaveBeenCalled();
       const admission = new FileStorageAdmission(root, () => 0n);
-      await writeWorkerContextPackageFiles(root, files, { admission });
+      const fixture = await createAcceptedFixture(root, {
+        sourceFiles: [sourceFile],
+        turnId: 'tu_00000000-0000-7000-8000-000000000400',
+      });
       expect(open).toHaveBeenCalledTimes(1);
+      expect(streamedBytes).toBe(STREAMED_ORIGINAL_BYTES);
+      expect(`sha256:${streamedHash.digest('hex')}`).toBe(STREAMED_ORIGINAL_DIGEST);
       const published = join(
         root,
         'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-000000000400/context-package',
-        originalSnapshotPath
+        sourceFile.packagePath
       );
-      const output = openSync(published, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        const hash = createHash('sha256');
-        const chunk = Buffer.alloc(65_536);
-        let total = 0;
-        for (;;) {
-          const count = readSync(output, chunk, 0, chunk.length, total);
-          if (!count) break;
-          total += count;
-          hash.update(chunk.subarray(0, count));
-        }
-        expect(total).toBe(STREAMED_ORIGINAL_BYTES);
-        expect(`sha256:${hash.digest('hex')}`).toBe(STREAMED_ORIGINAL_DIGEST);
-      } finally {
-        closeSync(output);
-      }
+      expect(readFileSync(published, 'utf8')).toBe(delivered);
+      writeWorkerContextPackageTrace({
+        ...fixture,
+        workspaceRoot: root,
+        authorities: {
+          ...fixture.authorities,
+          readSourceFile: () => ({
+            originalDigest: STREAMED_ORIGINAL_DIGEST,
+            byteLength: STREAMED_ORIGINAL_BYTES,
+            mediaType: 'application/octet-stream',
+          }),
+        },
+      });
+      expect(open).toHaveBeenCalledTimes(1);
       closeSync(held);
       descriptor = undefined;
       rmSync(sourcePath);
-      await writeWorkerContextPackageFiles(root, files, { admission });
+      await writeWorkerContextPackageFiles(root, fixture.packageFiles, { admission });
       expect(open).toHaveBeenCalledTimes(1);
     } finally {
       if (descriptor !== undefined) closeSync(descriptor);
@@ -1992,7 +1994,7 @@ describe('bounded S39 source representations', () => {
 function sourceFixture(
   bytes: Uint8Array = Buffer.from([0, 255, 1])
 ): WorkerContextPackageSourceFileInput {
-  const text = Buffer.from('Binary original is available only in the read-only file view.\n');
+  const text = Buffer.from('Original is referenced by digest; its text view is unavailable.\n');
   return {
     source: {
       kind: 'artifact',
@@ -2005,7 +2007,6 @@ function sourceFixture(
     originalDigest: sha256(Buffer.from(bytes)),
     byteLength: bytes.byteLength,
     mediaType: 'application/octet-stream',
-    originalSnapshotPath: 'originals/artifacts/ar_00000000-0000-7000-8000-0000000003e9/1/payload',
     packagePath: 'sources/ar_00000000-0000-7000-8000-0000000003e9.txt',
     projection: {
       kind: 'descriptor',
@@ -2018,7 +2019,6 @@ function sourceFixture(
       byteLength: text.byteLength,
       truncated: true,
       availability: 'unavailable',
-      originalSnapshotPath: 'originals/artifacts/ar_00000000-0000-7000-8000-0000000003e9/1/payload',
     },
     deliveredBytes: text,
     async *open() {
@@ -2164,7 +2164,7 @@ describe('S39 bounded delivery and publication refusal', () => {
     'drift',
     'abort',
     'oversized-chunk',
-  ] as const)('cleans private original stages after %s and leaves no readiness manifest', async (failure) => {
+  ] as const)('refuses invalid current original after %s and leaves no readiness manifest', async (failure) => {
     const root = mkdtempSync(join(tmpdir(), 's39-original-refusal-'));
     try {
       const source = sourceFixture(
@@ -2209,8 +2209,8 @@ describe('S39 bounded delivery and publication refusal', () => {
         'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package'
       );
       expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
-      expect(existsSync(join(packageRoot, source.originalSnapshotPath))).toBe(false);
-      expect(release).toHaveBeenCalledTimes(2);
+      expect(existsSync(join(packageRoot, 'originals'))).toBe(false);
+      expect(release).toHaveBeenCalledTimes(1);
       const walk = (path: string): string[] =>
         readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
           entry.isDirectory() ? walk(join(path, entry.name)) : [entry.name]
@@ -2245,8 +2245,8 @@ describe('S39 bounded delivery and publication refusal', () => {
   });
 });
 
-describe('S39 original source authority and retained proof', () => {
-  it('requires the original owner for first acceptance and then verifies historical binary snapshots independently', async () => {
+describe('S39 original source authority and retained delivery proof', () => {
+  it('requires the original owner for first acceptance and then verifies exact historical delivery independently', async () => {
     const root = mkdtempSync(join(tmpdir(), 's39-retained-original-'));
     const source = sourceFixture();
     const fixture = await createAcceptedFixture(root, { sourceFiles: [source] });
@@ -2279,13 +2279,13 @@ describe('S39 original source authority and retained proof', () => {
       })
     ).toEqual(trace);
     expect(missingOriginalOwner.readSourceFile).not.toHaveBeenCalled();
-    const originalPath = join(
+    const deliveredPath = join(
       root,
       'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package',
-      source.originalSnapshotPath
+      source.packagePath
     );
-    chmodSync(originalPath, 0o600);
-    writeFileSync(originalPath, Buffer.from([0, 254, 1]));
+    chmodSync(deliveredPath, 0o600);
+    writeFileSync(deliveredPath, Buffer.alloc(source.deliveredBytes.byteLength, 0x58));
     expect(() =>
       verifyWorkerContextPackageTrace({ authorities, trace, workspaceRoot: root })
     ).toThrow(/digest mismatch/);
@@ -2318,7 +2318,7 @@ describe('S39 original source authority and retained proof', () => {
         },
       },
     ],
-    ['escaping original path', { originalSnapshotPath: '../payload' }],
+    ['escaping delivered path', { packagePath: '../payload' }],
     ['invalid UTF-8 delivery', { deliveredBytes: Buffer.from([0xff]) }],
   ])('refuses %s before original reads', (_label, change) => {
     const source = sourceFixture();
@@ -2388,7 +2388,7 @@ describe('S39 exact original UTF-8 ranges', () => {
 });
 
 describe('S39 historical publication fence', () => {
-  it('refuses a missing accepted original without reopening or rebuilding the source', async () => {
+  it('refuses missing accepted delivered bytes without reopening or rebuilding the source', async () => {
     const root = mkdtempSync(join(tmpdir(), 's39-no-historical-rebuild-'));
     const source = sourceFixture();
     const open = vi.fn(source.open);
@@ -2405,7 +2405,7 @@ describe('S39 historical publication fence', () => {
     const path = join(
       root,
       'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package',
-      source.originalSnapshotPath
+      source.packagePath
     );
     rmSync(path);
     await expect(
@@ -2418,12 +2418,10 @@ describe('S39 historical publication fence', () => {
   });
 });
 
-/** Uses the one existing bound Material body path for both its selection and original inventory proof. */
+/** Shares one exact delivered Material path while retaining separate original identity. */
 function sharedMaterialInputs(): Parameters<typeof createWorkerContextPackageFiles>[0] {
   const content = '# Shared material\nOriginal remainder.\n';
   const deliveredContent = '# Shared material';
-  const originalSnapshotPath =
-    'originals/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f8/payload';
   const projection: WorkerContextPackageProjection = {
     kind: 'excerpt',
     sourceRevision: 'mrev_00000000-0000-7000-8000-0000000003f8',
@@ -2435,7 +2433,6 @@ function sharedMaterialInputs(): Parameters<typeof createWorkerContextPackageFil
     byteLength: Buffer.byteLength(deliveredContent),
     truncated: true,
     availability: 'incomplete',
-    originalSnapshotPath,
   };
   return {
     ...boundedInputs(),
@@ -2467,7 +2464,6 @@ function sharedMaterialInputs(): Parameters<typeof createWorkerContextPackageFil
         originalDigest: sha256(content),
         byteLength: Buffer.byteLength(content),
         mediaType: 'text/markdown',
-        originalSnapshotPath,
         packagePath:
           'workspace/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f8.md',
         projection,
@@ -2482,7 +2478,7 @@ function sharedMaterialInputs(): Parameters<typeof createWorkerContextPackageFil
 }
 
 describe('S39 one bound Material delivery path', () => {
-  it('retains one original inventory entry and reuses the exact selected body without duplicate bytes', async () => {
+  it('retains only the exact selected Material body and its original reference without duplicate bytes', async () => {
     const input = sharedMaterialInputs();
     const files = createWorkerContextPackageFiles(input);
     const source = files.sourceFiles![0]!;
@@ -2492,9 +2488,7 @@ describe('S39 one bound Material delivery path', () => {
     expect(files.fileInventory.filter((entry) => entry.path === selected.packagePath)).toHaveLength(
       1
     );
-    expect(
-      files.fileInventory.filter((entry) => entry.path === source.originalSnapshotPath)
-    ).toHaveLength(1);
+    expect(files.fileInventory.some((entry) => entry.path.startsWith('originals/'))).toBe(false);
     expect(files.files.some((file) => file.path.startsWith('sources/'))).toBe(false);
     const root = mkdtempSync(join(tmpdir(), 's39-shared-material-'));
     await writeWorkerContextPackageFiles(root, files, {
@@ -2507,9 +2501,7 @@ describe('S39 one bound Material delivery path', () => {
     expect(readFileSync(join(packageRoot, selected.packagePath), 'utf8')).toBe(
       input.materialSelections[0]!.deliveredContent
     );
-    expect(readFileSync(join(packageRoot, source.originalSnapshotPath), 'utf8')).toBe(
-      input.materialSelections[0]!.content
-    );
+    expect(existsSync(join(packageRoot, 'originals'))).toBe(false);
     expect(
       JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).sourceFiles[0].packagePath
     ).toBe(selected.packagePath);
@@ -2577,20 +2569,17 @@ describe('S39 empty original stream', () => {
     await writeWorkerContextPackageFiles(root, files, {
       admission: new FileStorageAdmission(root, () => 0n),
     });
-    expect(
-      readFileSync(
-        join(
-          root,
-          'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package',
-          source.originalSnapshotPath
-        )
-      )
-    ).toEqual(Buffer.alloc(0));
-    expect(files.fileInventory).toContainEqual({
-      path: source.originalSnapshotPath,
+    expect(files.sourceFiles![0]).toMatchObject({
       byteLength: 0,
-      contentDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      originalDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     });
+    expect(files.fileInventory.some((entry) => entry.path.startsWith('originals/'))).toBe(false);
+    const delivered = join(
+      root,
+      'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package',
+      source.packagePath
+    );
+    expect(readFileSync(delivered)).toEqual(source.deliveredBytes);
   });
 });
 
@@ -2619,12 +2608,12 @@ it.each([
     expect(schema.safeParse(value).success).toBe(false);
 });
 
-describe('S39 complete derived representation publication', () => {
+describe('S39 complete derived representation admission', () => {
   it('requires a representation supplier and refuses changed derived bytes before readiness', async () => {
     const root = mkdtempSync(join(tmpdir(), 's39-derived-representation-'));
     try {
       const complete = Buffer.from(
-        'Complete extracted representation retained for later bounded reads.\n'
+        'Complete extracted representation verified before bounded delivery.\n'
       );
       const preview = complete.subarray(0, 8);
       const source: WorkerContextPackageSourceFileInput = {
@@ -2641,21 +2630,20 @@ describe('S39 complete derived representation publication', () => {
           ranges: [{ start: 0, end: preview.length }],
           truncated: true,
           availability: 'incomplete',
-          representationSnapshotPath:
-            'representations/artifacts/ar_00000000-0000-7000-8000-0000000003e9/1/text.txt',
         },
         async *openRepresentation() {
           yield Buffer.from('wrong derived bytes');
         },
       };
-      expect(() =>
-        createWorkerContextPackageFiles({
-          ...boundedInputs(),
-          sourceFiles: [{ ...source, openRepresentation: undefined }],
-        })
-      ).toThrow(/representation supplier/);
-      const files = createWorkerContextPackageFiles({ ...boundedInputs(), sourceFiles: [source] });
       const admission = new FileStorageAdmission(root, () => 0n);
+      const missingSupplier = createWorkerContextPackageFiles({
+        ...boundedInputs(),
+        sourceFiles: [{ ...source, openRepresentation: undefined }],
+      });
+      await expect(
+        writeWorkerContextPackageFiles(root, missingSupplier, { admission })
+      ).rejects.toThrow(/representation supplier/);
+      const files = createWorkerContextPackageFiles({ ...boundedInputs(), sourceFiles: [source] });
       await expect(writeWorkerContextPackageFiles(root, files, { admission })).rejects.toThrow(
         /digest mismatch/
       );
@@ -2668,9 +2656,7 @@ describe('S39 complete derived representation publication', () => {
         'context-package'
       );
       expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
-      expect(existsSync(join(packageRoot, source.projection.representationSnapshotPath!))).toBe(
-        false
-      );
+      expect(existsSync(join(packageRoot, 'representations'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

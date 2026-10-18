@@ -2,6 +2,7 @@
 // Create the matching vault reference before using this provider.
 // The provider id and tier models are traceable to the vendored models.dev snapshot.
 {
+  "schemaVersion": 1,
   "id": "openrouter",
   "displayName": "OpenRouter",
   "kind": "gateway",

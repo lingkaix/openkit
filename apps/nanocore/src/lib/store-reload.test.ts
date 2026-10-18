@@ -20,6 +20,7 @@ import {
   ThreadSchema,
   TurnSchema,
   WorkspaceRecordSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -213,7 +214,7 @@ describe('FsStore canonical reload', () => {
 
     writeFileSync(
       firstItemsPath,
-      `${JSON.stringify(firstItem)}\n${JSON.stringify(updatedFirstItem)}\n`
+      `${JSON.stringify(writeRetainedV1(firstItem))}\n${JSON.stringify(writeRetainedV1(updatedFirstItem))}\n`
     );
     const restarted = new FsStore({ dataRoot });
 
@@ -312,7 +313,7 @@ describe('FsStore canonical reload', () => {
 
     const appendedLog = readFileSync(itemsPath, 'utf8');
     expect(appendedLog.startsWith(initialLog)).toBe(true);
-    expect(JSON.parse(appendedLog.slice(initialLog.length))).toEqual(updatedItem);
+    expect(JSON.parse(appendedLog.slice(initialLog.length))).toEqual(writeRetainedV1(updatedItem));
     const turnRecord = JSON.parse(readFileSync(turnPath, 'utf8')) as { items: unknown[] };
     expect(turnRecord.items).toEqual([]);
     expect(JSON.stringify(turnRecord)).not.toContain(updatedItem.text);
@@ -507,14 +508,18 @@ describe('FsStore canonical reload', () => {
     >;
     const finalEventLog = existsSync(eventLogPath) ? readFileSync(eventLogPath, 'utf8') : '';
 
-    expect.soft(artifactMetadata).toEqual({
-      ...artifact,
-      content: { format: artifact.content.format },
-    });
+    expect.soft(artifactMetadata).toEqual(
+      writeRetainedV1({
+        ...artifact,
+        content: { format: artifact.content.format },
+      })
+    );
     expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
     expect.soft(readFileSync(artifactContentPath, 'utf8')).toBe(artifact.content.body);
-    expect.soft(initialEventLog).toBe(`${JSON.stringify(agentSessionEvent)}\n`);
-    expect.soft(finalEventLog).toBe(`${initialEventLog}${JSON.stringify(artifactEvent)}\n`);
+    expect.soft(initialEventLog).toBe(`${JSON.stringify(writeRetainedV1(agentSessionEvent))}\n`);
+    expect
+      .soft(finalEventLog)
+      .toBe(`${initialEventLog}${JSON.stringify(writeRetainedV1(artifactEvent))}\n`);
 
     expect(forbiddenLegacyStorePaths.some((path) => existsSync(path))).toBe(false);
 
@@ -994,7 +999,10 @@ describe('FsStore canonical reload', () => {
     expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual([item]);
     expect(readFileSync(itemsPath, 'utf8')).toBe(validLog);
 
-    writeFileSync(itemsPath, `${validLog}{"id":"broken"\n${JSON.stringify(item)}\n`);
+    writeFileSync(
+      itemsPath,
+      `${validLog}{"id":"broken"\n${JSON.stringify(writeRetainedV1(item))}\n`
+    );
     expect(() => new FsStore({ dataRoot })).toThrow();
 
     writeFileSync(itemsPath, `${validLog}not-json`);
@@ -1034,7 +1042,7 @@ describe('FsStore canonical reload', () => {
       'items.jsonl'
     );
 
-    writeFileSync(itemsPath, JSON.stringify(item));
+    writeFileSync(itemsPath, JSON.stringify(writeRetainedV1(item)));
     const restarted = new FsStore({ dataRoot });
     const updated = restarted.updateItem(item.id, {
       status: 'completed',
@@ -1043,7 +1051,10 @@ describe('FsStore canonical reload', () => {
 
     const normalizedLog = readFileSync(itemsPath, 'utf8');
     expect(normalizedLog.endsWith('\n')).toBe(true);
-    expect(normalizedLog.trimEnd().split('\n').map(JSON.parse)).toEqual([item, updated]);
+    expect(normalizedLog.trimEnd().split('\n').map(JSON.parse)).toEqual([
+      writeRetainedV1(item),
+      writeRetainedV1(updated),
+    ]);
   });
 
   it('repairs an incomplete final event-log fragment', () => {
@@ -1167,7 +1178,7 @@ describe('FsStore canonical reload', () => {
     );
     appendFileSync(
       itemsPath,
-      `${JSON.stringify({ ...item, type: 'user-message', actor: localActor })}\n`
+      `${JSON.stringify(writeRetainedV1({ ...item, type: 'user-message', actor: localActor }))}\n`
     );
     expect(() => new FsStore({ dataRoot })).toThrow(/immutable identity/);
   });
@@ -1272,7 +1283,7 @@ describe('FsStore canonical reload', () => {
 
     writeFileSync(
       eventPath,
-      `${JSON.stringify({ ...event, data: { ...event.data, turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481' } })}\n`
+      `${JSON.stringify(writeRetainedV1({ ...event, data: { ...event.data, turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481' } }))}\n`
     );
     expect(() => new FsStore({ dataRoot })).toThrow(/nested payload lineage/);
   });
@@ -1354,7 +1365,10 @@ describe('FsStore canonical reload', () => {
     );
 
     mkdirSync(duplicateRoot, { recursive: true });
-    writeFileSync(join(duplicateRoot, 'session.json'), `${JSON.stringify(duplicate, null, 2)}\n`);
+    writeFileSync(
+      join(duplicateRoot, 'session.json'),
+      `${JSON.stringify(writeRetainedV1(duplicate), null, 2)}\n`
+    );
 
     expect(() => new FsStore({ dataRoot })).toThrow();
   });

@@ -16,6 +16,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
+import { writeRetainedV1 } from '@openkit/protocol';
 import {
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
@@ -108,6 +109,20 @@ interface ImportFixture {
 }
 
 describe('worker runtime provenance import', () => {
+  it('refuses missing or unknown normalized row versions before interpreting payload fields', () => {
+    const fixture = createImportFixture('openkit-provenance-format-');
+    try {
+      for (const marker of [{}, { schemaVersion: 2 }]) {
+        const invalid = JSON.stringify({ ...marker, parseStatus: 'future' });
+        expect(() =>
+          remintWorkerRuntimeProvenanceIndex(invalid, fixture.lineage, fixture.lineage)
+        ).toThrow('Unsupported retained record format.');
+      }
+    } finally {
+      fixture.workspaceDb.sqlite.close();
+      rmSync(fixture.workspaceDb.dataRoot, { recursive: true, force: true });
+    }
+  });
   it('remints only parsed normalized fields with a recomputed digest and exact producer assertions', () => {
     const fixture = createImportFixture('openkit-provenance-remint-extension-');
     const row = {
@@ -124,14 +139,14 @@ describe('worker runtime provenance import', () => {
       runtimeTurnRef: null,
     };
     try {
-      const source = `${JSON.stringify({ ...row, futureNote: 'ignored' })}\n`;
+      const source = `${JSON.stringify(writeRetainedV1({ ...row, futureNote: 'ignored' }))}\n`;
       const targetLineage = { ...fixture.lineage, packageSnapshotId: 'package_reminted' };
       const reminted = remintWorkerRuntimeProvenanceIndex(source, fixture.lineage, targetLineage);
-      expect(JSON.parse(reminted.text)).toMatchObject({ lineage: targetLineage });
+      const { schemaVersion, ...retainedPayload } = JSON.parse(reminted.text);
+      expect(schemaVersion).toBe(1);
+      expect(retainedPayload).toMatchObject({ lineage: targetLineage });
       expect(reminted.text).not.toContain('futureNote');
-      expect(
-        WorkerRuntimeOriginIndexRowSchema.strict().parse(JSON.parse(reminted.text))
-      ).toMatchObject({
+      expect(WorkerRuntimeOriginIndexRowSchema.strict().parse(retainedPayload)).toMatchObject({
         lineage: targetLineage,
       });
       expect(reminted.digest).toBe(sha256(Buffer.from(reminted.text)));
@@ -141,14 +156,14 @@ describe('worker runtime provenance import', () => {
       ).toBe(false);
       expect(() =>
         remintWorkerRuntimeProvenanceIndex(
-          JSON.stringify({ ...row, requiredFeatures: ['unsupported.required'] }),
+          JSON.stringify(writeRetainedV1({ ...row, requiredFeatures: ['unsupported.required'] })),
           fixture.lineage,
           targetLineage
         )
       ).toThrow();
       expect(() =>
         remintWorkerRuntimeProvenanceIndex(
-          JSON.stringify({ ...row, parseStatus: 'invented' }),
+          JSON.stringify(writeRetainedV1({ ...row, parseStatus: 'invented' })),
           fixture.lineage,
           targetLineage
         )
@@ -213,9 +228,9 @@ describe('worker runtime provenance import', () => {
       );
       expect(normalized).not.toContain('futureNote');
       for (const line of normalized.trim().split('\n')) {
-        expect(WorkerRuntimeOriginIndexRowSchema.strict().safeParse(JSON.parse(line)).success).toBe(
-          true
-        );
+        const { schemaVersion, ...payload } = JSON.parse(line);
+        expect(schemaVersion).toBe(1);
+        expect(WorkerRuntimeOriginIndexRowSchema.strict().safeParse(payload).success).toBe(true);
       }
       expect(readFileSync(capture.streamManifestPath)).toEqual(manifestBytes);
       expect(readFileSync(capture.nativeOriginIndexPath)).toEqual(indexBytes);

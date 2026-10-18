@@ -26,19 +26,23 @@ describe('Task terminal and Goal wake shared commit', () => {
       );
       const goal = view.goal!;
       const task = store.createThread(ws.id, 'Task');
-      db.sqlite.prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)').run(
-        task.id,
-        goal.goalId,
-        'gc_hook',
-        JSON.stringify({
-          goalId: goal.goalId,
-          cardId: 'gc_hook',
-          threadId: task.id,
-          planVersionId: 'gp_hook',
-          cardRevision: 0,
-          admittedAt: new Date().toISOString(),
-        })
-      );
+      db.sqlite
+        .prepare(
+          'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json) VALUES (?,?,?,?)'
+        )
+        .run(
+          task.id,
+          goal.goalId,
+          'gc_hook',
+          JSON.stringify({
+            goalId: goal.goalId,
+            cardId: 'gc_hook',
+            threadId: task.id,
+            planVersionId: 'gp_hook',
+            cardRevision: 0,
+            admittedAt: new Date().toISOString(),
+          })
+        );
       const turn = store.createTurn(ws.id, task.id, 'Design', {
         kind: 'user',
         id: 'usr_00000000-0000-7000-8000-000000000001',
@@ -58,6 +62,7 @@ describe('Task terminal and Goal wake shared commit', () => {
       applyScopedMigrations(db);
       expect(db.sqlite.prepare('SELECT * FROM task_turn_terminal_facts').all()).toEqual([
         {
+          schema_version: 1,
           turn_id: turn.id,
           thread_id: task.id,
           payload_json: JSON.stringify({
@@ -98,19 +103,23 @@ describe('Task terminal and Goal wake shared commit', () => {
     );
     const goal = view.goal!;
     const task = store.createThread(ws.id, 'Task');
-    db.sqlite.prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)').run(
-      task.id,
-      goal.goalId,
-      'gc_1',
-      JSON.stringify({
-        goalId: goal.goalId,
-        cardId: 'gc_1',
-        threadId: task.id,
-        planVersionId: 'gp_1',
-        cardRevision: 2,
-        admittedAt: new Date().toISOString(),
-      })
-    );
+    db.sqlite
+      .prepare(
+        'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json) VALUES (?,?,?,?)'
+      )
+      .run(
+        task.id,
+        goal.goalId,
+        'gc_1',
+        JSON.stringify({
+          goalId: goal.goalId,
+          cardId: 'gc_1',
+          threadId: task.id,
+          planVersionId: 'gp_1',
+          cardRevision: 2,
+          admittedAt: new Date().toISOString(),
+        })
+      );
     const turn = store.createTurn(ws.id, task.id, 'Design', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',

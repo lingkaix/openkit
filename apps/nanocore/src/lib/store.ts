@@ -4637,7 +4637,9 @@ export class FsStore {
 
     let content: string | null;
     let scopeSchemaText: string | undefined;
+    let pageScopeId: string | undefined;
     try {
+      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
       const workspaceRoot = this.workspaceRootPath(workspaceId);
       content = readWorkspaceKnowledgePage(workspaceRoot, knowledgePageId);
       const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
@@ -4680,6 +4682,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path,
       content,
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]

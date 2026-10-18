@@ -29,7 +29,7 @@ type Artifact = z.infer<typeof ArtifactSchema>;
 const CHUNK_BYTES = 65_536;
 const TEXT_MEDIA = new Set(['text/plain', 'text/markdown', 'application/json']);
 
-/** Prepares explicitly selected exact Artifact versions under current source and destination authority. This adapter retains no access grant or open descriptor. The existing S39 writer proves every complete original before publication; a bounded text descriptor does not prove body absence. */
+/** Prepares explicitly selected exact Artifact versions under current source and destination authority. This adapter retains no access grant or open descriptor. The existing S39 writer verifies every complete original before first acceptance without retaining an extra copy; a bounded text descriptor does not prove body absence. */
 export async function prepareArtifactSourceInputs(input: {
   readonly workspaceRoot: string;
   readonly artifacts: readonly Artifact[];
@@ -82,7 +82,6 @@ export async function prepareArtifactSourceInputs(input: {
           : artifact.content.format === 'json'
             ? 'application/json'
             : 'text/plain';
-    const originalSnapshotPath = `originals/artifacts/${artifact.id}/${artifact.version}/payload`;
     const packagePath = `sources/artifacts/${artifact.id}/${artifact.version}.txt`;
     let pinned: BigIntStats | undefined;
     /** Acquires one no-follow original and closes it if any post-await admission check fails. */
@@ -283,10 +282,9 @@ export async function prepareArtifactSourceInputs(input: {
           truncated: page.truncated,
           availability:
             page.truncated || pdfEvidence?.coverage.complete === false ? 'incomplete' : 'available',
-          originalSnapshotPath,
+
           ...(pdfEvidence
             ? {
-                representationSnapshotPath: `representations/artifacts/${artifact.id}/${artifact.version}/pdf-text-layer.txt`,
                 pdfTextLayer: pdfEvidence,
               }
             : {}),
@@ -311,7 +309,6 @@ export async function prepareArtifactSourceInputs(input: {
           byteLength: deliveredBytes.byteLength,
           truncated: true,
           availability: 'unavailable',
-          originalSnapshotPath,
         };
       }
       if (handle) await assertPinned(handle, signal);
@@ -327,7 +324,7 @@ export async function prepareArtifactSourceInputs(input: {
       originalDigest: artifact.contentDigest,
       byteLength,
       mediaType,
-      originalSnapshotPath,
+
       packagePath,
       projection,
       deliveredBytes,

@@ -62,6 +62,7 @@ function writeServerConfig(dataRoot: string): void {
     join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc'),
     `${JSON.stringify(
       {
+        schemaVersion: 1,
         id: 'agent-openrouter',
         vendor: 'openrouter',
         displayName: 'Agent OpenRouter',

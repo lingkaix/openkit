@@ -1,13 +1,11 @@
-import {
-  type WorkspaceApplyResult,
-  WorkspaceApplyResultReaderSchema,
-  WorkspaceApplyResultSchema,
-} from '@openkit/app-api-schemas';
+import { type WorkspaceApplyResult, WorkspaceApplyResultSchema } from '@openkit/app-api-schemas';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import { StoredWorkspaceApplyResultV1Schema } from './workspace-sync-outcomes-v1.js';
 
 /**
  * Input used to persist one review-gated workspace apply result.
@@ -26,6 +24,7 @@ export interface ExportedWorkspaceApplyResult extends WorkspaceApplyResult {
 }
 
 interface WorkspaceApplyResultRow {
+  readonly schemaVersion: unknown;
   readonly apply_result_id: string;
   readonly workspace_id: string;
   readonly review_id: string;
@@ -53,7 +52,9 @@ export function recordWorkspaceApplyResult(
   workspaceDb: WorkspaceDb,
   input: RecordWorkspaceApplyResultInput
 ): WorkspaceApplyResult {
-  const result = WorkspaceApplyResultSchema.parse(input.result);
+  const result = StoredWorkspaceApplyResultV1Schema.parse(
+    WorkspaceApplyResultSchema.parse(input.result)
+  );
   const existing = getWorkspaceApplyResultRow(workspaceDb, result.workspaceId, result.id);
   if (existing) {
     return requireMatchingWorkspaceApplyResultReplay(existing, result, input.requestId);
@@ -75,8 +76,9 @@ export function recordWorkspaceApplyResult(
         applied_at,
         request_id,
         created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        updated_at,
+        schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       result.id,
@@ -92,7 +94,8 @@ export function recordWorkspaceApplyResult(
       result.appliedAt,
       input.requestId,
       result.appliedAt,
-      result.appliedAt
+      result.appliedAt,
+      writeRetainedV1({}).schemaVersion
     );
 
   if (inserted.changes > 0) {
@@ -202,6 +205,7 @@ export function listWorkspaceApplyResults(
     workspaceDb.sqlite
       .prepare(
         `SELECT
+          schema_version AS schemaVersion,
           apply_result_id,
           workspace_id,
           review_id,
@@ -241,6 +245,7 @@ export function listExportableWorkspaceApplyResults(
     workspaceDb.sqlite
       .prepare(
         `SELECT
+          schema_version AS schemaVersion,
           apply_result_id,
           workspace_id,
           review_id,
@@ -275,7 +280,7 @@ export function importWorkspaceApplyResults(
 ): void {
   for (const record of results) {
     const { requestId, ...publicRecord } = record;
-    const result = WorkspaceApplyResultSchema.parse(publicRecord);
+    const result = StoredWorkspaceApplyResultV1Schema.parse(publicRecord);
     if (typeof requestId !== 'string' || requestId.length === 0) {
       throw new Error('Workspace apply result import record is missing requestId.');
     }
@@ -301,8 +306,9 @@ export function importWorkspaceApplyResults(
           applied_at,
           request_id,
           created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          updated_at,
+          schema_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         result.id,
@@ -318,7 +324,8 @@ export function importWorkspaceApplyResults(
         result.appliedAt,
         requestId,
         result.appliedAt,
-        result.appliedAt
+        result.appliedAt,
+        writeRetainedV1({}).schemaVersion
       );
   }
 }
@@ -364,6 +371,7 @@ function getWorkspaceApplyResultRow(
   return workspaceDb.sqlite
     .prepare(
       `SELECT
+        schema_version AS schemaVersion,
         apply_result_id,
         workspace_id,
         review_id,
@@ -412,19 +420,21 @@ function requireMatchingWorkspaceApplyResultReplay(
  * @returns Public workspace apply result.
  */
 function mapWorkspaceApplyResultRow(row: WorkspaceApplyResultRow): WorkspaceApplyResult {
-  return WorkspaceApplyResultReaderSchema.parse({
-    id: row.apply_result_id,
-    workspaceId: row.workspace_id,
-    reviewId: row.review_id,
-    changeSetId: row.change_set_id,
-    status: row.status,
-    appliedPaths: parseArray(row.applied_paths_json),
-    skippedPaths: parseArray(row.skipped_paths_json),
-    conflictRecords: parseArray(row.conflict_records_json),
-    verification: parseArray(row.verification_json),
-    commitIds: parseArray(row.commit_ids_json),
-    appliedAt: row.applied_at,
-  });
+  return readRetainedV1(row, () =>
+    StoredWorkspaceApplyResultV1Schema.parse({
+      id: row.apply_result_id,
+      workspaceId: row.workspace_id,
+      reviewId: row.review_id,
+      changeSetId: row.change_set_id,
+      status: row.status,
+      appliedPaths: parseArray(row.applied_paths_json),
+      skippedPaths: parseArray(row.skipped_paths_json),
+      conflictRecords: parseArray(row.conflict_records_json),
+      verification: parseArray(row.verification_json),
+      commitIds: parseArray(row.commit_ids_json),
+      appliedAt: row.applied_at,
+    })
+  );
 }
 
 /**

@@ -40,6 +40,7 @@ function fixture() {
   roots.push(root);
   mkdirSync(join(root, 'config', 'providers'), { recursive: true });
   const profile = {
+    schemaVersion: 1,
     id: 'primary',
     vendor: 'openai',
     displayName: 'Primary',
@@ -277,6 +278,7 @@ describe('deployment model extension catalog', () => {
     const { root, path, profilePath } = fixture();
     const nativeId = 'openai-codex/future-subscription-model';
     const catalogOnlyProfile = {
+      schemaVersion: 1,
       id: 'primary',
       vendor,
       displayName: 'Subscription',
@@ -514,6 +516,7 @@ it.each([
 }) => {
   const { root, path, profilePath } = fixture();
   const profile = {
+    schemaVersion: 1,
     id: 'primary',
     vendor: 'openai',
     displayName: 'Primary',

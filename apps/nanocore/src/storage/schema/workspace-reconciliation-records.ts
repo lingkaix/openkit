@@ -1,9 +1,12 @@
-import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Durable workspace reconciliation records scoped by workspace. */
 export const workspaceReconciliationRecords = sqliteTable(
   'workspace_reconciliation_records',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable workspace reconciliation record id. */
     reconciliationRecordId: text('reconciliation_record_id').notNull(),
     /** Workspace that owns the reconciliation record. */

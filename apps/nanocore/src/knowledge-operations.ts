@@ -1719,6 +1719,7 @@ export function createKnowledgeOperationImplementations(
           },
         });
         return ListKnowledgeEntriesResponseSchema.parse({
+          knowledgeBaseId: snapshot.knowledgeBaseId,
           notebookRevision: snapshot.notebookRevision,
           items: snapshot.pages.map(({ path, id, content }) => ({
             ...parseOwnedKnowledgeEntry(path, id, content),

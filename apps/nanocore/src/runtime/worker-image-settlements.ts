@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ArtifactIdSchema } from '@openkit/protocol';
+import { ArtifactIdSchema, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import {
   canonicalNativeEnvironment,
   NativeEnvironmentRecordSchema,
@@ -52,14 +52,20 @@ export function readWorkerImageSettlement(
   requestId: string
 ): WorkerImageSettlement | null {
   const row = coreDb.sqlite
-    .prepare(`SELECT request_id AS requestId, operation,
+    .prepare(`SELECT schema_version AS schemaVersion, request_id AS requestId, operation,
     authored_artifact_id AS authoredArtifactId, authored_artifact_version AS authoredArtifactVersion,
     authored_content_digest AS authoredContentDigest, input_digest AS inputDigest,
     outcome, image_digest AS imageDigest, failure_code AS failureCode
     FROM worker_image_settlements WHERE request_id = ?`)
     .get(requestId) as Record<string, unknown> | undefined;
   if (!row) return null;
-  const { outcome, imageDigest, failureCode, ...identity } = row;
+  const {
+    outcome,
+    imageDigest,
+    failureCode,
+    schemaVersion: _schemaVersion,
+    ...identity
+  } = readRetainedV1(row, () => row);
   const parsed = WorkerImageSettlementSchema.safeParse({
     ...identity,
     outcome:
@@ -81,8 +87,8 @@ export function writeWorkerImageSettlement(coreDb: CoreDb, input: WorkerImageSet
   coreDb.sqlite
     .prepare(`INSERT INTO worker_image_settlements
     (request_id, operation, authored_artifact_id, authored_artifact_version, authored_content_digest,
-     input_digest, outcome, image_digest, failure_code, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING`)
+     input_digest, outcome, image_digest, failure_code, created_at, schema_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING`)
     .run(
       value.requestId,
       value.operation,
@@ -93,7 +99,8 @@ export function writeWorkerImageSettlement(coreDb: CoreDb, input: WorkerImageSet
       value.outcome.kind,
       value.outcome.kind === 'success' ? value.outcome.imageDigest : null,
       value.outcome.kind === 'failure' ? value.outcome.failureCode : null,
-      new Date().toISOString()
+      new Date().toISOString(),
+      writeRetainedV1({}).schemaVersion
     );
   if (
     JSON.stringify(readWorkerImageSettlement(coreDb, value.requestId)) !== JSON.stringify(value)
@@ -130,7 +137,7 @@ export function admitWorkerImageEnvironment(
   if (previous && JSON.stringify(previous) !== JSON.stringify(environment))
     throw new WorkerImageSettlementConflict();
   const rows = coreDb.sqlite
-    .prepare(`SELECT request_id AS requestId FROM worker_image_settlements
+    .prepare(`SELECT schema_version AS schemaVersion, request_id AS requestId FROM worker_image_settlements
     WHERE authored_artifact_id = ? AND authored_artifact_version = ? AND authored_content_digest = ? AND input_digest = ? AND outcome = 'success' AND image_digest = ?`)
     .all(
       identity.authoredArtifactId,
@@ -138,9 +145,9 @@ export function admitWorkerImageEnvironment(
       identity.authoredContentDigest,
       identity.inputDigest,
       environment.imageDigest
-    ) as { requestId: string }[];
+    ) as { schemaVersion: unknown; requestId: string }[];
   if (rows.length !== 1) throw new WorkerImageSettlementConflict();
-  const row = rows[0]!;
+  const row = readRetainedV1(rows[0]!, () => rows[0]!);
   const bytes = JSON.stringify(environment);
   coreDb.sqlite
     .prepare(
@@ -156,11 +163,13 @@ export function readAdmittedWorkerImageEnvironment(coreDb: CoreDb, imageDigest: 
   digest.parse(imageDigest);
   const rows = coreDb.sqlite
     .prepare(
-      `SELECT native_environment_json AS environment FROM worker_image_settlements WHERE image_digest = ? AND outcome = 'success' AND native_environment_json IS NOT NULL`
+      `SELECT schema_version AS schemaVersion, native_environment_json AS environment FROM worker_image_settlements WHERE image_digest = ? AND outcome = 'success' AND native_environment_json IS NOT NULL`
     )
-    .all(imageDigest) as { environment: string }[];
+    .all(imageDigest) as { schemaVersion: unknown; environment: string }[];
   if (!rows.length) return null;
-  const records = rows.map((row) => checkedImageEnvironment(JSON.parse(row.environment)));
+  const records = rows.map((row) =>
+    readRetainedV1(row, () => checkedImageEnvironment(JSON.parse(row.environment)))
+  );
   if (
     records.some(
       (record) =>

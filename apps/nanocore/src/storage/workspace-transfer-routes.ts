@@ -28,6 +28,8 @@ import {
   deriveEntityId,
   type Item,
   isEntityId,
+  readRetainedV1,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import {
@@ -87,6 +89,7 @@ import {
   importAgentEnvironmentPackageSnapshots,
   listExportableAgentEnvironmentPackageSnapshots,
 } from '../runtime/aep-snapshot-ledger.js';
+import { listExportableGoalState } from '../runtime/goal-owner.js';
 import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
@@ -167,6 +170,7 @@ import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
 import { exportRecurringPortableHistory } from './recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
+import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import {
   artifactReviews,
   threadMaterialBindings,
@@ -306,7 +310,7 @@ export function canReadWorkspaceExport(
     try {
       const rows = workspaceDb.sqlite
         .prepare(`
-        SELECT call.workspace_id AS call_workspace_id, call.family, call.operation,
+        SELECT call.schema_version AS callSchemaVersion, usage.schema_version AS schemaVersion, call.workspace_id AS call_workspace_id, call.family, call.operation,
                call.capability_id, call.status, usage.workspace_id, usage.usage_id,
                usage.category, usage.unit, usage.quantity, usage.model_id, usage.provider_ref,
                usage.source, usage.source_ids_json, usage.responsible_user_id
@@ -315,6 +319,8 @@ export function canReadWorkspaceExport(
         WHERE call.call_id = ?
       `)
         .all(deriveEntityId('cap', ['storage_export', verified.manifest.id])) as Array<{
+        callSchemaVersion: unknown;
+        schemaVersion: unknown;
         call_workspace_id: string;
         family: string;
         operation: string;
@@ -331,6 +337,10 @@ export function canReadWorkspaceExport(
         source_ids_json: string;
         responsible_user_id: string | null;
       }>;
+      for (const row of rows) {
+        readRetainedV1(row, () => undefined);
+        readRetainedV1({ schemaVersion: row.callSchemaVersion }, () => undefined);
+      }
       const expected = new Map([
         ['files', verified.checkedFiles.length],
         [
@@ -632,13 +642,7 @@ function collectWorkspaceExportRows(
         runtimeEvidence: listWorkspaceRuntimeEvidence(workspaceDb, workspaceId),
         usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
         vaultUseRecords: listExportableWorkspaceVaultUseRecords(workspaceDb, workspaceId),
-        goalState: {
-          goals: readGoalPayloads(workspaceDb, 'goals'),
-          cards: readGoalPayloads(workspaceDb, 'goal_cards'),
-          versions: readGoalPayloads(workspaceDb, 'goal_plan_versions'),
-          tasks: readGoalPayloads(workspaceDb, 'goal_card_tasks'),
-          terminalFacts: readGoalPayloads(workspaceDb, 'task_turn_terminal_facts'),
-        },
+        goalState: listExportableGoalState(workspaceDb),
         workerCheckpoints: listExportableWorkerCheckpoints(workspaceDb, workspaceId),
         workspaceApplyPlans: listExportableWorkspaceApplyPlans(workspaceDb, workspaceId),
         workspaceApplyResults: listExportableWorkspaceApplyResults(workspaceDb, workspaceId),
@@ -716,6 +720,7 @@ function importWorkspaceDatabaseRows({
           .values(
             snapshot.artifactReviews.map(({ materialProposal, ...review }) => ({
               ...review,
+              schemaVersion: writeRetainedV1({}).schemaVersion,
               rangeFeedback: review.rangeFeedback ?? null,
               candidateSelections: review.candidateSelections,
               proposalMaterialId: materialProposal?.materialId ?? null,
@@ -754,31 +759,55 @@ function importWorkspaceDatabaseRows({
     importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
     workspaceDb.sqlite.transaction(() => {
       for (const goal of snapshot.goalState.goals)
-        workspaceDb.sqlite.prepare('INSERT INTO goals VALUES (?,?,?)').run(
-          goal.goalId,
-          goal.threadId,
-          JSON.stringify({
-            ...goal,
-            responsibleUserId: ownerUserId,
-            responsibleActorContext: { kind: 'session', userId: ownerUserId },
-          })
-        );
+        workspaceDb.sqlite
+          .prepare(
+            'INSERT INTO goals (goal_id,thread_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(
+            goal.goalId,
+            goal.threadId,
+            JSON.stringify({
+              ...goal,
+              responsibleUserId: ownerUserId,
+              responsibleActorContext: { kind: 'session', userId: ownerUserId },
+            }),
+            writeRetainedV1({}).schemaVersion
+          );
       for (const card of snapshot.goalState.cards)
         workspaceDb.sqlite
-          .prepare('INSERT INTO goal_cards VALUES (?,?,?)')
-          .run(card.cardId, card.goalId, JSON.stringify(card));
+          .prepare(
+            'INSERT INTO goal_cards (card_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(card.cardId, card.goalId, JSON.stringify(card), writeRetainedV1({}).schemaVersion);
       for (const version of snapshot.goalState.versions)
         workspaceDb.sqlite
-          .prepare('INSERT INTO goal_plan_versions VALUES (?,?,?)')
-          .run(version.planVersionId, version.goalId, JSON.stringify(version));
+          .prepare(
+            'INSERT INTO goal_plan_versions (plan_version_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(
+            version.planVersionId,
+            version.goalId,
+            JSON.stringify(version),
+            writeRetainedV1({}).schemaVersion
+          );
       for (const link of snapshot.goalState.tasks)
         workspaceDb.sqlite
-          .prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)')
-          .run(link.threadId, link.goalId, link.cardId, JSON.stringify(link));
+          .prepare(
+            'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json,schema_version) VALUES (?,?,?,?,?)'
+          )
+          .run(
+            link.threadId,
+            link.goalId,
+            link.cardId,
+            JSON.stringify(link),
+            writeRetainedV1({}).schemaVersion
+          );
       for (const fact of snapshot.goalState.terminalFacts)
         workspaceDb.sqlite
-          .prepare('INSERT INTO task_turn_terminal_facts VALUES (?,?,?)')
-          .run(fact.id, fact.threadId, JSON.stringify(fact));
+          .prepare(
+            'INSERT INTO task_turn_terminal_facts (turn_id,thread_id,payload_json,schema_version) VALUES (?,?,?,?)'
+          )
+          .run(fact.id, fact.threadId, JSON.stringify(fact), writeRetainedV1({}).schemaVersion);
     })();
     importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
     importGenerativePresentations({
@@ -967,7 +996,7 @@ export function importVerifiedWorkspace({
       // The canonical Store writer runs after this stage and preserves the admitted private fields.
       writeFileAtomic(
         join(root, 'turn.json'),
-        `${JSON.stringify({ ...turn, items: [], requiredFeatures: ['openkit.work-observations.v1'], captureCoverage: snapshot.turnCaptureCoverage.get(turnId) }, null, 2)}\n`
+        `${JSON.stringify(writeRetainedV1({ ...turn, items: [], requiredFeatures: ['openkit.work-observations.v1'], captureCoverage: snapshot.turnCaptureCoverage.get(turnId) }), null, 2)}\n`
       );
       writeFileAtomic(join(root, 'observations.jsonl'), text);
     }
@@ -1212,7 +1241,10 @@ export function createVerifiedWorkspaceExport({
   const turnObservations = new Map<string, string>();
   for (const turn of turns) {
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
-    const rawTurn = JSON.parse(readCanonicalTextFile(join(root, 'turn.json')));
+    const rawTurn = readRetainedV1(
+      JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
+      StoredTurnV1Schema.parse
+    );
     const declared =
       Array.isArray(rawTurn.requiredFeatures) &&
       rawTurn.requiredFeatures.includes('openkit.work-observations.v1');
@@ -1726,11 +1758,4 @@ export function registerWorkspaceTransferRoutes({
       staged?.remove();
     }
   });
-}
-
-/** Captures current Goal-family bytes on the export transaction, without interpreting retired data. */
-function readGoalPayloads(db: WorkspaceDb, table: string): unknown[] {
-  return (
-    db.sqlite.prepare(`SELECT payload_json FROM ${table}`).all() as { payload_json: string }[]
-  ).map((row) => JSON.parse(row.payload_json) as unknown);
 }

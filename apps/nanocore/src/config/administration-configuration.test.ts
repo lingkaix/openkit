@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, writeRetainedV1 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
@@ -87,7 +87,7 @@ function fixture() {
   mkdirSync(join(dataRoot, 'config/providers'), { recursive: true });
   writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
   const providerPath = join(dataRoot, 'config/providers/catalog.provider.jsonc');
-  writeFileSync(providerPath, JSON.stringify(provider));
+  writeFileSync(providerPath, JSON.stringify(writeRetainedV1(provider)));
   const logicalModel = {
     id: 'reasoning',
     displayName: 'Reasoning',

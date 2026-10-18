@@ -411,6 +411,11 @@ test('runs actual App, restored NanoHost and Worker stages in their mandatory or
   assert.equal(f.calls.filter((op) => op === 'app-update.start').length, 1);
   assert.equal(f.calls.filter((op) => op === 'nanohost:start').length, 1);
   assert.equal(f.calls.filter((op) => op === 'worker-environment.activate').length, 1);
+  const retained = JSON.parse(
+    await fs.readFile(path.join(f.evidence, 'components-result.json'), 'utf8')
+  );
+  assert.equal(retained.schemaVersion, 1);
+  assert.deepEqual(retained, { ...out, schemaVersion: 1 });
   assert.equal(out.components.app.reference, `${f.p.invocationReference}:app`);
   assert.equal(out.components.nanohost.reference, `${f.p.invocationReference}:nanohost`);
   for (const name of [

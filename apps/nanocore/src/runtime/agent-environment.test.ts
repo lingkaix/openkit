@@ -2717,7 +2717,7 @@ describe('public network AEP admission', () => {
       );
       writeFileSync(
         join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc'),
-        JSON.stringify(provider)
+        JSON.stringify({ ...provider, schemaVersion: 1 })
       );
       writeFileSync(join(dataRoot, 'config', 'gateway.jsonc'), JSON.stringify(gatewayConfig));
       const version = manager.current().version;

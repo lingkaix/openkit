@@ -10,7 +10,7 @@ import {
   validateAgentEnvironmentPackageForBackend,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import { readRetainedV1, responsibleUserIdForActor } from '@openkit/protocol';
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   WorkerRuntimeRawStreamManifestSchema,
@@ -3306,6 +3306,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: new Date().toISOString(),
         workspaceId: session.environmentPackage.scope.workspaceId,
       });
+      const retainedBinding = this.coreDb.sqlite
+        .prepare(
+          'SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        )
+        .get(session.agentSessionRuntimeBindingId);
+      if (retainedBinding) readRetainedV1(retainedBinding, () => retainedBinding);
       this.coreDb.sqlite
         .prepare(
           'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
@@ -3991,9 +3997,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Record<string, string> {
     const row = this.coreDb.sqlite
       .prepare(
-        'SELECT runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
       )
-      .get(session.agentSessionRuntimeBindingId) as { versions: string | null } | undefined;
+      .get(session.agentSessionRuntimeBindingId) as
+      | { schemaVersion: unknown; versions: string | null }
+      | undefined;
+    if (row) readRetainedV1(row, () => row);
     try {
       const versions = JSON.parse(row?.versions ?? 'null') as Array<{
         targetEnvVarName: string;

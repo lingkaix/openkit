@@ -16,6 +16,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import {
   type WorkerLineage,
   WorkerLineageSchema,
@@ -180,7 +181,9 @@ export function remintWorkerRuntimeProvenanceIndex(
   if (lines.length === 0) {
     throw new Error('Runtime provenance index is empty.');
   }
-  const rows = lines.map((line) => WorkerRuntimeOriginIndexRowSchema.parse(JSON.parse(line)));
+  const rows = lines.map((line) =>
+    readRetainedV1(JSON.parse(line), (value) => WorkerRuntimeOriginIndexRowSchema.parse(value))
+  );
   if (rows.some((row) => !isDeepStrictEqual(row.lineage, sourceLineage))) {
     throw new Error('Runtime provenance index lineage does not match its source package.');
   }
@@ -191,19 +194,21 @@ export function remintWorkerRuntimeProvenanceIndex(
   );
   const remintedText = `${rows
     .map((row) =>
-      JSON.stringify({
-        ...row,
-        lineage: targetLineage,
-        runtimeOriginRef: row.runtimeOriginRef
-          ? (runtimeOriginRefs.get(row.runtimeOriginRef) ?? null)
-          : null,
-        parentRuntimeOriginRef: row.parentRuntimeOriginRef
-          ? opaqueRef('rto', `${targetLineage.packageSnapshotId}:${row.parentRuntimeOriginRef}`)
-          : null,
-        runtimeTurnRef: row.runtimeTurnRef
-          ? opaqueRef('rtt', `${targetLineage.packageSnapshotId}:${row.runtimeTurnRef}`)
-          : null,
-      })
+      JSON.stringify(
+        writeRetainedV1({
+          ...row,
+          lineage: targetLineage,
+          runtimeOriginRef: row.runtimeOriginRef
+            ? (runtimeOriginRefs.get(row.runtimeOriginRef) ?? null)
+            : null,
+          parentRuntimeOriginRef: row.parentRuntimeOriginRef
+            ? opaqueRef('rto', `${targetLineage.packageSnapshotId}:${row.parentRuntimeOriginRef}`)
+            : null,
+          runtimeTurnRef: row.runtimeTurnRef
+            ? opaqueRef('rtt', `${targetLineage.packageSnapshotId}:${row.runtimeTurnRef}`)
+            : null,
+        })
+      )
     )
     .join('\n')}\n`;
   return {
@@ -259,9 +264,13 @@ export async function importWorkerRuntimeProvenance(
     lineage.packageSnapshotId
   );
   const existingRawBundle = input.workspaceDb.sqlite
-    .prepare('SELECT created_at FROM evidence_bundles WHERE evidence_bundle_id = ?')
-    .get(rawBundleId) as { created_at: string } | undefined;
-  const recordedAt = existingRawBundle?.created_at ?? input.collectedAt;
+    .prepare(
+      'SELECT schema_version AS schemaVersion, created_at FROM evidence_bundles WHERE evidence_bundle_id = ?'
+    )
+    .get(rawBundleId) as { schemaVersion: unknown; created_at: string } | undefined;
+  const recordedAt = existingRawBundle
+    ? readRetainedV1(existingRawBundle, () => existingRawBundle.created_at)
+    : input.collectedAt;
   const verified = await verifyRuntimeProvenance(input, lineage);
   const gatewayCalls = listWorkspaceCapabilityCalls(input.workspaceDb, lineage.workspaceId).filter(
     (call) =>
@@ -288,7 +297,9 @@ export async function importWorkerRuntimeProvenance(
   const rawRoot = join(input.workspaceRoot, 'evidence', 'backend', rawBundleId);
   await adoptEvidenceDirectory(rawRoot, verified.rawFiles);
   const normalizedBytes = complete
-    ? Buffer.from(`${verified.normalizedRows.map((row) => JSON.stringify(row)).join('\n')}\n`)
+    ? Buffer.from(
+        `${verified.normalizedRows.map((row) => JSON.stringify(writeRetainedV1(row))).join('\n')}\n`
+      )
     : null;
   const normalizedRoot = join(input.workspaceRoot, 'evidence', 'bundles', indexBundleId);
   if (normalizedBytes) {

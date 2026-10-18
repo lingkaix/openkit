@@ -1,12 +1,19 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { checkGoalCommandIntent, executeGoalOperation } from './goal-owner.js';
+import { considerGoal } from './goal-coordinator.js';
+import {
+  advanceGoalRevision,
+  checkGoalCommandIntent,
+  executeGoalOperation,
+  listExportableGoalState,
+  readGoalView,
+} from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
 import { commandInputHash } from './idempotent-command.js';
 import { respondRecordedApproval } from './pending-request-flow.js';
@@ -125,6 +132,7 @@ describe('Goal durable owner', () => {
 describe('Proposed Plan eligibility', () => {
   async function fixture() {
     const root = mkdtempSync(join(tmpdir(), 'goal-plan-'));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
     const store = new FsStore({ dataRoot: root });
     const ws = store.createWorkspace('Plan eligibility');
     const db = openWorkspaceDb(root, ws.id);
@@ -225,6 +233,153 @@ describe('Proposed Plan eligibility', () => {
       consume,
     };
   }
+
+  const retainedFamilies = [
+    'goals',
+    'goal_cards',
+    'goal_plan_versions',
+    'goal_card_tasks',
+  ] as const;
+  async function retainedFixture(table: (typeof retainedFamilies)[number]) {
+    const f = await fixture();
+    onTestFinished(() => f.db.sqlite.close());
+    if (table === 'goal_plan_versions' || table === 'goal_card_tasks') {
+      const plan = await f.propose();
+      if (table === 'goal_card_tasks') {
+        await f.resolve(plan.pendingRequestId);
+        await f.consume(plan.pendingRequestId);
+        const task = f.store.createThread(f.scope.workspaceId, 'Retained Task');
+        f.db.sqlite.transaction(() =>
+          reserveGoalTask(
+            f.store,
+            f.db,
+            {
+              goalId: f.scope.goalId,
+              cardId: f.card.cardId,
+              planVersionId: plan.planVersionId,
+              cardRevision: 0,
+              intentRevision: 0,
+              withinCurrentIntent: true,
+              withinPermittedAdjustments: true,
+              rationale: 'Design within the approved commitment.',
+            },
+            task.id
+          )
+        )();
+      }
+    }
+    return f;
+  }
+
+  it.each(
+    retainedFamilies
+  )('writes %s v1 and preserves descriptive retained content', async (table) => {
+    const f = await retainedFixture(table);
+    const row = f.db.sqlite
+      .prepare(`SELECT schema_version AS schemaVersion, payload_json FROM ${table} WHERE goal_id=?`)
+      .get(f.scope.goalId) as { schemaVersion: number; payload_json: string };
+    expect(row.schemaVersion).toBe(1);
+    expect(listExportableGoalState(f.db).goals).toHaveLength(1);
+    const payload = JSON.parse(row.payload_json);
+    payload.futureNote = 'retained';
+    if (table === 'goals') payload.intentHistory[0].futureNote = 'retained history';
+    const annotatedBytes = JSON.stringify(payload);
+    f.db.sqlite
+      .prepare(`UPDATE ${table} SET payload_json=? WHERE goal_id=?`)
+      .run(annotatedBytes, f.scope.goalId);
+
+    const view = readGoalView(f.store, f.db, f.scope.goalId);
+    expect(view.goal?.intent).toBe('Produce a design');
+    expect(view.cards[0]?.description).toBe('Design the schema');
+    if (table === 'goals') {
+      advanceGoalRevision(f.db, f.scope.goalId);
+      f.store.updateTurn(f.coordinator.coordinatorTurnId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      expect(considerGoal(f.store, f.db, f.scope.goalId)?.agentId).toBe('goal-coordinator');
+    } else if (table === 'goal_cards') {
+      await executeGoalOperation(
+        'goal.card.edit',
+        {
+          ...f.scope,
+          requestId: f.requestId(),
+          cardId: f.card.cardId,
+          expectedRevision: 0,
+          description: 'Design with retained context',
+          priority: 2,
+        },
+        f.human,
+        f.store,
+        f.db
+      );
+    } else if (table === 'goal_plan_versions') {
+      expect(view.versions[0]?.commitment.boundaries).toBe('No deployment');
+    } else {
+      expect(view.tasks[0]).toMatchObject({
+        cardId: f.card.cardId,
+        missing: false,
+        admittedAt: null,
+      });
+    }
+    const retained = f.db.sqlite
+      .prepare(`SELECT payload_json FROM ${table} WHERE goal_id=?`)
+      .get(f.scope.goalId) as { payload_json: string };
+    expect(JSON.parse(retained.payload_json).futureNote).toBe('retained');
+    if (table === 'goals')
+      expect(JSON.parse(retained.payload_json).intentHistory[0].futureNote).toBe(
+        'retained history'
+      );
+    if (table === 'goal_plan_versions' || table === 'goal_card_tasks')
+      expect(retained.payload_json).toBe(annotatedBytes);
+  });
+
+  it.each(
+    retainedFamilies
+  )('refuses %s version 2 before malformed JSON or overwrite', async (table) => {
+    const f = await retainedFixture(table);
+    f.db.sqlite
+      .prepare(`UPDATE ${table} SET schema_version=2, payload_json=? WHERE goal_id=?`)
+      .run('{', f.scope.goalId);
+    expect(() => readGoalView(f.store, f.db, f.scope.goalId)).toThrow(
+      'Unsupported retained record format.'
+    );
+    expect(() => listExportableGoalState(f.db)).toThrow('Unsupported retained record format.');
+    if (table === 'goals') {
+      expect(() => advanceGoalRevision(f.db, f.scope.goalId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => considerGoal(f.store, f.db, f.scope.goalId)).toThrow(
+        'Unsupported retained record format.'
+      );
+    }
+    if (table === 'goal_cards') {
+      await expect(
+        executeGoalOperation(
+          'goal.card.edit',
+          {
+            ...f.scope,
+            requestId: f.requestId(),
+            cardId: f.card.cardId,
+            expectedRevision: 0,
+            description: 'Must not replace retained content',
+            priority: 2,
+          },
+          f.human,
+          f.store,
+          f.db
+        )
+      ).rejects.toThrow('Unsupported retained record format.');
+    }
+    expect(
+      f.db.sqlite
+        .prepare(
+          `SELECT schema_version AS schemaVersion, payload_json FROM ${table} WHERE goal_id=?`
+        )
+        .get(f.scope.goalId)
+    ).toEqual({ schemaVersion: 2, payload_json: '{' });
+  });
+
   for (const edit of ['intent', 'card'] as const)
     for (const timing of ['before-resolution', 'after-grant'] as const)
       it(`${edit} edit ${timing} preserves exact proposed bytes and eligibility`, async () => {
@@ -593,7 +748,9 @@ describe('Proposed Plan eligibility', () => {
         admittedAt: new Date().toISOString(),
       };
       f.db.sqlite
-        .prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)')
+        .prepare(
+          'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json) VALUES (?,?,?,?)'
+        )
         .run(link.threadId, link.goalId, link.cardId, JSON.stringify(link));
       const before = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
       let interrupts = 0;

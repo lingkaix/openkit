@@ -34,6 +34,40 @@ const workspacePatchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
 const workspacePatchDigest = `sha256:${createHash('sha256').update(workspacePatchText).digest('hex')}`;
 
 describe('workspace sync records', () => {
+  it.each([
+    'workspace_input_snapshots',
+    'workspace_materialization_records',
+    'backend_workspace_handles',
+    'worker_output_manifests',
+    'workspace_change_sets',
+    'staged_workspace_reviews',
+  ])('refuses unknown %s versions before JSON decode or import replay', (table) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-format-'));
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyScopedMigrations(db);
+      const fixture = workspaceSyncImportFixture();
+      importWorkspaceSyncRecords(db, fixture);
+      db.sqlite.prepare(`UPDATE ${table} SET schema_version = 2, payload_json = ?`).run('{');
+      db.sqlite.exec(
+        `CREATE TRIGGER reject_unknown_sync_update BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(FAIL, 'Unsupported sync row reached UPDATE'); END`
+      );
+      expect(() => listExportableWorkspaceSyncRecords(db, db.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => importWorkspaceSyncRecords(db, fixture)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(
+        db.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion, payload_json FROM ${table}`)
+          .get()
+      ).toEqual({ schemaVersion: 2, payload_json: '{' });
+    } finally {
+      db.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
   it('preserves public fixture literals through canonical records, patch Artifacts and reopened public reads', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-public-fixture-'));
     const store = createDemoStore({ dataRoot });
@@ -190,6 +224,9 @@ describe('workspace sync records', () => {
       );
       const retained = new Map<string, string>();
       for (const table of tables) {
+        expect(
+          db.sqlite.prepare(`SELECT schema_version AS schemaVersion FROM ${table}`).get()
+        ).toEqual({ schemaVersion: 1 });
         const row = db.sqlite.prepare(`SELECT payload_json FROM ${table}`).get() as {
           payload_json: string;
         };
