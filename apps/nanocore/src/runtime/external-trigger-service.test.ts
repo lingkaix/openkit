@@ -1,23 +1,26 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AdmitExternalTriggerResponseSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
+import { createOperationInvocation } from '../operation-composition.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { findExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempt-records.js';
@@ -26,6 +29,7 @@ import {
   type ExternalTriggerServiceInput,
 } from './external-trigger-service.js';
 import { inspectExternalTriggerAdmission } from './external-trigger-source.js';
+import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
 import type { TurnExecutor } from './types.js';
 
 // This suite decides source admission and durable publication only. Dispatch has its own real-owner suite.
@@ -67,7 +71,8 @@ function fixture(options: { privateSource?: boolean } = {}) {
   const mutationAdmission = new WorkspaceMutationAdmission();
   let instant = '2026-10-18T00:00:00.000Z';
   const schedules = new AutomationStore(db, mutationAdmission, () => instant);
-  const manifest = createTestAgentSetup().manifest;
+  const agentSetup = createTestAgentSetup();
+  const manifest = agentSetup.manifest;
   const created = schedules.createAutomation(userId, {
     name: 'Poll',
     workspaceId: workspace.id,
@@ -111,7 +116,6 @@ function fixture(options: { privateSource?: boolean } = {}) {
     })!;
     const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId!);
     const agentSessionId = allocateEntityId('as');
-    const packageSnapshotId = `snapshot_${entry.turnId}`;
     store.createAgentSession({
       id: agentSessionId,
       agentId: manifest.id,
@@ -122,13 +126,33 @@ function fixture(options: { privateSource?: boolean } = {}) {
       createdAt: instant,
       updatedAt: instant,
     });
-    store.createTurn(workspace.id, thread.id, entry.turnInput, schedule.actor, snapshot.version, {
-      turnId: entry.turnId,
-      status: 'running',
-      agentId: manifest.id,
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      entry.turnInput,
+      schedule.actor,
+      snapshot.version,
+      {
+        turnId: entry.turnId,
+        status: 'running',
+        agentId: manifest.id,
+        agentSessionId,
+        executorKind: 'worker',
+      }
+    );
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      agentSetup,
       agentSessionId,
-      executorKind: 'worker',
+      triggerActor: schedule.actor,
+      userId,
+      backend: { kind: 'openshell' },
+      createdAt: instant,
+      requestId: 'req_external_poll',
+      turn,
+      workspaceCwd: '/workspace/output',
+      workspaceRoots: [],
     });
+    const packageSnapshotId = environmentPackage.snapshotId;
     recordTestExecutionAttempt(db, {
       entry,
       attemptId: testEntityId('attempt', entry.turnId),
@@ -145,6 +169,7 @@ function fixture(options: { privateSource?: boolean } = {}) {
       agentSessionId,
       packageSnapshotId,
       triggerActor: schedule.actor,
+      environmentPackage,
     };
   }
   const source = poll();
@@ -196,6 +221,81 @@ function queueCount(db: CoreDb): number {
 }
 
 describe('bounded scheduled poll event admission', () => {
+  it('joins the native Work Tool to isolated admission and refuses substituted scope and human entry', async () => {
+    const f = fixture();
+    const workspaceDb = openWorkspaceDb(f.root, f.source.workspaceId);
+    applyScopedMigrations(workspaceDb);
+    try {
+      const services = {
+        coreDb: f.db,
+        inflightCommands: new WeakMap(),
+        runtimeConfig: () => f.dependencies.snapshot,
+        turnExecutor: f.dependencies.turnExecutor,
+        providerCredentialResolver: f.dependencies.providerCredentialResolver,
+        workerPlacement: f.dependencies.workerPlacement,
+      };
+      const input = {
+        coreDb: f.db,
+        store: f.store,
+        workspaceDb,
+        environmentPackage: f.source.environmentPackage,
+        automationStore: f.schedules,
+        turnStartServices: services,
+        knowledgeCallId: 'capability-event-1',
+      };
+      const args = { eventKey: 'email/native-1', input: 'Handle only the selected application.' };
+      const call = async (arguments_: Record<string, unknown>) => {
+        const result = await dispatchOpenkitWorkTool(input, 'automation_event-admit', arguments_);
+        return AdmitExternalTriggerResponseSchema.parse(
+          'structuredContent' in result ? result.structuredContent : undefined
+        );
+      };
+      const first = await call(args);
+      const second = await call({
+        ...args,
+        eventKey: 'email/native-2',
+      });
+      const replay = await call(args);
+      expect(first).toMatchObject({
+        scheduleId: f.schedule.id,
+        sourceTurnId: f.source.turnId,
+        duplicate: false,
+      });
+      expect(second.threadId).not.toBe(first.threadId);
+      expect(replay).toEqual({ ...first, duplicate: true });
+      await expect(
+        dispatchOpenkitWorkTool(input, 'automation_event-admit', {
+          ...args,
+          threadId: second.threadId,
+        })
+      ).rejects.toMatchObject({ code: 'bound_input_conflict' });
+      const invoke = createOperationInvocation({
+        coreDb: f.db,
+        store: f.store,
+        automationStore: f.schedules,
+        turnStartServices: services,
+        workspaceMutationAdmission: f.schedules.mutationAdmission,
+      });
+      await expect(
+        invoke(
+          'automation.event-admit',
+          {
+            ...args,
+            workspaceId: f.source.workspaceId,
+            threadId: f.source.threadId,
+            turnId: f.source.turnId,
+          },
+          { kind: 'public', actor: { kind: 'local', userId: f.userId } }
+        )
+      ).rejects.toMatchObject({
+        code: 'workspace_access_denied',
+      });
+      expect(queueCount(f.db)).toBe(3);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('isolates two events in fresh shared child Threads while the first case is pending', async () => {
     const f = fixture();
     const [first, replay] = await Promise.all([

@@ -24,6 +24,7 @@ import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
 import { createTaskConversationOperationImplementations } from './conversation-operation-implementations.js';
 import { createDiagnosticsOperationImplementations } from './diagnostics/diagnostics-operations.js';
+import { createExternalTriggerOperationImplementations } from './external-trigger-operations.js';
 import {
   createGenerativeUiOperationImplementations,
   createRemainingKernelOperationImplementations,
@@ -216,6 +217,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       observation: dependencies,
     }),
     createAutomationOperationImplementations(dependencies),
+    createExternalTriggerOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),
     createWorkspaceSyncOperationImplementations({

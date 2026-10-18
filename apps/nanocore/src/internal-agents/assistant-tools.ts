@@ -35,7 +35,8 @@ export function createAssistantTools(input: {
       };
     return { isError, content: [{ type: 'text', text }] };
   };
-  const native = (name: string, id: JsonOperationId, propose?: 'task' | 'goal'): AgentTool => {
+  const native = (id: JsonOperationId, propose?: 'task' | 'goal'): AgentTool => {
+    const name = id;
     const definition = OPERATION_DEFINITIONS[id];
     const schema = operationModelInput(definition.inputSchema, [
       'workspaceId',
@@ -147,17 +148,17 @@ export function createAssistantTools(input: {
   });
   return {
     tools: [
-      native('workspace.state.read', 'workspace.dashboard'),
+      native('workspace.dashboard'),
       input.history,
-      native('knowledge.ask', 'knowledge.ask'),
-      native('knowledge.tell', 'knowledge.tell'),
-      native('workspace.create', 'workspace.create'),
-      native('task.start', 'task.start', 'task'),
-      native('goal.create', 'goal.create', 'goal'),
-      native('goal.intent.revise', 'goal.intent.revise'),
-      native('goal.card.create', 'goal.card.create'),
-      native('goal.card.edit', 'goal.card.edit'),
-      native('goal.card.cancel', 'goal.card.cancel'),
+      native('knowledge.ask'),
+      native('knowledge.tell'),
+      native('workspace.create'),
+      native('task.start', 'task'),
+      native('goal.create', 'goal'),
+      native('goal.intent.revise'),
+      native('goal.card.create'),
+      native('goal.card.edit'),
+      native('goal.card.cancel'),
       ...[
         'memory.page.read',
         'memory.page.create',

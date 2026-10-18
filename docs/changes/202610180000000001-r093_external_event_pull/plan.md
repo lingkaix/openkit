@@ -2,7 +2,7 @@
 type: change-plan
 status: in-progress
 date: "2026-10-18"
-branch: lane/go
+branch: lane/go-r093-naming-stack
 ---
 # Governed External Events Through Scheduled Pull
 
@@ -24,7 +24,7 @@ R093 admits one isolated bounded Worker case for each observed external event th
 
 ## Scope And Ablation
 
-Reuse RecurringSchedule unchanged. ExternalTriggerAdmission retains only scheduleId (key scope), eventKey (source duplicate identity), sourceTurnId (original poll lineage) and queueEntryId (ordinary work authority). One context-bound event-admit operation supplies the missing admission bridge. No source field, target Thread field, event queue, per-poll uniqueness, retry runner, recovery owner, automatic Goal creation or B01-specific type is added. The canonical operation follows the accepted naming grammar. Naming-held integration paths wait for the L-ID landing.
+Reuse RecurringSchedule unchanged. ExternalTriggerAdmission retains only scheduleId (key scope), eventKey (source duplicate identity), sourceTurnId (original poll lineage) and queueEntryId (ordinary work authority). One context-bound event-admit operation supplies the missing admission bridge. No source field, target Thread field, event queue, per-poll uniqueness, retry runner, recovery owner, automatic Goal creation or B01-specific type is added. The canonical operation follows the accepted naming grammar. The coordinator authorized a separate stack over the current L-ID naming branch before its landing; final publication still waits for naming on main.
 
 ## Verification And Completion
 
@@ -37,3 +37,7 @@ The storage builder owns the Core SQL/Drizzle join and its transaction/reopen ch
 ## Checkpoint
 
 Core storage and isolated admission helpers are merged. Focused checks cover 43 storage/scheduler cases, 23 new admission cases, 23 provider-readiness cases, 13 portable-history cases and two closure cases. These are implementation evidence, not the exact landing gate. Existing Task admission has one base fixture failure because Worker Context Package storage admission is absent; the required L-ID naming branch also changes that test, so this lane leaves its bytes to that merge. Operation and native Tool composition, naming-held guides, exact complete-suite gate and final review wait for naming on main. The B01 recipe contains the R093 alternative; live execution remains unverified. Preliminary independent review found a reachable stale-cache dispatch overwrite after failed Turn persistence. The correction fences dispatch and cancellation before their Store mutations while preserving canonical duplicate reads and export. Focused regressions cover missing publication, cache disagreement, zero preparation and cancellation without canonical changes; final complete-module acceptance remains pending.
+
+## Naming Stack
+
+The coordinator authorized the separate stack on 2026-10-18. The original reviewed lane/go head e6eae750 remains unchanged. The stack merges main and the naming branch, composes automation.event-admit through native operation admission and the built-in Worker Tool, passes the existing scheduler and ordinary Turn-start dependencies from App composition, and aligns guides and generated projections. The generated operator CLI merge conflict is resolved only through the repository generator under explicit coordinator authorization. Fresh independent delta review and complete affected-directory gate remain required; no landing or branch CI starts before naming is on main.

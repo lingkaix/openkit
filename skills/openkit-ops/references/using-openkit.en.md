@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Using OpenKit
 
-Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP guide, search, describe and call to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
+Use Web for ordinary conversation, delegated work, human decisions and outputs. An external Agent uses remote MCP `openkit_guide`, `openkit_search`, `openkit_describe` and `openkit_call` to discover and invoke supported operations; administrators can use this operations package's CLI. Both operate the same durable product records and current user authority.
 
 Select the intended Workspace and inspect the data sources selected for the task, Agent and model before a source task. Quick conversation is for short assistance; use a Worker task for bounded execution and Goal Mode for planned work requiring coordination. In the current Web composer, the Worker target may be presented as **New Shard + Worker**, which creates a linked execution Thread. Follow that receiving Thread rather than treating submission as completion.
 
@@ -359,3 +359,11 @@ Source, Git, evidence and backup bytes remain retained under their existing rule
 To retain an exact literal document for later personal Knowledge work, use `memory.source.register` with `kind: document`, a title and the text. The Source belongs to your authenticated User and remains separate from the Memory notebook. Use `memory.source.list` and `memory.source.read` to inspect it. The retained text and digest are immutable; a retry with the same request id returns the same Source, while changed input conflicts. This operation supplies no conversation, URL or file provenance, creates no saved Memory page or candidate, and starts no model or automatic capture.
 
 To cite that Source in an explicitly authored page, put `source:<sourceId>` in its OKF `source_refs` list. You can also use `source:<sourceId>@<contentDigest>` to require the returned exact digest. The returned `contentDigest` includes `sha256:`; the pinned form is `source:ks_<uuid>@sha256:<64-hex-digest>`. Both forms require a currently admitted Source in your own registry; a raw Source id without `source:` is not a citation. These citations do not request generation or a Source-backed Proposal/Review. Retaining a Source does not enable automatic recall or internal semantic maintenance. Inspection of another User's Source collection remains unjoined.
+
+### External Events Through Scheduled Polls
+
+Use a bounded poll Skill on an existing recurring schedule to read a source through its admitted MCP tools. Give each source event a stable eventKey. The schedule already scopes that key; if one poll reads several sources, include the source name in the key. The live scheduled Worker calls automation.event-admit with that key and an explicit case brief. This is a Worker Tool operation; a human operator must not invoke it as a substitute for polling.
+
+Each new event gets its own Workspace-visible Worker Thread, conversation and storage. Repeated observation returns the original queue and Turn references and does not launch another case. The poll Turn is lineage only. Each case keeps the ordinary Worker Policy and captured human effect approvals; event admission grants no send, offer, Goal creation or Plan approval. Imported history is inert.
+
+Inspect an unknown, failed or incomplete accepted result through the existing poll Items, queue and Turn views. Do not choose a new key to relaunch that accepted event or reconstruct its history. If damaged accepted work blocks a queue entry, the existing queue cancel action releases it. Use the existing pause or delete controls to stop future polling; they do not undo accepted case work or an external effect. Push subscriptions and a separate event retry or recovery engine are outside this capability.

@@ -173,7 +173,7 @@ it.each([
             ? {
                 mode: 'enabled',
                 protocol: 'openkit-worker-capability-v1',
-                routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+                routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
               }
             : { mode: 'disabled', routes: [] },
         control: {

@@ -96,7 +96,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
   },
-  'provider-subscription.account-login-start': {
+  'provider-subscription.login-start': {
     description: 'Start device-code login for one provider-subscription account.',
     inputSchema: StartProviderSubscriptionAccountLoginRequestSchema.extend(pairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -109,7 +109,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
   },
-  'provider-subscription.account-login-cancel': {
+  'provider-subscription.login-cancel': {
     description: 'Cancel one exact provider-subscription login interaction.',
     inputSchema: CancelProviderSubscriptionAccountLoginRequestSchema.extend(pairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,

@@ -513,6 +513,8 @@ Catalog Skill history reads exact retained provenance and file inventory, previe
 
 Skill history hides retained versions, file previews, downloads and comparisons when the current read fails. Removal and byte deletion disable another attempt after an error and offer read-only inspection; a lost or invalid response is an unknown result. Inventory comparisons show each file path, size and digest. This source preparation remains unpublished until the accepted P20 contract lands and the integrated Web checks finish.
 
+Provider account login screens call the shared canonical `provider-subscription.login-start` and `provider-subscription.login-cancel` operations without local aliases.
+
 ### Exact Review feedback and candidate use
 
 The Artifact Review uses the exact Material proposal base for optional Markdown/plain-text range feedback. Select the original source range, inspect its revision, digest and text, and submit it with the existing whole-revision decision. Binary candidates show their recorded original metadata and exact-version download rather than a text diff. Select candidate records your exact choice and optional reason without accepting or starting work. Use in next Turn opens the source conversation with the exact candidate in its draft; Send is still explicit. An unavailable or changed candidate cannot substitute a newer version. Existing uncertain message submissions retain their original draft and must finish before another candidate handoff. The [Work Resource owner](../../docs/specs/20260713-work_resource_interaction_model.md#grounded-feedback-and-candidate-choice) defines authority and outcomes.
