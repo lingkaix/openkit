@@ -1118,22 +1118,25 @@ function resolveWorkerSkillSupply(
       entryId: skillId,
       workspaceId,
     });
+    const selectionSource = runDigest
+      ? ('run' as const)
+      : skill.digest
+        ? ('setup' as const)
+        : pin?.digest
+          ? ('pin' as const)
+          : ('current' as const);
     return {
       digest,
       entry,
       version,
-      selectionSource: runDigest
-        ? ('run' as const)
-        : skill.digest
-          ? ('setup' as const)
-          : pin?.digest
-            ? ('pin' as const)
-            : ('current' as const),
+      selectionSource,
+      // Capture the same catalog observation that selected this version, not a later pin.
+      ...(selectionSource === 'pin' && pin?.pinAuditRef ? { pinAuditRef: pin.pinAuditRef } : {}),
     };
   });
   // Recheck the complete selection after collection; a later Skill read can revoke an earlier entry.
   const current = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
-  return selected.map(({ digest, entry, selectionSource, version }) => {
+  return selected.map(({ digest, entry, selectionSource, pinAuditRef, version }) => {
     const retained = current.skills.versions.find(
       (item) => item.entryId === entry.id && item.digest === digest
     );
@@ -1165,6 +1168,7 @@ function resolveWorkerSkillSupply(
         baseDigest: version.provenance.baseDigest,
         pluginMemberKey: version.provenance.pluginMemberKey,
         pluginVersionDigest: version.provenance.pluginVersionDigest,
+        ...(pinAuditRef === undefined ? {} : { pinAuditRef }),
       },
       materialization: {
         kind: 'filesystem-copy' as const,
