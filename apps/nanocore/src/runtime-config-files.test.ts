@@ -319,6 +319,12 @@ describe('runtime config file API', () => {
         expect(row).toMatchObject({
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           category: 'system',
+          actor_json: JSON.stringify({
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }),
+          authentication_json: JSON.stringify({ credentialKind: 'local', credentialId: null }),
+          request_id: null,
           resource: 'data-source-catalog:repo_default',
           outcome: 'succeeded',
           severity: 'info',

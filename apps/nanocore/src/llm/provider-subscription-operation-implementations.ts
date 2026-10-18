@@ -9,7 +9,11 @@ import {
   SubscriptionProviderIdSchema,
 } from '@openkit/config-schema/provider-subscription';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
-import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
+import {
+  type AdmittedOperationContext,
+  type FamilyImplementations,
+  publicOperationActor,
+} from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { readCodexQuota } from './codex-quota.js';
 import {
@@ -79,14 +83,14 @@ export function createProviderSubscriptionOperationImplementations(
     projectAccount(account, services!.boundProviderIds);
   return {
     'provider-subscription.provider-list': () => PROVIDERS,
-    'provider-subscription.account-list': (input) =>
-      runAccountOperation(async () => ({
+    'provider-subscription.account-list': (input, context) =>
+      runAccountOperation(manager(), context, async () => ({
         accounts: (await manager().listAccounts(requireProvider(input.subscriptionProviderId))).map(
           project
         ),
       })),
     'provider-subscription.account-create': (input, context) =>
-      runAccountOperation(async () =>
+      runAccountOperation(manager(), context, async () =>
         project(
           await manager().createAccount(
             {
@@ -102,7 +106,7 @@ export function createProviderSubscriptionOperationImplementations(
         )
       ),
     'provider-subscription.account-update': (input, context) =>
-      runAccountOperation(async () =>
+      runAccountOperation(manager(), context, async () =>
         project(
           await manager().updateAccount(
             requirePair(input),
@@ -115,25 +119,31 @@ export function createProviderSubscriptionOperationImplementations(
         )
       ),
     'provider-subscription.account-delete': (input, context) =>
-      runAccountOperation(async () => {
+      runAccountOperation(manager(), context, async () => {
         await manager().deleteAccount(requirePair(input), {
           actor: context.actorRef,
           authentication: auditAuthenticationFromActor(publicOperationActor(context)),
         });
         return null;
       }),
-    'provider-subscription.account-status': (input) =>
-      runAccountOperation(async () => project(await manager().getStatus(requirePair(input)))),
-    'provider-subscription.login-start': (input) =>
-      runAccountOperation(async () => project(await manager().startLogin(requirePair(input)))),
-    'provider-subscription.login-cancel': (input) =>
-      runAccountOperation(async () =>
+    'provider-subscription.account-status': (input, context) =>
+      runAccountOperation(manager(), context, async () =>
+        project(await manager().getStatus(requirePair(input)))
+      ),
+    'provider-subscription.login-start': (input, context) =>
+      runAccountOperation(manager(), context, async () =>
+        project(await manager().startLogin(requirePair(input)))
+      ),
+    'provider-subscription.login-cancel': (input, context) =>
+      runAccountOperation(manager(), context, async () =>
         project(await manager().cancelLogin(requirePair(input), input.interactionId))
       ),
-    'provider-subscription.account-logout': (input) =>
-      runAccountOperation(async () => project(await manager().logout(requirePair(input)))),
+    'provider-subscription.account-logout': (input, context) =>
+      runAccountOperation(manager(), context, async () =>
+        project(await manager().logout(requirePair(input)))
+      ),
     'provider-subscription.account-quota': (input, context) =>
-      runAccountOperation(async () => {
+      runAccountOperation(manager(), context, async () => {
         const pair = requirePair(input);
         await manager().reconcileAccount(pair);
         const handle = await manager().getPairHandle(pair);
@@ -163,8 +173,8 @@ export function createProviderSubscriptionOperationImplementations(
           subscriptionProviderId: pair.subscriptionProviderId,
         };
       }),
-    'provider-subscription.account-auto-topup': (input) =>
-      runAccountOperation(async () => {
+    'provider-subscription.account-auto-topup': (input, context) =>
+      runAccountOperation(manager(), context, async () => {
         const pair = requirePair(input);
         if (pair.subscriptionProviderId !== 'xai')
           throw new OperationError(
@@ -232,9 +242,19 @@ function projectAccount(
 }
 
 /** Preserves known account refusals with safe fixed text; unknown exceptions escape unchanged. */
-async function runAccountOperation<T>(operation: () => Promise<T>): Promise<T> {
+async function runAccountOperation<T>(
+  manager: ProviderSubscriptionAccountManager,
+  context: AdmittedOperationContext,
+  operation: () => Promise<T>
+): Promise<T> {
   try {
-    return await operation();
+    return await manager.withAuditContext(
+      {
+        actor: context.actorRef,
+        authentication: auditAuthenticationFromActor(publicOperationActor(context)),
+      },
+      operation
+    );
   } catch (error) {
     const managerError =
       error instanceof ProviderSubscriptionAccountError

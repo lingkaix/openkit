@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -405,6 +406,14 @@ export type ProviderSubscriptionAuditContext = Pick<
 
 /** Direct provider-subscription account, Vault credential, and pi-ai runtime owner. */
 export class ProviderSubscriptionAccountManager {
+  /** Keeps the admitted caller through stock credential callbacks, including asynchronous login. */
+  private readonly credentialAudit = new AsyncLocalStorage<ProviderSubscriptionAuditContext>();
+
+  /** Runs one known native caller's lifecycle without attributing unrelated background work. */
+  public withAuditContext<T>(audit: ProviderSubscriptionAuditContext, operation: () => T): T {
+    return this.credentialAudit.run(audit, operation);
+  }
+
   private readonly coreDb: CoreDb;
 
   private readonly vaultBackend: () => VaultBackend;
@@ -1956,7 +1965,10 @@ export class ProviderSubscriptionAccountManager {
   ): Promise<T> {
     let result: T;
     try {
-      result = await operation();
+      result = await this.credentialAudit.run(
+        audit ?? this.credentialAudit.getStore() ?? {},
+        operation
+      );
     } catch (error) {
       const normalized = normalizeAccountError(error);
       try {
@@ -1992,7 +2004,7 @@ export class ProviderSubscriptionAccountManager {
   ): void {
     const timestamp = new Date(this.canonicalNow());
     recordServerAuditEvent({
-      ...audit,
+      ...(audit ?? this.credentialAudit.getStore()),
       action,
       category: 'system',
       coreDb: this.coreDb,

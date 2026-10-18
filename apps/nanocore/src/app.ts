@@ -36,6 +36,7 @@ import {
   resolveSessionDeploymentAdminTokenId,
   verifyOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
 import { type Actor, ensureLocalUser, isDeploymentAdminActor } from './auth/identity.js';
 // Actor type used by mode worker turn request credential threading
 import {
@@ -132,6 +133,7 @@ import {
 } from './providers/llm-config.js';
 import {
   type ProviderCredentialResolver,
+  type ProviderCredentialUseContext,
   type ProviderRegistry,
   resolveEnvSecretRef,
 } from './providers/registry.js';
@@ -1398,6 +1400,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                   workspaceId: change.workspaceId,
                   category: 'system',
                   action: 'data_source_catalog.authority.update',
+                  actor: { kind: 'user', id: actor.userId },
+                  authentication: auditAuthenticationFromActor(actor),
                   resource: `data-source-catalog:${change.sourceId}`,
                   outcome: 'succeeded',
                   severity: 'info',
@@ -1442,7 +1446,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    * @returns Secret-bearing provider config.
    * @throws OpenAICompatibleProviderError when the provider or model cannot be dispatched.
    */
-  function resolveGatewayProvider(providerId: string, model: string) {
+  function resolveGatewayProvider(
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) {
     const profile = runtimeConfig().providerRegistry.get(providerId);
 
     if (!profile) {
@@ -1470,7 +1478,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       });
     }
 
-    return resolveProviderProfileToLLMConfig(profile, providerCredentialResolver);
+    return resolveProviderProfileToLLMConfig(profile, (secretRef) =>
+      providerCredentialResolver(secretRef, context)
+    );
   }
 
   const knowledgeDependencies = {

@@ -10,7 +10,7 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
-import { ProviderRegistry } from '../providers/registry.js';
+import { type ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -44,13 +44,16 @@ function fixture(missingKey = false) {
   const dispatcher = new LLMGatewayProviderDispatcher({
     piAiClient: new PiAiGatewayClient({ models }),
   });
+  const credentialResolver = vi.fn<ProviderCredentialResolver>((ref) =>
+    ref === 'test:backup' ? 'synthetic-backup-key' : null
+  );
   const app = createApp({
     coreDb,
     dataRoot,
     store,
     llmGatewayDispatcher: dispatcher,
     openKitConfig: {},
-    providerCredentialResolver: (ref) => (ref === 'test:backup' ? 'synthetic-backup-key' : null),
+    providerCredentialResolver: credentialResolver,
     providerRegistry: new ProviderRegistry([
       {
         id: 'p',
@@ -138,6 +141,7 @@ function fixture(missingKey = false) {
     workspaceId,
     dataRoot,
     dispatcher,
+    credentialResolver,
     primary,
     backup,
     post,
@@ -153,7 +157,12 @@ describe('public durable logical Gateway lineage', () => {
   it('retains a public call without Workspace metadata in the Server ledger and keeps Core open', async () => {
     const f = fixture();
     try {
-      f.primary.setResponses([fauxAssistantMessage('server served')]);
+      f.primary.setResponses([
+        fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'invalid_api_key' }),
+      ]);
+      const served = fauxAssistantMessage('server served');
+      served.usage = { ...served.usage, input: 7, output: 3, totalTokens: 10 };
+      f.backup.setResponses([served]);
       const response = await f.app.request('/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -185,6 +194,20 @@ describe('public durable logical Gateway lineage', () => {
           }),
         }),
       ]);
+      expect(f.credentialResolver).toHaveBeenCalledWith(
+        'test:backup',
+        expect.objectContaining({
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          capabilityCallId: call.call_id,
+        })
+      );
+      expect(
+        f.coreDb.sqlite
+          .prepare(
+            "SELECT sum(quantity) AS quantity FROM usage_records WHERE capability_call_id = ? AND unit = 'tokens'"
+          )
+          .get(call.call_id)
+      ).toEqual({ quantity: 10 });
       expect(f.coreDb.sqlite.open).toBe(true);
     } finally {
       f.close();
