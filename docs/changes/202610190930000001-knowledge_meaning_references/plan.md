@@ -17,3 +17,7 @@ This adds no retained shape, operation, store, index, alias, converter or compat
 ## Proof
 
 Start with real Git notebooks, current Core authority, retained KB creation and exact canonical URIs. Observe the new available result missing at the initially unavailable native entry, with malformed/raw refusal controls. Then prove exact current and retained bytes, wrong pins/owners/KBs, unpublished-candidate refusal, current Source/audience revocation, schema/sensitivity denial and independent Server admission. Run independent Sol review, complete affected module suites plus reference dependency suites and static gates. Source work waits for its separate readiness notice; C05 is a separate additive increment with types, fields and activation together.
+
+## Checkpoint
+
+On pushed test/interface head4eefaa0f5, dependency builds passed and the initially unavailable native entry produced four intended available-result assertion failures with one refusal-control test passing; actual Core/KB/Git fixture creation reached each subject. No setup or collection failure occurred. Evidence: /home/simonx/.cache/openkit-tmp/L-AK-c03/logs/red.log. The real implementation was prepared outside the frozen worktree and applied only after this red result. It reuses current read admission and schema/Review validation, verifies exact digests, and walks only published parent records under the existing100-record bound. Independent preparation returned Continue; source and execution review remain pending.

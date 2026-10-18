@@ -35,6 +35,8 @@ This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-pro
 - Profile/schema v4 is a cutover component, not an independent activation path. All live callers must use the Scope schema API and `schema/scope-schema.yaml` with fresh Git notebook initialization; pre-stable data uses the approved reset boundary without offline conversion. There is no v2 fallback. Notebook Git commits own revisions; pages carry no revision counter.
 - Keep parsing deterministic and independent of database, provider, and HTTP concerns.
 
+`knowledge-meaning-reference.ts` supplies Light App discovery with one native pinned-page read over the existing Workspace/Server admission, retained KB binding and published Git history. It returns exact content/digest/revision or a uniform unavailable result. Current schema, Source audience, sensitivity and Review eligibility remain mandatory; delegated labels require the actual producing commit authority. The lookup inspects at most 100 published records, never unpublished candidates or a materialized fallback. User Memory and not-yet-activated raw resolution are unavailable to shared Light App discovery. It adds no retained projection or operation.
+
 ## Verification
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge` and the affected Knowledge Store tests.

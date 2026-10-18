@@ -222,6 +222,30 @@ describe('exact governed Knowledge meaning receiver', () => {
     expect(resolve(f, uri)).toEqual(unavailable(uri));
   });
 
+  it('refuses invalid governed pages and fabricated delegation while preserving descriptive extensions', () => {
+    const f = fixture();
+    const content = updateOkfFrontmatter({
+      path: 'domain.md',
+      content: page(f.ownerScope),
+      updates: { custom: { keep: ['exact', 'extension'] } },
+    });
+    publish(f, f.notebook, content);
+    expect(resolve(f, reference(f, f.ownerScope, content))).toMatchObject({
+      status: 'available',
+      content,
+    });
+    for (const updates of [
+      { type: 'Procedure' },
+      { review_state: 'delegated' },
+      { requiredFeatures: ['openkit.unknown.v1'] },
+    ]) {
+      const invalid = updateOkfFrontmatter({ path: 'domain.md', content, updates });
+      publish(f, f.notebook, invalid);
+      const uri = reference(f, f.ownerScope, invalid);
+      expect(resolve(f, uri)).toEqual(unavailable(uri));
+    }
+  });
+
   it('admits Server meaning separately and does not treat Workspace membership as Server authority', () => {
     const f = fixture();
     initializeScopedNotebook({
