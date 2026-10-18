@@ -21,4 +21,6 @@ Source: coordinator GO after the 773d8fdc completeness audit. Working agents mus
 
 ## Ownership And Evidence
 
-Root writes the shared overview reader, Assistant integration, KM owner and context guide. The built-in gpt-6.1-sol high Builder owns Worker package/preparation source, their tests and S39 owner on a separate branch; root merges normally. No naming-held source or tests may be edited. Logs, exact review and landing state are retained in evidence/L-AK/checkpoint.md in the coordinator backlog. No real-provider acceptance is claimed by fake-backed checks.
+Root writes the shared overview reader, Assistant integration, KM owner and context guide. The built-in gpt-6.1-sol high Builder owns Worker package/preparation source, their tests and S39 owner on a separate branch; root merges normally. The coordinator released the small exact-input and inventory test corrections for this overview landing before naming. This branch merges only main, not the naming branch. Logs, exact review and landing state are retained in evidence/L-AK/checkpoint.md in the coordinator backlog. No real-provider acceptance is claimed by fake-backed checks.
+
+The original complete gate exposed exact-request test arrays that omitted the overview and failed-start classification that compared native projection with the canonical request. The correction shares the fixed suffix derivation with that classifier, keeps the original Item equality, and rejects arbitrary additions. Complete module gates cover the correction; history, privacy, request and replay assertions remain intact.
