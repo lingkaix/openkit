@@ -68,6 +68,8 @@ The NanoHost deployment schema admits optional positive `maxActiveTurnsPerSandbo
 
 `knowledgeMaintenance.enabled` delegates ordinary notebook publication. The separate `knowledgeMaintenance.schedule.enabled` selects fixed daily Knowledge Manager execution and defaults to `false`; the omitted schedule object also resolves to disabled. Server, User and Workspace settings use this same shape with independent authority. Scheduling grants no publication delegation or source access.
 
+Workspace Skill pins optionally retain `pinAuditRef`, the existing admission Audit identity of the command that published that pin. Omission records unknown attribution. The field is evidence, not selection or operation authority, and the catalog's existing portable projection preserves source history without activating target pins.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`
@@ -119,3 +121,5 @@ The browser-safe `mcp-credentials` entry also exports `McpHttpEndpointSchema`, t
 Authored Worker Skill references in the base Agent, selected profile and Workspace Agent binding may include an exact digest. Setup rejects conflicting exact versions and preserves an exact version when another layer only repeats the ID. The AEP records setup selection separately from pin/default selection; metadata acceptance grants no additional launch authority.
 
 The existing Resource Catalog includes an additive `lightApps` group for reusable definition entries, immutable versions and future-use pins. Versions retain a bounded canonical JSON string plus digest, parent, producer and creation time. The Config schema owns this record shape; native catalog admission reuses the strict Light App schema and verifies content and reference integrity. Same-owner readers preserve descriptive annotations, public views select known fields, and older retained documents load with an empty group. The portable catalog retains definition history and historical source selection without live app data or target execution authority. The shared `stableJson` export exposes the existing catalog digest codec unchanged for native definition admission.
+
+AEP Skill lineage optionally carries `pinAuditRef`, validated by the Protocol Audit event identifier schema. The runtime producer supplies it only when the catalog pin wins; omission stays unknown and adds no authority or instruction body.

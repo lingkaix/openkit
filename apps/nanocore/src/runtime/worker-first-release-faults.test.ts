@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient } from '../../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -62,6 +62,12 @@ vi.mock('node:timers/promises', async (importOriginal) => ({
       setTimeout(() => resolve(value), milliseconds);
     }),
 }));
+
+// A fixture can time out before it returns its close handle; do not carry its spy into the next case.
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 const NOW = '2026-10-05T00:00:00.000Z';
 const DIGEST = 'a'.repeat(64);
@@ -589,6 +595,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     }
   });
 
+  // Real Core/transport setup needs fixture time; the virtual 300-second outage proof remains exact.
   it.each([
     false,
     true,
@@ -674,7 +681,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       await f.close();
       vi.useRealTimers();
     }
-  });
+  }, 60_000);
 
   it('fails closed when a dispatched session.inspect result is held for the 300-second budget', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });

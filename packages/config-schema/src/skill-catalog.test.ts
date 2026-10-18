@@ -4,6 +4,7 @@ import {
   EMPTY_RESOURCE_CATALOG,
   parseResourceCatalogDocument,
   ResourceCatalogDocumentViewSchema,
+  SkillPinRecordSchema,
   SkillVersionRecordSchema,
 } from './resource-catalog.js';
 
@@ -34,6 +35,16 @@ function candidateCatalog() {
 }
 
 describe('Skill decision lineage', () => {
+  it('retains optional winning pin Audit identity without inventing historical attribution', () => {
+    const pin = { entryId: 'alpha', digest: `sha256:${'a'.repeat(64)}` };
+    const pinAuditRef = allocateEntityId('aud');
+    expect(SkillPinRecordSchema.parse(pin)).toEqual(pin);
+    expect(SkillPinRecordSchema.parse({ ...pin, pinAuditRef })).toEqual({ ...pin, pinAuditRef });
+    expect(SkillPinRecordSchema.safeParse({ ...pin, pinAuditRef: 'not-an-audit-id' }).success).toBe(
+      false
+    );
+  });
+
   it('defaults old version retention and refuses unknown content states', () => {
     const version = {
       createdAt: '2026-10-16T00:00:00.000Z',
