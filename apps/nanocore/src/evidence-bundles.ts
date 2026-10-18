@@ -3,6 +3,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { type EvidenceBundleRecord, EvidenceBundleRecordSchema } from '@openkit/app-api-schemas';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 
 import type { WorkspaceDb } from './storage/db.js';
 import {
@@ -15,6 +16,7 @@ import {
 } from './storage/workspace-file-records.js';
 
 interface EvidenceBundleRow {
+  readonly schema_version: number;
   readonly evidence_bundle_id: string;
   readonly workspace_id: string;
   readonly thread_id: string | null;
@@ -115,17 +117,27 @@ export function compactWorkspaceEvidenceBundles(
   if (input.workspaceId !== input.workspaceDb.workspaceId) {
     throw new Error('Evidence bundle compaction has different Workspace lineage.');
   }
-  const restrictedRows = input.workspaceDb.sqlite
+  const compactedRows = input.workspaceDb.sqlite
     .prepare(
-      `SELECT evidence_bundle_id
+      `SELECT evidence_bundle_id, schema_version, retention_class
       FROM evidence_bundles
       WHERE workspace_id = ?
-        AND retention_class = 'restricted-raw'
-        AND source_kind IN ('worker-runtime-provenance-raw', 'work-observation-body')
+        AND (retention_class = 'ephemeral-diagnostic' OR (
+          retention_class = 'restricted-raw'
+          AND source_kind IN ('worker-runtime-provenance-raw', 'work-observation-body')
+        ))
         AND created_at < ?`
     )
-    .all(input.workspaceId, input.olderThan) as Array<{ evidence_bundle_id: string }>;
-  for (const row of restrictedRows) {
+    .all(input.workspaceId, input.olderThan) as Array<{
+    evidence_bundle_id: string;
+    schema_version: number;
+    retention_class: string;
+  }>;
+  for (const row of compactedRows) {
+    readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+  }
+  for (const row of compactedRows) {
+    if (row.retention_class !== 'restricted-raw') continue;
     assertSafeWorkspacePathSegment(row.evidence_bundle_id, 'Evidence bundle id');
     rmSync(
       join(
@@ -169,6 +181,7 @@ function insertEvidenceBundle(
   const existingRow = workspaceDb.sqlite
     .prepare(
       `SELECT
+        schema_version,
         evidence_bundle_id,
         workspace_id,
         thread_id,
@@ -200,6 +213,7 @@ function insertEvidenceBundle(
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO evidence_bundles (
+        schema_version,
         evidence_bundle_id,
         workspace_id,
         thread_id,
@@ -217,9 +231,10 @@ function insertEvidenceBundle(
         import_status,
         required_features_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1(record).schemaVersion,
       record.id,
       record.workspaceId,
       record.threadId,
@@ -287,6 +302,7 @@ export function listStoredWorkspaceEvidenceBundles(
     workspaceDb.sqlite
       .prepare(
         `SELECT
+          schema_version,
           evidence_bundle_id,
           workspace_id,
           thread_id,
@@ -563,6 +579,7 @@ export function stageWorkObservationChunk(
 }
 
 function evidenceBundleFromRow(row: EvidenceBundleRow): EvidenceBundleRecord {
+  readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return EvidenceBundleRecordSchema.parse({
     id: row.evidence_bundle_id,
     workspaceId: row.workspace_id,

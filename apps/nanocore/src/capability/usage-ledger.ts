@@ -7,9 +7,11 @@ import {
   type GatewayRouteLineageEntry,
   GatewayRouteLineageEntrySchema,
   RequestIdSchema,
+  readRetainedV1,
   responsibleUserIdForActor,
   type UsageRecord,
   UsageRecordSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -18,6 +20,7 @@ import type { WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
 
 type CapabilityCallRow = {
+  schema_version: number;
   call_id: string;
   workspace_id: string;
   thread_id: string | null;
@@ -260,6 +263,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
   const insertion = input.workspaceDb.sqlite
     .prepare(
       `INSERT OR IGNORE INTO capability_calls (
+        schema_version,
         call_id,
         workspace_id,
         thread_id,
@@ -284,9 +288,10 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
         schema_snapshot_id,
         runtime_origin_ref,
         runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1(protocolCall).schemaVersion,
       protocolCall.id,
       protocolCall.workspaceId,
       protocolCall.threadId,
@@ -388,6 +393,7 @@ export function recordUsage(input: RecordUsageInput): string[] {
       input.workspaceDb.sqlite
         .prepare(
           `INSERT INTO usage_records (
+            schema_version,
             usage_id,
             workspace_id,
             thread_id,
@@ -406,9 +412,10 @@ export function recordUsage(input: RecordUsageInput): string[] {
             provider_ref,
             source,
             recorded_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
+          writeRetainedV1(usage).schemaVersion,
           usage.id,
           usage.workspaceId,
           usage.threadId,
@@ -457,7 +464,7 @@ function hasEquivalentUsageRecord(
 ): string | undefined {
   const row = workspaceDb.sqlite
     .prepare(
-      `SELECT usage_id FROM usage_records
+      `SELECT usage_id, schema_version FROM usage_records
        WHERE capability_call_id IS ?
          AND category = ?
          AND unit = ?
@@ -477,8 +484,9 @@ function hasEquivalentUsageRecord(
       usage.providerRef,
       usage.source,
       sourceIdsJson(usage.sourceIds)
-    ) as { usage_id: string } | undefined;
+    ) as { usage_id: string; schema_version: number } | undefined;
 
+  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return row?.usage_id;
 }
 
@@ -557,6 +565,7 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
 export function stampCapabilityCallSchemaSnapshot(
   input: StampCapabilityCallSchemaSnapshotInput
 ): void {
+  findCapabilityCallById(input.workspaceDb, input.callId);
   const parsed = CapabilityCallSchema.shape.schemaSnapshotId.unwrap().parse(input.schemaSnapshotId);
   const result = input.workspaceDb.sqlite
     .prepare(
@@ -669,6 +678,8 @@ export function readLatestCurrentAgentSessionLlmUsage(
   const row = workspaceDb.sqlite
     .prepare(
       `SELECT
+         usage.schema_version AS usage_schema_version,
+         call.schema_version AS call_schema_version,
          usage.capability_call_id AS capability_call_id,
          usage.model_id AS model_id,
          usage.recorded_at AS recorded_at,
@@ -692,6 +703,8 @@ export function readLatestCurrentAgentSessionLlmUsage(
     )
     .get(input.workspaceId, input.threadId, input.agentSessionId) as
     | {
+        readonly usage_schema_version: number;
+        readonly call_schema_version: number;
         readonly capability_call_id: string;
         readonly model_id: string;
         readonly recorded_at: string;
@@ -703,6 +716,8 @@ export function readLatestCurrentAgentSessionLlmUsage(
     return null;
   }
 
+  readRetainedV1({ schemaVersion: row.usage_schema_version }, () => undefined);
+  readRetainedV1({ schemaVersion: row.call_schema_version }, () => undefined);
   return {
     capabilityCallId: row.capability_call_id,
     modelId: row.model_id,
@@ -740,9 +755,11 @@ function findCapabilityCallById(
   workspaceDb: WorkspaceDb,
   callId: string
 ): CapabilityCallRow | undefined {
-  return workspaceDb.sqlite
+  const row = workspaceDb.sqlite
     .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
     .get(callId) as CapabilityCallRow | undefined;
+  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+  return row;
 }
 
 /** Inserts one exportable capability call record. */
@@ -750,6 +767,7 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO capability_calls (
+        schema_version,
         call_id,
         workspace_id,
         thread_id,
@@ -776,9 +794,10 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
         runtime_cache_lineage_ref,
         system_prompt_digest,
         extensions_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1(call).schemaVersion,
       call.id,
       call.workspaceId,
       call.threadId,
@@ -815,6 +834,7 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO usage_records (
+        schema_version,
         usage_id,
         workspace_id,
         thread_id,
@@ -833,9 +853,10 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
         provider_ref,
         source,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1(usage).schemaVersion,
       usage.id,
       usage.workspaceId,
       usage.threadId,
@@ -860,6 +881,7 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
 /** Converts one stored capability call row into an exportable record. */
 function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
   const call = row as CapabilityCallRow;
+  readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
   const extensions =
     call.extensions_json === null
       ? undefined
@@ -904,6 +926,7 @@ function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
 /** Converts one stored usage row into a protocol usage record. */
 function usageRecordFromRow(row: unknown): UsageRecord {
   const usage = row as Record<string, unknown>;
+  readRetainedV1({ schemaVersion: usage.schema_version }, () => undefined);
 
   return UsageRecordSchema.parse({
     id: usage.usage_id,
@@ -1046,6 +1069,7 @@ function findCapabilityCallByIdOrIdempotency(
       | undefined;
 
     if (storedByRequest) {
+      readRetainedV1({ schemaVersion: storedByRequest.schema_version }, () => undefined);
       return storedByRequest;
     }
   }
@@ -1184,7 +1208,11 @@ export function hasCapabilityCallRequestId(
   workspaceId: string,
   requestId: string
 ): boolean {
-  return !!workspaceDb.sqlite
-    .prepare('SELECT 1 FROM capability_calls WHERE workspace_id = ? AND request_id = ? LIMIT 1')
-    .get(workspaceId, requestId);
+  const row = workspaceDb.sqlite
+    .prepare(
+      'SELECT schema_version FROM capability_calls WHERE workspace_id = ? AND request_id = ? LIMIT 1'
+    )
+    .get(workspaceId, requestId) as { schema_version: number } | undefined;
+  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+  return row !== undefined;
 }

@@ -829,11 +829,76 @@ describe('Generative UI commands', () => {
         actions: [],
       };
       const first = await publishGenerativePresentation(context, input);
+      expect(
+        context.workspaceDb.sqlite
+          .prepare('SELECT schema_version FROM generative_presentations WHERE presentation_id = ?')
+          .get(first.id)
+      ).toEqual({ schema_version: 1 });
       const second = await publishGenerativePresentation(context, input);
       expect(second.id).toBe(first.id);
       await expect(
         publishGenerativePresentation(context, { ...input, title: 'Changed title' })
       ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
+    } finally {
+      context.close();
+    }
+  });
+
+  it('rejects an unknown retained presentation format before read or replay', async () => {
+    const requestId = randomUUID();
+    const context = createContext(requestId);
+    try {
+      const turn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Replay publication',
+        context.actor
+      );
+      const sourceItem = context.store.createItem({
+        id: testEntityId('it', `it_${turn.id}_source`),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text: 'Stable source text.',
+        createdAt: turn.startedAt ?? new Date().toISOString(),
+        completedAt: turn.startedAt ?? new Date().toISOString(),
+      });
+      const input = {
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        title: 'Stable view',
+        fallbackText: 'Stable source text.',
+        messages: nativeMessages('surface-replay', [
+          { id: 'root', component: 'Text', text: { path: '/text' } },
+        ]),
+        source: {
+          kind: 'item' as const,
+          itemId: sourceItem.id,
+          contentDigest: `sha256:${createHash('sha256').update(sourceItem.text, 'utf8').digest('hex')}`,
+        },
+        actions: [],
+      };
+      const first = await publishGenerativePresentation(context, input);
+      context.workspaceDb.sqlite
+        .prepare(
+          "UPDATE generative_presentations SET schema_version = 2, source_json = 'invalid-json' WHERE presentation_id = ?"
+        )
+        .run(first.id);
+      expect(() => getGenerativePresentation(context, first.id)).toThrow(
+        'Unsupported retained record format.'
+      );
+      await expect(publishGenerativePresentation(context, input)).rejects.toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(
+        context.workspaceDb.sqlite
+          .prepare(
+            'SELECT schema_version, source_json FROM generative_presentations WHERE presentation_id = ?'
+          )
+          .get(first.id)
+      ).toEqual({ schema_version: 2, source_json: 'invalid-json' });
     } finally {
       context.close();
     }

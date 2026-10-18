@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LightAppAdmittedSchema } from '@openkit/app-api-schemas';
 import { LightAppAdmittedSchemaSchema } from '@openkit/app-api-schemas';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 
 import { listSqliteAuditEvents } from '../audit-events.js';
@@ -508,6 +509,7 @@ export function importGenerativePresentations(input: {
   presentationIds: ReadonlyMap<string, string>;
 }): void {
   for (const row of input.presentations) {
+    readRetainedV1(row, () => undefined);
     const sourceId = String(row.id);
     const lineage = asRecord(row.lineage);
     const presentation = asRecord(row.presentation);
@@ -528,12 +530,13 @@ export function importGenerativePresentations(input: {
     input.workspaceDb.sqlite
       .prepare(
         `INSERT INTO generative_presentations (
-          presentation_id, workspace_id, thread_id, turn_id, item_id, created_at, actor_json,
+          schema_version, presentation_id, workspace_id, thread_id, turn_id, item_id, created_at, actor_json,
           request_id, origin_request_id, semantic_input_hash, title, fallback_text, protocol_version,
           catalog_id, messages_json, content_digest, source_json, actions_json, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        writeRetainedV1(row).schemaVersion,
         targetId,
         input.targetWorkspaceId,
         threadId,
