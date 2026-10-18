@@ -372,6 +372,21 @@ describe('knowledgeReferenceErrors', () => {
     expect(errors(local, true, '')).not.toEqual([]);
   });
 
+  it('does not infer a page scope from a verified-reference set', () => {
+    const parsed = parseOkfDocument({
+      path: 'a.md',
+      content: `---\ntype: KnowledgePage\nsource_refs: ${JSON.stringify([local])}\n---\nBody`,
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('Invalid reference fixture.');
+    expect(
+      knowledgeReferenceErrors(parsed.document, new Map(), new Set([objectId]), new Set([local]))
+    ).toContainEqual(expect.objectContaining({ code: 'reference.unresolved_knowledge' }));
+    expect(
+      knowledgeReferenceErrors(parsed.document, new Map(), new Set(), new Set([local]), pageScopeId)
+    ).toContainEqual(expect.objectContaining({ code: 'reference.unresolved_knowledge' }));
+  });
+
   it('requires exact page pin proof and rejects legacy or malformed page strings', () => {
     const pinned = formatReferenceUri({ scopeId: pageScopeId, objectId }, pin);
     expect(errors(pinned)).not.toEqual([]);
