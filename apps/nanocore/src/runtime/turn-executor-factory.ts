@@ -25,7 +25,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
+import { ArtifactAuthorityError, FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
@@ -339,7 +339,8 @@ function createNanoHostWorkerLifecycleRuntime(
     nanoHostSessionDispatch,
     workerControlGateway,
     vaultBackend,
-    readRuntimeConfig
+    readRuntimeConfig,
+    sharedStore
   );
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
@@ -663,6 +664,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * @param workerControlGateway Optional existing semantic worker-control owner.
    * @param collectionVaultBackend Existing Vault owner for private release snapshots.
    * @param readRuntimeConfig Current authored Sandbox capacity configuration.
+   * @param sharedStore Existing AgentSession authority for already-completed proof handoff.
    */
   public constructor(
     private readonly coreDb: CoreDb,
@@ -674,7 +676,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly sessionDispatch?: NanoHostSessionDispatch,
     private readonly workerControlGateway?: WorkerControlGateway,
     private readonly collectionVaultBackend?: () => VaultBackend,
-    private readonly readRuntimeConfig?: () => PublicNetworkConfiguration
+    private readonly readRuntimeConfig?: () => PublicNetworkConfiguration,
+    private readonly sharedStore?: FsStore
   ) {}
 
   /** Reads the authored aggregate bound; invalid current configuration fails closed. */
@@ -2147,7 +2150,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
     if (eviction === 'capacity-saturated') return 'capacity-saturated';
     for (const binding of eviction?.bindings ?? []) {
-      this.handoffDurableAgentSessionProof(binding);
+      this.handoffDurableAgentSessionProof(binding, undefined, eviction!);
     }
     return 'available';
   }
@@ -2517,7 +2520,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         // Every row removed by whole-Sandbox retirement must settle proof before drain.
         for (const binding of eviction.bindings) {
-          this.handoffDurableAgentSessionProof(binding);
+          this.handoffDurableAgentSessionProof(binding, undefined, eviction);
         }
         const timestamp = new Date().toISOString();
         const physicalAbsentFlag = Number(eviction.physicalAbsent);
@@ -4882,15 +4885,77 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return this.requireSession(environmentPackage.snapshotId);
   }
 
+  /** Recognizes completed handoff from existing authorities without admitting the historical package. */
+  private hasRecordedRetiringProof(
+    inspection: NanoHostAgentSessionContinuityInspection,
+    retirement: NanoHostIdleSandboxEviction
+  ): boolean {
+    if (!this.sharedStore || !inspection.nativeHandleDigest) return false;
+    let session: ReturnType<FsStore['getAgentSession']>;
+    try {
+      session = this.sharedStore.getAgentSession(inspection.agentSessionId);
+    } catch (error) {
+      if (error instanceof StoreRecordNotFoundError) return false;
+      throw error;
+    }
+    if (session.nativeHandleDigest !== inspection.nativeHandleDigest || !session.retainedStorage)
+      return false;
+    const latest = this.coreDb.sqlite
+      .prepare(`
+      SELECT workspace_id AS workspaceId, thread_id AS threadId,
+        package_snapshot_id AS packageSnapshotId, sandbox_binding_ref AS sandboxBindingRef,
+        runtime_target_id AS runtimeTargetId, origin_physical_epoch AS originPhysicalEpoch
+      FROM worker_backend_sessions WHERE agent_session_id = ?
+      ORDER BY created_at DESC, attempt_id DESC LIMIT 1
+    `)
+      .get(inspection.agentSessionId) as
+      | {
+          workspaceId: string;
+          threadId: string;
+          packageSnapshotId: string;
+          sandboxBindingRef: string;
+          runtimeTargetId: string;
+          originPhysicalEpoch: string;
+        }
+      | undefined;
+    if (
+      !latest ||
+      session.environmentPackageSnapshotId !== latest.packageSnapshotId ||
+      session.workspaceId !== latest.workspaceId ||
+      session.threadId !== latest.threadId ||
+      latest.sandboxBindingRef !== retirement.sandboxBindingRef ||
+      latest.originPhysicalEpoch !== retirement.originPhysicalEpoch
+    )
+      return false;
+    const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
+      sandboxBindingRef: retirement.sandboxBindingRef,
+    });
+    return (
+      storage !== null &&
+      storage.runtimeTargetId === latest.runtimeTargetId &&
+      storage.storageRef === session.retainedStorage.storageRef &&
+      storage.workspaceId === session.workspaceId &&
+      storage.contributors.some(
+        (contributor) =>
+          contributor.workSlotRef === session.retainedStorage!.workSlotRef &&
+          contributor.threadId === session.threadId &&
+          contributor.workspaceId === session.workspaceId
+      )
+    );
+  }
+
   /**
    * Joins accepted proof to original persisted identities and compatibility keys reproduced from digest-verified retained JSON before normalization. Proof-only inspection needs no Turn handle or live Harness, including in an old physical Epoch. A recorder refusal leaves the binding and its cleanup ownership untouched.
    */
   private handoffDurableAgentSessionProof(
     inspection: NanoHostAgentSessionContinuityInspection,
-    record?: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void
+    record?: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void,
+    retirement?: NanoHostIdleSandboxEviction
   ): void {
     const digest = inspection.nativeHandleDigest;
     if (!digest) return;
+    // Physical retirement is not executable admission. Keep the accepted historical proof and bytes.
+    if (retirement?.physicalAbsent && this.hasRecordedRetiringProof(inspection, retirement)) return;
     const liveSession = [...this.sessions.values()].find(
       (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
     );
