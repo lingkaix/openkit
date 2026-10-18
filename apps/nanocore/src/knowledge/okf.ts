@@ -64,27 +64,8 @@ const OPENKIT_BASE_TYPES = new Set([
   'Index',
   'Log',
 ]);
-// These domain types use the same governance boundary, not a new portable OKF base.
-const OPENKIT_DOMAIN_TYPES = new Set(['Rule', 'Effect', 'Objective']);
-/** Retained Claim uncertainty values; the notebook replaces the former row authority. */
-const CLAIM_CONFLICT_STATES = new Set([
-  'none',
-  'conflicting',
-  'weak_evidence',
-  'stale',
-  'superseded',
-  'partially_superseded',
-]);
-/** Retained conflict analysis values; publication and retrieval keep distinct eligibility rules. */
-const OBSERVATION_CONFLICT_STATES = new Set([
-  'conflicting',
-  'needs_review',
-  'weak_evidence',
-  'stale',
-  'resolved',
-  'superseded',
-  'partially_superseded',
-]);
+/** Conflict truth is separate from freshness, Review and whole-page lifecycle. */
+const KNOWLEDGE_CONFLICT_STATES = new Set(['unresolved', 'resolved']);
 const DEFAULT_STATUS_VALUES = ['draft', 'active', 'archived', 'superseded', 'invalid', 'deleted'];
 const STANDARD_STATUS_BY_OPENKIT_STATUS = {
   active: 'stable',
@@ -120,7 +101,7 @@ const DEFAULT_FRESHNESS_VALUES = [
 export const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT = [
   `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
   'status: "active"',
-  `allowed_types: ${JSON.stringify([...OPENKIT_BASE_TYPES, ...OPENKIT_DOMAIN_TYPES])}`,
+  `allowed_types: ${JSON.stringify([...OPENKIT_BASE_TYPES])}`,
   `allowed_statuses: ${JSON.stringify(DEFAULT_STATUS_VALUES)}`,
   `allowed_review_states: ${JSON.stringify(DEFAULT_REVIEW_STATE_VALUES)}`,
   `allowed_sensitivities: ${JSON.stringify(DEFAULT_SENSITIVITY_VALUES)}`,
@@ -217,7 +198,7 @@ export type ParseScopeKnowledgeSchemaResult =
 /** Default active constraints for governed notebook pages. */
 export const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA: ScopeKnowledgeSchema = {
   schemaVersion: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
-  allowedTypes: [...OPENKIT_BASE_TYPES, ...OPENKIT_DOMAIN_TYPES],
+  allowedTypes: [...OPENKIT_BASE_TYPES],
   allowedStatuses: DEFAULT_STATUS_VALUES,
   allowedReviewStates: DEFAULT_REVIEW_STATE_VALUES,
   allowedSensitivities: DEFAULT_SENSITIVITY_VALUES,
@@ -517,60 +498,38 @@ export function validateScopeKnowledgeSchema(
     });
   }
 
-  if (
-    typeof document.frontmatter.type === 'string' &&
-    OPENKIT_DOMAIN_TYPES.has(document.frontmatter.type)
-  ) {
-    const appliesTo = document.frontmatter.applies_to;
-    if (!Array.isArray(appliesTo) || appliesTo.length === 0 || !appliesTo.every(nonEmptyString)) {
-      errors.push({
-        code: 'scope_schema.invalid_applies_to',
-        field: 'applies_to',
-        message:
-          'Rule, Effect and Objective pages require applies_to as a nonempty list of tool or work-step identifiers.',
-      });
-    }
-  }
-
   const factType = document.frontmatter.type;
-  if (factType === 'Claim' || factType === 'Observation') {
+  if (factType === 'Claim') {
     const confidence = document.frontmatter.confidence;
     if (
-      (factType === 'Claim' || confidence !== undefined) &&
-      (typeof confidence !== 'number' ||
-        !Number.isFinite(confidence) ||
-        confidence < 0 ||
-        confidence > 1)
+      typeof confidence !== 'number' ||
+      !Number.isFinite(confidence) ||
+      confidence < 0 ||
+      confidence > 1
     ) {
       errors.push({
         code: 'scope_schema.invalid_confidence',
         field: 'confidence',
-        message:
-          'Claim confidence is required; any Claim or Observation confidence must be a finite number from zero through one.',
+        message: 'Claim confidence must be a finite number from zero through one.',
       });
     }
+  }
+  if (factType === 'Claim' || factType === 'Observation') {
     const conflictStatus = document.frontmatter.conflict_status;
     if (
-      factType === 'Claim' &&
-      (typeof conflictStatus !== 'string' || !CLAIM_CONFLICT_STATES.has(conflictStatus))
+      conflictStatus !== undefined &&
+      (typeof conflictStatus !== 'string' || !KNOWLEDGE_CONFLICT_STATES.has(conflictStatus))
     ) {
       errors.push({
-        code: 'scope_schema.invalid_claim_conflict_status',
+        code: 'scope_schema.invalid_conflict_status',
         field: 'conflict_status',
-        message: 'Claim pages require a supported conflict_status.',
+        message: 'A recorded conflict assessment must be unresolved or resolved.',
       });
     }
     if (
       factType === 'Observation' &&
       (conflictStatus !== undefined || document.frontmatter.subject_refs !== undefined)
     ) {
-      if (typeof conflictStatus !== 'string' || !OBSERVATION_CONFLICT_STATES.has(conflictStatus)) {
-        errors.push({
-          code: 'scope_schema.invalid_observation_conflict_status',
-          field: 'conflict_status',
-          message: 'Structured conflict Observations require a supported conflict_status.',
-        });
-      }
       const subjects = document.frontmatter.subject_refs;
       if (
         !Array.isArray(subjects) ||
@@ -581,28 +540,9 @@ export function validateScopeKnowledgeSchema(
           code: 'scope_schema.invalid_conflict_subjects',
           field: 'subject_refs',
           message:
-            'Structured conflict Observations require a nonempty list of canonical reference URIs; the reference owner admits their targets.',
+            'Subject assessments require nonempty canonical reference URIs; the reference owner admits their targets.',
         });
       }
-    }
-  }
-
-  if (document.frontmatter.type === 'Effect') {
-    if (!nonEmptyString(document.frontmatter.basis)) {
-      errors.push({
-        code: 'scope_schema.invalid_effect_basis',
-        field: 'basis',
-        message: 'Effect pages require a nonempty descriptive basis.',
-      });
-    }
-    const lastCheckedAt = document.frontmatter.last_checked_at;
-    if (!nonEmptyString(lastCheckedAt) || !isMachineReadableTimestamp(lastCheckedAt)) {
-      errors.push({
-        code: 'scope_schema.invalid_effect_last_check',
-        field: 'last_checked_at',
-        message:
-          'Effect pages require last_checked_at as a machine-readable timestamp with an explicit offset.',
-      });
     }
   }
 
