@@ -28,6 +28,7 @@ import {
   deriveEntityId,
   type Item,
   isEntityId,
+  readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
@@ -308,7 +309,7 @@ export function canReadWorkspaceExport(
     try {
       const rows = workspaceDb.sqlite
         .prepare(`
-        SELECT call.workspace_id AS call_workspace_id, call.family, call.operation,
+        SELECT call.schema_version AS callSchemaVersion, usage.schema_version AS schemaVersion, call.workspace_id AS call_workspace_id, call.family, call.operation,
                call.capability_id, call.status, usage.workspace_id, usage.usage_id,
                usage.category, usage.unit, usage.quantity, usage.model_id, usage.provider_ref,
                usage.source, usage.source_ids_json, usage.responsible_user_id
@@ -317,6 +318,8 @@ export function canReadWorkspaceExport(
         WHERE call.call_id = ?
       `)
         .all(deriveEntityId('cap', ['storage_export', verified.manifest.id])) as Array<{
+        callSchemaVersion: unknown;
+        schemaVersion: unknown;
         call_workspace_id: string;
         family: string;
         operation: string;
@@ -333,6 +336,10 @@ export function canReadWorkspaceExport(
         source_ids_json: string;
         responsible_user_id: string | null;
       }>;
+      for (const row of rows) {
+        readRetainedV1(row, () => undefined);
+        readRetainedV1({ schemaVersion: row.callSchemaVersion }, () => undefined);
+      }
       const expected = new Map([
         ['files', verified.checkedFiles.length],
         [

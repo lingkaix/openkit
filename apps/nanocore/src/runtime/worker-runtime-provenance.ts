@@ -264,9 +264,13 @@ export async function importWorkerRuntimeProvenance(
     lineage.packageSnapshotId
   );
   const existingRawBundle = input.workspaceDb.sqlite
-    .prepare('SELECT created_at FROM evidence_bundles WHERE evidence_bundle_id = ?')
-    .get(rawBundleId) as { created_at: string } | undefined;
-  const recordedAt = existingRawBundle?.created_at ?? input.collectedAt;
+    .prepare(
+      'SELECT schema_version AS schemaVersion, created_at FROM evidence_bundles WHERE evidence_bundle_id = ?'
+    )
+    .get(rawBundleId) as { schemaVersion: unknown; created_at: string } | undefined;
+  const recordedAt = existingRawBundle
+    ? readRetainedV1(existingRawBundle, () => existingRawBundle.created_at)
+    : input.collectedAt;
   const verified = await verifyRuntimeProvenance(input, lineage);
   const gatewayCalls = listWorkspaceCapabilityCalls(input.workspaceDb, lineage.workspaceId).filter(
     (call) =>
