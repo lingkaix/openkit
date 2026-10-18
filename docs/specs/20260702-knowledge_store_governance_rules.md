@@ -7,6 +7,12 @@ kind: concept
 
 Implementation note: the accepted V1 validation, source, maintenance-record, create-only proposal review and application, unchanged-page reversal, and S39-only worker-delivery boundaries are implemented. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority; scoped ownership, Git notebook publication and bounded learning are accepted extensions that remain Not Started.
 
+## Versioned Source Pointers
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) replaces the external Source registry with Notebook-owned OKF SourceSummary pointers when activated. Existing Source identity, capture/disclosure/sensitivity and review requirements remain binding; summaries are interpretation, not independent corroboration. Raw bytes stay outside Git.
+
+For this format, a changed original updates the same Source pointer in one commit, superseding the new-ID-on-recapture rule below. Historical digest-qualified citations must match their exact original bytes or report unavailable; deletion retains the unavailable pointer. The older registry/material rules remain current implementation projections until cutover.
+
 ## Summary
 
 This specification defines the concrete governance rules that make the canonical Knowledge model enforceable in portable files, schemas, validation, proposals, human review, content lineage, retrieval, and bounded maintenance.

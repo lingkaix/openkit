@@ -131,7 +131,7 @@ Direct `task.start` accepts optional exact `agentId`. The selector narrows exist
 
 `workspace-archive-history.ts` validates pre-retirement Git push and repository metadata only for archive verification. It defines no public operations, live resource, or execution authority.
 
-`automation-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare nine browser-safe operations and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
+`automation-operations.ts`, `external-trigger-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare eleven browser-safe operation definitions and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
 
 `src/workspace-transfer.ts` defines `workspace.export`, `workspace.import-dry-run`, and `workspace.import`, reusing complete storage response and import request schemas. `operation-definitions.ts` composes the family statically; model schema views retain the existing handle refinements.
 
@@ -219,3 +219,5 @@ Server operation targets carry an optional explicit `family` of administration, 
 
 
 `src/resource-policy-operations.ts` declares the Workspace named-resource request and confirmed application contracts. Request creation captures the existing configuration revision without resolving the proposed protected target. Apply selects `approvalRequestId`, independently of command correlation, and requires the exact human confirmation. Its result distinguishes saved revision from runtime reload status. The public catalog composes these definitions with their native handlers; the shared schema adds no assignment store or approval workflow. Its `@openkit/config-schema/workspace-resource-policy` dependency is a browser-safe schema-only subpath over protocol identities and Zod, with no server configuration loader.
+
+`external-trigger.ts` and `external-trigger-operations.ts` declare the scheduled poll event admission input and its ordinary Worker references. The operation accepts only Worker-package credentials. Native invocation binds source scope; model arguments cannot select another schedule or target Thread. `external-trigger.test.ts` checks that boundary without adding event execution states.

@@ -244,6 +244,10 @@ Permission decision records should be immutable. A later policy check should cre
 
 ## Enforcement Points
 
+Supervising agents MAY author per-agent and per-action Policy only inside their current delegated human-approved envelope. Risk tiers, confidence and assessments are inputs, not grants; widening that envelope requires its owning human decision. Author, delegation and evaluated Policy version MUST remain attributable. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this agent-native direction.
+
+Gate and transform participants require explicit Policy authority, and the final current Policy check follows transform, advise and gate. An agent approver MUST run in shadow before explicit bounded activation; it MUST NOT impersonate a human or satisfy a human-only decision. No agent approver is activated by this design. Timeout or an open participant circuit means unavailable, never an inferred deny or allow; required authority still fails closed.
+
 Permission checks should happen at enforcement points.
 
 Examples:

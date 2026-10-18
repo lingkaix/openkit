@@ -574,6 +574,7 @@ describe('worker MCP routes', () => {
       expect(sessionTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect(statelessTools.tools.map((tool) => tool.name)).toContain('kernel_apps_list');
       expect((await workClient.listTools()).tools.map((tool) => tool.name)).toEqual([
+        operationToolName('automation.event-admit'),
         operationToolName('knowledge.ask'),
         operationToolName('knowledge.tell'),
         'work_input_request',
@@ -1195,6 +1196,7 @@ describe('worker MCP routes', () => {
       expect(workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toHaveLength(1);
       const tools = (await client.listTools()).tools;
       expect(tools.map((tool) => tool.name)).toEqual([
+        operationToolName('automation.event-admit'),
         operationToolName('knowledge.ask'),
         operationToolName('knowledge.tell'),
         'work_input_request',

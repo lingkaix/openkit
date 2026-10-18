@@ -40,6 +40,8 @@ AgentSessions materialize resolved supply into live or resumable runtime continu
 
 ## Scope
 
+Solidified reusable procedures MUST use Skills as their canonical owner; other reusable understanding belongs in the governed Knowledge Base. Catalog descriptions and selected runtime copies remain metadata or projections, not additional grounding stores. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this consolidation. A participant provider binding reuses the applicable supply/capability owner and MUST NOT turn an installed package into trusted NanoCore plugin code or grant it effects.
+
 Agent supply is projected into a workspace-visible catalog by default. Workspace launch bindings and default selections do not filter that inventory. The reusable conversation-target projection separately uses Workspace pins or the selected default; an eligible unpinned Agent remains selectable by an exact Task request. The [pinning ruling](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md) links its owning specification.
 
 A workspace may include:

@@ -10,6 +10,12 @@ updated: 2026-09-30
 
 Personal scope and Thread visibility project through the same Policy Kernel. `20260909-thread_visibility_and_sharing.md` supplies creation-fixed private/workspace classification and private owner; current Workspace membership resolves shared audience. `20260909-personal_memory_and_knowledge_learning.md` supplies explicit User/Workspace/Server page scope and retained source restrictions. Administration requires current target mutation authority and exact human confirmation; User Memory requires exact current user, Server Knowledge requires deployment administration, and neither grants Workspace content access. Tool membership stays entry-path/binding determined; a currently unauthorized caller receives a typed refusal. AI assessments and past Memory never become grant facts.
 
+## Storage Access Leases
+
+A storage access lease is a kind of existing Policy grant. Its payload binds `knowledgeBaseId`, `mount`, normalized mount-relative `pathPrefix`, `mode: read-only | staged-write`, and canonical-timestamp `expiresAt`, plus existing subject, issuer, owner/audience and decision lineage. Unknown required lease semantics fail closed. Supervising agents set leases only within current delegation; Storage makes no access decision.
+
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns the location boundary. Audit lease issue/change/revocation/expiry, not each byte. Expiry/revocation blocks new access and requires removal or fencing of continued mounted exposure through runtime enforcement. Staged-write grants neither commit nor in-place overwrite; NanoCore intercepts those effects under current Policy. No new grant record family is introduced. Before the format freeze, its owning Policy implementation maps leases to STS session policy actions, resource prefix, expiry and conditions.
+
 ## Summary
 
 This spec maps the OpenKit policy kernel into NanoCore product enforcement.
