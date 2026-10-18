@@ -31,6 +31,7 @@ import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import { openBoundedSourceView } from '../context/bounded-source-view.js';
+import { prepareKnowledgeOverview } from '../context/knowledge-overview.js';
 import { prepareMaterialSourceInput } from '../context/material-source-files.js';
 import {
   admitModelRequest,
@@ -55,6 +56,7 @@ import {
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
+import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -296,6 +298,8 @@ interface WorkerTurnBackendLifecycle {
 
 /** Prepared S39 package state retained until its accepted trace and queue handoff complete. */
 export interface PreparedWorkerTurnContext {
+  /** Transient source and audience check before backend disclosure and native submission. */
+  readonly assertCurrentKnowledgeOverview: () => void;
   /** Task diagnostic lineage, absent for an outcome-initiated Turn. */
   readonly checkpoint: WorkerCheckpointRecord | null;
   /** Exact scheduler request identity, including checkpoint-free outcome Turns. */
@@ -370,6 +374,26 @@ export async function prepareWorkerTurnContextPackage(
     : null;
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const sourceAdmission = coreDb ? findSchedulerAdmissionForTurn(coreDb, input) : null;
+  const serverKnowledgeActor =
+    sourceAdmission?.serverAdminTokenId && sourceAdmission.triggerActor.kind === 'user'
+      ? {
+          kind: 'token' as const,
+          tokenId: sourceAdmission.serverAdminTokenId,
+          tokenScope: 'server-admin' as const,
+          userId: sourceAdmission.triggerActor.id,
+        }
+      : undefined;
+  const knowledgeOverview = prepareKnowledgeOverview({
+    store,
+    coreDb,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    actor: turn.triggerActor,
+    requestActor: serverKnowledgeActor,
+    serverKnowledgeActor,
+  });
   const isTask =
     workerRequest.requestKind === 'structured-delegation' && checkpoint?.goalId === null;
   const isChatSubordinateTask =
@@ -517,7 +541,19 @@ export async function prepareWorkerTurnContextPackage(
       );
     selectedArtifacts.set(artifact.id, structuredClone(artifact));
   }
+  const assertCurrentKnowledgeOverview = () => {
+    try {
+      knowledgeOverview.assertCurrent();
+    } catch {
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Current Knowledge overview authority is unavailable.',
+        503
+      );
+    }
+  };
   const assertCurrentSources = () => {
+    assertCurrentKnowledgeOverview();
     if (!originalInputs.length && !materialSelections.length && !selectedArtifacts.size) return;
     if (!coreDb)
       throw new TurnStartValidationError(
@@ -723,6 +759,7 @@ export async function prepareWorkerTurnContextPackage(
     contextBudgetTokens,
     includedItemIds,
     knowledgeSelections,
+    knowledgeOverview: knowledgeOverview.text,
     materialSelections,
     threadId: input.threadId,
     turnId: input.turnId,
@@ -738,11 +775,13 @@ export async function prepareWorkerTurnContextPackage(
     input.turnId,
     'context-package'
   );
+  assertCurrentSources();
   await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
   assertCurrentKnowledge();
   assertCurrentSources();
   for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);
   return {
+    assertCurrentKnowledgeOverview,
     checkpoint,
     requestId: input.requestId,
     knowledgeExclusions,
@@ -1932,7 +1971,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
         runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
         turn,
-        turnInput: workerInput,
+        // The retained request stays exact; only native model input adds package navigation.
+        turnInput: preparedWorkerContext?.packageFiles.fileInventory.some(
+          (file) => file.path === 'knowledge-overview.md'
+        )
+          ? workerInputWithKnowledgeOverview(workerInput, resolvedAgentSessionId)
+          : workerInput,
         triggerActor: context.triggerActor,
         ...(this.vaultBackend ? { vaultBackend: this.vaultBackend } : {}),
         ...(context.workspaceDataSourceCatalog
@@ -2086,6 +2130,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const launchLifecycle = backendLifecycle;
       /** Publishes the execution binding only after the backend's final no-effect capacity guards. */
       const publishMaterialization = () => {
+        preparedWorkerContext?.assertCurrentKnowledgeOverview();
         if (materializationPublished)
           throw new Error('Worker materialization publication may occur only once.');
         materializationPublished = true;
@@ -2280,6 +2325,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       await this.backend.prepareLaunch(materialization);
+      preparedWorkerContext?.assertCurrentKnowledgeOverview();
       const submission = recordSchedulerExecutionOperation(this.coreDb!, {
         attemptId: context.attemptId!,
         operationId: commandInputHash({
