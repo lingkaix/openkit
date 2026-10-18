@@ -189,3 +189,21 @@ it('closes a large source iterator when cancellation wins between chunks', async
 function sha256(bytes: Uint8Array): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
+
+it('retrieves only the selected ordinal when an unrelated original is unavailable', async () => {
+  const state = fixture(Buffer.from('selected original'));
+  const turn = {
+    ...state.input.turn,
+    fileInputs: [
+      ...state.input.turn.fileInputs!,
+      { ...state.input.turn.fileInputs![0]!, name: 'unavailable-other-original' },
+    ],
+  };
+  const sources = await prepareTurnFileSourceInputs({ ...state.input, turn, onlyOrdinal: 0 });
+  expect(sources).toHaveLength(1);
+  expect(sources[0]!.source.reference.objectId).toBe('0');
+  expect(Buffer.from(sources[0]!.deliveredBytes).toString('utf8')).toBe('selected original');
+  await expect(
+    prepareTurnFileSourceInputs({ ...state.input, turn, onlyOrdinal: 1 })
+  ).rejects.toThrow();
+});

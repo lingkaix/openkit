@@ -31,6 +31,8 @@ const TEXT_MEDIA = new Set(['text/plain', 'text/markdown', 'application/json']);
 export async function prepareTurnFileSourceInputs(input: {
   readonly workspaceRoot: string;
   readonly turn: Turn;
+  /** Current retrieval can select one exact ordinal without acquiring unrelated inputs. */
+  readonly onlyOrdinal?: number;
   readonly assertCurrent: () => void;
   readonly signal?: AbortSignal;
 }): Promise<WorkerContextPackageSourceFileInput[]> {
@@ -39,8 +41,16 @@ export async function prepareTurnFileSourceInputs(input: {
   const workspaceRoot = input.workspaceRoot;
   const { workspaceId, threadId, id: turnId } = input.turn;
   const originals = (input.turn.fileInputs ?? []).map((original) => Object.freeze({ ...original }));
+  if (
+    input.onlyOrdinal !== undefined &&
+    (!Number.isSafeInteger(input.onlyOrdinal) ||
+      input.onlyOrdinal < 0 ||
+      input.onlyOrdinal >= originals.length)
+  )
+    throw new Error('Selected Turn input ordinal is unavailable.');
   const result: WorkerContextPackageSourceFileInput[] = [];
   for (const [ordinal, original] of originals.entries()) {
+    if (input.onlyOrdinal !== undefined && ordinal !== input.onlyOrdinal) continue;
     signal.throwIfAborted();
     assertCurrent();
     const reference = TurnInputReferenceSchema.parse({
