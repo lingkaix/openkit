@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import { type ActorRef, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,8 @@ import {
   verifyAndMigrateExistingScopedDatabases,
 } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { StoredEventPayloadV1Schema } from '../storage/retained-work-events-v1.js';
+import { StoredItemV1Schema } from '../storage/retained-work-items-v1.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -1225,7 +1227,10 @@ describe('terminal failed-start product recovery', () => {
           'items.jsonl'
         );
         const item = store.getTurnById(f.turnId).items[proof === 'changed-prior-item' ? 0 : 4]!;
-        appendFileSync(itemsPath, `${JSON.stringify({ ...item, status: 'failed' })}\n`);
+        appendFileSync(
+          itemsPath,
+          `${JSON.stringify(StoredItemV1Schema.parse(writeRetainedV1({ ...item, status: 'failed' })))}\n`
+        );
       }
       const currentStore = new FsStore({ dataRoot: f.dataRoot });
       const before = currentStore.getTurnById(f.turnId);
@@ -1260,7 +1265,7 @@ describe('terminal failed-start product recovery', () => {
       const terminalBefore = eventsBefore
         .split('\n')
         .filter(Boolean)
-        .map((line) => JSON.parse(line))
+        .map((line) => readRetainedV1(JSON.parse(line), StoredEventPayloadV1Schema.parse))
         .find((event) => event.event === 'turn.completed');
       expect(
         currentStore.getTurnEvents(f.turnId).find((event) => event.event === 'turn.completed')
