@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 322;
+const EXPECTED_CATALOG_SIZE = 327;
 const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 237;
+const EXPECTED_INCLUDED_SIZE = 242;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -27,6 +27,11 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.archive-import', 'R008'],
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
+  ['memory.ask', 'R069'],
+  ['memory.tell', 'R069'],
+  ['memory.maintain', 'R069'],
+  ['memory.proposal.read', 'R069'],
+  ['memory.proposal.decide', 'R069'],
   ['memory.create', 'R069'],
   ['memory.update', 'R069'],
   ['memory.list', 'R069'],
@@ -212,6 +217,11 @@ const WEB_OPERATION_GROUPS = {
     'knowledge.repair.suggest': { disposition: 'live', surface: 'Knowledge' },
   },
   Memory: {
+    'memory.ask': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.tell': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.maintain': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.proposal.read': { disposition: 'roadmap', roadmap: 'R069' },
+    'memory.proposal.decide': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.create': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.update': { disposition: 'roadmap', roadmap: 'R069' },
     'memory.list': { disposition: 'roadmap', roadmap: 'R069' },
