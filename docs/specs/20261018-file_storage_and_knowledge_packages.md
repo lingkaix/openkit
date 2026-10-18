@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: "2026-10-18"
 ---
@@ -237,7 +237,7 @@ Acceptance observes one-to-one published-tree/package paths and justified differ
 
 Ablation: accepted contracts must remain distinct from implementation status.
 
-Storage package/local integration and these format extensions are not implemented by this documentation landing. Sources currently use an external registry and captured sibling text materials; the pointer cutover is not implemented. Context packages copy originals and require retained paths. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain the starting owners. No backend, host mount or media/model capability is activated here. Initial Storage implementation covers its contract, local backend and Knowledge Sources/raw namespace first; Artifact, Turn and Context adoption follows later.
+The Storage package implements asynchronous JSON control requests, bounded base64 byte chunks, local mount access under current admitted Policy facts, digest/size-verified original reads, metadata scan continuation and temporary staged owner handoff. Its references use the shared Protocol schema. NanoCore consumer adoption, Source pointers/raw cutover and retained-format extensions remain separate work: Sources still use their external registry/captured text, and Context still requires copied original paths. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain canonical. No host mount, remote backend, media/model capability or publication authority is activated by the package. Knowledge Source/raw integration precedes later Artifact, Turn and Context adoption.
 
 ## Derivation And Retrieval Interface
 

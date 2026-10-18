@@ -111,10 +111,7 @@ export interface StorageService {
     offset: number;
     length: number;
   }): Promise<StorageResult<StorageChunk>>;
-  discardStage(request: {
-    access: StorageAccess;
-    handle: string;
-  }): Promise<StorageResult<null>>;
+  discardStage(request: { access: StorageAccess; handle: string }): Promise<StorageResult<null>>;
 }
 
 /** Per-operation bounds; large files cross the boundary as repeated bounded chunks. */
