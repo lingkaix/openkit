@@ -7,11 +7,10 @@ const SLICE_KILL: &str =
     "-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all openkit-nanohost.slice";
 
 /// Keys whose effective value is one `[Service]` assignment.
-const SERVICE_POLICY: [&str; 5] = [
+const SERVICE_POLICY: [&str; 4] = [
     "Restart",
     "RestartSec",
     "RestartPreventExitStatus",
-    "ExecStop",
     "ExecStopPost",
 ];
 
@@ -141,18 +140,41 @@ fn wp3a_u3a2_service_unit_owns_one_bounded_fail_stop_slice() {
     assert!(!exec_start.contains("dockerd"));
     assert!(!exec_start.contains("openshell"));
 
-    let exec_stop = directives
-        .iter()
-        .find_map(|line| line.strip_prefix("ExecStop="))
-        .expect("slice cgroup kill");
-    assert_eq!(exec_stop, SLICE_KILL);
-    assert!(!exec_stop.contains("/bin/sh"));
-
     let exec_stop_post = directives
         .iter()
         .find_map(|line| line.strip_prefix("ExecStopPost="))
         .expect("abnormal-exit slice cgroup kill");
     assert_eq!(exec_stop_post, SLICE_KILL);
+}
+
+#[test]
+fn intentional_stop_does_not_report_its_own_slice_kill_as_main_process_failure() {
+    let rows = unit_assignments(UNIT);
+    for (section, key, value) in &rows {
+        if section != "Service" {
+            continue;
+        }
+        let arguments = value.split_ascii_whitespace().collect::<Vec<_>>();
+        if key == "ExecStop" {
+            // Killing MainPID from ExecStop records Result=signal even after the slice is empty.
+            // ExecStopPost retains whole-slice cleanup after service-process termination.
+            let kills_own_slice = arguments.contains(&"kill")
+                && arguments.contains(&"--signal=SIGKILL")
+                && arguments.contains(&"openkit-nanohost.slice");
+            assert!(
+                !kills_own_slice,
+                "ExecStop must not SIGKILL MainPID through its containing slice"
+            );
+        }
+        if key == "SuccessExitStatus" {
+            assert!(
+                !arguments
+                    .iter()
+                    .any(|value| matches!(*value, "SIGKILL" | "KILL")),
+                "unexpected MainPID SIGKILL must remain a failure"
+            );
+        }
+    }
 }
 
 #[test]
@@ -165,7 +187,7 @@ fn service_policy_rejects_duplicate_and_wrong_section_assignments() {
     if let Ok(value) = service_policy(&unit_assignments(&reset), "RestartPreventExitStatus") {
         panic!("RestartPreventExitStatus = reset parsed as Ok({value})");
     }
-    for key in SERVICE_POLICY {
+    for key in SERVICE_POLICY.into_iter().chain(["ExecStop"]) {
         let duplicate = format!("[Service]\n{key}=one\n{key}=two\n");
         assert!(
             service_policy(&unit_assignments(&duplicate), key).is_err(),
