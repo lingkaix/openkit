@@ -30,6 +30,7 @@ const assignment = {
   },
 };
 const policy = (statements = [assignment]) => ({ schemaVersion: 1 as const, statements });
+const authorCurrent = (humanId: string) => humanId === userId;
 const facts = {
   responsibleUserId: 'usr_00000000-0000-7000-8000-000000000002',
   agentId: 'agent_worker',
@@ -43,14 +44,32 @@ const facts = {
 };
 
 describe('finite Worker Git-read Policy evaluation', () => {
+  it('ends a distinct human author statement when that author loses current authority', () => {
+    const issuerId = 'usr_00000000-0000-7000-8000-000000000003';
+    const issued = {
+      ...assignment,
+      author: { kind: 'human' as const, id: issuerId },
+      authority: { kind: 'human' as const, userId: issuerId },
+    };
+    let issuerActive = true;
+    const current = (humanId: string) => humanId === issuerId && issuerActive;
+    expect(evaluateWorkerGitReadMaintenance(policy([issued]), facts, current).effect).toBe('allow');
+    issuerActive = false;
+    expect(evaluateWorkerGitReadMaintenance(policy([issued]), facts, current).effect).toBe('deny');
+    expect(evaluateWorkerGitReadMaintenance(policy([issued]), facts, authorCurrent).effect).toBe(
+      'deny'
+    );
+  });
+
   it('removes current authority when the common statement is inactive or absent', () => {
     expect(
       evaluateWorkerGitReadMaintenance(
         { schemaVersion: 1, statements: [{ ...assignment, state: 'inactive' }] },
-        facts
+        facts,
+        authorCurrent
       ).effect
     ).toBe('deny');
-    expect(evaluateWorkerGitReadMaintenance(policy([]), facts).effect).toBe('deny');
+    expect(evaluateWorkerGitReadMaintenance(policy([]), facts, authorCurrent).effect).toBe('deny');
   });
   it.each([
     { at: '2026-10-15T23:59:59.999Z', effect: 'deny' },
@@ -58,9 +77,10 @@ describe('finite Worker Git-read Policy evaluation', () => {
     { at: '2026-10-16T00:59:59.999Z', effect: 'allow' },
     { at: '2026-10-16T01:00:00.000Z', effect: 'deny' },
   ])('returns $effect at the exact validity boundary $at', ({ at, effect }) => {
-    expect(evaluateWorkerGitReadMaintenance(policy(), { ...facts, now: new Date(at) }).effect).toBe(
-      effect
-    );
+    expect(
+      evaluateWorkerGitReadMaintenance(policy(), { ...facts, now: new Date(at) }, authorCurrent)
+        .effect
+    ).toBe(effect);
   });
 
   it('does not union duplicate tuples into broader authority', () => {
@@ -74,7 +94,8 @@ describe('finite Worker Git-read Policy evaluation', () => {
             grant: { ...assignment.grant, repositoryPaths: ['/other/project.git'] },
           },
         ]),
-        facts
+        facts,
+        authorCurrent
       ).effect
     ).toBe('deny');
   });
@@ -93,20 +114,25 @@ describe('finite Worker Git-read Policy evaluation', () => {
     { reason: 'another host', changed: { host: 'other.example.test' } },
     { reason: 'another repository', changed: { repositoryPath: '/other/project.git' } },
   ])('refuses $reason through the actual kernel', ({ changed }) => {
-    expect(evaluateWorkerGitReadMaintenance(policy(), { ...facts, ...changed }).effect).toBe(
-      'deny'
-    );
+    expect(
+      evaluateWorkerGitReadMaintenance(policy(), { ...facts, ...changed }, authorCurrent).effect
+    ).toBe('deny');
   });
 
   it('fails closed on an unknown authority field or an invalid current time', () => {
     expect(
       evaluateWorkerGitReadMaintenance(
         policy([{ ...assignment, grant: { ...assignment.grant, allowPush: true } }]),
-        facts
+        facts,
+        authorCurrent
       ).effect
     ).toBe('deny');
     expect(
-      evaluateWorkerGitReadMaintenance(policy(), { ...facts, now: new Date(Number.NaN) }).effect
+      evaluateWorkerGitReadMaintenance(
+        policy(),
+        { ...facts, now: new Date(Number.NaN) },
+        authorCurrent
+      ).effect
     ).toBe('deny');
   });
 });
