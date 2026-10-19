@@ -1,7 +1,7 @@
-import type { WorkspaceResourceAccessEntry } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from './thread-visibility.js';
 
 describe('current managed Thread audience', () => {
@@ -12,14 +12,13 @@ describe('current managed Thread audience', () => {
     const ordinary = store.createThread(workspace.id, 'Ordinary');
     const userId = allocateEntityId('usr');
     const otherId = allocateEntityId('usr');
-    let entries: WorkspaceResourceAccessEntry[] = [
-      {
-        resource: { family: 'thread', id: managed.id },
-        grants: [{ subject: { kind: 'user', userId }, operations: ['thread.read'] }],
-        prohibitions: [],
-      },
-    ];
-    store.setWorkspaceResourcePolicyProjection(() => entries);
+    let policy = managedThreadPolicy({
+      workspaceId: workspace.id,
+      threadId: managed.id,
+      userId,
+      operations: ['thread.read'],
+    });
+    store.setWorkspaceResourcePolicyProjection(() => policy);
     expect(isThreadVisible(store, managed, userId)).toBe(true);
     expect(isThreadVisible(store, managed, userId, false, 'turn.run')).toBe(false);
     expect(isThreadVisible(store, managed, otherId)).toBe(false);
@@ -27,7 +26,10 @@ describe('current managed Thread audience', () => {
     expect(
       store.listThreads(workspace.id).filter((thread) => isThreadVisible(store, thread, otherId))
     ).toEqual([ordinary]);
-    entries = [{ ...entries[0]!, grants: [] }];
+    policy = {
+      ...policy,
+      statements: policy.statements.filter((statement) => statement.kind === 'managed-boundary'),
+    };
     expect(isThreadVisible(store, managed, userId)).toBe(false);
     expect(isThreadVisible(store, ordinary, userId)).toBe(true);
   });
@@ -39,16 +41,24 @@ it('does not copy a managed source into an unmanaged or different audience', () 
   const source = store.createThread(workspace.id, 'Managed source');
   const destination = store.createThread(workspace.id, 'Broad destination');
   const matching = store.createThread(workspace.id, 'Matching destination');
-  const grants = [
-    {
-      subject: { kind: 'user' as const, userId: allocateEntityId('usr') },
-      operations: ['thread.read' as const],
-    },
-  ];
-  store.setWorkspaceResourcePolicyProjection(() => [
-    { resource: { family: 'thread', id: source.id }, grants, prohibitions: [] },
-    { resource: { family: 'thread', id: matching.id }, grants, prohibitions: [] },
-  ]);
+  const userId = allocateEntityId('usr');
+  store.setWorkspaceResourcePolicyProjection(() => ({
+    schemaVersion: 1,
+    statements: [
+      ...managedThreadPolicy({
+        workspaceId: workspace.id,
+        threadId: source.id,
+        userId,
+        operations: ['thread.read'],
+      }).statements,
+      ...managedThreadPolicy({
+        workspaceId: workspace.id,
+        threadId: matching.id,
+        userId,
+        operations: ['thread.read'],
+      }).statements,
+    ],
+  }));
   expect(canDiscloseThreadToAudience(store, source, source)).toBe(true);
   expect(canDiscloseThreadToAudience(store, source, destination)).toBe(false);
   expect(canDiscloseThreadToAudience(store, source, null)).toBe(false);

@@ -273,7 +273,6 @@ export const OpenKitConfigSchema = z
           })
           .strict()
           .optional(),
-
       })
       .strict()
       .optional(),

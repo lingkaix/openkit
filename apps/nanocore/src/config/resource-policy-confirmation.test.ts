@@ -8,6 +8,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
 describe('raw Workspace configuration Policy edits', () => {
@@ -31,9 +32,11 @@ describe('raw Workspace configuration Policy edits', () => {
         workspace: {
           name: 'Managed Workspace',
           policy: {
-            resourceAccess: [
-              { resource: { family: 'thread', id: thread.id }, grants: [], prohibitions: [] },
-            ],
+            mediation: managedThreadPolicy({
+              workspaceId: workspace.id,
+              threadId: thread.id,
+              userId: FIXTURE_LOCAL_USER_ID,
+            }),
           },
         },
       };
@@ -53,7 +56,10 @@ describe('raw Workspace configuration Policy edits', () => {
       const { file } = (await read.json()) as { file: { revision: string } };
       const widened = {
         ...source,
-        workspace: { ...source.workspace, policy: { resourceAccess: [] } },
+        workspace: {
+          ...source.workspace,
+          policy: { mediation: { schemaVersion: 1, statements: [] } },
+        },
       };
       const refused = await send('runtime.file-update', {
         id,

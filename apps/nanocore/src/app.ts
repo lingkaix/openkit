@@ -134,6 +134,7 @@ import {
   isResourcePolicyRequesterCurrent,
 } from './policy/resource-policy-requests.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
+import { readCurrentWorkspacePolicy } from './policy/workspace-resource-access.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
@@ -895,7 +896,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     const loaded = runtimeConfigManager
       .current()
       .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId);
-    return loaded ? (loaded.config.workspace.policy?.resourceAccess ?? []) : null;
+    if (!loaded) return null;
+    const policy = loaded.config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+    if (!policy.statements.length) return policy;
+    if (!options.coreDb) throw new Error('Current Workspace Policy authority is unavailable.');
+    return readCurrentWorkspacePolicy({ coreDb: options.coreDb, workspaceId, policy });
   });
   const automationStore =
     options.automationStore ??

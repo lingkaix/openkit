@@ -24,6 +24,7 @@ import { createApp } from '../test-support/app.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { AuthVariables } from './middleware.js';
@@ -50,18 +51,12 @@ describe('managed Thread native admission', () => {
       workspace: {
         name: workspace.name,
         policy: {
-          resourceAccess: [
-            {
-              resource: { family: 'thread', id: thread.id },
-              grants: [
-                {
-                  subject: { kind: 'user', userId: FIXTURE_LOCAL_USER_ID },
-                  operations: ['thread.read'],
-                },
-              ],
-              prohibitions: [],
-            },
-          ],
+          mediation: managedThreadPolicy({
+            workspaceId: workspace.id,
+            threadId: thread.id,
+            userId: FIXTURE_LOCAL_USER_ID,
+            operations: ['thread.read'],
+          }),
         },
       },
     });
@@ -123,8 +118,10 @@ describe('managed Thread native admission', () => {
       );
       expect(denied.status).toBe(404);
       expect(store.getThread(workspace.id, thread.id).name).toBe('Managed');
-      manager.current().workspaceConfigs[0]!.config.workspace.policy!.resourceAccess[0]!.grants =
-        [];
+      const policy = manager.current().workspaceConfigs[0]!.config.workspace.policy!.mediation;
+      policy.statements = policy.statements.filter(
+        (statement) => statement.kind === 'managed-boundary'
+      );
       expect(
         (
           await app.request(
@@ -187,18 +184,15 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', () =>
     sessionCompatibilityKey: 'resource-policy-worker-session',
     now: () => new Date().toISOString(),
   });
-  store.setWorkspaceResourcePolicyProjection(() => [
-    {
-      resource: { family: 'thread', id: thread.id },
-      grants: [
-        {
-          subject: { kind: 'agent', userId: actor.id, agentId: 'researcher' },
-          operations: ['workspace.write'],
-        },
-      ],
-      prohibitions: [],
-    },
-  ]);
+  store.setWorkspaceResourcePolicyProjection(() =>
+    managedThreadPolicy({
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      userId: actor.id,
+      agentId: 'researcher',
+      operations: ['workspace.write'],
+    })
+  );
   const requestId = randomUUID();
   const kernel = vi.spyOn(policyKernel, 'evaluateAccess');
   try {
@@ -249,18 +243,15 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', () =>
       requestId,
       bindings: { workspaceId: workspace.id },
     };
-    store.setWorkspaceResourcePolicyProjection(() => [
-      {
-        resource: { family: 'thread', id: thread.id },
-        grants: [
-          {
-            subject: { kind: 'agent', userId: actor.id, agentId: 'researcher' },
-            operations: ['workspace.read'],
-          },
-        ],
-        prohibitions: [],
-      },
-    ]);
+    store.setWorkspaceResourcePolicyProjection(() =>
+      managedThreadPolicy({
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        userId: actor.id,
+        agentId: 'researcher',
+        operations: ['workspace.read'],
+      })
+    );
     kernel.mockClear();
     const lightApp = admitOperation(
       KERNEL_REMAINING_OPERATION_DEFINITIONS['kernel.records.get'],
@@ -274,9 +265,9 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', () =>
       process: agentSessionId,
       operation: 'workspace.read',
     });
-    store.setWorkspaceResourcePolicyProjection(() => [
-      { resource: { family: 'thread', id: thread.id }, grants: [], prohibitions: [] },
-    ]);
+    store.setWorkspaceResourcePolicyProjection(() =>
+      managedThreadPolicy({ workspaceId: workspace.id, threadId: thread.id, userId: actor.id })
+    );
     expect(() =>
       admitOperation(
         KERNEL_REMAINING_OPERATION_DEFINITIONS['kernel.records.get'],

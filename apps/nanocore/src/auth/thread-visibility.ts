@@ -1,8 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { type ArtifactSchema, ThreadSchema } from '@openkit/protocol';
-
-import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 
 import {
   evaluateWorkspaceResourceAccess,
@@ -129,14 +128,39 @@ export function canDiscloseThreadToAudience(
     );
   try {
     const document = store.getWorkspaceResourceAccess(source.workspaceId);
-    const statementsFor = (threadId: string) => document.statements.filter(statement => statement.state === 'active' && statement.scope.resources.some(resource => resource.kind === 'container' && resource.container.kind === 'thread' && resource.container.id === threadId));
+    const statementsFor = (threadId: string) =>
+      document.statements.filter(
+        (statement) =>
+          statement.state === 'active' &&
+          statement.scope.resources.some(
+            (resource) =>
+              resource.kind === 'container' &&
+              resource.container.kind === 'thread' &&
+              resource.container.id === threadId
+          )
+      );
     const sourceStatements = statementsFor(source.id);
-    if (!sourceStatements.some(statement => statement.kind === 'managed-boundary')) return true;
+    if (!sourceStatements.some((statement) => statement.kind === 'managed-boundary')) return true;
     if (destination?.visibility !== 'workspace') return false;
     const destinationStatements = statementsFor(destination.id);
-    if (!destinationStatements.some(statement => statement.kind === 'managed-boundary')) return false;
+    if (!destinationStatements.some((statement) => statement.kind === 'managed-boundary'))
+      return false;
     // Compare effective recipient/operation restrictions, excluding ids and attributable authorship.
-    const restrictions = (statements: typeof sourceStatements) => statements.flatMap(statement => statement.kind === 'permission' ? [{effect:statement.effect,subjects:statement.scope.subjects,actions:statement.scope.actions,grant:statement.grant}] : []).sort((left,right)=>JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    const restrictions = (statements: typeof sourceStatements) =>
+      statements
+        .flatMap((statement) =>
+          statement.kind === 'permission'
+            ? [
+                {
+                  effect: statement.effect,
+                  subjects: statement.scope.subjects,
+                  actions: statement.scope.actions,
+                  grant: statement.grant,
+                },
+              ]
+            : []
+        )
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
     return isDeepStrictEqual(restrictions(sourceStatements), restrictions(destinationStatements));
   } catch {
     return false;
