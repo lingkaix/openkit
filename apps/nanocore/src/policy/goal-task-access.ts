@@ -1,19 +1,22 @@
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
 import {
   AgentIdSchema,
+  PolicyPermissionV1Schema,
   PolicyResourceV1Schema,
   PolicySubjectV1Schema,
   UserIdSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { GoalDomainStatement } from './goal-domains.js';
-import { policyDigest } from './statements.js';
+import { policyDigest, policyScopeContains } from './statements.js';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
 
 /** Trusted native input after current Goal-domain read and exact scheduler admission readback. */
 export interface GoalTaskAccessInput {
   /** Must come from GoalDomainPolicyService.read for this attempt, never cached/model input. */
   readonly domain: GoalDomainStatement | null;
+  /** Current native delegated allows; they can extend only the Task association. */
+  readonly permissions?: readonly z.infer<typeof PolicyPermissionV1Schema>[];
   /** Actual agent principal, actor and process restored by the Worker lineage owner. */
   readonly subject: z.infer<typeof PolicySubjectV1Schema>;
   /** Current Goal accountability owner; this can differ from the approving statement author. */
@@ -33,13 +36,15 @@ export interface GoalTaskAccessResult {
   readonly inGoalEnvelope: boolean;
   /** Include in existing currentness checks; do not create another retained revision owner. */
   readonly authorizationRevision: string;
+  /** The one selected exception, absent when original Task resources suffice. */
+  readonly permission?: z.infer<typeof PolicyPermissionV1Schema>;
 }
 
 /**
  * Projects the explicit Goal and Task selectors into two NGAC policy classes.
  * Both associations are mandatory in the existing Kernel; no local scope check returns allow.
  * Current domain/credential/lifecycle and Task identity reads stay with their existing owners.
- * This initial hook does not activate delegated permissions or perform Coordinator administration.
+ * Current delegated allows extend only the Task class; the approved Goal and human Kernel stay mandatory.
  */
 export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAccessResult {
   const subject = PolicySubjectV1Schema.parse(input.subject);
@@ -64,22 +69,46 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
       domain.scope.resources.some((value) => policyDigest(value) === resourceDigest)
   );
   const selectedByTask = resources.some((value) => policyDigest(value) === resourceDigest);
+  const permission =
+    selectedByTask || !domain
+      ? undefined
+      : input.permissions?.find((value) => {
+          const candidate = PolicyPermissionV1Schema.parse(value);
+          return (
+            candidate.state === 'active' &&
+            candidate.effect === 'allow' &&
+            candidate.grant.kind === 'ordinary' &&
+            candidate.author.kind === 'agent' &&
+            candidate.author.id === domain.delegate.id &&
+            candidate.authority.kind === 'delegation' &&
+            candidate.authority.statement.id === domain.id &&
+            candidate.authority.statement.digest === policyDigest(domain) &&
+            policyScopeContains(domain.scope, candidate.scope) &&
+            candidate.scope.subjects.some(
+              (value) => policyDigest(value) === policyDigest(subject.principal)
+            ) &&
+            candidate.scope.actions.includes(input.operation) &&
+            candidate.scope.resources.some((value) => policyDigest(value) === resourceDigest)
+          );
+        });
   const kernel = scopeKernel({
     operation: input.operation,
     user: `${subject.principal.kind}:${subject.principal.id}`,
     ...(subject.process ? { process: subject.process.turnId } : {}),
     inGoalEnvelope,
-    selectedByTask,
+    selectedByTask: selectedByTask || Boolean(permission),
     humanKernel: input.humanKernel,
   });
   return {
     kernel,
     inGoalEnvelope,
+    ...(permission ? { permission } : {}),
     authorizationRevision: policyDigest({
       domain: domain ? { id: domain.id, digest: policyDigest(domain) } : null,
       subject,
       responsibleHumanId,
       resources,
+      permission: permission ? { id: permission.id, digest: policyDigest(permission) } : null,
       operation: input.operation,
       resource,
       humanKernel: input.humanKernel,
