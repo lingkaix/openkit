@@ -112,7 +112,11 @@ function minimalExportInput(
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
         schemaVersion: 1,
-        workspace: { name: 'Boundary workspace', defaultAgentId: null },
+        workspace: {
+          name: 'Boundary workspace',
+          defaultAgentId: null,
+          defaultKnowledgeBaseId: allocateEntityId('kb'),
+        },
       }),
       workspaceSchema: null,
     },
@@ -1675,9 +1679,11 @@ describe('Workspace resource Policy portability', () => {
         grants: [],
         prohibitions: [],
       };
+      const sourceConfig = JSON.parse(input.portableFileState!.workspaceConfig!);
       input.portableFileState!.workspaceConfig = JSON.stringify({
+        ...sourceConfig,
         requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
-        workspace: { name: 'Boundary workspace', policy: { resourceAccess: [boundary] } },
+        workspace: { ...sourceConfig.workspace, policy: { resourceAccess: [boundary] } },
       });
       const verified = writeWorkspaceExportTree(input);
       expect(verified.manifest.requiredFeatures).toContain(WORKSPACE_RESOURCE_POLICY_FEATURE);
@@ -1701,8 +1707,9 @@ describe('Workspace resource Policy portability', () => {
       };
       input.exportRoot = join(root, 'principal-export');
       input.portableFileState!.workspaceConfig = JSON.stringify({
+        ...sourceConfig,
         requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
-        workspace: { name: 'Boundary workspace', policy: { resourceAccess: [restricted] } },
+        workspace: { ...sourceConfig.workspace, policy: { resourceAccess: [restricted] } },
       });
       const withPrincipal = writeWorkspaceExportTree(input);
       expect(() =>

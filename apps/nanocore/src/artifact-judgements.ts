@@ -5,7 +5,7 @@ import {
   type JudgementRecord,
   JudgementRecordSchema,
 } from '@openkit/app-api-schemas';
-import { UserActorRefSchema } from '@openkit/protocol';
+import { UserActorRefSchema, writeRetainedV1 } from '@openkit/protocol';
 import {
   ArtifactReviewError,
   appendArtifactReviewJudgement,
@@ -56,23 +56,24 @@ function admit(access: ArtifactJudgementAccess, input: ArtifactJudgementInput) {
     )
   )
     throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
-  const parsed = JudgementRecordSchema.safeParse({
-    formatVersion: 1,
-    workspaceId: access.workspaceDb.workspaceId,
-    actor: actor.data,
-    recordedAt: new Date().toISOString(),
-    requestId: input.requestId,
-    target: {
-      kind: 'artifact-version',
-      artifactId: input.artifactId,
-      artifactVersion: input.artifactVersion,
-      contentDigest: input.contentDigest,
-    },
-    kind: input.kind,
-    choice: input.choice,
-    note: input.note ?? null,
-    extensions: input.extensions ?? {},
-  });
+  const parsed = JudgementRecordSchema.safeParse(
+    writeRetainedV1({
+      workspaceId: access.workspaceDb.workspaceId,
+      actor: actor.data,
+      recordedAt: new Date().toISOString(),
+      requestId: input.requestId,
+      target: {
+        kind: 'artifact-version',
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        contentDigest: input.contentDigest,
+      },
+      kind: input.kind,
+      choice: input.choice,
+      note: input.note ?? null,
+      extensions: input.extensions ?? {},
+    })
+  );
   if (!parsed.success)
     throw new OperationError('invalid_request', 'The Artifact assessment is invalid.', 400);
   access.store.getWorkspace(access.workspaceDb.workspaceId);
