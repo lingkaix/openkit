@@ -94,7 +94,7 @@ def load_maintenance():
 
 def state(unit=UNIT):
     """Read independent actual process and activation facts from the private manager."""
-    result = command(["/usr/bin/systemctl", "show", "--no-pager", "--property=MainPID,ActiveState,SubState,Restart,Result,ExecMainStatus", unit])
+    result = command(["/usr/bin/systemctl", "show", "--no-pager", "--property=MainPID,ActiveState,SubState,Restart,Result,ExecMainStatus,NRestarts,RestartUSec,RestartSteps,RestartMaxDelayUSec", unit])
     need(result.returncode == 0, "service_query_failed")
     return dict(line.split("=", 1) for line in result.stdout.decode("ascii").splitlines())
 
@@ -167,11 +167,67 @@ def oracle_self_check():
     inactive(unit)
 
 
+def backoff():
+    """Observe stock restart delays and refusal/stop controls in the private manager."""
+    oracle_self_check()
+    wait_for(lambda: len(starts()) >= 3, "three_starts_not_observed", seconds=45)
+    times = [int(value) for value in starts()[:3]]
+    intervals = [(times[index + 1] - times[index]) / 1_000_000_000 for index in range(2)]
+    policy = state()
+    need(command(["/usr/bin/systemctl", "stop", UNIT]).returncode == 0, "backoff_stop_failed")
+    inactive()
+    need(domain_empty(), "backoff_stop_left_processes")
+    stopped_count = len(starts())
+    time.sleep(6)
+    need(len(starts()) == stopped_count, "stopped_backoff_restarted")
+
+    write(Path("/fixture/exit-code"), b"78\n")
+    need(command(["/usr/bin/systemctl", "reset-failed", UNIT]).returncode == 0, "backoff_reset_failed")
+    need(command(["/usr/bin/systemctl", "start", UNIT]).returncode == 0, "exit78_start_failed")
+    wait_for(lambda: len(starts()) == stopped_count + 1 and state()["ExecMainStatus"] == "78", "exit78_not_observed")
+    inactive()
+    time.sleep(6)
+    inactive()
+    need(len(starts()) == stopped_count + 1 and state()["NRestarts"] == "0", "exit78_restarted")
+    need(domain_empty(), "exit78_left_processes")
+
+    write(Path("/fixture/exit-code"), b"hold\n")
+    need(command(["/usr/bin/systemctl", "reset-failed", UNIT]).returncode == 0, "hold_reset_failed")
+    need(command(["/usr/bin/systemctl", "start", UNIT]).returncode == 0, "hold_start_failed")
+    wait_for(lambda: Path("/fixture/held-child").exists() and state()["ActiveState"] == "active", "hold_child_not_active")
+    sibling = subprocess.Popen(["/usr/bin/systemd-run", "--scope", "--unit=openkit-fixture-sibling",
+                                "--slice=openkit-nanohost.slice", "/usr/bin/sleep", "infinity"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        wait_for(lambda: state("openkit-fixture-sibling.scope")["ActiveState"] == "active", "backoff_sibling_not_active")
+        need(command(["/usr/bin/systemctl", "stop", UNIT]).returncode == 0, "hold_stop_failed")
+        wait_for(lambda: sibling.poll() is not None, "backoff_sibling_survived_stop")
+        inactive()
+        need(domain_empty(), "backoff_whole_slice_not_empty")
+        need(state()["Result"] == "success", "intentional_stop_reported_failure")
+    finally:
+        if sibling.poll() is None:
+            sibling.kill()
+        sibling.wait(timeout=10)
+    facts = {"restartIntervalsSeconds": intervals, "restartSec": policy["RestartUSec"],
+             "restartSteps": policy["RestartSteps"], "restartMaxDelay": policy["RestartMaxDelayUSec"],
+             "exit78NotRestarted": True, "stopCancelsRestart": True, "wholeSliceStopped": True,
+             "oracleSuccessFailureTimeout": True}
+    write(Path("/fixture/backoff-observations.json"), json.dumps(facts).encode())
+    # A fixed five-second loop cannot pass; use monotonic process starts, not modeled timers.
+    need(intervals[0] >= 4 and intervals[1] >= 1.5 * intervals[0], "restart_delay_did_not_increase")
+    need(policy["RestartUSec"] == "5s" and policy["RestartSteps"] == "5" and
+         policy["RestartMaxDelayUSec"] == "5min", "effective_backoff_policy_mismatch")
+    return facts
+
+
 def inside(phase, case):
     """Run the production recipe in the actual private namespaces and fixed real root."""
     plan = json.loads(Path("/fixture/plan.json").read_text())
     need(hashlib.sha256(Path(__file__).read_bytes()).hexdigest() == plan["instrumentSha256"], "fixture_source_changed_during_run")
     need(run_is_tmpfs(), "private_run_not_tmpfs")
+    if phase == "backoff":
+        return backoff()
     module = load_maintenance()
     manager = module.Maintenance(IDENTIFIER)
     if phase == "prepare":
@@ -331,6 +387,26 @@ class PrivateManager:
         source_root = Path(__file__).resolve().parents[2]
         old_unit = (source_root / "apps/nanohost/deploy/openkit-nanohost.service").read_bytes()
         program = b'#!/usr/bin/python3\nfrom pathlib import Path\nimport time\np=Path("/var/lib/openkit-fixture/starts")\np.parent.mkdir(parents=True,exist_ok=True)\nwith p.open("ab") as f: f.write(b"started\\n"); f.flush()\nwhile True: time.sleep(1)\n'
+        if case == "restart-backoff":
+            program = b'''#!/usr/bin/python3
+from pathlib import Path
+import subprocess
+import sys
+import time
+p = Path("/var/lib/openkit-fixture/starts")
+p.parent.mkdir(parents=True, exist_ok=True)
+with p.open("ab") as f:
+    f.write(str(time.monotonic_ns()).encode() + b"\\n")
+    f.flush()
+mode = Path("/fixture/exit-code").read_text().strip()
+if mode == "hold":
+    child = subprocess.Popen(["/usr/bin/sleep", "infinity"])
+    Path("/fixture/held-child").write_text(str(child.pid))
+    while True:
+        time.sleep(1)
+sys.exit(int(mode))
+'''
+            write(root / "fixture/exit-code", b"1\n")
         old = {"nanohost": program + b"# old fixture\n", "gateway": b"#!/usr/bin/true\n# old gateway\n", "unit": old_unit}
         target = {"nanohost": program + b"# target fixture\n", "gateway": b"#!/usr/bin/true\n# target gateway\n",
                   "unit": old_unit + b"\nEnvironment=OPENKIT_FIXTURE_TARGET=1\n" + (b"ExecStartPre=/usr/bin/false\n" if case == "failed-start" else b"")}
@@ -479,9 +555,9 @@ class PrivateManager:
             self.log.close()
 
 
-def outer():
+def outer(cases=CASES):
     """Run each finite case, proving cleanup even after unavailable setup or a failed case."""
-    for case in CASES:
+    for case in cases:
         fixture = None
         root = None
         facts = {}
@@ -491,19 +567,22 @@ def outer():
             fixture = PrivateManager(root)
             fixture.prepare(case)
             fixture.start()
-            facts.update(fixture.phase("prepare", case))
-            wait_for(lambda: fixture.run(["/usr/bin/systemctl", "is-active", "--quiet", "dbus.service"], timeout=3).returncode == 0,
-                     "reexec_bus_unavailable")
-            facts.update(fixture.phase("after-reexec", case))
-            fixture.stop()
-            # A fresh owned leaf avoids reusing a domain with enabled child controllers.
-            fixture.group.rmdir()
-            fixture.group = fixture.group.with_name("openkit-p29-live-" + uuid.uuid4().hex)
-            fixture.identity = None
-            fixture.group.mkdir()
-            fixture.identity = fixture.group.stat()
-            fixture.start()
-            facts.update(fixture.phase("finish", case))
+            if case == "restart-backoff":
+                facts.update(fixture.phase("backoff", case))
+            else:
+                facts.update(fixture.phase("prepare", case))
+                wait_for(lambda: fixture.run(["/usr/bin/systemctl", "is-active", "--quiet", "dbus.service"], timeout=3).returncode == 0,
+                         "reexec_bus_unavailable")
+                facts.update(fixture.phase("after-reexec", case))
+                fixture.stop()
+                # A fresh owned leaf avoids reusing a domain with enabled child controllers.
+                fixture.group.rmdir()
+                fixture.group = fixture.group.with_name("openkit-p29-live-" + uuid.uuid4().hex)
+                fixture.identity = None
+                fixture.group.mkdir()
+                fixture.identity = fixture.group.stat()
+                fixture.start()
+                facts.update(fixture.phase("finish", case))
             need((fixture.unrelated.stat().st_ino, fixture.unrelated.read_bytes()) == fixture.unrelated_before,
                  "unrelated_override_changed")
             facts.update(unrelatedOverridePreserved=True)
@@ -516,6 +595,12 @@ def outer():
                     facts["managerReportedNamespaceFailure"] = b"NAMESPACE" in raw
                     facts["managerReportedFixtureDockerPath"] = b"/run/docker.sock" in raw
         finally:
+            try:
+                if root is not None and (root / "fixture/backoff-observations.json").exists():
+                    facts.update(json.loads((root / "fixture/backoff-observations.json").read_text()))
+            except Exception:
+                # Lost diagnostic bytes must not bypass the owned-domain cleanup below.
+                failure = "backoff_observations_unreadable"
             group_removed = fixture is None
             if fixture is not None and fixture.identity is not None:
                 try:
@@ -579,4 +664,4 @@ if __name__ == "__main__":
             print(json.dumps({"outcome": "failed", "cause": str(error) if isinstance(error, FixtureFailure) else "maintenance_recipe_refused", "facts": facts}))
             sys.exit(1)
     else:
-        sys.exit(outer())
+        sys.exit(outer(("restart-backoff",) if sys.argv[1:] == ["--backoff"] else CASES))

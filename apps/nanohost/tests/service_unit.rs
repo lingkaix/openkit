@@ -7,9 +7,11 @@ const SLICE_KILL: &str =
     "-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all openkit-nanohost.slice";
 
 /// Keys whose effective value is one `[Service]` assignment.
-const SERVICE_POLICY: [&str; 4] = [
+const SERVICE_POLICY: [&str; 6] = [
     "Restart",
     "RestartSec",
+    "RestartSteps",
+    "RestartMaxDelaySec",
     "RestartPreventExitStatus",
     "ExecStopPost",
 ];
@@ -85,6 +87,14 @@ fn wp3a_u3a2_service_unit_owns_one_bounded_fail_stop_slice() {
     assert_eq!(
         service_policy(&rows, "RestartSec").expect("RestartSec"),
         "5s"
+    );
+    assert_eq!(
+        service_policy(&rows, "RestartSteps").expect("RestartSteps"),
+        "5"
+    );
+    assert_eq!(
+        service_policy(&rows, "RestartMaxDelaySec").expect("RestartMaxDelaySec"),
+        "5min"
     );
     assert_eq!(
         service_policy(&rows, "RestartPreventExitStatus").expect("RestartPreventExitStatus"),
