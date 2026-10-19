@@ -77,15 +77,24 @@ Repository tests use the same system-under-test instrumentation and correlation 
 
 ### Worker Sandbox Export Boundary
 
-The [#221 engineer ruling](../decisions/20261015-sandbox_telemetry_and_public_gateway_boundary.md) applies with the narrow [worker phase-marker amendment](../decisions/20261019-worker_reported_phase_markers.md). The worker shim, OpenKit's own code inside the Sandbox, may report only allowlisted lifecycle phase markers through the existing authenticated worker-control channel. This is not a general telemetry relay.
+The [#221 engineer ruling](../decisions/20261015-sandbox_telemetry_and_public_gateway_boundary.md) applies with the [phase-marker amendment](../decisions/20261019-worker_reported_phase_markers.md) and its narrow [resource/preflight extension](../decisions/20261019-sandbox_resource_and_preflight_diagnostics.md). The worker shim, OpenKit's own code inside the Sandbox, may report only closed marker variants through the existing authenticated worker-control channel. This is not a general telemetry relay.
 
-A marker contains exactly an enum phase name, a timestamp, and at most one optional fixed-enum outcome or stable error code. Reject unknown fields, free-form strings, unknown phase/outcome values, and error codes outside the release-defined allowlist. Existing channel authentication and the Core-owned Turn/step binding select the parent; a marker supplies no identity or authorization.
+Every marker has an enum phase name and timestamp. Its only additional fields follow this release-defined allowlist:
+
+| Phase | Admitted additional fields |
+| --- | --- |
+| Lifecycle phase | At most one optional fixed-enum outcome or stable allowlisted error code. |
+| `environment_preflight` | `harnessVersionMatch`: `match`/`mismatch` against the admitted version; `gatewayReachability`: `ok`/`dns`/`connect`/`tls`/`http_class`/`timeout`; `gatewayHttpClass`: `1xx` through `5xx`, only with `http_class`; `workAreaFreeBytes`: integer 0 through 2^53−1 for the writable work area. At most one preflight marker per Turn. |
+| `native_process_exit` | An integer exit code from 0 through 255 or a release-defined signal enum, never both. |
+| `shim_error` | One stable allowlisted shim error code; no error message, exception text, or stack. |
+
+Report only actually observed preflight fields; omission means unknown. Do not include the raw harness version, URL, hostname, environment, or response body. Marker reporting grants no additional probe or egress authority. Reject unknown fields, free-form strings, invalid numeric bounds, unknown phase/outcome/signal values, and unlisted error codes. Existing channel authentication and the Core-owned Turn/step binding select the parent; a marker supplies no identity or authorization.
 
 NanoCore validates the allowlist and per-Turn count/byte budgets before recording. Current defaults admit at most 64 marker inputs and 16 KiB of encoded marker payloads per Turn. Rejected or duplicate inputs also consume this diagnostic input budget. Exhaustion drops markers, never control messages or product work. Clamp timestamps into the Core-observed parent window, bounded by receipt time while the step is open. Drop duplicates after validation/clamping, and drop unbound or late markers after the owning step ends.
 
-The shim uses a bounded queue below control-message priority. Drop markers on overflow; marker production and delivery must never delay control traffic. No new egress, OpenTelemetry SDK provider/exporter, OTLP endpoint/receiver, Collector, exporter credential, native agent-runtime telemetry relay, or content is admitted in the Sandbox.
+The shim uses a bounded queue below control-message priority. Drop markers on overflow; marker production and delivery must never delay control traffic. No new egress, OpenTelemetry SDK provider/exporter, OTLP endpoint/receiver, Collector, exporter credential, native agent-runtime telemetry relay, arbitrary metrics/logs, periodic sampling, or content is admitted in the Sandbox.
 
-The execution owner records accepted markers as bounded, unverified events on the owning journal step. This specification defines their projection as OpenTelemetry span events, not child spans: a point observation has no verified operation duration or independent lifecycle. Use the fixed event name `openkit.worker.phase`, the clamped timestamp, an allowlisted phase, and any admitted outcome/error code. NanoCore adds `openkit.report.origin=worker` and `openkit.report.verified=false`. Keep marker outcome/error attributes separate from the owning stage's outcome/status attributes.
+The execution owner records accepted markers as bounded, unverified events on the owning journal step. This specification defines their projection as OpenTelemetry span events, not child spans: a point observation has no verified operation duration or independent lifecycle. Use the fixed event name `openkit.worker.phase`, the clamped timestamp, and only the selected marker variant's allowlisted fields. NanoCore adds `openkit.report.origin=worker` and `openkit.report.verified=false`. Keep marker outcome/error attributes separate from the owning stage's outcome/status attributes.
 
 Markers never change a step's status, outcome, retry, recovery, or fences, and never add histogram samples. Missing or forged markers affect diagnostics only. Journal persistence proves only that Core received an unverified report, not that the reported phase occurred.
 
@@ -247,6 +256,14 @@ A Turn-caused NanoHost effect span may carry one span link to the completed Epoc
 
 Without a Collector, NanoHost's own fine-grained spans are absent from the local sink and Turn view in this release; the Core journal still records Core-observed timing for every NanoHost call, and a NanoHost local sink remains a later option, not admitted now.
 
+### Host-Observed Sandbox Resources
+
+NanoHost's [bounded resource summary](20260802-nanohost_runtime_and_transport.md#host-observed-sandbox-resource-summary) supplies container resource/exit facts from its private Docker/cgroups, not the shim. Existing terminal/inspect/teardown responses carry it; Core also uses the existing inspect call on lost-Worker detection. No new route, polling loop, periodic series, or metric is added.
+
+Core records available summary fields as host-observed, trusted attributes on the owning journal step and its span. This remains available when the shim is dead or hung, subject to backend observation availability. Missing fields mean unknown, not zero. Trusted source identifies the host/backend boundary, not outcome authority; summaries never decide step status, outcome, retry, recovery, or fences. The host owner defines the field list, bounds, and collection failure behavior. Operators may use separate host monitoring for time series.
+
+Native runtime stderr and logs are content, not telemetry. Their verbatim restricted-raw capture, per-Turn bounds, and explicit truncation records belong to the work-data retention owner, never marker payloads or span attributes.
+
 ## Metric Contract
 
 - The first implementation uses stock OpenTelemetry HTTP, process, runtime, SDK, and Collector metrics where supported by the pinned stable conventions.
@@ -377,7 +394,7 @@ The lock resolves `@opentelemetry/otlp-transformer` 0.221.0 through the trace ex
 
 The current explicit GenAI opt-in baseline is `@opentelemetry/semantic-conventions` 1.41.1, already resolved in the lock. Its [incubating convention surface](https://unpkg.com/@opentelemetry/semantic-conventions@1.41.1/README.md) requires an exact pin and includes the selected operation names. Opting into this experimental version does not admit content or unrelated instrumentation. No dependency is changed by this design amendment.
 
-The local sink, local-first configuration flags, journal-backed lifecycle spans/statistics, histogram, Turn timeline, and bounded shim-marker admission/projection are not implemented. Manual Gateway/provider/storage spans, broader log bridging, and CI telemetry also remain partial or absent. Existing evidence and retention coverage retain their owners; this document claims no complete instrumentation.
+The local sink, local-first configuration flags, journal-backed lifecycle spans/statistics, histogram, Turn timeline, bounded shim-marker admission/projection, and host-resource summary projection are not implemented. Manual Gateway/provider/storage spans, broader log bridging, and CI telemetry also remain partial or absent. Existing evidence and retention coverage retain their owners; this document claims no complete instrumentation.
 
 At the selected OpenShell 0.0.99 pin, an admitted TCP dial failure before CONNECT 200 can lose request correlation. The native failure event retains a shared static proxy endpoint, while a separate destination DEBUG message has no request join. NanoHost cannot reconstruct that missing association. [Issue #136](https://github.com/lingkaix/openkit/issues/136) remains open for an official upstream fix; the current slice does not add a proxy, patch OpenShell or relax identity enforcement. This limit does not establish the cause of a historical package-download failure.
 
@@ -425,7 +442,8 @@ The deciding oracles remain canonical records and existing assertions. Telemetry
 - Gateway and provider tests prove product-safe provider, model, operation, streaming, terminal, duration, and usage projection without prompt, response, quota payload, account, credential, cache-key, or provider-private data.
 - Internal Gateway regressions prove one logical-closeout diagnostic, the pre-transport classification of required constrained-sampling rejection of `task_start`'s `prefixItems` schema, observed-status-only projection, prohibited-content absence, and unchanged failure closeout when the log sink throws.
 - Worker tests prove Core-owned start/run/end spans use accepted observations and distinguish dispatch from accepted start. Only allowed shim markers become unverified journal/span events; no SDK provider/exporter, OTLP/native-runtime relay, endpoint, credential, or new egress enters the Sandbox.
-- Marker tests cover exact fields/enums, authentication/binding, count/byte limits, timestamp clamping, duplicate and late-input drops, lower-priority bounded queues, and overflow. Missing/forged markers never change step status, outcomes, histogram samples, retries, recovery, fences, or control-traffic progress.
+- Marker tests cover the closed lifecycle/preflight/native-exit/shim-error variants, one-time preflight, numeric/enum bounds, authentication/binding, count/byte limits, timestamp clamping, duplicate/late drops, lower-priority queues, and overflow. Raw version/environment/URL/stderr content and periodic samples are rejected. Missing/forged markers never change status, outcomes, histogram samples, retries, recovery, fences, or control-traffic progress.
+- Host-summary tests cover bounded optional backend fields, absent/invalid = unknown, dead/hung shim observations through existing inspect, and unchanged product outcomes, teardown, and fences. Journal/span attributes distinguish trusted host facts from unverified shim reports; no new metric, poller, or route exists.
 - Lifecycle tests prove every ended journal step maps losslessly to one OTLP span and retains journal-owned correlation. Cover every reached/open stage, failed-check attribution, distinct collection/release outcomes, and pending-request closeout without telemetry-driven recovery.
 - Metrics tests reject high-cardinality OpenKit ids and dynamic route, URL, error-message, user, account, Workspace, Thread, Turn, request, and test-case dimensions.
 - Failure tests prove disabled telemetry, Collector refusal, exporter timeout, queue overflow, and shutdown flush failure do not alter product status, canonical records, cleanup, or process deadline behavior.
@@ -447,7 +465,7 @@ Acceptance requires all of the following:
 - Product and test outcomes are unchanged when telemetry is disabled, dropped, unavailable, delayed, or contradictory.
 - Sensitive and unrestricted content is absent before export.
 - Metrics remain bounded by low-cardinality dimensions.
-- The only Sandbox reports are bounded allowlisted shim markers, retained/projected as unverified events under #221's narrow amendment. The optional NanoHost trace-header/startup-link contract remains unchanged.
+- The only Sandbox reports are the closed bounded shim marker variants, retained/projected as unverified events under #221's narrow amendments. Resource summaries originate at the host and never decide an outcome. The optional NanoHost trace-header/startup-link contract remains unchanged.
 - Local OTLP files remain disposable and excluded from backup/export; canonical journal continuity is unchanged. Stage facts/statistics come from the journal, with optional sink detail, without a Collector.
 - No bundled backend, reliable spool, new runner, event bus, general query API, or telemetry recovery workflow exists.
 
@@ -469,7 +487,7 @@ None for the accepted architecture boundary. The local limits are current defaul
 ## Deferred / Future Work
 
 - Broader diagnostic views or additional custom metrics require a separate demonstrated need and an owning operational question.
-- Sandbox telemetry beyond the admitted unverified shim markers must satisfy #221's revisit condition; no native-runtime or OTLP relay is authorized.
+- Sandbox telemetry beyond the admitted closed shim variants must satisfy #221's revisit condition; no native-runtime/OTLP relay, arbitrary inside metrics/logs, or periodic inside sampling is authorized.
 - A NanoHost local sink requires a later accepted need; this release admits no such sink.
 - Remote Collector authentication or direct OTLP export after a deployment model requires it; the initial same-deployment Collector keeps vendor credentials outside NanoCore.
 - Tail sampling, multi-collector routing, long-term local storage, telemetry legal hold, and multi-server correlation after the deployment baseline changes.
