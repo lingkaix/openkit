@@ -23,6 +23,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
 
   const timestamp = new Date().toISOString();
   const workspace = {
+    schemaVersion: 1,
     id: 'ws_00000000-0000-7000-8000-000000000001',
     kind: 'code',
     status: 'active',
@@ -30,6 +31,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
     updatedAt: timestamp,
   };
   const quickChatWorkspace = {
+    schemaVersion: 1,
     id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
     kind: 'personal',
     status: 'active',
@@ -69,11 +71,11 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   writeFileSync(quickChatPath, `${JSON.stringify(quickChatWorkspace, null, 2)}\n`);
   writeFileSync(
     join(workspaceRoot, 'config', 'workspace.jsonc'),
-    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Demo Workspace', defaultAgentId: 'agent_codex_host' } }, null, 2)}\n`
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Demo Workspace', defaultAgentId: 'agent_codex_host', defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001' } }, null, 2)}\n`
   );
   writeFileSync(
     join(quickChatRoot, 'config', 'workspace.jsonc'),
-    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Personal', defaultAgentId: null } }, null, 2)}\n`
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Personal', defaultAgentId: null, defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000002' } }, null, 2)}\n`
   );
   writeFileSync(
     join(threadRoot, 'thread.json'),
@@ -112,6 +114,7 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
     { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT },
     { serializeUserAuthoredKnowledgePage },
     { createDemoWorkspaceForUser },
+    { readDefaultKnowledgeBaseId },
   ] = await Promise.all([
     import('../../apps/nanocore/dist/test-support/local-user.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
@@ -121,6 +124,7 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
     import('../../apps/nanocore/dist/knowledge/okf.js'),
     import('../../apps/nanocore/dist/storage/workspace-file-records.js'),
     import('../../apps/nanocore/dist/test-support/demo-store.js'),
+    import('../../apps/nanocore/dist/config/knowledge-base.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
 
@@ -145,6 +149,10 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       try {
         applyScopedMigrations(workspaceDb);
+        const knowledgeBaseId = readDefaultKnowledgeBaseId({
+          dataRoot,
+          scope: { kind: 'workspace', workspaceId },
+        });
         initializeWorkspaceNotebook({
           workspaceRoot,
           workspaceId,
@@ -165,6 +173,7 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
               }
             : {}),
           revalidate: () => ({
+            pageScopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
             scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
             reviewRequiredPageIds: [],
             registeredSources: new Map(),
