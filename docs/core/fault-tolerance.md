@@ -27,11 +27,11 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 **Collect valuable information while it exists.** Harness, Sandbox and native state are temporary and may become unreadable or be deleted. OpenKit collects the information it needs to understand admitted work and its result while the work runs. It does not depend on teardown-time recovery or on native history. The decision and its reason are recorded in [Fault Tolerance And Work Collection](../decisions/20261017-fault_tolerance_and_work_collection.md).
 
-**Prefer interruption and a deliberate new attempt.** When a failure breaks an operation, OpenKit stops it with a truthful state and lets an authorized actor start a new attempt. Transparent recovery is an optional optimization; it never adds a second workflow and never guesses.
+**Continue committed work without replaying unknown effects.** Normal progress and restart use the same execution owner and committed steps. An unsafe or unproved external continuation stops with a truthful state and requires deliberate new admission. Recovery never guesses, replays a lost native Worker, or adds a parallel workflow.
 
-**Contain failure to the affected dependency.** A failed provider, MCP server, Worker, Workspace store or channel blocks only the operations that depend on it. Wider interruption is justified only by shared authority, a shared writer or loss of containment.
+**Contain failure to its owning scope.** Unreadable or unsupported Workspace authority quarantines that Workspace as recovery-required and inspectable; the server and healthy Workspaces can still boot. Untrustworthy server-scoped authority, including users, server Knowledge, configuration and Host state, refuses whole-server boot. This rule is storage-neutral and applies before and after the control-store replacement. A failed provider, MCP server, Worker or channel blocks its dependent operations. Shared authority, a shared writer or loss of containment can require a wider fence. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) records the failure-scope ruling.
 
-**Keep controls proportional to reachable loss.** Controls protect user content, authorization, secrets and scope isolation against failures that can actually happen. Operators are trusted, and model or Worker claims can be wrong without malice. OpenKit adds no general proof, reconciliation or reliability ledger beyond the owners that already need one.
+**Keep controls proportional to reachable loss.** Controls protect user content, authorization, secrets and scope isolation against failures that can actually happen. Operators are trusted, and model or Worker claims can be wrong without malice. Durable execution replaces its scattered state and bespoke recovery; it MUST NOT add a second proof, reconciliation or reliability ledger beside those owners.
 
 **State the limits.** What OpenKit cannot guarantee is written down, not hidden.
 
@@ -75,9 +75,9 @@ These are observable properties of the whole system. They add no status values.
 
 ### OpenKit and storage
 
-[Storage](storage.md) owns the acknowledgement point for each canonical store: an ordinary transaction, an atomic file publication with the required synchronization, or the existing append discipline. A mutation that spans files and SQLite records has one owner that states which committed state readers accept; incomplete state returns that owner's error, never a guessed repair. OpenKit uses no distributed transaction.
+[Storage](storage.md) owns the acknowledgement point: one mutable control transition commits in one owning-store transaction over already durable immutable content. A cross-scope or external effect has separately committed intent and outcome; it is not made atomic with that transaction. Pending replacement, existing file-backed publication still must acknowledge only synchronized content and report incomplete authority explicitly. OpenKit uses no distributed transaction.
 
-Damaged or unreadable authority-bearing storage fails closed. Missing authority-bearing storage that a durable record expects also fails closed. Recovery preserves what remains in place and never replaces lost authority with a fresh empty store. Derived indexes and caches are rebuilt only from intact authority; an index never substitutes for missing canonical content. A storage failure stops the affected writes and keeps readable history readable. A backup reports the Worker volumes and external references it does not cover.
+Damaged, unreadable or unsupported authority-bearing storage fails closed within its owning scope. Missing authority-bearing storage that a durable record expects also fails closed there. Workspace quarantine preserves the original bytes and a typed owner/check diagnosis, blocks dependent effects, and never substitutes derived state. Recovery preserves what remains in place and never replaces lost authority with a fresh empty store. Derived indexes and caches are rebuilt only from intact authority; an index never substitutes for missing canonical content. A storage failure stops the affected writes and keeps readable history readable. A backup reports the Worker volumes and external references it does not cover.
 
 ### Network
 
@@ -97,12 +97,12 @@ Damaged or unreadable authority-bearing storage fails closed. Missing authority-
 
 ## Boundaries And Non-Goals
 
-This document adds no entity, record, status value, ledger or recovery service. It does not authorize a new retry, replay, reconstruction or reconciliation mechanism. It does not make native histories or opaque Worker volumes a recovery prerequisite, and it does not authorize purging them; [Storage](storage.md) keeps its retained-volume protections.
+This document adds no public entity, protocol status value or separate recovery service. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) permits one replacement execution authority, not the duplicate universal Run or event ledger previously excluded. It does not authorize replay of an unknown effect or change a domain owner's retry rules. It does not make native histories or opaque Worker volumes a recovery prerequisite, and it does not authorize purging them; [Storage](storage.md) keeps its retained-volume protections.
 
 ## Invariants
 
 - A success MUST NOT be reported before the content it describes reaches its owner's acknowledgement point.
-- An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed. Recovery MUST preserve what remains and MUST NOT replace lost authority with an empty store.
+- An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed in its owning scope. Workspace quarantine MUST NOT prevent healthy Workspaces from booting unless shared authority or containment is affected. Recovery MUST preserve what remains and MUST NOT replace lost authority with an empty store.
 - A timeout, disconnect, crash or interruption MUST NOT be reported as proof that an effect did or did not happen.
 - An effect with an unknown outcome MUST NOT be repeated automatically.
 - An inner retry, wait or liveness signal MUST NOT extend the deadline set by an operation's end-to-end owner.

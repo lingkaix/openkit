@@ -6,6 +6,12 @@ updated: 2026-10-06
 ---
 # Durable Scheduler Design
 
+## Control-Store Replacement
+
+The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) supersedes the separate global admission/attempt/checkpoint stores and boot-only recovery classifier described below. [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#global-dispatch-and-physical-capacity) proposes Workspace-owned execution rows, a rebuilt in-memory dispatch index, and server-owned keyed physical reservations. It is a Draft mechanism, not implemented behavior. Until cutover, the current implementation still uses this document's mechanisms; no dual-write transition is authorized.
+
+Exact request identity, bounded FIFO ordering, one writer, current authorization, single-flight exclusion, truthful uncertainty, terminal evidence and cleanup fences remain binding. The old exclusion of a recovery workflow prevents duplicate authority; it does not prohibit the approved replacement of that authority with the same normal/restart engine. Survivor adoption and individual fences remain subject to the named ablations, not blanket deletion. Goal structures and progression remain outside this owner.
+
 ## Owns
 
 - The single-writer NanoCore admission queue for one configured execution backend.
