@@ -185,8 +185,20 @@ export class PolicyInterception {
             ).values(),
           ]
         : [];
+    const finalInput = decisionInput(input, policyRevision);
     recordProductPermissionDecision({
-      ...decisionInput(input, policyRevision),
+      ...finalInput,
+      contextSummary: {
+        ...finalInput.contextSummary,
+        ...(kernel
+          ? {
+              kernelTrace: {
+                matchedAssociations: kernel.trace.matchedAssociations,
+                matchedProhibitions: kernel.trace.matchedProhibitions,
+              },
+            }
+          : {}),
+      },
       decisionId,
       result,
       ...(result === 'require_approval' ? { requiredApprovalKind: 'permission' } : {}),
