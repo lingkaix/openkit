@@ -120,12 +120,6 @@ export function readWorkspaceNotebookAdmission(
         const source = resolution.targetId ? sourceRecords.get(resolution.targetId) : undefined;
         if (!resolution.resolved || !source) throw new NotebookError('invalid_request');
         if (source.originatingThreadId) permitThreadDisclosure(source.originatingThreadId);
-        const material = input.store.readKnowledgeSourceMaterial(workspaceId, source.id);
-        if (
-          material === null ||
-          `sha256:${createHash('sha256').update(material).digest('hex')}` !== source.contentDigest
-        )
-          throw new NotebookError('recovery_required');
         resolved.add(reference);
       } else if (reference.startsWith('openkit:')) {
         const parsedReference = parseKnowledgePageSourceReference(reference, pageScopeId);
