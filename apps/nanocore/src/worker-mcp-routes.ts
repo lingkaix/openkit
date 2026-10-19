@@ -2191,7 +2191,16 @@ function mcpApprovalEffect(
   input: WorkerMcpToolCallInput,
   schemaSnapshotId: string
 ): McpApprovalEffect {
-  const responsibleUserId = responsibleUserIdForActor(input.environmentPackage.scope.triggerActor);
+  const responsibleUserId =
+    readGoalTaskPolicyContext({
+      coreDb: input.input.coreDb!,
+      store: input.input.store,
+      db: input.workspaceDb,
+      lineage: {
+        ...input.environmentPackage.scope,
+        packageSnapshotId: input.environmentPackage.snapshotId,
+      },
+    })?.responsibleUserId ?? responsibleUserIdForActor(input.environmentPackage.scope.triggerActor);
   if (!responsibleUserId) {
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   }

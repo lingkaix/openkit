@@ -26,3 +26,9 @@ Independent Test Author context `/root/goal_consumers_test_author` derives regre
 ## Current Checkpoint
 
 Current base is main `feac6fd01`, including the landed Source cutover and agent gate. The corrected L-CH interpretation is acknowledged: a current admitted delegated allow is an alternative association only in the existing goal-task class; the Goal-envelope association and human Kernel remain mandatory. No administration callable or complete Goal enforcement is claimed yet.
+
+## Independent Review Correction
+
+The fresh reviewer identified one reachable continuation defect: the Policy subject correctly retained the original Goal accountable human, but a later administrator-triggered Turn supplied that administrator to the captured request. Independent test-author commit `92cf2961a` reproduced the real response failure before claim and added successful execution, actual administrator credential and Audit attribution, and canonical reload checks. A producer-only correction then exposed the same incorrect trigger/accountability equivalence in canonical Pending loading. The correction uses the canonical Task human for the native capture and preserves exact Worker, Session and captured source checks at historical load. The actual trigger and deciding actor remain separate. The retained record shape and strict Policy-source equality are unchanged; historical load needs no live Goal or new authority record.
+
+The first affected runtime run passed 142 cases in 12 files and timed out in the unchanged single-case Goal Coordinator Knowledge integration file at its existing 30-second budget. Its original output is retained in `goal-consumers-runtime-suites.log`; no budget or assertion changed. Current-main `6c02252e1` was normally merged, including the independently landed Policy writer and Knowledge package. Final affected reruns and Native typecheck remain pending.
