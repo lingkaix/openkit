@@ -224,18 +224,11 @@ An execution substrate can fail while a Turn remains inspectable or eligible for
 
 ### Safe Points And Danger Windows
 
-[Fault Tolerance](fault-tolerance.md) defines safe points and danger windows. A worker Turn passes through them in this order. Each stage ends at a safe point. The window before it belongs to the named owner, and the last column is the only result recovery may record when that window breaks.
+[Fault Tolerance](fault-tolerance.md) defines safe points and danger windows. A durable admission, preparation intent, dispatch intent, accepted observation or terminal result establishes only its recorded facts. It does not prove that dependent runtime effects have settled. Recovery MUST follow the owning lifecycle above and obtain its required proof before adopting execution or releasing resources.
 
-| Stage | Safe point reached | Danger window and its owner | When the window breaks |
-| --- | --- | --- | --- |
-| Admission | The Turn request, admission decision and attempt intent are committed. | None; no external effect has started. | Recovery re-reads the committed admission. |
-| Preparation | Immutable preparation inputs and the attempt are committed before any preparation effect. | Creating or attaching Sandbox, Harness, volumes and credentials; runtime. | Adopt only the exact survivor under an accepted proof contract; otherwise clean up and fence. Readiness is never inferred. |
-| Dispatch | The command is recorded for delivery. | Handing the command to the substrate; the command owner. | Acknowledged: continue. Proven non-receipt: deliver the identical command again. Otherwise unknown, reported within the delivery bound. |
-| Execution | The accepted start, then each accepted observation. | Native work, tool calls and external effects; the substrate for its local effects and [Agent Capability](agent-capability.md) for calls. | Interruption keeps effect uncertainty; an uncertain effect is not replayed. |
-| Collection and closeout | The accepted terminal result, after output, evidence and Workspace collection. | Publishing collected content and its references; their storage owners. | Content is durable before its reference; incomplete collection is reported as incomplete. |
-| Cleanup and release | Proved local cleanup, then capacity release. | Stopping processes and detaching resources; runtime. | Unprovable cleanup widens the fence to the boundary that can be proved, up to the epoch. |
+[Permissions](permissions.md) owns checks at each governed effect boundary. Decisions permitting an effect MUST be recorded before that effect's danger window opens; a separately governed effect within a larger operation retains its own checks. An extension MUST NOT change an already committed decision or the immutable inputs of an effect that may have occurred.
 
-[Permissions](permissions.md) enforcement points, approval gates and later extension points attach at these safe points, before the next window opens. The resolved Agent setup and environment are fixed when the Turn is prepared; a later Agent, Skill or image change applies to later Turns. Authorization is not fixed with them: each governed effect is checked against current policy at its enforcement point.
+The resolved Agent setup and declared execution-environment inputs MUST remain fixed for the prepared Turn; later Agent, Skill or image changes apply to later Turns. This does not freeze mutable working data. Each further governed effect MUST satisfy current authorization at its enforcement point.
 
 ## Runtime Setup
 

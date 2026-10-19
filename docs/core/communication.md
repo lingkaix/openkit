@@ -200,6 +200,14 @@ If an HTTP request, SSE reconnect, bridge retry, agent retry, or client retry re
 
 Transport-specific retry behavior is allowed only when the semantic command result remains idempotent.
 
+## Acknowledged Command Delivery
+
+A delivery protocol that advances dispatch state when a receiver polls MUST require receiver evidence before treating the command as delivered. A successful local write to a connection is not that evidence. A correlated acknowledgement or result can establish receipt; receipt alone does not establish completion of the commanded effect.
+
+`Proven Non-Receipt` is validated evidence, under the owning delivery contract, that the exact receiver execution has not accepted the command for execution and that an earlier delivery cannot still start it. A timeout, lost acknowledgement, stale observation or restarted receiver is not such proof.
+
+Under that proof, the delivery owner MAY redeliver the identical command with the same identity while its execution authority and deadline remain valid. Redelivery MUST NOT permit duplicate execution. Without the required proof or an established result, the owner MUST report unknown within its delivery bound and preserve the owning cleanup fence. This rule does not change [Protocol](protocol.md) command deduplication or replay of an existing receipt or result.
+
 ## Ordering Projection
 
 A live event stream must define an ordering scope. The protocol owns the ordering guarantees for protocol streams.
