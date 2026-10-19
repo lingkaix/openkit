@@ -51,7 +51,7 @@ def verify(archive: Path) -> None:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache', type=Path, required=True)
-    parser.add_argument('--archive', type=Path, default=Path(__file__).resolve().parent.parent / 'apps/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz')
+    parser.add_argument('--archive', type=Path, default=Path(__file__).resolve().parent.parent / 'packages/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz')
     parser.add_argument('--notice', type=Path)
     args = parser.parse_args()
     supply(args.cache, args.archive, args.notice)

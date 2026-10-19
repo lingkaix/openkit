@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { GoalView } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
-import { testGoalDomainProposal } from '../src/test-support/goal-domain.js';
+import { testGoalDomainProposal } from '../dist/test-support/goal-domain.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;

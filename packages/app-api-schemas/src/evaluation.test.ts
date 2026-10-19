@@ -167,6 +167,36 @@ describe('evaluation retained shapes', () => {
     ).toBe(false);
   });
 
+  it('retains a single-version select judgement only when its exact target and choice agree', () => {
+    const selection = {
+      ...judgement,
+      target: { kind: 'artifact-version', ...candidate },
+      note: 'Use this exact original.',
+    };
+    expect(JudgementRecordSchema.parse(selection)).toEqual(selection);
+    expect(
+      JudgementRecordReaderSchema.parse({
+        ...selection,
+        target: { ...selection.target, description: 'Historical target' },
+        choice: { ...selection.choice, description: 'Historical choice' },
+      })
+    ).toEqual(selection);
+    for (const choice of [
+      { ...candidate, artifactId: 'ar_00000000-0000-7000-8000-000000000002' },
+      secondCandidate,
+      { ...candidate, contentDigest: secondCandidate.contentDigest },
+    ]) {
+      expect(JudgementRecordSchema.safeParse({ ...selection, choice }).success).toBe(false);
+      expect(JudgementRecordReaderSchema.safeParse({ ...selection, choice }).success).toBe(false);
+    }
+    expect(
+      JudgementRecordSchema.safeParse({
+        ...selection,
+        target: { ...selection.target, kind: 'latest-artifact' },
+      }).success
+    ).toBe(false);
+  });
+
   it('retains UTF-16 original range and correction result without widening the target kind', () => {
     const correction = {
       ...judgement,

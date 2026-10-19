@@ -749,7 +749,6 @@ function importWorkspaceDatabaseRows({
               ...review,
               schemaVersion: writeRetainedV1({}).schemaVersion,
               rangeFeedback: review.rangeFeedback ?? null,
-              candidateSelections: review.candidateSelections,
               proposalMaterialId: materialProposal?.materialId ?? null,
               proposalBaseRevisionId: materialProposal?.baseRevisionId ?? null,
               proposalBaseContentDigest: materialProposal?.baseContentDigest ?? null,
@@ -1471,7 +1470,21 @@ export function createVerifiedWorkspaceExport({
   }
   const workerContextTraces = [...portableFileState.workerContextPackageFiles]
     .filter(([path]) => path.endsWith('/context-package.json'))
-    .map(([path, text]) => [path, parseWorkerContextPackageTrace(JSON.parse(text))] as const);
+    .map(
+      ([path, text]) =>
+        [
+          path,
+          parseWorkerContextPackageTrace(
+            JSON.parse(text),
+            Buffer.from(
+              portableFileState.workerContextPackageFiles.get(
+                path.replace(/context-package\.json$/, 'context-package/package.json')
+              ) ?? '',
+              'utf8'
+            )
+          ),
+        ] as const
+    );
   const tracedTurnIds = new Set(workerContextTraces.map(([, trace]) => trace.turnId));
   const workerBackedTurnIds = new Set(
     turns.filter((turn) => turn.agentSessionId != null).map((turn) => turn.id)

@@ -9,7 +9,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SUPPLIED = ROOT / 'apps/retrieval-kernel/notices'
+SUPPLIED = ROOT / 'packages/retrieval-kernel/notices'
 APACHE_SHA256 = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30'
 
 
@@ -21,7 +21,7 @@ class ElectedNoticeTests(unittest.TestCase):
         """Read the real locked package metadata as the independent provenance oracle."""
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--locked', '--offline', '--format-version', '1'],
-            cwd=ROOT / 'apps/retrieval-kernel',
+            cwd=ROOT / 'packages/retrieval-kernel',
         ))
         cls.htmlescape = next(p for p in metadata['packages'] if p['name'] == 'htmlescape')
 
@@ -30,7 +30,7 @@ class ElectedNoticeTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix='retrieval-notices-')
         self.addCleanup(self.temporary.cleanup)
         fixture = Path(self.temporary.name)
-        self.supplied = fixture / 'apps/retrieval-kernel/notices'
+        self.supplied = fixture / 'packages/retrieval-kernel/notices'
         shutil.copytree(SUPPLIED, self.supplied)
         self.script = fixture / 'scripts/retrieval-notices.py'
         self.script.parent.mkdir()
@@ -41,7 +41,7 @@ class ElectedNoticeTests(unittest.TestCase):
         """Execute the shipped collector with real Cargo metadata and fixture-owned bytes."""
         return subprocess.run(
             ['python3', str(self.script), '--output', str(self.output)],
-            cwd=ROOT / 'apps/retrieval-kernel',
+            cwd=ROOT / 'packages/retrieval-kernel',
             capture_output=True,
             text=True,
             check=False,

@@ -145,7 +145,7 @@ export const ArtifactMaterialProposalSchema = z
   })
   .strict();
 
-/** Attributable choice evidence retained on its exact version-owned Review. */
+/** Attributable choice view derived from select judgements on the exact version-owned Review. */
 export const ArtifactReviewCandidateSelectionSchema = z
   .object({
     actorId: opaqueIdSchema,
