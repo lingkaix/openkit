@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { allocateEntityId, ContentReferenceSchema, formatReferenceUri } from '@openkit/protocol';
 import { LocalStorage } from '@openkit/storage';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -149,7 +150,7 @@ function fixture() {
     );
     return app.fetch(request);
   };
-  return { source, target, tamperTarget, call, transfer, dataRoot, coreDb, store, userId };
+  return { source, target, tamperTarget, call, transfer, dataRoot, coreDb, store, userId, app };
 }
 
 describe('Knowledge package public operation round trip', () => {
@@ -546,4 +547,129 @@ describe('Knowledge package public operation round trip', () => {
       })
     ).toBe(f.tamperTarget.knowledgeBaseId);
   });
+});
+
+describe('Independent package boundary probes', () => {
+  it('replays a completed import and preserves authored code literals', async () => {
+    const f = fixture();
+    const registered = await f.call('knowledge.source.register', f.source.id, {
+      kind: 'document',
+      title: 'Original',
+      content: 'Exact original.',
+    });
+    expect(registered.status).toBe(200);
+    const id = registered.body.source.id;
+    const pointer = readSourcePointers({
+      dataRoot: f.dataRoot,
+      ownerScope: { kind: 'workspace', workspaceId: f.source.id },
+    }).get(id)!;
+    const href = `../raw/${pointer.fields.contentRef.locator.path}`;
+    const body = `[Original](${href})\n\n[Reference][original]\n\n[original]: ${href}\n\nKeep this literal: \`${href}\`\n\n\`\`\`md\n[literal](${href})\n\`\`\`\n`;
+    const content = serializeKnowledgePageFixture(
+      {
+        title: 'Guide',
+        content: body,
+        sourceReferences: [`source:${id}@${registered.body.source.contentDigest}`],
+        createdAt: '2026-10-19T00:00:00.000Z',
+        updatedAt: '2026-10-19T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: f.source.id }
+    );
+    const page = await f.call('knowledge.notebook.create', f.source.id, {
+      baseRevision: f.source.notebook.publishedRevision(),
+      path: 'guide.md',
+      content,
+      summary: 'Publish guide.',
+    });
+    expect(page.status, JSON.stringify(page.body)).toBe(200);
+    const exported = await f.transfer('export', f.source.id);
+    expect(exported.status).toBe(200);
+    const bytes = Buffer.from(await exported.arrayBuffer());
+    const requestId = randomUUID();
+    const runImport = () =>
+      f.app.fetch(
+        new Request(
+          `http://localhost/api/app/operations/knowledge.package.import?workspaceId=${f.target.id}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-tar', 'x-openkit-request-id': requestId },
+            body: bytes,
+          }
+        )
+      );
+    const first = await runImport();
+    const firstText = await first.text();
+    expect(first.status, firstText).toBe(200);
+    const imported = parseOkfDocument({
+      path: 'guide.md',
+      content: f.target.notebook.readRevision(f.target.notebook.publishedRevision()).files[
+        'guide.md'
+      ]!,
+    });
+    expect(imported.ok).toBe(true);
+    if (!imported.ok) throw new Error('No imported guide.');
+    expect.soft(imported.document.body).toContain(`Keep this literal: \`${href}\``);
+    expect.soft(imported.document.body).toContain(`[literal](${href})`);
+    const sources = readSourcePointers({
+      dataRoot: f.dataRoot,
+      ownerScope: { kind: 'workspace', workspaceId: f.target.id },
+    });
+    const targetHref = `../raw/${[...sources.values()][0]!.fields.contentRef.locator.path}`;
+    expect.soft(imported.document.body).toContain(`[Original](${targetHref})`);
+    expect.soft(imported.document.body).toContain(`[original]: ${targetHref}`);
+    const retry = await runImport();
+    const retryText = await retry.text();
+    expect.soft(retry.status, retryText).toBe(200);
+    if (retry.status === 200) expect(JSON.parse(retryText)).toEqual(JSON.parse(firstText));
+  });
+});
+
+it('stops export disclosure when its Source origin becomes private', async () => {
+  const f = fixture();
+  const origin = f.store.createThread(f.source.id, 'Initially shared Source');
+  const secret = 'SOURCE-REVOKED-TAIL-MARKER';
+  const registered = await f.call('knowledge.source.register', f.source.id, {
+    kind: 'document',
+    title: 'Source',
+    content: 'x'.repeat(1024 * 1024) + secret,
+    originatingThreadId: origin.id,
+  });
+  expect(registered.status, JSON.stringify(registered.body)).toBe(200);
+  const token = createOpenKitAccessTokenRecord(f.coreDb, {
+    ownerUserId: f.userId,
+    scope: 'workspace-readonly',
+    workspaceIds: [f.source.id],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  });
+  const server = createApp({
+    mode: 'server',
+    coreDb: f.coreDb,
+    dataRoot: f.dataRoot,
+    store: f.store,
+  });
+  const exported = await server.fetch(
+    new Request(
+      `http://127.0.0.1/api/app/operations/knowledge.package.export?workspaceId=${f.source.id}`,
+      { method: 'POST', headers: { authorization: `Bearer ${token.secret}` } }
+    )
+  );
+  expect(exported.status).toBe(200);
+  Object.assign(origin, { visibility: 'private', privateOwnerUserId: allocateEntityId('usr') });
+  const denied = await server.fetch(
+    new Request('http://127.0.0.1/api/app/operations/knowledge.source.read', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: f.source.id, sourceId: registered.body.source.id }),
+    })
+  );
+  expect(denied.status, await denied.text()).toBe(403);
+  const outcome = await exported.arrayBuffer().then(
+    (bytes) => ({
+      complete: true,
+      bytes: bytes.byteLength,
+      containsSecret: Buffer.from(bytes).includes(secret),
+    }),
+    (error) => ({ complete: false, error: String(error) })
+  );
+  expect(outcome.complete).toBe(false);
 });
