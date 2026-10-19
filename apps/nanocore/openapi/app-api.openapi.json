@@ -63750,6 +63750,7 @@
                     "sensitive_content",
                     "lower_conformance",
                     "policy_excluded",
+                    "selector_mismatch",
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
@@ -64136,6 +64137,7 @@
                     "sensitive_content",
                     "lower_conformance",
                     "policy_excluded",
+                    "selector_mismatch",
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
@@ -67452,6 +67454,7 @@
                     "sensitive_content",
                     "lower_conformance",
                     "policy_excluded",
+                    "selector_mismatch",
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
@@ -142037,5 +142040,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d247d831c3b8d636f764e1a7ebc8b165ba433698e082d782e2f56925d99d456e"
+  "x-openkit-source-digest": "sha256:f5f233c9e5338efc72cd1fc7ca3d9aee077d2c9633a9fe1378557769e39fee74"
 }
