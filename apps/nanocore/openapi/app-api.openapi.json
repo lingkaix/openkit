@@ -67657,7 +67657,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -67816,7 +67816,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -67832,7 +67832,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -67991,7 +67991,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68007,7 +68007,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -68178,7 +68178,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68194,7 +68194,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -68296,7 +68296,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68312,7 +68312,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -68488,7 +68488,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68862,7 +68862,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69021,7 +69021,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69037,7 +69037,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69196,7 +69196,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69212,7 +69212,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69383,7 +69383,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69399,7 +69399,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69501,7 +69501,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69517,7 +69517,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69693,7 +69693,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -109842,7 +109842,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110001,7 +110001,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110017,7 +110017,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110176,7 +110176,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110192,7 +110192,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110363,7 +110363,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110379,7 +110379,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110481,7 +110481,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110497,7 +110497,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110673,7 +110673,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -111310,7 +111310,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "formatVersion": {
+          "schemaVersion": {
             "type": "number",
             "const": 1
           },
@@ -111379,7 +111379,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -111538,7 +111538,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -111554,7 +111554,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -111713,7 +111713,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -111729,7 +111729,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -111900,7 +111900,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -111916,7 +111916,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -112018,7 +112018,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -112034,7 +112034,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -112210,7 +112210,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -112237,7 +112237,7 @@
           }
         },
         "required": [
-          "formatVersion",
+          "schemaVersion",
           "workspaceId",
           "candidateSetId",
           "createdBy",
@@ -112304,7 +112304,7 @@
             "items": {
               "type": "object",
               "properties": {
-                "formatVersion": {
+                "schemaVersion": {
                   "type": "number",
                   "const": 1
                 },
@@ -112373,7 +112373,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -112532,7 +112532,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -112548,7 +112548,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -112707,7 +112707,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -112723,7 +112723,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -112894,7 +112894,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -112910,7 +112910,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -113012,7 +113012,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -113028,7 +113028,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -113204,7 +113204,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -113231,7 +113231,7 @@
                 }
               },
               "required": [
-                "formatVersion",
+                "schemaVersion",
                 "workspaceId",
                 "candidateSetId",
                 "createdBy",
@@ -113305,7 +113305,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "formatVersion": {
+          "schemaVersion": {
             "type": "number",
             "const": 1
           },
@@ -113374,7 +113374,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -113533,7 +113533,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -113549,7 +113549,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -113708,7 +113708,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -113724,7 +113724,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -113895,7 +113895,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -113911,7 +113911,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114013,7 +114013,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114029,7 +114029,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114205,7 +114205,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114232,7 +114232,7 @@
           }
         },
         "required": [
-          "formatVersion",
+          "schemaVersion",
           "workspaceId",
           "candidateSetId",
           "createdBy",
@@ -114328,7 +114328,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "formatVersion": {
+          "schemaVersion": {
             "type": "number",
             "const": 1
           },
@@ -114397,7 +114397,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114556,7 +114556,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114572,7 +114572,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114731,7 +114731,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114747,7 +114747,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114918,7 +114918,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114934,7 +114934,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -115036,7 +115036,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -115052,7 +115052,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -115228,7 +115228,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -115255,7 +115255,7 @@
           }
         },
         "required": [
-          "formatVersion",
+          "schemaVersion",
           "workspaceId",
           "candidateSetId",
           "createdBy",
@@ -115791,7 +115791,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -115950,7 +115950,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -115966,7 +115966,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116125,7 +116125,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116141,7 +116141,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116312,7 +116312,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116328,7 +116328,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116430,7 +116430,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116446,7 +116446,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116622,7 +116622,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116814,7 +116814,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116973,7 +116973,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116989,7 +116989,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117148,7 +117148,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -117164,7 +117164,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117335,7 +117335,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -117351,7 +117351,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117453,7 +117453,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -117469,7 +117469,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117645,7 +117645,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -137598,5 +137598,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4222f3ce66e1256600bdf13ce1ba4bc2322c3252091535d6cbbc1aa09e7e9518"
+  "x-openkit-source-digest": "sha256:82e999bc28fcb9a272ff167ca3575585a4a6ae5f8c1d2d100bca6b4cc23c49e0"
 }
