@@ -5,6 +5,7 @@ import {
   finishCapabilityCall,
   type GatewayCallContext,
   type ServerGatewayCallContext,
+  type StartedCapabilityCall,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import {
@@ -110,7 +111,7 @@ export function createInternalAgentGatewayProvider(
       : captureDb.scope === 'core'
         ? openCoreDb(captureDb.dataRoot)
         : openWorkspaceDb(captureDb.dataRoot, captureDb.workspaceId);
-    let call: ReturnType<typeof startCapabilityCall> | undefined;
+    let call: StartedCapabilityCall | StartedCapabilityCall<ServerGatewayCallContext> | undefined;
     let callFinished = false;
     let failurePhase: InternalGatewayFailurePhase = 'pre-transport';
     let observedStatus: number | undefined;
