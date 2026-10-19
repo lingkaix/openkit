@@ -238,11 +238,11 @@ it.each([
       workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
     });
   };
-  const settled = (id: string) =>
+  const settled = (id: string, state: 'open' | 'failed' = 'open') =>
     vi.waitFor(
       async () => {
         const result = await send('session.inspect', selector(id));
-        expect(result.body).toMatchObject({ cleanupState: 'clean', state: 'open' });
+        expect(result.body).toMatchObject({ cleanupState: 'clean', state });
       },
       { timeout: 20_000, interval: 10 }
     );
@@ -307,7 +307,8 @@ it.each([
         'must-not-prompt'
       )
     ).toMatchObject({ disposition: 'refused', body: { reasonCode: 'dependency_failed' } });
-    await settled('as_00000000-0000-70ba-9934-6a70762ca1b9');
+    // Refused admission stopped this host; clean inputs do not make the binding reusable.
+    await settled('as_00000000-0000-70ba-9934-6a70762ca1b9', 'failed');
     if (calls)
       expect(calls).toEqual([
         kind === 'resume-timeout'
@@ -323,7 +324,7 @@ it.each([
     ).toMatchObject({
       disposition: 'succeeded',
       body: {
-        state: 'open',
+        state: 'failed',
         childState: 'absent',
         nativeHandleState: 'unknown',
         nativeHandleDigest: null,
