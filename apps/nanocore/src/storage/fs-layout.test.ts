@@ -69,6 +69,45 @@ function listDirectories(root: string): string[] {
 }
 
 describe('ensureLayout', () => {
+  it.each([
+    'user',
+    'workspace',
+    'server',
+  ] as const)('accepts retained %s Source registry envelopes on the next boot', async (ownerScope) => {
+    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-source-'));
+    const ownerRoot =
+      ownerScope === 'user'
+        ? join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001')
+        : ownerScope === 'workspace'
+          ? join(root, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001')
+          : join(root, 'server');
+    const directory = join(ownerRoot, 'sources', 'registry');
+    try {
+      mkdirSync(directory, { recursive: true });
+      const path = join(directory, 'ks_00000000-0000-7000-8000-000000000001.json');
+      const content = JSON.stringify({
+        schemaVersion: 1,
+        recordType: 'source',
+        id: 'ks_00000000-0000-7000-8000-000000000001',
+        ownerScope,
+        lineage: {},
+        createdAt: '2026-10-19T00:00:00.000Z',
+        updatedAt: '2026-10-19T00:00:00.000Z',
+        contentDigest: 'sha256:source',
+        redactionLevel: 'none',
+        sensitivity: 'internal',
+        requiredFeatures: ['openkit.knowledge-owner-scope.v1'],
+        extensions: {},
+        futureOptionalField: 'retained',
+      });
+      writeFileSync(path, content);
+      expect(() => ensureLayout(root)).not.toThrow();
+      expect(readFileSync(path, 'utf8')).toBe(content);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('creates v0.0.3 runtime directories', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
