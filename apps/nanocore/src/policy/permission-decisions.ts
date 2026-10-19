@@ -359,6 +359,8 @@ export function readPolicyApprovalTerminalWinner(
 export interface RecordGatewayPolicyDecisionInput {
   /** Server-scope database handle. */
   coreDb: CoreDb;
+  /** Actual native-assigned call, when Gateway admission opened one. */
+  capabilityCallId?: string;
   /** Gateway action evaluated. */
   action: 'llm.gateway.chat_completions' | 'llm.gateway.responses';
   /** Provider selected for routing, when known. */
@@ -963,7 +965,10 @@ export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionIn
     subjectSummary: { kind: 'gateway-client', id: 'openai-compatible' },
     action: input.action,
     resourceSummary: { kind: 'llm-provider', providerId: input.providerId ?? null },
-    contextSummary: { route: input.route },
+    contextSummary: {
+      route: input.route,
+      ...(input.capabilityCallId === undefined ? {} : { capabilityCallId: input.capabilityCallId }),
+    },
     result: input.result,
     reasonCode: input.reasonCode,
     enforcementPoint: 'llm.gateway.policy',

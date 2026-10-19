@@ -339,20 +339,22 @@ test('preserves Material delivery and delivers a durable simulator answer on the
         canRespond: true,
       }),
     ]);
-    const trace = JSON.parse(
-      readFileSync(
-        join(
-          stack.dataRoot,
-          'workspaces',
-          workspaceId,
-          'threads',
-          taskThreadId,
-          'turns',
-          turn.id,
-          'context-package.json'
-        ),
-        'utf8'
-      )
+    const { parseWorkerContextPackageTrace } = await import(
+      '../../../nanocore/dist/context/worker-context-package.js'
+    );
+    const turnRoot = join(
+      stack.dataRoot,
+      'workspaces',
+      workspaceId,
+      'threads',
+      taskThreadId,
+      'turns',
+      turn.id
+    );
+    // The compact trace omits selections; the canonical decoder hydrates them from the package manifest.
+    const trace = parseWorkerContextPackageTrace(
+      JSON.parse(readFileSync(join(turnRoot, 'context-package.json'), 'utf8')),
+      readFileSync(join(turnRoot, 'context-package/package.json'))
     );
     expect(trace).toMatchObject({
       turnId: turn.id,
