@@ -615,14 +615,41 @@ describe('scoped storage databases', () => {
         join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'quarantine'),
       verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
     },
-  ])('fails boot closed when the $scope database is corrupt', ({ path, quarantine, verify }) => {
+  ])('keeps corrupt $scope authority closed at its owning scope', ({
+    scope,
+    path,
+    quarantine,
+    verify,
+  }) => {
     const dataRoot = createDataRoot();
     const dbPath = path(dataRoot);
     const originalBytes = Buffer.from(`not sqlite: ${dbPath}`);
     mkdirSync(dirname(dbPath), { recursive: true });
     writeFileSync(dbPath, originalBytes);
 
-    expect(() => verify(dataRoot)).toThrow(/SQLite integrity check failed/);
+    if (scope === 'Core') {
+      expect(() => verify(dataRoot)).toThrow(/SQLite integrity check failed/);
+    } else {
+      const siblingId = 'usr_00000000-0000-7000-8000-000000000002';
+      const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+      const sibling = openUserDb(dataRoot, siblingId);
+      sibling.sqlite.close();
+      const workspace = openWorkspaceDb(dataRoot, workspaceId);
+      workspace.sqlite.close();
+      expect(() => verify(dataRoot)).not.toThrow();
+      expect(() =>
+        openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b').sqlite.close()
+      ).toThrow();
+      const healthyUser = openUserDb(dataRoot, siblingId);
+      const healthyWorkspace = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+      try {
+        expect(listTables(healthyUser.sqlite)).toContain('idempotency_requests');
+        expect(listTables(healthyWorkspace.sqlite)).toContain('idempotency_requests');
+      } finally {
+        healthyUser.sqlite.close();
+        healthyWorkspace.sqlite.close();
+      }
+    }
     expect(readFileSync(dbPath)).toEqual(originalBytes);
     expect(readdirSync(dirname(dbPath))).toEqual([basename(dbPath)]);
     expect(existsSync(quarantine(dataRoot))).toBe(false);
