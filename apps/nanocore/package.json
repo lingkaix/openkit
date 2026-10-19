@@ -43,6 +43,7 @@
     "@openkit/models-dev-catalog": "workspace:*",
     "@openkit/policy-kernel": "workspace:*",
     "@openkit/protocol": "workspace:*",
+    "@openkit/storage": "workspace:*",
     "@openkit/worker-protocol": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/context-async-hooks": "^2.11.0",
