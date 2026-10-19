@@ -649,6 +649,60 @@ export function readPolicyStatementUseCount(
     ).length;
 }
 
+/** Exact final decision facts supplied only by the existing effect's native dispatch owner. */
+export interface PolicyUseDecision {
+  readonly decisionId: string;
+  readonly proposalDigest: string;
+  readonly policyRevision: string;
+  readonly authorizationRevision: string;
+}
+
+/** Checks this effect's own atomic consumption without granting another use or changing records. */
+export function policyStatementUsedByDecision(
+  workspaceDb: WorkspaceDb,
+  reference: PolicyDecisionV1['consumedStatements'][number],
+  expected: PolicyUseDecision
+): boolean {
+  const statement = PolicyStatementReferenceV1Schema.parse(reference);
+  const row = workspaceDb.sqlite
+    .prepare(
+      "SELECT * FROM permission_decisions WHERE decision_id = ? AND owner_scope = 'workspace' AND workspace_id = ?"
+    )
+    .get(expected.decisionId, workspaceDb.workspaceId);
+  if (!row) return false;
+  const decision = readPermissionDecisionRowV1(row);
+  const mediation = decision.mediation;
+  if (
+    decision.result !== 'allow' ||
+    decision.policySnapshotId !== expected.policyRevision ||
+    mediation?.role !== 'final' ||
+    mediation.stage !== 'decide' ||
+    mediation.kernel?.effect !== 'allow' ||
+    mediation.proposalDigest !== expected.proposalDigest ||
+    mediation.authorizationRevision !== expected.authorizationRevision ||
+    !mediation.consumedStatements.some(
+      ({ id, digest }) => id === statement.id && digest === statement.digest
+    )
+  )
+    return false;
+  const auditRow = workspaceDb.sqlite
+    .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+    .get(decision.auditEventId);
+  if (!auditRow) return false;
+  const audit = readAuditEventRowV1(auditRow);
+  return (
+    audit.permissionDecisionId === decision.decisionId &&
+    audit.workspaceId === workspaceDb.workspaceId &&
+    audit.action === 'permission.decision' &&
+    audit.outcome === 'succeeded' &&
+    audit.resource === `permission:${decision.action}` &&
+    audit.capabilityCallId === optionalStringField(decision.contextSummary, 'capabilityCallId') &&
+    (mediation.subject.process === null ||
+      (audit.threadId === mediation.subject.process.threadId &&
+        audit.turnId === mediation.subject.process.turnId))
+  );
+}
+
 /**
  * Lists workspace-scoped permission decisions for export.
  *

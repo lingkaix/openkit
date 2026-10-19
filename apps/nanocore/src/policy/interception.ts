@@ -12,6 +12,7 @@ import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
 import {
+  type RecordProductPermissionDecisionInput,
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
@@ -46,6 +47,8 @@ export interface InterceptionInput {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
   readonly authorizationRevision: string;
+  /** Current finite grants used by the native mandatory Kernel adapter, not participant results. */
+  readonly authorizationUses?: RecordProductPermissionDecisionInput['uses'];
   /** Existing catalog condition, pinned by the proposal's catalog revision. */
   readonly requiresHumanApproval?: boolean;
   /** Exact human response context supplied only by the existing captured approval owner. */
@@ -99,6 +102,16 @@ export class PolicyInterception {
       throw new Error('I16 safe participant output reference is unavailable.');
     const policyRevision = policyDigest(input.document);
     const proposalDigest = policyProposalDigest(input.proposal);
+    for (const { statement, limit } of input.authorizationUses ?? []) {
+      const current = input.document.statements.find((value) => value.id === statement.id);
+      if (
+        !current ||
+        current.state !== 'active' ||
+        policyDigest(current) !== statement.digest ||
+        current.lifetime.uses !== limit
+      )
+        throw new Error('Finite authorization must match the current Policy statement and limit.');
+    }
     const bindings = selectPolicyBindings({ ...input, now: Date.now() });
     const invocations: InvocationReference[] = [];
     const advice: unknown[] = [];
@@ -157,7 +170,21 @@ export class PolicyInterception {
     const result = combineResults(results);
     const decisionId = allocateEntityId('pd');
     const consumed =
-      result === 'allow' ? used.filter((binding) => binding.lifetime.uses !== undefined) : [];
+      result === 'allow'
+        ? [
+            ...new Map(
+              [
+                ...(input.authorizationUses ?? []),
+                ...used
+                  .filter((binding) => binding.lifetime.uses !== undefined)
+                  .map((binding) => ({
+                    statement: { id: binding.id, digest: policyDigest(binding) },
+                    limit: binding.lifetime.uses!,
+                  })),
+              ].map((value) => [value.statement.id, value])
+            ).values(),
+          ]
+        : [];
     recordProductPermissionDecision({
       ...decisionInput(input, policyRevision),
       decisionId,
@@ -184,17 +211,11 @@ export class PolicyInterception {
           ? { effect: kernel.effect, reason: kernel.reasons[0]?.code ?? 'not_granted' }
           : null,
         invocations,
-        consumedStatements: consumed.map((binding) => ({
-          id: binding.id,
-          digest: policyDigest(binding),
-        })),
+        consumedStatements: consumed.map(({ statement }) => statement),
       },
       ...(consumed.length
         ? {
-            uses: consumed.map((binding) => ({
-              statement: { id: binding.id, digest: policyDigest(binding) },
-              limit: binding.lifetime.uses!,
-            })),
+            uses: consumed,
           }
         : {}),
     });

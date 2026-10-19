@@ -261,7 +261,8 @@ export function evaluateAccess(policy: PolicyState, request: AccessRequest): Pol
   };
 
   const matchedAssociations = new Set<string>();
-  for (const accessRight of operation.accessRights) {
+  let missingAccessRight: string | undefined;
+  associationSearch: for (const accessRight of operation.accessRights) {
     for (const policyClass of policyClasses) {
       const association = policy.associations.find((entry) => {
         return grantsAccessRight(
@@ -274,10 +275,8 @@ export function evaluateAccess(policy: PolicyState, request: AccessRequest): Pol
         );
       });
       if (!association) {
-        return deny([{ code: 'missing-privilege', accessRight }], {
-          ...trace,
-          matchedAssociations: [...matchedAssociations],
-        });
+        missingAccessRight = accessRight;
+        break associationSearch;
       }
       matchedAssociations.add(association.id);
     }
@@ -303,6 +302,11 @@ export function evaluateAccess(policy: PolicyState, request: AccessRequest): Pol
   const firstProhibition = matchedProhibitions[0];
   if (firstProhibition) {
     return deny([{ code: 'restriction', prohibitionId: firstProhibition.id }], finalTrace);
+  }
+
+  // A matching prohibition determines the deny reason even when a privilege is absent.
+  if (missingAccessRight !== undefined) {
+    return deny([{ code: 'missing-privilege', accessRight: missingAccessRight }], finalTrace);
   }
 
   const firstAssociation = finalTrace.matchedAssociations[0];
