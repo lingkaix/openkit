@@ -1,4 +1,4 @@
-import { UserActorRefSchema } from '@openkit/protocol';
+import { readRetainedV1, UserActorRefSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   CandidateSetJudgementTargetSchema,
@@ -7,6 +7,15 @@ import {
   JudgementRecordSchema,
   MaterialJudgementTargetSchema,
 } from './evaluation.js';
+
+/** Adapts shared marker refusal to schema admission without interpreting family fields first. */
+function retainedV1Input(value: unknown): unknown {
+  try {
+    return readRetainedV1(value, (record) => record);
+  } catch {
+    return undefined;
+  }
+}
 
 const actor = UserActorRefSchema.strip();
 const candidate = EvaluationCandidateSchema.strip();
@@ -20,7 +29,7 @@ const target = z.union([
 const [accept, reject, correct, select, rate] = JudgementRecordSchema.options;
 
 /** Retained judgement reads ignore descriptive additions while preserving closed kinds and exact known fields. */
-export const JudgementRecordReaderSchema = z.discriminatedUnion('kind', [
+const judgementReader = z.discriminatedUnion('kind', [
   accept.safeExtend({ actor, target }),
   reject.safeExtend({ actor, target }),
   correct.safeExtend({ actor, target: materialRange }),
@@ -28,9 +37,14 @@ export const JudgementRecordReaderSchema = z.discriminatedUnion('kind', [
   rate.safeExtend({ actor, target }),
 ]);
 
+export const JudgementRecordReaderSchema = z.preprocess(retainedV1Input, judgementReader);
+
 /** Retained membership reads use the same coherence predicates without applying strict command admission to descriptions. */
-export const CandidateSetRecordReaderSchema = CandidateSetRecordSchema.safeExtend({
+const candidateSetReader = CandidateSetRecordSchema.safeExtend({
   createdBy: actor,
   candidates: z.array(candidate).min(2),
   judgements: z.array(JudgementRecordReaderSchema),
 });
+
+/** Checks the shared marker before reading immutable membership and nested judgements. */
+export const CandidateSetRecordReaderSchema = z.preprocess(retainedV1Input, candidateSetReader);

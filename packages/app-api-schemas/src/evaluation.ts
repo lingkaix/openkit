@@ -1,5 +1,6 @@
 import {
   MaterialIdSchema,
+  RETAINED_FORMAT_VERSION,
   MaterialRevisionIdSchema,
   TimestampSchema,
   UserActorRefSchema,
@@ -36,7 +37,7 @@ export const JudgementTargetSchema = z.union([
 ]);
 
 const judgementFields = {
-  formatVersion: z.literal(1),
+  schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
   workspaceId: WorkspaceIdSchema,
   requestId: z.string().min(1),
   actor: UserActorRefSchema,
@@ -112,7 +113,7 @@ export const JudgementRecordSchema = z.discriminatedUnion('kind', [
 /** Retained ordered membership and attributable judgement history; current choice is a projection. */
 export const CandidateSetRecordSchema = z
   .object({
-    formatVersion: z.literal(1),
+    schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
     workspaceId: WorkspaceIdSchema,
     candidateSetId: z.string().min(1),
     createdBy: UserActorRefSchema,

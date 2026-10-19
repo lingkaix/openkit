@@ -5,7 +5,7 @@ import type { OperationDefinition } from './operation-contract.js';
 
 const [accept, reject, , , rate] = JudgementRecordSchema.options;
 const serverFields = {
-  formatVersion: true,
+  schemaVersion: true,
   actor: true,
   recordedAt: true,
   workspaceId: true,
