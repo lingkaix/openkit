@@ -5,10 +5,10 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RegisterKnowledgeSourceResponseSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -16,6 +16,9 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { readWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
+import * as sourcePublication from './source-publication.js';
+
+afterEach(() => vi.restoreAllMocks());
 
 /** One real current owner; requests cross the public parser, native publisher and actual local Storage. */
 function fixture() {
@@ -31,7 +34,7 @@ function fixture() {
   const app = createApp({ coreDb, dataRoot, store });
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
   const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
-  const register = (requestId: string) =>
+  const register = (requestId: string, fields: Record<string, unknown> = {}) =>
     app.request(
       ...operationRequest(
         'knowledge.source.register',
@@ -42,6 +45,7 @@ function fixture() {
             kind: 'document',
             title: 'One admitted original',
             content: 'Exact UUID-command original.\r\nUnicode Ω 雪.\n',
+            ...fields,
           }),
         }
       )
@@ -138,5 +142,25 @@ describe('public Source request identity', () => {
         )
         .get(requestId)
     ).toEqual({ count: 1 });
+  });
+  it.each([
+    'success',
+    'refusal',
+  ] as const)('closes its publication database after %s', async (outcome) => {
+    const f = fixture();
+    const publish = sourcePublication.publishCapturedSource;
+    let publicationDb: WorkspaceDb | undefined;
+    vi.spyOn(sourcePublication, 'publishCapturedSource').mockImplementation(async (...args) => {
+      if (args[0].database.kind === 'workspace') publicationDb = args[0].database.workspaceDb;
+      return publish(...args);
+    });
+    const response = await f.register(
+      randomUUID(),
+      outcome === 'refusal' ? { originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2' } : {}
+    );
+    expect(response.status).toBe(outcome === 'success' ? 200 : 404);
+    expect(publicationDb).toBeDefined();
+    expect(publicationDb!.sqlite.open).toBe(false);
+    if (outcome === 'refusal') expect(f.store.listKnowledgeSources(f.workspace.id)).toEqual([]);
   });
 });
