@@ -42,7 +42,7 @@ import {
 } from './knowledge/scoped-notebook-owner.js';
 import {
   admitsServerKnowledge,
-  readServerKnowledgeSource,
+  readServerKnowledgeSourceMetadata,
 } from './knowledge/server-knowledge-owner.js';
 import {
   resolveWorkspaceKnowledgeReferenceProofs,
@@ -168,9 +168,9 @@ export function readAuthorizedServerNotebookPages(input: Target) {
           registeredSources
         );
         if (!targetId) return false;
-        const source = readServerKnowledgeSource(context, targetId);
+        const source = readServerKnowledgeSourceMetadata(context, targetId);
         if (!source) return false;
-        registeredSources.set(targetId, source.source.contentDigest);
+        registeredSources.set(targetId, source.contentDigest);
         if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
           return false;
       } else if (reference.startsWith('openkit:')) {

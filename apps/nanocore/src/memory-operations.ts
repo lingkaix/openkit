@@ -476,8 +476,8 @@ export function createMemoryOperationImplementations(
         })
       ),
     'memory.source.read': (input, context) =>
-      self(context, (writer) => {
-        const entry = readUserKnowledgeSource(writer, input.sourceId, context.delivery);
+      self(context, async (writer) => {
+        const entry = await readUserKnowledgeSource(writer, input.sourceId, context.delivery);
         return MEMORY_OPERATION_DEFINITIONS['memory.source.read'].outputSchema.parse({
           source: entry ? { ...entry.source, content: entry.content } : null,
         });
