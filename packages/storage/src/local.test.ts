@@ -229,11 +229,8 @@ describe('LocalStorage original identity and Protocol boundary', () => {
     ).not.toBe('ok');
   });
 
-  it.each([
-    { kind: 'page', page: 1 },
-    { kind: 'time', startSeconds: 0, endSeconds: 1 },
-    { kind: 'frame', frame: 0, numbering: 'zero-based', coordinateSpace: 'source-video' },
-  ])('refuses implicit $kind-to-byte conversion', async (range) => {
+  it('refuses implicit page-to-byte conversion', async () => {
+    const range = { kind: 'page', page: 1 };
     const f = await fixture();
     const captured = await capture(f);
     const content = {
@@ -246,6 +243,15 @@ describe('LocalStorage original identity and Protocol boundary', () => {
       status: 'unavailable',
       reason: 'unsupported',
     });
+  });
+
+  it.each([
+    { kind: 'time', startSeconds: 0, endSeconds: 1 },
+    { kind: 'frame', frame: 0, numbering: 'zero-based', coordinateSpace: 'source-video' },
+  ])('refuses deferred $kind coordinates at the shared reference boundary', async (range) => {
+    const f = await fixture();
+    const captured = await capture(f);
+    expect(ContentReferenceSchema.safeParse({ ...captured.reference, range }).success).toBe(false);
   });
 
   it('refuses oversized chunks and malformed byte offsets', async () => {
