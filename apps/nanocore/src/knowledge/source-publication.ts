@@ -41,7 +41,7 @@ export interface SourcePublication {
   readonly owner: SourcePointerOwner;
   readonly database: NotebookPublicationOwner;
   readonly access: ManagedSourceAdmission['access'];
-  readonly producer: Extract<ActorRef, { kind: 'user' | 'agent' }>;
+  readonly producer: ActorRef & { readonly kind: 'user' | 'agent' };
   readonly requestId: string;
   readonly commandInput: unknown;
   readonly captureChannel: string;

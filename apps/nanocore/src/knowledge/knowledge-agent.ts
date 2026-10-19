@@ -48,6 +48,8 @@ import {
   readServerKnowledgeSource,
   readServerKnowledgeSourceMetadata,
 } from './server-knowledge-owner.js';
+import { readSourcePointers } from './source-pointers.js';
+import { readManagedSourceText } from './source-reading.js';
 
 /** Trusted query context remains that of the asker, separate from the Knowledge Manager work Turn. */
 export interface KnowledgeAgentQuestion {
@@ -338,9 +340,21 @@ export async function askKnowledgeAgent(
       if (parseReferenceScope(candidate.reference.scopeId)?.kind === 'server')
         return readServerKnowledgeSource(serverContext, sourceId);
       if (!knowledgeSourceAudienceReadable(bound, sourceId)) return null;
-      const source = store.getKnowledgeSource(input.workspaceId, sourceId);
-      const content = store.readKnowledgeSourceMaterial(input.workspaceId, sourceId);
-      return content === null ? null : { source, content };
+      const owner = {
+        dataRoot,
+        ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
+      };
+      const pointer = readSourcePointers(owner).get(sourceId);
+      if (!pointer) return null;
+      const delivered = await readManagedSourceText({ owner, pointer, access: bound.access });
+      if (
+        delivered.status !== 'ok' ||
+        !knowledgeSourceAudienceReadable(bound, sourceId) ||
+        store.getKnowledgeSource(input.workspaceId, sourceId).contentDigest !==
+          pointer.source.contentDigest
+      )
+        return null;
+      return { source: pointer.source, content: delivered.value };
     };
     const assertCallerCurrent = () => {
       input.assertCurrent?.();

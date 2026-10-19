@@ -102,7 +102,7 @@ function fixture() {
   };
   const publish = (
     selected: KnowledgeRetrievalAccess,
-    producer: Extract<ActorRef, { kind: 'user' | 'agent' }>
+    producer: ActorRef & { readonly kind: 'user' | 'agent' }
   ) =>
     publishCapturedSource(
       {
