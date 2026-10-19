@@ -338,8 +338,8 @@ describe('workspace portable file state', () => {
     const workspaceSchema = [
       'schema_version: "openkit-scope-knowledge-schema-v4"',
       'status: "active"',
-      'allowed_types: ["KnowledgePage", "RepoConvention"]',
-      'allowed_statuses: ["active"]',
+      'allowed_types: ["KnowledgePage", "RepoConvention", "Claim", "Observation"]',
+      'allowed_statuses: ["active", "draft"]',
       'allowed_review_states: ["accepted", "user-authored"]',
       'allowed_sensitivities: ["normal", "confidential"]',
       'allowed_freshness: ["current"]',
