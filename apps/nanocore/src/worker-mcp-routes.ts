@@ -1603,7 +1603,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     terminalCommitted = true;
     status = 'completed';
-    if (!policyInput.stillCurrent())
+    let resultCurrent = false;
+    try {
+      resultCurrent = policyInput.stillCurrent();
+    } catch {
+      // Unavailable current authority withholds content without rewriting a settled effect.
+    }
+    if (!resultCurrent)
       throw new ProtocolError(
         ProtocolErrorCode.InvalidRequest,
         'MCP call completed; current authority does not permit result delivery.',
@@ -2144,29 +2150,22 @@ function mcpInterceptionInput(
     anchorCurrent,
     participantAuthorized,
     finalKernel: () => currentMcpPolicyAuthority(input).kernel,
-    stillCurrent: () => {
-      try {
-        return (
-          !input.signal.aborted &&
-          lifecycleCurrent() &&
-          agentBindingsCurrent() &&
-          currentCatalogRevision() === proposal.catalogRevision &&
-          policyDigest({
-            caller: currentMcpPolicyAuthority(input, ownDecision).revision,
-            bindings: currentBindingRefs(),
-          }) === authorizationRevision &&
-          policyDigest(
-            readAdmittedPolicyDocument(
-              input.input.coreDb!,
-              input.input.runtimeConfig().openKitConfig.policy?.mediation
-            )
-          ) === policyRevision &&
-          policyDigest(input.arguments) === proposal.argumentsDigest
-        );
-      } catch {
-        return false;
-      }
-    },
+    stillCurrent: () =>
+      !input.signal.aborted &&
+      lifecycleCurrent() &&
+      agentBindingsCurrent() &&
+      currentCatalogRevision() === proposal.catalogRevision &&
+      policyDigest({
+        caller: currentMcpPolicyAuthority(input, ownDecision).revision,
+        bindings: currentBindingRefs(),
+      }) === authorizationRevision &&
+      policyDigest(
+        readAdmittedPolicyDocument(
+          input.input.coreDb!,
+          input.input.runtimeConfig().openKitConfig.policy?.mediation
+        )
+      ) === policyRevision &&
+      policyDigest(input.arguments) === proposal.argumentsDigest,
   };
 }
 
