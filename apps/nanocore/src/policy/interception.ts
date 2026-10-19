@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
+import type { GoalTaskAccessResult } from './goal-task-access.js';
 import {
   type RecordProductPermissionDecisionInput,
   readPolicyStatementUseCount,
@@ -77,7 +78,7 @@ export interface InterceptionInput {
   readonly finalKernel: (context: {
     readonly proposal: PolicyProposal;
     readonly advice: readonly unknown[];
-  }) => PolicyDecision;
+  }) => PolicyDecision | GoalTaskAccessResult;
 }
 
 /** A final allow is permission to attempt the effect, not an effect result. */
@@ -87,6 +88,8 @@ export interface InterceptionDecision {
   readonly proposalDigest: string;
   readonly policyRevision: string;
   readonly authorizationRevision: string;
+  /** Present only for the current Goal Task association gap, never a human/participant refusal. */
+  readonly escalation?: GoalTaskAccessResult['escalation'];
 }
 
 /** Bounded process-local availability state; restart never replays participant work. */
@@ -178,15 +181,35 @@ export class PolicyInterception {
       }
     }
     let kernel: PolicyDecision | null = null;
+    let escalation: GoalTaskAccessResult['escalation'];
     try {
-      kernel = input.finalKernel({ proposal: input.proposal, advice });
-      results.push(
+      const evaluated = input.finalKernel({ proposal: input.proposal, advice });
+      const goal = 'kernel' in evaluated ? evaluated : undefined;
+      kernel = 'kernel' in evaluated ? evaluated.kernel : evaluated;
+      if (
         kernel.reasons.some(({ code }) =>
           ['invalid-policy', 'invalid-request', 'missing-operation'].includes(code)
         )
-          ? 'error'
-          : kernel.effect
-      );
+      ) {
+        results.push('error');
+      } else if (goal?.escalation) {
+        if (
+          !goal.inGoalEnvelope ||
+          kernel.effect !== 'deny' ||
+          kernel.reasons.length === 0 ||
+          kernel.reasons.some(({ code }) => code !== 'missing-privilege') ||
+          goal.escalation.workspaceId !== input.proposal.workspaceId
+        )
+          throw new Error('Goal escalation contradicts the current mandatory Kernel evaluation.');
+        // A Task association gap cannot redirect a human-only condition or a
+        // participant failure. Keep their existing result and destination.
+        if (results.every((value) => value === 'allow' || value === 'not_applicable')) {
+          results.push('require_escalation');
+          escalation = goal.escalation;
+        }
+      } else {
+        results.push(kernel.effect);
+      }
     } catch {
       results.push('error');
     }
@@ -260,6 +283,7 @@ export class PolicyInterception {
       proposalDigest,
       policyRevision,
       authorizationRevision: input.authorizationRevision,
+      ...(result === 'require_escalation' && escalation ? { escalation } : {}),
     };
   }
 
