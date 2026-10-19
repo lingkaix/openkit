@@ -1,10 +1,8 @@
+import { WorkspacePolicyResourceSchema } from '@openkit/config-schema/workspace-resource-policy';
 import {
-  WorkspacePolicyResourceSchema,
-} from '@openkit/config-schema/workspace-resource-policy';
-import {
-  PolicyDocumentV1Schema,
   ApprovalRequestIdSchema,
   ApprovalRequestSchema,
+  PolicyDocumentV1Schema,
   RequestIdSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
@@ -21,14 +19,28 @@ export const WorkspaceResourcePolicyTermsSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.replacement && (
-      !value.replacement.statements.some(statement => statement.kind === 'managed-boundary' && statement.state === 'active') ||
-      value.replacement.statements.some(statement =>
-        !['permission', 'managed-boundary'].includes(statement.kind) ||
-        statement.scope.resources.length !== 1 ||
-        statement.scope.resources.some(resource => resource.kind !== 'container' || resource.container.kind !== 'thread' || resource.container.id !== value.resource.id)
-      )
-    )) ctx.addIssue({code: 'custom', path: ['replacement'], message: 'The replacement must retain the captured Thread boundary and exact target.'});
+    if (
+      value.replacement &&
+      (!value.replacement.statements.some(
+        (statement) => statement.kind === 'managed-boundary' && statement.state === 'active'
+      ) ||
+        value.replacement.statements.some(
+          (statement) =>
+            !['permission', 'managed-boundary'].includes(statement.kind) ||
+            statement.scope.resources.length !== 1 ||
+            statement.scope.resources.some(
+              (resource) =>
+                resource.kind !== 'container' ||
+                resource.container.kind !== 'thread' ||
+                resource.container.id !== value.resource.id
+            )
+        ))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path: ['replacement'],
+        message: 'The replacement must retain the captured Thread boundary and exact target.',
+      });
   });
 
 /** The configuration revision is captured by the existing file owner when the request is raised. */

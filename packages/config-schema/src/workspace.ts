@@ -159,7 +159,6 @@ export const WorkspaceConfigSchema = z
     schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
     requiredFeatures: authoredConfigRequiredFeaturesSchema([
       WORKSPACE_RESOURCE_POLICY_FEATURE,
-  WorkspacePolicyDocumentSchema,
     ]).optional(),
     workspace: WorkspaceConfigWorkspaceSchema,
     extensions: z.record(z.string().min(1), z.unknown()).optional(),

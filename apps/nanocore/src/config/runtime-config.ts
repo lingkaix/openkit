@@ -292,7 +292,6 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
   'nanohost.deploymentId',
   'nanohost.identityId',
   'nanohost.rendezvousUrl',
-  'policy.workspaceApprovalModes',
 ] as const;
 
 /**

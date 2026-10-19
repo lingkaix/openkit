@@ -227,8 +227,8 @@ describe('server config schema', () => {
     expect(getConfigPolicyCatalog()).toContainEqual(
       expect.objectContaining({
         kind: 'server',
-        path: '$.policy',
-        reloadClass: 'restart-required',
+        path: '$.policy.mediation',
+        reloadClass: 'hot-swappable',
         workspaceOverride: 'forbidden',
       })
     );

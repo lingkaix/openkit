@@ -67,15 +67,24 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       const resource = statement.scope.resources[0];
       const anchor = statement.lifetime.anchor;
       if (
-        statement.effect !== 'allow' || statement.author.kind !== 'human' ||
-        statement.authority.kind !== 'human' || statement.author.id !== statement.authority.userId ||
-        statement.scope.subjects.length !== 1 || subject?.kind !== 'human' ||
-        statement.scope.actions.length !== 1 || statement.scope.actions[0] !== 'administration.configuration.apply' ||
-        statement.scope.resources.length !== 1 || resource?.kind !== 'container' ||
-        resource.container.owner.kind !== 'server' || resource.container.kind !== 'agent' ||
-        anchor.owner.kind !== 'server' || anchor.kind !== 'agent' || anchor.id !== resource.container.id ||
+        statement.effect !== 'allow' ||
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        statement.scope.subjects.length !== 1 ||
+        subject?.kind !== 'human' ||
+        statement.scope.actions.length !== 1 ||
+        statement.scope.actions[0] !== 'administration.configuration.apply' ||
+        statement.scope.resources.length !== 1 ||
+        resource?.kind !== 'container' ||
+        resource.container.owner.kind !== 'server' ||
+        resource.container.kind !== 'agent' ||
+        anchor.owner.kind !== 'server' ||
+        anchor.kind !== 'agent' ||
+        anchor.id !== resource.container.id ||
         statement.lifetime.uses !== undefined
-      ) throw new Error('Finite maintenance requires its human root and exact Server Agent scope.');
+      )
+        throw new Error('Finite maintenance requires its human root and exact Server Agent scope.');
       continue;
     }
     if (statement.kind === 'permission' && statement.grant.kind === 'storage-lease') {

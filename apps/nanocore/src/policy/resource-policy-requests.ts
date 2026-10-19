@@ -285,7 +285,7 @@ export function checkResourcePolicyCommandIntent(
       403
     );
   }
-  if (change.replacement) parseWorkspacePolicy(record.workspaceId,change.replacement);
+  if (change.replacement) parseWorkspacePolicy(record.workspaceId, change.replacement);
   for (const statement of change.replacement?.statements ?? []) {
     const subject = workspacePolicySubject(statement);
     if (!subject) continue;
@@ -355,17 +355,32 @@ export function applyResourcePolicyRequest(
   const id = `workspaces/${record.workspaceId}/workspace.jsonc`;
   const file = dependencies.files.readFile(id);
   const config = WorkspaceConfigSchema.parse(parse(file.content));
-  const current = parseWorkspacePolicy(record.workspaceId,config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT);
-  const statements = current.statements.filter(statement => !statement.scope.resources.some(resource => resource.kind === 'container' && resource.container.kind === 'thread' && resource.container.id === change.resource.id));
+  const current = parseWorkspacePolicy(
+    record.workspaceId,
+    config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
+  );
+  const statements = current.statements.filter(
+    (statement) =>
+      !statement.scope.resources.some(
+        (resource) =>
+          resource.kind === 'container' &&
+          resource.container.kind === 'thread' &&
+          resource.container.id === change.resource.id
+      )
+  );
   const authoredAt = new Date().toISOString();
-  for (const statement of change.replacement?.statements ?? []) statements.push({
-    ...statement,
-    author: {kind:'human',id:input.actor.userId},
-    authority: {kind:'human',userId:input.actor.userId},
-    authoredAt,
-  });
-  const document = parseWorkspacePolicy(record.workspaceId,{schemaVersion:1,statements});
-  let content = applyEdits(file.content,modify(file.content,['workspace','policy','mediation'],document,{}));
+  for (const statement of change.replacement?.statements ?? [])
+    statements.push({
+      ...statement,
+      author: { kind: 'human', id: input.actor.userId },
+      authority: { kind: 'human', userId: input.actor.userId },
+      authoredAt,
+    });
+  const document = parseWorkspacePolicy(record.workspaceId, { schemaVersion: 1, statements });
+  let content = applyEdits(
+    file.content,
+    modify(file.content, ['workspace', 'policy', 'mediation'], document, {})
+  );
   const requiredFeatures = [
     ...new Set([...(config.requiredFeatures ?? []), WORKSPACE_RESOURCE_POLICY_FEATURE]),
   ];

@@ -155,10 +155,15 @@ export function readAdmittedPolicyDocument(coreDb: CoreDb, input: unknown): Poli
 }
 
 /** Checks the current human Server root; it does not supply a caller's credential admission. */
-export function isCurrentServerPolicyAuthor(coreDb: CoreDb, humanId: string, now = Date.now()): boolean {
+export function isCurrentServerPolicyAuthor(
+  coreDb: CoreDb,
+  humanId: string,
+  now = Date.now()
+): boolean {
   if (!Number.isFinite(now)) return false;
   const author = coreDb.sqlite.prepare('SELECT kind FROM users WHERE id = ?').get(humanId) as
-    { kind: string } | undefined;
+    | { kind: string }
+    | undefined;
   if (!author || !['local', 'human'].includes(author.kind)) return false;
   try {
     requireCurrentDeploymentAdmin(

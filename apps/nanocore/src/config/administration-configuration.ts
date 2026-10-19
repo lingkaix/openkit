@@ -384,9 +384,17 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
               effectFacts: prepared.facts,
               assignments: (snapshot.openKitConfig.policy?.mediation?.statements ?? []).filter(
                 (entry) =>
-                  entry.kind === 'permission' && entry.grant.kind === 'worker-git-read-maintenance' &&
-                  entry.scope.subjects.some(subject => subject.kind === 'human' && subject.id === actor.userId) &&
-                  entry.scope.resources.some(resource => resource.kind === 'container' && resource.container.kind === 'agent' && resource.container.id === body.targetId) &&
+                  entry.kind === 'permission' &&
+                  entry.grant.kind === 'worker-git-read-maintenance' &&
+                  entry.scope.subjects.some(
+                    (subject) => subject.kind === 'human' && subject.id === actor.userId
+                  ) &&
+                  entry.scope.resources.some(
+                    (resource) =>
+                      resource.kind === 'container' &&
+                      resource.container.kind === 'agent' &&
+                      resource.container.id === body.targetId
+                  ) &&
                   entry.grant.networkGrantId === prepared.facts.networkGrantId
               ),
             },
