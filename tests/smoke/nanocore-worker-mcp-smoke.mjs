@@ -891,10 +891,16 @@ async function issueNanoHostToken(dataRoot) {
 
 /** Reads the normalized durable call, policy, schema, audit, usage, Item, backend, and attempt facts. */
 async function readDurableOutcome(dataRoot, turnId) {
-  const [{ FsStore }, { openCoreDb, openWorkspaceDb }, { ItemIdSchema }] = await Promise.all([
+  const [
+    { FsStore },
+    { openCoreDb, openWorkspaceDb },
+    { ItemIdSchema },
+    { listExportableWorkspacePermissionDecisions },
+  ] = await Promise.all([
     import('../../apps/nanocore/dist/lib/store.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
     import('../../packages/protocol/dist/index.js'),
+    import('../../apps/nanocore/dist/policy/permission-decisions.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
   let backend;
@@ -959,12 +965,16 @@ async function readDurableOutcome(dataRoot, turnId) {
         )
         .all(call.callId);
     }
-    permission = workspaceDb.sqlite
-      .prepare(
-        `SELECT enforcement_point AS enforcementPoint, result
-         FROM permission_decisions WHERE action = 'tool.use'`
-      )
-      .all();
+    permission = listExportableWorkspacePermissionDecisions(
+      workspaceDb,
+      'ws_00000000-0000-7000-8000-000000000001'
+    )
+      .filter((decision) => decision.action === 'tool.use')
+      .map((decision) => ({
+        operation: decision.mediation?.operation,
+        stage: decision.mediation?.stage,
+        result: decision.result,
+      }));
   } finally {
     workspaceDb.sqlite.close();
   }

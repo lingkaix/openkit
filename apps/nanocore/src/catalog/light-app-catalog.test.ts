@@ -564,7 +564,11 @@ describe('Light App definition catalog', () => {
         workerContextPackageFiles: new Map(),
         workspaceConfig: JSON.stringify({
           schemaVersion: 1,
-          workspace: { name: 'Definition templates', defaultAgentId: null },
+          workspace: {
+            name: 'Definition templates',
+            defaultAgentId: null,
+            defaultKnowledgeBaseId: allocateEntityId('kb'),
+          },
         }),
         workspaceSchema: null,
       },
