@@ -1,10 +1,10 @@
 // openkit-test-platform: posix
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { RetrieveKnowledgeRequestSchema } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
@@ -21,12 +21,15 @@ import {
   recordMemorySuppression,
   saveMemoryPage,
 } from './knowledge/memory-lifecycle.js';
-import { updateOkfFrontmatter } from './knowledge/okf.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { parseOkfDocument, updateOkfFrontmatter } from './knowledge/okf.js';
 import {
   readUserKnowledgeSource,
   registerUserKnowledgeSource,
 } from './knowledge/scoped-knowledge-sources.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
+import { parseSourcePointer } from './knowledge/source-pointers.js';
+import { readManagedSourceText } from './knowledge/source-reading.js';
 import { FsStore } from './lib/store.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
 import {
@@ -427,8 +430,11 @@ describe('governed current-self Memory search', () => {
       content: 'Exact raw evidence.',
     });
     const refs = [`source:${source.id}@${source.contentDigest}`];
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.dataRoot, 'users', aliceId, 'memory', 'notebook.git'),
+    });
     const saved = await f.alice.save(
-      f.alice.baseRevision,
+      notebook.publishedRevision(),
       'preferences',
       `${marker} saved interpretation`,
       refs
@@ -492,17 +498,63 @@ describe('governed current-self Memory search', () => {
     );
     const next = await retrieveUserMemory(f.alice.query());
     expect(next.selected.map(({ reference }) => reference.objectId)).toEqual(['new-preferences']);
-    expect(readUserKnowledgeSource(f.alice.writer, source.id, 'model')).toBeNull();
-    expect(readUserKnowledgeSource(f.alice.writer, source.id, 'human')?.content).toBe(
+    expect(await readUserKnowledgeSource(f.alice.writer, source.id, 'model')).toBeNull();
+    expect((await readUserKnowledgeSource(f.alice.writer, source.id, 'human'))?.content).toBe(
       'Exact raw evidence.'
     );
-    writeFileSync(
-      join(f.dataRoot, 'users', aliceId, 'sources', 'materials', source.id, 'content.txt'),
-      'Corrupt evidence.'
+    const revision = notebook.publishedRevision();
+    const pointer = notebook.readSourcePointers(revision)[source.id]!;
+    const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointer });
+    if (!parsed.ok) throw new Error('Expected canonical SourceSummary before byte corruption.');
+    const reference = ContentReferenceSchema.parse(parsed.document.frontmatter.contentRef);
+    const scope = { kind: 'user' as const, userId: aliceId };
+    expect(reference.locator.ownerScope).toEqual(scope);
+    expect(reference.knowledgeBaseId).toBe(
+      readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope })
     );
-    await expect(retrieveUserMemory(f.alice.query())).rejects.toMatchObject({
-      code: 'recovery_required',
+    expect(reference.locator.mount).toBe('managed');
+    const rawRoot = resolve(f.dataRoot, 'users', aliceId, 'memory', 'raw');
+    const material = resolve(rawRoot, reference.locator.path);
+    const confined = relative(rawRoot, material);
+    expect(isAbsolute(confined) || confined === '..' || confined.startsWith('../')).toBe(false);
+    expect(readFileSync(material, 'utf8')).toBe('Exact raw evidence.');
+    const pageBytes = notebook.readRevision(revision).files['new-preferences.md']!;
+    writeFileSync(material, 'Corrupt evidence.');
+    const owner = { dataRoot: f.dataRoot, ownerScope: scope };
+    await expect(
+      readManagedSourceText({
+        owner,
+        pointer: parseSourcePointer(owner, source.id, pointer),
+        access: f.alice.access,
+      })
+    ).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'changed',
+      reference: { ...reference, availability: 'unavailable' },
     });
+    expect(await readUserKnowledgeSource(f.alice.writer, source.id, 'human')).toBeNull();
+    expect(notebook.readSourcePointers(notebook.publishedRevision())[source.id]).toBe(pointer);
+    expect(notebook.readRevision(revision).files['new-preferences.md']).toBe(pageBytes);
+    const after = await retrieveUserMemory(f.alice.query());
+    expect(after.selected).toEqual(next.selected);
+    expect(after).toMatchObject({
+      notebookRevision: revision,
+      selected: [
+        {
+          reference: { scopeId: memoryPageScope(f, aliceId), objectId: 'new-preferences' },
+          revision,
+          contentDigest: `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`,
+          sourceReferences: refs,
+        },
+      ],
+    });
+    expect(
+      resolveWorkspaceKnowledgeRetrievalPages({ ...f.alice.query(), selection: after })?.find(
+        ({ knowledgePageId }) => knowledgePageId === 'new-preferences'
+      )?.content
+    ).toBe(pageBytes);
+    expect(await readUserKnowledgeSource(f.alice.writer, source.id, 'model')).toBeNull();
+    expect(readMemoryPage(f.alice.writer, 'preferences')).toBeNull();
   });
 
   it.each([
