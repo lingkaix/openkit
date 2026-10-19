@@ -80,6 +80,7 @@ import {
 } from './policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
+import { advanceGoalRevision } from './runtime/goal-owner.js';
 import { readGoalTaskPolicyContext } from './runtime/goal-task-policy-context.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
@@ -183,6 +184,8 @@ interface WorkerMcpToolCallInput {
 export interface RegisterWorkerMcpRoutesInput {
   /** Native Goal-domain composition; linked Tasks cannot omit their mandatory Policy class. */
   readonly goalTaskPolicy?: (db: WorkspaceDb, responsibleUserId: string) => GoalTaskPolicyService;
+  /** Reuses the existing Goal wake after its durable change marker advances. */
+  readonly goalWake?: (workspaceId: string, goalId: string) => void;
   /** Deterministic pilot participant injected by the native composition or tests. */
   readonly interception?: PolicyInterception;
   readonly automationStore?: OperationInvocationDependencies['automationStore'];
@@ -1434,6 +1437,42 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     policyInput = mcpInterceptionInput(input, call);
     const policyDecision = await input.interception.decide(policyInput);
     if (policyDecision.result === 'allow') policyInput.useDecision(policyDecision);
+    if (policyDecision.result === 'require_escalation' && policyDecision.escalation) {
+      if (!policyInput.stillCurrent())
+        throw new WorkerControlGatewayError(
+          'mcp-policy-stale',
+          'Goal Task authority changed before Coordinator escalation.',
+          409
+        );
+      const escalation = policyDecision.escalation;
+      // Commit the Goal-scoped gap and its wake marker together before notifying the owner.
+      input.workspaceDb.sqlite
+        .transaction(() => {
+          finishCapabilityCall({
+            callId: call.id,
+            errorCode: 'policy_requires_escalation',
+            status: 'denied',
+            workspaceDb: input.workspaceDb,
+          });
+          advanceGoalRevision(input.workspaceDb, escalation.goalId);
+        })
+        .immediate();
+      terminalCommitted = true;
+      status = 'declined';
+      input.input.goalWake?.(
+        policyDecision.escalation.workspaceId,
+        policyDecision.escalation.goalId
+      );
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text' as const,
+            text: 'The Goal Coordinator must authorize this Task capability within its approved domain. No upstream effect occurred. A later request requires full current evaluation.',
+          },
+        ],
+      };
+    }
     if (
       policyDecision.result === 'require_escalation' ||
       policyDecision.result === 'require_approval'
@@ -1966,6 +2005,7 @@ function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput, decision?: Pol
   return {
     subject,
     kernel: task?.kernel ?? captured.decision,
+    goalTask: task,
     revision: task
       ? policyDigest({ caller: captured, goalTask: task.authorizationRevision })
       : policyDigest(captured),
@@ -2150,7 +2190,10 @@ function mcpInterceptionInput(
     authorCurrent,
     anchorCurrent,
     participantAuthorized,
-    finalKernel: () => currentMcpPolicyAuthority(input).kernel,
+    finalKernel: () => {
+      const current = currentMcpPolicyAuthority(input);
+      return current.goalTask ?? current.kernel;
+    },
     stillCurrent: () =>
       !input.signal.aborted &&
       lifecycleCurrent() &&
