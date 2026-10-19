@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { type KnowledgeOwnerScope, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
@@ -41,4 +42,18 @@ export function serializeKnowledgePageFixture(
     input.content,
     '',
   ].join('\n');
+}
+
+/** Authors one canonical page fixture for Store/import consumers without a legacy entry record. */
+export function knowledgePageFixture(
+  input: Parameters<typeof serializeKnowledgePageFixture>[0] & { readonly id: string },
+  ownerScope: KnowledgeOwnerScope
+) {
+  const content = serializeKnowledgePageFixture(input, ownerScope);
+  return {
+    id: input.id,
+    path: `${input.id}.md`,
+    content,
+    contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+  };
 }

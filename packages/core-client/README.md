@@ -119,3 +119,5 @@ Product diagnostics use `client.operations['diagnostics.app']({})` and `client.o
 Turn feedback responses include ordered attributable `history` and the current rating/note. Submit requests still contain only rating, note and the Turn selector; NanoCore binds the actor. [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md#turn-feedback-attribution-and-history) owns these semantics.
 
 Provider account login operations use `provider-subscription.login-start` and `provider-subscription.login-cancel`; provider and account selectors remain required.
+
+Notebook page calls use definition-derived `client.operations['knowledge.notebook.list' | 'knowledge.notebook.create' | 'knowledge.notebook.update' | 'knowledge.notebook.delete']`. List pages carry complete OKF Markdown; create/delete return the existing Notebook publication result. There are no legacy Knowledge entry types or CRUD aliases.

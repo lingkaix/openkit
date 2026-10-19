@@ -1,4 +1,9 @@
-import { RequestIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  KnowledgeBaseIdSchema,
+  KnowledgeNotebookPageSchema,
+  RequestIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Bundle-relative Markdown path. Native Git and final-tree validation remain authoritative. */
@@ -66,10 +71,44 @@ export const UpdateKnowledgeNotebookResponseSchema = z
     changedPageIds: z.array(z.string().min(1)).max(256),
     receiptRef: z
       .object({
-        operation: z.literal('knowledge.notebook.update'),
+        operation: z.enum([
+          'knowledge.notebook.update',
+          'knowledge.notebook.create',
+          'knowledge.notebook.delete',
+        ]),
         requestId: RequestIdSchema,
         ownerScope: WorkspaceNotebookOwnerSchema,
       })
       .strict(),
+  })
+  .strict();
+
+/** One authorized snapshot; page content is complete OKF Markdown, never an entry projection. */
+export const ListKnowledgeNotebookResponseSchema = z.object({
+  knowledgeBaseId: KnowledgeBaseIdSchema,
+  notebookRevision: z.string().min(1),
+  pages: z.array(KnowledgeNotebookPageSchema),
+});
+
+/** Creates only a new path through the existing fixed-base Notebook publisher. */
+export const CreateKnowledgeNotebookPageRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    baseRevision: UpdateKnowledgeNotebookRequestSchema.shape.baseRevision,
+    path: KnowledgeNotebookPathSchema,
+    content: UpdateKnowledgeNotebookRequestSchema.shape.changes.element.shape.content.unwrap(),
+    summary: UpdateKnowledgeNotebookRequestSchema.shape.summary,
+  })
+  .strict();
+
+/** Removes only the exact human-confirmed page bytes; Git history remains authoritative. */
+export const DeleteKnowledgeNotebookPageRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    baseRevision: UpdateKnowledgeNotebookRequestSchema.shape.baseRevision,
+    path: KnowledgeNotebookPathSchema,
+    expectedContentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    confirmRemoval: z.literal(true),
+    summary: UpdateKnowledgeNotebookRequestSchema.shape.summary,
   })
   .strict();

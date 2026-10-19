@@ -4,7 +4,7 @@ import {
   CapabilityUsageResponseSchema,
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
-  KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+  KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
   OPERATION_DEFINITIONS,
   operationHttpPath,
@@ -2263,7 +2263,7 @@ describe('Knowledge OpenAPI derivation', () => {
     const document = createAppOpenApiDocument();
     const definitions = {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
-      ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+      ...KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
     };
     expect(Object.keys(definitions)).toHaveLength(31);
     expect(Object.keys(definitions)).toEqual(

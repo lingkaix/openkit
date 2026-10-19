@@ -287,12 +287,12 @@ describe('Knowledge operation definition cutover', () => {
         'knowledge.proposal.read',
       ].sort()
     );
-    expect(Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
+    expect(Object.keys(tables.KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
       [...entryIds].sort()
     );
     const ids = [
       ...Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS!),
-      ...Object.keys(tables.KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS!),
+      ...Object.keys(tables.KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS!),
     ];
     const root = new URL('../../../', import.meta.url);
     for (const path of [

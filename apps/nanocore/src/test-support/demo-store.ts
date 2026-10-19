@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { z } from 'zod';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { knowledgePageFixture } from './knowledge-page.js';
 
 type Thread = z.infer<typeof ThreadSchema>;
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
-type KnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
+type KnowledgeNotebookPage = z.infer<typeof KnowledgeNotebookPageSchema>;
 
 import {
   allocateEntityId,
-  type KnowledgeEntrySchema,
+  type KnowledgeNotebookPageSchema,
   type ThreadSchema,
   type WorkspaceRecordSchema,
 } from '@openkit/protocol';
@@ -30,7 +30,7 @@ export interface DemoWorkspaceFixture {
   /** Starter thread owned by the project workspace. */
   readonly thread: Thread;
   /** Starter knowledge entries owned by the project workspace. */
-  readonly knowledge: readonly KnowledgeEntry[];
+  readonly knowledge: readonly KnowledgeNotebookPage[];
 }
 
 /**
@@ -62,15 +62,17 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const knowledge: KnowledgeEntry[] = [
-    {
-      id: 'mem_project',
-      kind: 'project-context',
-      title: 'Product focus',
-      content: 'Drive the workspace protocol through a real Codex-backed local agent adapter.',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    },
+  const knowledge: KnowledgeNotebookPage[] = [
+    knowledgePageFixture(
+      {
+        id: 'mem_project',
+        title: 'Product focus',
+        content: 'Drive the workspace protocol through a real Codex-backed local agent adapter.',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: workspace.id }
+    ),
   ];
   const thread: Thread = {
     id: ids.threadId,
@@ -115,13 +117,7 @@ export function seedDemoWorkspace(store: FsStore, userId = FIXTURE_LOCAL_USER_ID
         instructionReference: 'test-fixture:demo-workspace',
       },
       initialNotebookFiles: Object.fromEntries(
-        demo.knowledge.map((entry) => [
-          `${entry.id}.md`,
-          serializeUserAuthoredKnowledgePage(entry, {
-            kind: 'workspace',
-            workspaceId: demo.workspace.id,
-          }),
-        ])
+        demo.knowledge.map((page) => [page.path, page.content])
       ),
     });
   }
