@@ -22,7 +22,7 @@ describe('Codex subscription management operations', () => {
     expect(Object.keys(PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS)).toEqual(
       expect.arrayContaining([
         'provider-subscription.account-use-reset',
-        'provider-subscription.account-update-codex-settings',
+        'provider-subscription.codex-settings',
       ])
     );
   });
@@ -66,7 +66,7 @@ describe('Codex subscription management contracts', () => {
   });
 
   it('admits partial boolean settings through their separate operation, not label update', () => {
-    const definition = managementDefinition('provider-subscription.account-update-codex-settings');
+    const definition = managementDefinition('provider-subscription.codex-settings');
     const input = { ...pair, settings: { codexAutoUseWeeklyReset: true, codexUseCredits: false } };
     expect(definition.mutating).toBe(true);
     expect(definition.inputSchema.parse(input)).toEqual(input);

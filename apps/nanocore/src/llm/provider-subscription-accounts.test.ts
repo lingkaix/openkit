@@ -1272,6 +1272,9 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(accountPath(fixture.dataRoot, pair)).toBe(exactPath);
     expect(created).toEqual({
       accountSlotId: 'team_a',
+      codexAutoUseWeeklyReset: true,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: false,
       createdAt: '2026-07-23T01:00:00.000Z',
       displayName: 'Team A',
       status: 'logged_out',
@@ -2161,6 +2164,9 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     expect(repaired).toEqual({
       accountSlotId: 'repair_one',
+      codexAutoUseWeeklyReset: true,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: false,
       createdAt: DEFAULT_TIME,
       status: 'logged_in',
       subscriptionProviderId: 'openai-codex',
@@ -4858,6 +4864,13 @@ async function createObservedInferenceRouteFixture(
     pair,
     'vault_00000000-0000-799d-848e-914aef612c73'
   );
+  if (subscriptionProviderId === 'openai-codex') {
+    // This fixture tests inference authentication, not quota admission or weekly recovery.
+    await fixture.manager.updateCodexSettings(pair, {
+      codexUseCredits: true,
+      codexAutoUseWeeklyReset: false,
+    });
+  }
   const providerModel =
     subscriptionProviderId === 'openai-codex' ? 'openai-codex/gpt-5.6-sol' : 'grok-4.3';
   const models = handle.models as MutableModels;
@@ -5669,7 +5682,7 @@ describe('Codex settings and manual reset public behavior', () => {
       codexAutoUseExpiringReset: true,
       codexUseCredits: false,
     });
-    const updated = await fixture.invoke('account-update-codex-settings', {
+    const updated = await fixture.invoke('codex-settings', {
       settings: { codexAutoUseWeeklyReset: false, codexUseCredits: true },
     });
     expect(updated.status).toBe(200);
@@ -5890,7 +5903,7 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
   it('defaults credits off for a fresh full window, but stale unavailable quota is not exhaustion proof', async () => {
     const fixture = await codexManagementFixture();
     const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
-    const settings = await fixture.invoke('account-update-codex-settings', {
+    const settings = await fixture.invoke('codex-settings', {
       settings: { codexAutoUseWeeklyReset: false },
     });
     expect(settings.status).toBe(200);
@@ -5909,7 +5922,7 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
   it('spends one weekly reset for settled quota and guards the same window on the next request', async () => {
     const fixture = await codexManagementFixture();
     const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
-    const settings = await fixture.invoke('account-update-codex-settings', {
+    const settings = await fixture.invoke('codex-settings', {
       settings: { codexUseCredits: true },
     });
     expect(settings.status).toBe(200);
@@ -5943,7 +5956,7 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
     const fixture = await codexManagementFixture();
     const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
     transport.quota.rate_limit.primary_window.limit_window_seconds = 18000;
-    const settings = await fixture.invoke('account-update-codex-settings', {
+    const settings = await fixture.invoke('codex-settings', {
       settings: { codexUseCredits: true },
     });
     expect(settings.status).toBe(200);
@@ -5967,7 +5980,7 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       return Response.json({ code: 'reset' });
     });
-    const settings = await fixture.invoke('account-update-codex-settings', {
+    const settings = await fixture.invoke('codex-settings', {
       settings: { codexAutoUseWeeklyReset: false },
     });
     expect(settings.status).toBe(200);
@@ -5990,13 +6003,13 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
     const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
     const manager = fixture.manager as CodexExpiryManager;
     const signal = new AbortController().signal;
-    const disabled = await fixture.invoke('account-update-codex-settings', {
+    const disabled = await fixture.invoke('codex-settings', {
       settings: { codexAutoUseExpiringReset: false },
     });
     expect(disabled.status).toBe(200);
     await manager.checkExpiringCodexResets(signal);
     expect(transport.bodies).toHaveLength(0);
-    const enabled = await fixture.invoke('account-update-codex-settings', {
+    const enabled = await fixture.invoke('codex-settings', {
       settings: { codexAutoUseExpiringReset: true },
     });
     expect(enabled.status).toBe(200);

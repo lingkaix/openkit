@@ -138,6 +138,7 @@ const CODEX_USAGE = {
 } as const;
 const PRIMARY_QUOTA_WINDOW = {
   id: 'primary',
+  label: '5 hours',
   limitWindowSeconds: 18_000,
   remainingPercent: 69,
   resetsAt: '2026-08-01T00:00:00.000Z',
@@ -145,6 +146,7 @@ const PRIMARY_QUOTA_WINDOW = {
 } as const;
 const SECONDARY_QUOTA_WINDOW = {
   id: 'secondary',
+  label: '7 days',
   limitWindowSeconds: 604_800,
   remainingPercent: 0,
   resetsAt: '2026-08-08T00:00:00.000Z',
@@ -590,7 +592,7 @@ describe('Codex management HTTP authority and projection', () => {
     try {
       for (const [operation, input] of [
         ['account-use-reset', { redeemRequestId: 'd98c622b-90e0-4f0e-b526-c03fdc8e5312' }],
-        ['account-update-codex-settings', { settings: { codexUseCredits: false } }],
+        ['codex-settings', { settings: { codexUseCredits: false } }],
       ] as const) {
         const response = await app.request(
           `/api/app/operations/provider-subscription.${operation}`,
@@ -617,7 +619,7 @@ describe('Codex management HTTP authority and projection', () => {
   it('rejects Codex settings on xAI before account or credential access', async () => {
     const fixture = createFixture();
     const response = await fixture.app.request(
-      '/api/app/operations/provider-subscription.account-update-codex-settings',
+      '/api/app/operations/provider-subscription.codex-settings',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1380,6 +1382,7 @@ describe('provider-subscription app API', () => {
       expect(ProviderSubscriptionQuotaSchema.parse(await firstResponse.json())).toEqual({
         ...backupPair,
         availability: 'available',
+        credits: { hasCredits: true, unlimited: false, balance: '17.25' },
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: 'pro',
         windows: [PRIMARY_QUOTA_WINDOW, SECONDARY_QUOTA_WINDOW],
@@ -1409,6 +1412,7 @@ describe('provider-subscription app API', () => {
       expect(ProviderSubscriptionQuotaSchema.parse(await secondResponse.json())).toEqual({
         ...backupPair,
         availability: 'available',
+        credits: { hasCredits: true, unlimited: false, balance: '17.25' },
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: 'pro',
         windows: [PRIMARY_QUOTA_WINDOW, SECONDARY_QUOTA_WINDOW],
@@ -1457,6 +1461,7 @@ describe('provider-subscription app API', () => {
       expect(ProviderSubscriptionQuotaSchema.parse(await thirdResponse.json())).toEqual({
         ...backupPair,
         availability: 'available',
+        credits: { hasCredits: true, unlimited: false, balance: '17.25' },
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: 'pro',
         windows: [PRIMARY_QUOTA_WINDOW, SECONDARY_QUOTA_WINDOW],
@@ -1571,6 +1576,9 @@ describe('provider-subscription app API', () => {
         availability: 'available',
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: body.plan_type,
+        ...('rate_limit' in body && body.rate_limit?.allowed === false
+          ? { heldReason: 'rate_limit_reached' }
+          : {}),
         subscriptionProviderId: 'openai-codex',
         windows,
       });
@@ -1582,8 +1590,12 @@ describe('provider-subscription app API', () => {
   });
 
   it.each([
-    900, 18_000, 604_800, 0, -1,
-  ])('projects only a positive reported Codex window duration (%s)', async (seconds) => {
+    [900, undefined],
+    [18_000, '5 hours'],
+    [604_800, '7 days'],
+    [0, undefined],
+    [-1, undefined],
+  ] as const)('projects only a positive reported Codex window duration (%s)', async (seconds, label) => {
     const fixture = createFixture();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
@@ -1610,9 +1622,17 @@ describe('provider-subscription app API', () => {
       expect(response.status).toBe(200);
       expect(quota).toMatchObject({ availability: 'available' });
       if (quota.availability !== 'available') throw new Error('Expected available quota.');
-      const { limitWindowSeconds: _defaultDuration, ...primary } = PRIMARY_QUOTA_WINDOW;
+      const {
+        limitWindowSeconds: _defaultDuration,
+        label: _defaultLabel,
+        ...primary
+      } = PRIMARY_QUOTA_WINDOW;
       expect(quota.windows).toEqual([
-        { ...primary, ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}) },
+        {
+          ...primary,
+          ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}),
+          ...(label ? { label } : {}),
+        },
         SECONDARY_QUOTA_WINDOW,
       ]);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
