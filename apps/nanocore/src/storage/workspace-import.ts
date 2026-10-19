@@ -4820,15 +4820,17 @@ function readPortableFileStateFromExport(
         WorkspaceConfigSchema.parse(record)
       ).workspace.knowledgeMounts;
       if (mounts)
-        workspaceConfig = applyEdits(
-          workspaceConfig,
-          modify(
+        for (let index = 0; index < mounts.length; index += 1)
+          // Remint only authority bindings; preserve authored comments and descriptive extensions.
+          workspaceConfig = applyEdits(
             workspaceConfig,
-            ['workspace', 'knowledgeMounts'],
-            mounts.map((mount) => ({ ...mount, knowledgeBaseId: context.targetKnowledgeBaseId })),
-            { formattingOptions: { insertSpaces: true, tabSize: 2 } }
-          )
-        );
+            modify(
+              workspaceConfig,
+              ['workspace', 'knowledgeMounts', index, 'knowledgeBaseId'],
+              context.targetKnowledgeBaseId,
+              { formattingOptions: { insertSpaces: true, tabSize: 2 } }
+            )
+          );
     } else if (workspacePath.startsWith('knowledge/sources/')) {
       // Source pointers are validated/reminted with their binary payloads, then enter the first Notebook commit.
     } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
