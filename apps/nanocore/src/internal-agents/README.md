@@ -56,3 +56,5 @@ The fixed administration prompt describes the sole delegated configuration excep
 Internal Tool definitions retain canonical dotted IDs. The Gateway validates the current supplied names and projects dots to underscores only; exact maps restore canonical names for execution and evidence. See Operation Definition for the naming and compatibility contract.
 
 Server Knowledge maintenance uses the same role resolver, Gateway, captured capability/usage records, loop and compaction. Gateway capture and call attribution must share the admitted Server or Workspace owner. Shared inert Item, source-digest and summary projections accept Server Items; rolling selection remains Workspace-only. Server summaries identify their actual owner, and exact history stays bound to the current Server run.
+
+Knowledge Manager defaults to a 300-second run and editor deadline, with existing explicitly authored profile limits unchanged. Its own deadline retains `knowledge_manager_timeout` on the failed Turn; caller cancellation remains separate. The timeout adds no retry or alternate Provider path.

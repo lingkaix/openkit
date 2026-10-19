@@ -1,23 +1,48 @@
 import { z } from 'zod';
 
-/** One Server-owned internal-role execution profile. */
-export const InternalRoleExecutionProfileSchema = z
+/** Default KM budget leaves room for one slow Provider call without adding a retry. */
+export const KNOWLEDGE_MANAGER_RUN_DEADLINE_MS = 300_000;
+
+const InternalRoleLimitsSchema = z
   .object({
-    id: z.string().min(1),
-    roleId: z.string().min(1),
-    preferredLogicalModelId: z.string().min(1).optional(),
-    compatibleLogicalModelIds: z.array(z.string().min(1)).default([]),
-    requiredLogicalModelCapabilities: z.array(z.string().min(1)).default([]),
-    limits: z
-      .object({
-        maxModelTurns: z.number().int().positive(),
-        maxToolCalls: z.number().int().positive(),
-        deadlineMs: z.number().int().positive(),
-      })
-      .strict()
-      .default({ maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 }),
+    maxModelTurns: z.number().int().positive(),
+    maxToolCalls: z.number().int().positive(),
+    deadlineMs: z.number().int().positive(),
   })
-  .strip();
+  .strict();
+
+const InternalRoleProfileFields = {
+  id: z.string().min(1),
+  preferredLogicalModelId: z.string().min(1).optional(),
+  compatibleLogicalModelIds: z.array(z.string().min(1)).default([]),
+  requiredLogicalModelCapabilities: z.array(z.string().min(1)).default([]),
+};
+
+/** Disjoint role branches preserve the defaults in both the reader and exported JSON Schema. */
+export const InternalRoleExecutionProfileSchema = z.union([
+  z
+    .object({
+      ...InternalRoleProfileFields,
+      roleId: z.literal('knowledge-manager'),
+      limits: InternalRoleLimitsSchema.default({
+        maxModelTurns: 16,
+        maxToolCalls: 48,
+        deadlineMs: KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
+      }),
+    })
+    .strip(),
+  z
+    .object({
+      ...InternalRoleProfileFields,
+      roleId: z.string().min(1).regex(/^(?!knowledge-manager$)/),
+      limits: InternalRoleLimitsSchema.default({
+        maxModelTurns: 16,
+        maxToolCalls: 48,
+        deadlineMs: 120_000,
+      }),
+    })
+    .strip(),
+]);
 
 /** Server-scoped internal-role reader; descriptive additions are discarded. */
 export const InternalRoleProfilesConfigSchema = z

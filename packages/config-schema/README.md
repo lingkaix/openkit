@@ -132,3 +132,5 @@ AEP Skill lineage optionally carries `pinAuditRef`, validated by the Protocol Au
 
 
 `workspace-resource-policy` is the browser-safe entry for exact resource families, User and Agent subjects, allocations, prohibitions and retained managed boundaries. The Workspace schema accepts `workspace.policy.resourceAccess` only with the supported required feature when boundaries are present. An empty grants array keeps the boundary. Structural validation supplies no current membership, resource ownership or execution authority; NanoCore checks those owners before applying a change or importing records.
+
+An omitted internal-role limits object uses a 300-second deadline for Knowledge Manager and the existing 120-second deadline for other roles. Explicit authored limits override these defaults; no additional deadline setting is introduced.
