@@ -70,6 +70,8 @@ No automatic retry, reconstruction or repair lifecycle exists. An interrupted re
 
 The retained forms have a closed core and an open extension object. Readers ignore unknown descriptive extensions. Unknown target or judgement kinds, invalid exact references and unknown authority-bearing semantics fail closed under Contract Evolution.
 
+Retained judgement and candidate-set records use only the shared `schemaVersion: 1` marker and retained-v1 read/write helpers. Unknown or absent markers and predecessor-only `formatVersion` records are refused before family use. This pre-stable cut requires the coordinated reset; no converter, dual writer or legacy reader is supplied.
+
 ## Acceptance
 
 - An inspected judgement identifies its human actor, exact target, time, kind, typed choice and note after restart and Workspace round trip.

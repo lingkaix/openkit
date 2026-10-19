@@ -671,7 +671,7 @@ describe('Workspace Material Plane 1 S11', () => {
       applyAccepted = true;
       return {
         judgement: {
-          formatVersion: 1,
+          schemaVersion: 1,
           workspaceId: WORKSPACE_ID,
           requestId: request.requestId,
           actor: { kind: 'user', id: REVISION_2.authorId },
