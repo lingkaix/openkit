@@ -836,75 +836,80 @@ export function createKnowledgeOperationImplementations(
                 503
               );
             const sourceId = allocateEntityId('ks');
-            const source = await publishCapturedSource(
-              {
-                owner: {
-                  dataRoot: coreDb.dataRoot,
-                  ownerScope: { kind: 'workspace', workspaceId },
-                },
-                database: { kind: 'workspace', workspaceDb: repositoryWorkspaceDb(workspaceId) },
-                access: current.access,
-                producer: actor.kind === 'user' ? actor : { ...actor, kind: 'agent' },
-                requestId: commandInput.requestId,
-                commandInput: { ...commandInput, workspaceId },
-                captureChannel: 'knowledge.source.register',
-                revalidatePublication: () => {
-                  admitKnowledgeRetrieval(current);
-                  const principal = publicOperationActor(context);
-                  if (
-                    !principal ||
-                    !isWorkspaceOperationAuthorized(coreDb, principal, workspaceId, {
-                      mutating: true,
-                      policyOperation: 'knowledge.write',
-                    })
-                  )
-                    throw new OperationError(
-                      'workspace_access_denied',
-                      'Knowledge Source publication denied.',
-                      403
-                    );
-                  if (
-                    commandInput.originatingThreadId &&
-                    !threadReadable(current, commandInput.originatingThreadId)
-                  )
-                    throw new OperationError(
-                      'workspace_access_denied',
-                      'Knowledge Source is unavailable.',
-                      403
-                    );
-                  if (commandInput.originatingTurnId) {
-                    if (!commandInput.originatingThreadId)
+            const workspaceDb = repositoryWorkspaceDb(workspaceId);
+            try {
+              const source = await publishCapturedSource(
+                {
+                  owner: {
+                    dataRoot: coreDb.dataRoot,
+                    ownerScope: { kind: 'workspace', workspaceId },
+                  },
+                  database: { kind: 'workspace', workspaceDb },
+                  access: current.access,
+                  producer: actor.kind === 'user' ? actor : { ...actor, kind: 'agent' },
+                  requestId: commandInput.requestId,
+                  commandInput: { ...commandInput, workspaceId },
+                  captureChannel: 'knowledge.source.register',
+                  revalidatePublication: () => {
+                    admitKnowledgeRetrieval(current);
+                    const principal = publicOperationActor(context);
+                    if (
+                      !principal ||
+                      !isWorkspaceOperationAuthorized(coreDb, principal, workspaceId, {
+                        mutating: true,
+                        policyOperation: 'knowledge.write',
+                      })
+                    )
                       throw new OperationError(
-                        'knowledge_source_register_failed',
-                        `Knowledge source turn requires a thread: ${sourceId}`,
-                        404
+                        'workspace_access_denied',
+                        'Knowledge Source publication denied.',
+                        403
                       );
-                    store.getTurn(
-                      workspaceId,
-                      commandInput.originatingThreadId,
-                      commandInput.originatingTurnId
-                    );
-                  }
+                    if (
+                      commandInput.originatingThreadId &&
+                      !threadReadable(current, commandInput.originatingThreadId)
+                    )
+                      throw new OperationError(
+                        'workspace_access_denied',
+                        'Knowledge Source is unavailable.',
+                        403
+                      );
+                    if (commandInput.originatingTurnId) {
+                      if (!commandInput.originatingThreadId)
+                        throw new OperationError(
+                          'knowledge_source_register_failed',
+                          `Knowledge source turn requires a thread: ${sourceId}`,
+                          404
+                        );
+                      store.getTurn(
+                        workspaceId,
+                        commandInput.originatingThreadId,
+                        commandInput.originatingTurnId
+                      );
+                    }
+                  },
                 },
-              },
-              {
-                id: sourceId,
-                kind: commandInput.kind,
-                title: commandInput.title,
-                uri: commandInput.uri ?? null,
-                contentDigest: `sha256:${createHash('sha256')
-                  .update(commandInput.content)
-                  .digest('hex')}`,
-                originatingThreadId: commandInput.originatingThreadId ?? null,
-                originatingTurnId: commandInput.originatingTurnId ?? null,
-                originatingFileId: commandInput.originatingFileId ?? null,
-                capturedAt: now,
-                createdAt: now,
-                updatedAt: now,
-              },
-              Buffer.from(commandInput.content)
-            );
-            return { ...source.source, workspaceId };
+                {
+                  id: sourceId,
+                  kind: commandInput.kind,
+                  title: commandInput.title,
+                  uri: commandInput.uri ?? null,
+                  contentDigest: `sha256:${createHash('sha256')
+                    .update(commandInput.content)
+                    .digest('hex')}`,
+                  originatingThreadId: commandInput.originatingThreadId ?? null,
+                  originatingTurnId: commandInput.originatingTurnId ?? null,
+                  originatingFileId: commandInput.originatingFileId ?? null,
+                  capturedAt: now,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                Buffer.from(commandInput.content)
+              );
+              return { ...source.source, workspaceId };
+            } finally {
+              workspaceDb.sqlite.close();
+            }
           },
           replay: (record) => store.getKnowledgeSource(workspaceId, record.response.id),
           responseId: (result) => result.id,
