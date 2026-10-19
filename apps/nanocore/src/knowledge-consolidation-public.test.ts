@@ -16,10 +16,21 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const fixtures: Array<ReturnType<typeof fixture>> = [];
+/** Explicit fixture ownership avoids a recursive inferred return type through the cleanup registry. */
+interface Fixture {
+  dataRoot: string;
+  coreDb: ReturnType<typeof openCoreDb>;
+  workspaceDb: ReturnType<typeof openWorkspaceDb>;
+  store: FsStore;
+  app: ReturnType<typeof createApp>;
+  knowledgeRoot: string;
+  pageScopeId: string;
+}
+
+const fixtures: Fixture[] = [];
 
 /** Compose the public operation producer and real Git, SQLite and retrieval consumers. */
-function fixture() {
+function fixture(): Fixture {
   const dataRoot = mkdtempSync(join(tmpdir(), 'knowledge-consolidation-public-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
