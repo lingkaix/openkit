@@ -673,7 +673,7 @@ describe('workspace portable file state', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            query: 'unmatched-first-claim',
+            query: 'zzqvxc01portable',
             pinnedReferences: [{ scopeId: importedPageScopeId, objectId: firstClaimId }],
           }),
         }
