@@ -27,6 +27,8 @@ import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-vis
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ArtifactAuthorityError, FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
+import { readCurrentWorkspacePolicy } from '../policy/workspace-resource-access.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
@@ -5404,10 +5406,15 @@ function currentWorkerStorageAudienceAuthorizer(
       getWorkspace: () => records.workspace,
       getWorkspaceResourceAccess: (workspaceId: string) => {
         if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');
-        return (
-          readRuntimeConfig().workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)
-            ?.config.workspace.policy?.resourceAccess ?? []
+        const loaded = readRuntimeConfig().workspaceConfigs.find(
+          (entry) => entry.workspaceId === workspaceId
         );
+        if (!loaded) throw new Error('Current Workspace Policy is unavailable.');
+        return readCurrentWorkspacePolicy({
+          coreDb,
+          workspaceId,
+          policy: loaded.config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
+        });
       },
     };
     return (

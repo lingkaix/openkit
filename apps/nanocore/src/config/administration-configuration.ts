@@ -36,12 +36,13 @@ import {
   quickChatWorkspaceIdForUser,
 } from '../lib/store.js';
 import {
+  isCurrentServerPolicyAuthor,
   preparePolicyConfiguration,
   readAdmittedPolicyDocument,
   recordPolicyWriteDecision,
 } from '../policy/configuration.js';
 import { recordPermissionDecision } from '../policy/permission-decisions.js';
-import { policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { evaluateWorkerGitReadMaintenance } from '../policy/worker-git-read-maintenance.js';
 import {
   type InflightIdempotentCommand,
@@ -352,8 +353,9 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           const snapshot = options.runtimeConfig();
           const now = new Date();
           const decision = evaluateWorkerGitReadMaintenance(
-            snapshot.openKitConfig.policy?.workerGitReadMaintenance ?? [],
-            { ...prepared.facts, now }
+            snapshot.openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
+            { ...prepared.facts, now },
+            (humanId) => isCurrentServerPolicyAuthor(coreDb, humanId, now.getTime())
           );
           permissionDecisionId = allocateEntityId('pd');
           recordPermissionDecision({
@@ -380,11 +382,20 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
               entry: 'administration',
               effectScope: 'server',
               effectFacts: prepared.facts,
-              assignments: (snapshot.openKitConfig.policy?.workerGitReadMaintenance ?? []).filter(
+              assignments: (snapshot.openKitConfig.policy?.mediation?.statements ?? []).filter(
                 (entry) =>
-                  entry.responsibleUserId === actor.userId &&
-                  entry.agentId === body.targetId &&
-                  entry.networkGrantId === prepared.facts.networkGrantId
+                  entry.kind === 'permission' &&
+                  entry.grant.kind === 'worker-git-read-maintenance' &&
+                  entry.scope.subjects.some(
+                    (subject) => subject.kind === 'human' && subject.id === actor.userId
+                  ) &&
+                  entry.scope.resources.some(
+                    (resource) =>
+                      resource.kind === 'container' &&
+                      resource.container.kind === 'agent' &&
+                      resource.container.id === body.targetId
+                  ) &&
+                  entry.grant.networkGrantId === prepared.facts.networkGrantId
               ),
             },
             enforcementPoint: 'administration.configuration.apply',

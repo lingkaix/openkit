@@ -71,6 +71,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
+import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -8451,7 +8452,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           content: index,
         }),
       ]);
-      const trace = JSON.parse(readFileSync(fixture.tracePath, 'utf8'));
+      const trace = parseWorkerContextPackageTrace(
+        JSON.parse(readFileSync(fixture.tracePath, 'utf8')),
+        readFileSync(join(fixture.packageRoot, 'package.json'))
+      );
       expect(trace.fileInventory).toContainEqual({
         path: 'knowledge-overview.md',
         byteLength: Buffer.byteLength(overview),
@@ -8931,7 +8935,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceRoots: [],
       });
       expect(launchSpy).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(readFileSync(tracePath, 'utf8'))).toMatchObject({
+      expect(
+        parseWorkerContextPackageTrace(
+          JSON.parse(readFileSync(tracePath, 'utf8')),
+          readFileSync(join(fixture.packageRoot, 'package.json'))
+        )
+      ).toMatchObject({
         materialExclusions: [],
         materialSelections: [
           {
@@ -9196,7 +9205,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const launch = backend.submit.bind(backend);
     const launchSpy = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
-      expect(JSON.parse(readFileSync(fixture.tracePath, 'utf8'))).toMatchObject({
+      expect(
+        parseWorkerContextPackageTrace(
+          JSON.parse(readFileSync(fixture.tracePath, 'utf8')),
+          readFileSync(join(fixture.packageRoot, 'package.json'))
+        )
+      ).toMatchObject({
         goalId: null,
         knowledgeExclusions: [],
         knowledgeSelectionInput: { retrievalTraceRef },

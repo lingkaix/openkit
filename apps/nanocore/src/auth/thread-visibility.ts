@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { type ArtifactSchema, ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
-
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 
 import {
   evaluateWorkspaceResourceAccess,
@@ -39,14 +39,15 @@ export function isThreadVisible(
   try {
     return (
       evaluateWorkspaceResourceAccess({
+        workspaceId: workspaceIdForOwner(thread.owner),
         actor: policyActor ?? { kind: 'user', userId },
         eligible: true,
         resource: { family: 'thread', id: thread.id },
         operation,
-        resourceAccess:
+        policy:
           thread.visibility === 'workspace'
             ? store.getWorkspaceResourceAccess(workspaceIdForOwner(thread.owner))
-            : [],
+            : EMPTY_POLICY_DOCUMENT,
       }).effect === 'allow'
     );
   } catch {
@@ -121,8 +122,7 @@ export function canDiscloseThreadToAudience(
 ): boolean {
   if (source.owner.kind !== 'workspace' || (destination && destination.owner.kind !== 'workspace'))
     return false;
-  if (destination && workspaceIdForOwner(source.owner) !== workspaceIdForOwner(destination.owner))
-    return false;
+  if (destination && workspaceIdForOwner(source.owner) !== workspaceIdForOwner(destination.owner)) return false;
   if (destination?.id === source.id) return true;
   if (source.visibility === 'private')
     return (
@@ -130,23 +130,41 @@ export function canDiscloseThreadToAudience(
       destination.privateOwnerUserId === source.privateOwnerUserId
     );
   try {
-    const entries = store.getWorkspaceResourceAccess(workspaceIdForOwner(source.owner));
-    const sourceBoundary = entries.find(
-      (entry) => entry.resource.family === 'thread' && entry.resource.id === source.id
-    );
-    if (!sourceBoundary) return true;
-    // A different or absent destination boundary cannot prove that the output retains these restrictions.
-    const destinationBoundary =
-      destination?.visibility === 'workspace'
-        ? entries.find(
-            (entry) => entry.resource.family === 'thread' && entry.resource.id === destination.id
+    const document = store.getWorkspaceResourceAccess(workspaceIdForOwner(source.owner));
+    const statementsFor = (threadId: string) =>
+      document.statements.filter(
+        (statement) =>
+          statement.state === 'active' &&
+          statement.scope.resources.some(
+            (resource) =>
+              resource.kind === 'container' &&
+              resource.container.kind === 'thread' &&
+              resource.container.id === threadId
           )
-        : undefined;
-    return Boolean(
-      destinationBoundary &&
-        isDeepStrictEqual(sourceBoundary.grants, destinationBoundary.grants) &&
-        isDeepStrictEqual(sourceBoundary.prohibitions, destinationBoundary.prohibitions)
-    );
+      );
+    const sourceStatements = statementsFor(source.id);
+    if (!sourceStatements.some((statement) => statement.kind === 'managed-boundary')) return true;
+    if (destination?.visibility !== 'workspace') return false;
+    const destinationStatements = statementsFor(destination.id);
+    if (!destinationStatements.some((statement) => statement.kind === 'managed-boundary'))
+      return false;
+    // Compare effective recipient/operation restrictions, excluding ids and attributable authorship.
+    const restrictions = (statements: typeof sourceStatements) =>
+      statements
+        .flatMap((statement) =>
+          statement.kind === 'permission'
+            ? [
+                {
+                  effect: statement.effect,
+                  subjects: statement.scope.subjects,
+                  actions: statement.scope.actions,
+                  grant: statement.grant,
+                },
+              ]
+            : []
+        )
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    return isDeepStrictEqual(restrictions(sourceStatements), restrictions(destinationStatements));
   } catch {
     return false;
   }

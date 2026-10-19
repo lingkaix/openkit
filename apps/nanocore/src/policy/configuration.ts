@@ -154,6 +154,30 @@ export function readAdmittedPolicyDocument(coreDb: CoreDb, input: unknown): Poli
   return document;
 }
 
+/** Checks the current human Server root; it does not supply a caller's credential admission. */
+export function isCurrentServerPolicyAuthor(
+  coreDb: CoreDb,
+  humanId: string,
+  now = Date.now()
+): boolean {
+  if (!Number.isFinite(now)) return false;
+  const author = coreDb.sqlite.prepare('SELECT kind FROM users WHERE id = ?').get(humanId) as
+    | { kind: string }
+    | undefined;
+  if (!author || !['local', 'human'].includes(author.kind)) return false;
+  try {
+    requireCurrentDeploymentAdmin(
+      coreDb,
+      { kind: author.kind === 'local' ? 'local' : 'session', userId: humanId },
+      new Date(now)
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof DeploymentAdminRequiredError) return false;
+    throw error;
+  }
+}
+
 /**
  * Projects a current admitted human lease after the caller's mandatory credential/Kernel check.
  *
@@ -204,22 +228,7 @@ export function readStorageLeaseAccess(input: {
     !input.anchorCurrent(statement.lifetime.anchor)
   )
     return null;
-  // Local authority belongs only to the actual local User. Other human authors
-  // must still hold current administrator authority through the existing Token owner.
-  const author = input.coreDb.sqlite
-    .prepare('SELECT kind FROM users WHERE id = ?')
-    .get(statement.author.id) as { kind: 'local' | 'human' } | undefined;
-  if (!author) return null;
-  try {
-    requireCurrentDeploymentAdmin(
-      input.coreDb,
-      { kind: author.kind === 'local' ? 'local' : 'session', userId: statement.author.id },
-      new Date(input.now)
-    );
-  } catch (error) {
-    if (error instanceof DeploymentAdminRequiredError) return null;
-    throw error;
-  }
+  if (!isCurrentServerPolicyAuthor(input.coreDb, statement.author.id, input.now)) return null;
   return {
     basis: 'lease',
     grantId: statement.id,

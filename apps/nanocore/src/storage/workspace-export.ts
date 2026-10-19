@@ -33,6 +33,8 @@ import {
 import { parseJsoncObject } from '../config/jsonc.js';
 import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
 import { retainPermissionDecision } from '../policy/retained-records-v1.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
+import { parseWorkspacePolicy } from '../policy/workspace-resource-access.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
@@ -410,8 +412,11 @@ export function writeWorkspaceExportTree(
     parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc'),
     (record) => WorkspaceConfigSchema.parse(record)
   );
-  const resourceAccess = workspaceConfig.workspace.policy?.resourceAccess ?? [];
-  assertPortableResourcePolicy(resourceAccess, history.threads);
+  const resourcePolicy = parseWorkspacePolicy(
+    history.workspace.id,
+    workspaceConfig.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
+  );
+  assertPortableResourcePolicy(resourcePolicy, history.threads);
   if (workspaceConfig.workspace.name !== history.workspace.name) {
     throw new Error('Workspace config name does not match the public Workspace projection.');
   }
@@ -876,7 +881,7 @@ export function writeWorkspaceExportTree(
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
     ];
-    if (resourceAccess.length) requiredFeatures.push(WORKSPACE_RESOURCE_POLICY_FEATURE);
+    if (resourcePolicy.statements.length) requiredFeatures.push(WORKSPACE_RESOURCE_POLICY_FEATURE);
     if (
       input.lightApps?.length ||
       input.lightAppDefinitions?.length ||
