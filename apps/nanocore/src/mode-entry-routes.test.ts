@@ -83,14 +83,12 @@ import {
   readWorkObservations,
   readWorkObservationTurnBinding,
 } from './storage/work-observations.js';
-import {
-  artifactReferenceItemId,
-  serializeUserAuthoredKnowledgePage,
-} from './storage/workspace-file-records.js';
+import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -4494,10 +4492,8 @@ describe('#144 real Assistant command wiring', () => {
           messages.find((message) => message.role === 'user')!.content![0]!.text!
         );
         expect(payload.sources[0].content).toBe('I prefer green labels.');
-        const page = serializeUserAuthoredKnowledgePage(
+        const page = serializeKnowledgePageFixture(
           {
-            id: 'labels',
-            kind: 'preference',
             title: 'Labels',
             content: 'I prefer green labels.',
             sourceReferences: [payload.sources[0].reference],

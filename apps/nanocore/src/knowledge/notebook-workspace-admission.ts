@@ -96,10 +96,12 @@ export function readWorkspaceNotebookAdmission(
     if (workspace.kind === 'personal' && thread.privateOwnerUserId === input.actor.id) return;
     throw new OperationError('workspace_access_denied', 'Notebook source disclosure denied.', 403);
   };
-  const checkPage = (path: string, content: string): void => {
-    if (visited.has(path)) return;
-    if (active.has(path)) throw new NotebookError('invalid_request');
-    active.add(path);
+  const checkPage = (path: string, content: string, baseOnly = false): void => {
+    // A removed page uses its original dependency graph; candidate edits use the resulting tree.
+    const key = `${baseOnly ? 'base' : 'candidate'}:${path}`;
+    if (visited.has(key)) return;
+    if (active.has(key)) throw new NotebookError('invalid_request');
+    active.add(key);
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) throw new NotebookError('invalid_request');
     const references = stringListFrontmatterField(parsed.document, 'source_refs');
@@ -132,11 +134,12 @@ export function readWorkspaceNotebookAdmission(
         if (!parsedReference) throw new NotebookError('invalid_request');
         const sourcePath = `${parsedReference.reference.objectId}.md`;
         const changed = changes.get(sourcePath);
-        const sourceContent = changes.has(sourcePath)
-          ? changed
-          : base.entries[sourcePath]
-            ? input.notebook.readRevision(base.revision, [sourcePath]).files[sourcePath]
-            : undefined;
+        const sourceContent =
+          !baseOnly && changes.has(sourcePath)
+            ? changed
+            : base.entries[sourcePath]
+              ? input.notebook.readRevision(base.revision, [sourcePath]).files[sourcePath]
+              : undefined;
         if (
           typeof sourceContent !== 'string' ||
           (parsedReference.contentDigest !== undefined &&
@@ -156,7 +159,7 @@ export function readWorkspaceNotebookAdmission(
             'Notebook source disclosure denied.',
             403
           );
-        checkPage(sourcePath, sourceContent);
+        checkPage(sourcePath, sourceContent, baseOnly);
         resolved.add(reference);
       } else if (reference.startsWith('turn:')) {
         const turn = input.store.getTurnById(reference.slice('turn:'.length));
@@ -167,10 +170,16 @@ export function readWorkspaceNotebookAdmission(
         throw new NotebookError('invalid_request');
       }
     }
-    active.delete(path);
-    visited.add(path);
+    active.delete(key);
+    visited.add(key);
     resolvedReferences.set(path.slice(0, -3), resolved);
   };
+  // Deletion and its replay still require current access to the exact removed bytes and Sources.
+  for (const { path, content } of input.request.changes) {
+    if (content !== null || !base.entries[path]) continue;
+    const previous = input.notebook.readRevision(base.revision, [path]).files[path];
+    if (previous !== undefined) checkPage(path, previous, true);
+  }
   for (const { path, content } of input.request.changes)
     if (content !== null) checkPage(path, content);
   return {

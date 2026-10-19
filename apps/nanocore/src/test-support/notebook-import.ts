@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import type { KnowledgeNotebookPageSchema } from '@openkit/protocol';
+import type { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { FIXTURE_LOCAL_USER_ID } from './local-user.js';
 
 /** Creates current authored notebook bytes and explicit attribution for a synthetic import fixture. */
 export function notebookImportFixture(input: {
   readonly workspaceId: string;
-  readonly knowledge: readonly Parameters<typeof serializeUserAuthoredKnowledgePage>[0][];
+  readonly knowledge: readonly z.infer<typeof KnowledgeNotebookPageSchema>[];
   readonly userId?: string;
 }): Pick<
   Parameters<FsStore['importWorkspaceSnapshot']>[0],
@@ -19,13 +20,7 @@ export function notebookImportFixture(input: {
       instructionReference: 'test-fixture:workspace-import',
     },
     initialNotebookFiles: Object.fromEntries(
-      input.knowledge.map((entry) => [
-        `${entry.id}.md`,
-        serializeUserAuthoredKnowledgePage(entry, {
-          kind: 'workspace',
-          workspaceId: input.workspaceId,
-        }),
-      ])
+      input.knowledge.map((page) => [page.path, page.content])
     ),
   };
 }

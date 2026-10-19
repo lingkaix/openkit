@@ -7,8 +7,8 @@ import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from './okf.js';
 
@@ -102,39 +102,56 @@ describe('Notebook publication through existing Audit and command receipts', () 
     ).toEqual({ count: 0 });
   });
 
-  it('reconstructs an entry command response from its exact old commit after another edit and a new Store', async () => {
+  it('reconstructs a page publication from its exact old commit after another edit and a new Store', async () => {
     const f = fixture();
+    const path = 'notes/human-entry.md';
+    const originalBytes = serializeKnowledgePageFixture(
+      {
+        title: 'Original title',
+        content: 'Original bytes.',
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
     const input = {
-      operation: 'knowledge.create' as const,
       workspaceId,
       requestId: randomUUID(),
       baseRevision: f.initial,
-      knowledgePageId: 'notes/human-entry',
-      kind: 'project-context' as const,
-      title: 'Original title',
-      content: 'Original bytes.',
+      changes: [{ path, content: originalBytes }],
+      summary: 'Create human page',
     };
-    const created = await publishWorkspaceNotebookEntry(f, input);
-    const createdRevision = f.notebook.publishedRevision();
+    const command = { name: 'knowledge.notebook.create' as const, input };
+    const created = await publishWorkspaceNotebook({ ...f, command }, input);
     expect(created).toMatchObject({
-      id: input.knowledgePageId,
-      title: input.title,
-      content: input.content,
+      outcome: 'published',
+      baseRevision: f.initial,
+      changedPageIds: ['notes/human-entry'],
+      receiptRef: { operation: 'knowledge.notebook.create', requestId: input.requestId },
     });
-    const updated = await publishWorkspaceNotebookEntry(f, {
-      operation: 'knowledge.update',
+    expect(f.notebook.readRevision(created.notebookRevision).files[path]).toBe(originalBytes);
+    const laterBytes = serializeKnowledgePageFixture(
+      {
+        title: 'Original title',
+        content: 'Later bytes.',
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:01:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
+    const updated = await publishWorkspaceNotebook(f, {
       workspaceId,
       requestId: randomUUID(),
-      baseRevision: createdRevision,
-      knowledgeEntryId: created.id,
-      content: 'Later bytes.',
+      baseRevision: created.notebookRevision,
+      changes: [{ path, content: laterBytes }],
+      summary: 'Update human page',
     });
-    expect(updated.content).toBe('Later bytes.');
-    const current = f.notebook.publishedRevision();
-    expect(await publishWorkspaceNotebookEntry({ ...f, store: new FsStore() }, input)).toEqual(
+    expect(f.notebook.readRevision(updated.notebookRevision).files[path]).toBe(laterBytes);
+    expect(await publishWorkspaceNotebook({ ...f, command, store: new FsStore() }, input)).toEqual(
       created
     );
-    expect(f.notebook.publishedRevision()).toBe(current);
+    expect(f.notebook.publishedRevision()).toBe(updated.notebookRevision);
+    expect(f.notebook.readRevision(created.notebookRevision).files[path]).toBe(originalBytes);
     expect(
       f.workspaceDb.sqlite
         .prepare(
@@ -142,26 +159,37 @@ describe('Notebook publication through existing Audit and command receipts', () 
         )
         .all()
     ).toEqual([
-      { command: 'knowledge.create', kind: 'knowledge_notebook_revision' },
-      { command: 'knowledge.update', kind: 'knowledge_notebook_revision' },
+      { command: 'knowledge.notebook.create', kind: 'knowledge_notebook_revision' },
+      { command: 'knowledge.notebook.update', kind: 'knowledge_notebook_revision' },
     ]);
   });
 
-  it('retains the first candidate timestamps when an explicit unchanged entry request retries a ref failure', async () => {
+  it('retains exact authored timestamps when an unchanged page request retries a ref failure', async () => {
     const f = fixture();
+    const path = 'retry-note.md';
+    const content = serializeKnowledgePageFixture(
+      {
+        title: 'Retry note',
+        content: 'Retained exact content.',
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:01:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
     const input = {
-      operation: 'knowledge.create' as const,
       workspaceId,
       requestId: randomUUID(),
       baseRevision: f.initial,
-      knowledgePageId: 'retry-note',
-      kind: 'preference' as const,
-      title: 'Retry note',
-      content: 'Retained exact content.',
+      changes: [{ path, content }],
+      summary: 'Create retry note',
+    };
+    const dependencies = {
+      ...f,
+      command: { name: 'knowledge.notebook.create' as const, input },
     };
     const lock = join(f.repositoryPath, 'refs/heads/published.lock');
     writeFileSync(lock, 'Test-owned ref lock.');
-    await expect(publishWorkspaceNotebookEntry(f, input)).rejects.toMatchObject({
+    await expect(publishWorkspaceNotebook(dependencies, input)).rejects.toMatchObject({
       code: 'recovery_required',
     });
     const row = f.workspaceDb.sqlite
@@ -170,16 +198,20 @@ describe('Notebook publication through existing Audit and command receipts', () 
       )
       .get() as { admission: string };
     const admitted = JSON.parse(row.admission);
-    const originalBytes = f.notebook.readRevision(admitted.candidateRevision, ['retry-note.md'])
-      .files['retry-note.md'];
+    const originalBytes = f.notebook.readRevision(admitted.candidateRevision, [path]).files[path];
+    expect(originalBytes).toBe(content);
+    expect(parseOkfDocument({ path, content: originalBytes! }).document?.frontmatter).toMatchObject(
+      {
+        created_at: '2026-10-16T00:00:00.000Z',
+        updated_at: '2026-10-16T00:01:00.000Z',
+      }
+    );
     rmSync(lock);
-    const result = await publishWorkspaceNotebookEntry(f, input);
-    expect(result.content).toBe(input.content);
-    expect(
-      f.notebook.readRevision(f.notebook.publishedRevision(), ['retry-note.md']).files[
-        'retry-note.md'
-      ]
-    ).toBe(originalBytes);
+    const result = await publishWorkspaceNotebook(dependencies, input);
+    expect(f.notebook.publishedRevision()).toBe(result.notebookRevision);
+    expect(f.notebook.readRevision(result.notebookRevision, [path]).files[path]).toBe(
+      originalBytes
+    );
   });
 
   it('refuses a contradictory unpublished admission before an explicit retry can publish another candidate', async () => {

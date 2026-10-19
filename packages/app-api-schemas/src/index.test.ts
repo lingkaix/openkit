@@ -233,7 +233,6 @@ const canonicalKnowledgePageBytes = [
   'freshness: "current"',
   `created_at: ${JSON.stringify(timestamp)}`,
   `updated_at: ${JSON.stringify(timestamp)}`,
-  'openkit_entry_kind: "project-context"',
   `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
   '---',
   'Release reviews happen every Friday.',

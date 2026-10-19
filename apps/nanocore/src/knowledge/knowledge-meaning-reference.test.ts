@@ -10,7 +10,7 @@ import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
@@ -49,7 +49,7 @@ function fixture() {
 
 /** Native page bytes, including descriptive extensions, are checked as a complete exact document. */
 function page(ownerScope: KnowledgeOwnerScope, sourceReferences: string[] = []) {
-  return serializeUserAuthoredKnowledgePage(
+  return serializeKnowledgePageFixture(
     {
       id: 'domain',
       kind: 'project-context',

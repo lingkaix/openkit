@@ -7,8 +7,8 @@ import { expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createApp } from '../test-support/app.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -50,11 +50,9 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
   expect(registered.status).toBe(200);
   const sourceReference = `source:${registered.body.source.id}@${registered.body.source.contentDigest}`;
   const page = (id: string, body: string) =>
-    serializeUserAuthoredKnowledgePage(
+    serializeKnowledgePageFixture(
       {
-        id,
         title: id,
-        kind: 'project-context',
         content: body,
         sourceReferences: [sourceReference],
         createdAt: '2026-10-17T00:00:00.000Z',

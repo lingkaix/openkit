@@ -95,10 +95,10 @@ export const MemoryPublicationSchema = z.object({
   receiptRef: z
     .object({
       operation: z.enum([
-        'knowledge.create',
+        'knowledge.notebook.create',
         'knowledge.notebook.update',
         'knowledge.notebook.restore',
-        'knowledge.delete',
+        'knowledge.notebook.delete',
       ]),
       requestId: RequestIdSchema,
       ownerScope: MemoryOwnerSchema,

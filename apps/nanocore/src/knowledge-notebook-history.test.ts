@@ -68,7 +68,6 @@ function page(id: string, body: string, source: string): string {
     'sensitivity: normal',
     'freshness: current',
     `openkit_entry_id: ${id}`,
-    'openkit_entry_kind: project-context',
     'created_at: "2026-10-16T00:00:00.000Z"',
     'updated_at: "2026-10-16T00:00:00.000Z"',
     'custom: { preserved: [ one, two ] }',

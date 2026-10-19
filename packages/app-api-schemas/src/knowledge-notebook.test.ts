@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { UpdateKnowledgeNotebookRequestSchema } from './knowledge-notebook.js';
-import { KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS } from './knowledge-operation-definitions.js';
+import { KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS } from './knowledge-operation-definitions.js';
 
 /** Human payloads carry exact content intent and one fixed base, never publication authority. */
 function request() {
@@ -17,7 +17,7 @@ describe('Fixed-base notebook publication contract', () => {
   it('preserves exact text and treats revisions as opaque content-owner values', () => {
     const value = request();
     expect(UpdateKnowledgeNotebookRequestSchema.parse(value)).toEqual(value);
-    const definition = KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS['knowledge.notebook.update'];
+    const definition = KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS['knowledge.notebook.update'];
     expect(definition.mutating).toBe(true);
     expect(definition.policyOperation).toBe('knowledge.write');
     expect(

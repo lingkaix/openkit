@@ -15,9 +15,9 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real bearer authentication selects each User; every page is published through the public operation. */
@@ -69,11 +69,9 @@ function fixture() {
     });
     return { status: response.status, body: await response.json() };
   };
-  const content = (user: number, id: string, body: string) =>
-    serializeUserAuthoredKnowledgePage(
+  const content = (user: number, body: string) =>
+    serializeKnowledgePageFixture(
       {
-        id,
-        kind: 'preference',
         title: 'My saved preference',
         content: body,
         sourceReferences: [],
@@ -92,7 +90,7 @@ describe('public self Memory search', () => {
     let baseRevision: string | null = null;
     for (let index = 0; index < 6; index += 1) {
       const pageId = `preference-${index}`;
-      const content = f.content(0, pageId, 'I prefer auroramarker explanations.\r\n');
+      const content = f.content(0, 'I prefer auroramarker explanations.\r\n');
       const saved = await f.call(0, 'memory.create', {
         requestId: randomUUID(),
         baseRevision,
@@ -108,7 +106,7 @@ describe('public self Memory search', () => {
       requestId: randomUUID(),
       baseRevision: null,
       pageId: 'preference-0',
-      content: f.content(1, 'preference-0', 'auroramarker foreign-private-body'),
+      content: f.content(1, 'auroramarker foreign-private-body'),
       summary: 'Save another User preference',
     });
     expect(foreign.status).toBe(200);

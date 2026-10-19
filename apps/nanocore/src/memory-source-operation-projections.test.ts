@@ -10,8 +10,8 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 
 /** Actual User authority and isolated canonical files exercise explicit Source intake through HTTP. */
@@ -109,10 +109,8 @@ describe('public explicit self Source intake', () => {
     expect(captured.status).toBe(200);
     const sourceReference = `source:${captured.body.source.id}@${captured.body.source.contentDigest}`;
     const page = (body: string) =>
-      serializeUserAuthoredKnowledgePage(
+      serializeKnowledgePageFixture(
         {
-          id: 'cited-preference',
-          kind: 'preference',
           title: 'My cited preference',
           content: body,
           sourceReferences: [sourceReference],
@@ -174,10 +172,8 @@ describe('public explicit self Source intake', () => {
     });
     expect(other.status).toBe(200);
     const reference = `source:${captured.body.source.id}@${captured.body.source.contentDigest}`;
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'suppressed-context',
-        kind: 'preference',
         title: 'My cited entry',
         content: 'My personally saved understanding.',
         sourceReferences: [reference],

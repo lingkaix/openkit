@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { DeploymentIdSchema, WorkspaceIdSchema } from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { AgentSchema } from './agent.js';
-import { KnowledgeEntrySchema, ModelRefSchema, SkillRefSchema } from './knowledge.js';
+import { KnowledgeNotebookPageSchema, ModelRefSchema, SkillRefSchema } from './knowledge.js';
 
 /**
  * Product-visible workspace kind.
@@ -56,7 +56,7 @@ export const WorkspaceRecordSchema = z
  * Separately fetched workspace resources owned by a workspace.
  */
 export const WorkspaceResourcesSchema = z.object({
-  knowledge: z.array(KnowledgeEntrySchema),
+  knowledge: z.array(KnowledgeNotebookPageSchema),
   skills: z.array(SkillRefSchema),
   agents: z.array(AgentSchema),
   models: z.array(ModelRefSchema),

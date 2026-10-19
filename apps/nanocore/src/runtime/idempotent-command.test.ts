@@ -202,7 +202,7 @@ describe('workspace-transaction idempotent commands', () => {
           response_json,
           created_at,
           expires_at
-        ) VALUES ('test-owner:' || ?, 'knowledge.create', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
+        ) VALUES ('test-owner:' || ?, 'knowledge.notebook.create', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
       );
       const getOwner = workspaceDb.sqlite.prepare(
         `SELECT response_id AS id
@@ -213,7 +213,7 @@ describe('workspace-transaction idempotent commands', () => {
       const scope: CommandRequestScope = { workspaceId };
       const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
       const common = {
-        command: 'knowledge.create' as const,
+        command: 'knowledge.notebook.create' as const,
         inflightCommands,
         replay: () => {
           throw new Error('Unexpected command replay.');
@@ -238,7 +238,12 @@ describe('workspace-transaction idempotent commands', () => {
       ).resolves.toEqual({ id: 'owner_committed' });
       expect(getOwner.get('owner_committed')).toEqual({ id: 'owner_committed' });
       expect(
-        store.getCommandRequest('knowledge.create', 'request_committed', scope, workspaceDb)
+        store.getCommandRequest(
+          'knowledge.notebook.create',
+          'request_committed',
+          scope,
+          workspaceDb
+        )
       ).toMatchObject({ response: { id: 'owner_committed', kind: 'knowledge' } });
 
       const receiptWriter = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
@@ -264,7 +269,12 @@ describe('workspace-transaction idempotent commands', () => {
       expect.soft(getOwner.get('owner_rolled_back')).toBeUndefined();
       expect
         .soft(
-          store.getCommandRequest('knowledge.create', 'request_rolled_back', scope, workspaceDb)
+          store.getCommandRequest(
+            'knowledge.notebook.create',
+            'request_rolled_back',
+            scope,
+            workspaceDb
+          )
         )
         .toBeNull();
 
@@ -290,7 +300,9 @@ describe('workspace-transaction idempotent commands', () => {
       await Promise.resolve();
       expect.soft(getOwner.get('owner_async')).toBeUndefined();
       expect
-        .soft(store.getCommandRequest('knowledge.create', 'request_async', scope, workspaceDb))
+        .soft(
+          store.getCommandRequest('knowledge.notebook.create', 'request_async', scope, workspaceDb)
+        )
         .toBeNull();
     } finally {
       workspaceDb.sqlite.close();
