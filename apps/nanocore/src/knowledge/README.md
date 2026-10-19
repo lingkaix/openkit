@@ -48,6 +48,8 @@ Workspace maintenance identifies the exact supplied tell Source in the run instr
 
 ## Verification
 
+`notebook-authoring-guidance.ts` projects the admitted active schema and required OKF/domain fields into existing Workspace, User and Server maintenance context. The complete read-only guidance is bounded to 16 KiB of UTF-8 text. Oversized guidance is omitted with an explicit notice instead of a partial contract or default substitution; the full native schema validator remains mandatory. The schema is not an editable notebook file and guidance grants no publication authority. Run `typed-authoring-guidance.test.ts` for native scope delivery, size refusal, typed candidate/human Review and required-field controls. Its runner double proves context wiring and native effects, not model comprehension.
+
 Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge` and the affected Knowledge Store tests.
 
 See [Research Cookbook](../../../../docs/cookbooks/research.md).

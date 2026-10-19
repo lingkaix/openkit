@@ -24,6 +24,7 @@ import { admitMemoryContext, type MemoryContext } from './memory-lifecycle.js';
 import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
+import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
   attributedNotebookPageBytes,
@@ -501,6 +502,10 @@ export function prepareUserMemoryMaintenance(
             ...(supplied ? [`source:${supplied.id}@${supplied.contentDigest}`] : []),
           ])
             await admitSource(source);
+          const authoringGuidance = notebookAuthoringGuidance(
+            readUserMemoryNotebookAdmission(context, files).scopeSchemaText,
+            owner.ownerScope
+          );
           const assertCurrent = () => {
             input.signal.throwIfAborted();
             admitMemoryContext(context);
@@ -786,6 +791,7 @@ export function prepareUserMemoryMaintenance(
                     text: JSON.stringify({
                       instructions: input.instructions,
                       notebookRevision: baseRevision,
+                      authoringGuidance,
                       files: Object.keys(files),
                       selectedPageIds: input.pageIds ?? [],
                       humanEdits: boundedNotebookDiff(humanChanges, false),
