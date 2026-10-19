@@ -1670,7 +1670,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         this.previewAgentEnvironmentPackage(agentSessionId, input)
       );
     } catch (cause) {
-      // Never stringify arbitrary exceptions: Zod issues, paths and native errors can contain secrets.
+      // Keep the public cause finite: native names, messages and decoder values can contain secrets.
+      const errorClass =
+        cause instanceof WorkerNativeProofValidationError
+          ? 'WorkerNativeProofValidationError'
+          : cause instanceof TurnStartValidationError
+            ? 'TurnStartValidationError'
+            : cause instanceof TypeError
+              ? 'TypeError'
+              : cause instanceof SyntaxError
+                ? 'SyntaxError'
+                : cause instanceof AgentEnvironmentSnapshotReadError
+                  ? 'AgentEnvironmentSnapshotReadError'
+                  : cause instanceof Error
+                    ? 'Error'
+                    : 'UnknownError';
+      const failedCheck =
+        cause instanceof WorkerNativeProofValidationError
+          ? cause.failedCheck
+          : 'materialization-capacity-inspection';
       console.error(
         JSON.stringify({
           event: 'worker.admission.capacity-inspection-failed',
@@ -1693,34 +1711,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ...(cause instanceof AgentEnvironmentSnapshotReadError
             ? { causeMessage: cause.message }
             : {}),
-          errorClass:
-            cause instanceof WorkerNativeProofValidationError
-              ? 'WorkerNativeProofValidationError'
-              : cause instanceof TurnStartValidationError
-                ? 'TurnStartValidationError'
-                : cause instanceof TypeError
-                  ? 'TypeError'
-                  : cause instanceof SyntaxError
-                    ? 'SyntaxError'
-                    : cause instanceof AgentEnvironmentSnapshotReadError
-                      ? 'AgentEnvironmentSnapshotReadError'
-                      : cause instanceof Error
-                        ? 'Error'
-                        : 'UnknownError',
+          errorClass,
           message:
             cause instanceof WorkerNativeProofValidationError
               ? 'Retained native-session proof disagrees with its original binding and package provenance.'
               : 'Worker backend materialization capacity inspection failed.',
-          failedCheck:
-            cause instanceof WorkerNativeProofValidationError
-              ? cause.failedCheck
-              : 'materialization-capacity-inspection',
+          failedCheck,
         })
       );
       if (cause instanceof TurnStartValidationError) throw cause;
       const failure = new TurnStartValidationError(
         'recovery_required',
-        'The worker backend materialization capacity cannot be safely inspected.',
+        `The worker backend materialization capacity cannot be safely inspected. cause=${errorClass}; failedCheck=${failedCheck}.`,
         409
       );
       Object.defineProperty(failure, 'cause', { value: cause, configurable: true, writable: true });
