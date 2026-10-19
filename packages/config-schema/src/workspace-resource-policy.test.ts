@@ -68,6 +68,14 @@ describe('Workspace resource privacy configuration', () => {
     ).toEqual([boundary]);
   });
 
+  it('refuses unsupported active Thread approval effects at authored admission', () => {
+    expect(
+      WorkspaceConfigSchema.safeParse(
+        config([boundary, { ...permission, effect: 'require_approval' }])
+      ).success
+    ).toBe(false);
+  });
+
   it('rejects missing feature declarations and malformed scope-owned authority without stripping it', () => {
     const valid = config([boundary]);
     expect(
