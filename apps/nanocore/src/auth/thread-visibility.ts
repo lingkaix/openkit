@@ -122,7 +122,8 @@ export function canDiscloseThreadToAudience(
 ): boolean {
   if (source.owner.kind !== 'workspace' || (destination && destination.owner.kind !== 'workspace'))
     return false;
-  if (destination && workspaceIdForOwner(source.owner) !== workspaceIdForOwner(destination.owner)) return false;
+  if (destination && workspaceIdForOwner(source.owner) !== workspaceIdForOwner(destination.owner))
+    return false;
   if (destination?.id === source.id) return true;
   if (source.visibility === 'private')
     return (
