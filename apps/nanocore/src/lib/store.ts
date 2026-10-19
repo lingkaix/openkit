@@ -34,7 +34,7 @@ import {
 import { WorkspaceConfigSchema, type WorkspaceResourceAccessEntry } from '@openkit/config-schema';
 import type {
   ActorRef,
-  KnowledgeEntrySchema,
+  KnowledgeNotebookPageSchema,
   WorkspaceRecordSchema,
   WorkspaceResourcesSchema,
 } from '@openkit/protocol';
@@ -157,16 +157,14 @@ import {
   KnowledgeProposalReviewFileSchema,
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
-  parseOwnedKnowledgeEntry,
+  parseOwnedKnowledgePage,
   publishCanonicalPath,
   readCanonicalTextFile,
-  readWorkspaceKnowledgeEntries,
+  readWorkspaceKnowledgePages,
   readWorkspaceKnowledgePage,
   readWorkspaceTurnEvents,
   serializeKnowledgeProposalRecord,
-  serializeUserAuthoredKnowledgePage,
   TURN_STREAM_EVENT_WINDOW_SIZE,
-  updateUserAuthoredKnowledgePage,
   type WorkspaceFileRecords,
   writeFileAtomic,
   writeWorkspaceFileRecords,
@@ -211,7 +209,7 @@ export interface ImportWorkspaceStage {
   workspaceRoot: string;
 }
 
-type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
+type KnowledgeNotebookPage = import('zod').infer<typeof KnowledgeNotebookPageSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
@@ -1250,7 +1248,7 @@ function sandboxSummaryForWorkspaceRoots(
  * @param knowledge Seed knowledge entries.
  * @returns Workspace resources without a second agent or model catalog.
  */
-function createWorkspaceResources(knowledge: KnowledgeEntry[] = []): WorkspaceResources {
+function createWorkspaceResources(knowledge: KnowledgeNotebookPage[] = []): WorkspaceResources {
   return {
     knowledge,
     skills: [],
@@ -1835,71 +1833,38 @@ export class FsStore {
     return `page/workspace/${workspaceId}/${knowledgeBaseId}`;
   }
 
-  /**
-   * Validates exact direct-write Knowledge Page bytes before store mutation.
-   *
-   * @param workspaceId Workspace that owns the candidate page.
-   * @param candidate Candidate entry about to be written.
-   * @param knowledge Knowledge entries that will exist after the write.
-   * @param candidateContent Exact final page bytes to validate.
-   * @throws KnowledgePageValidationError when the candidate or current schema is invalid.
-   */
-  private assertValidKnowledgeEntryCandidate(
+  /** Validates exact canonical fixture bytes before an in-memory page is admitted. */
+  private assertValidKnowledgePageCandidate(
     workspaceId: string,
-    candidate: KnowledgeEntry,
-    knowledge: readonly KnowledgeEntry[],
-    candidateContent = serializeUserAuthoredKnowledgePage(candidate, {
-      kind: 'workspace',
-      workspaceId,
-    })
+    candidate: KnowledgeNotebookPage,
+    knowledge: readonly KnowledgeNotebookPage[]
   ): void {
-    let scopeSchemaText: string | undefined;
-    let resolvedReferences: ReadonlySet<string> = new Set();
-    let pageScopeId: string | undefined;
-
-    try {
-      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
-      if (this.dataRoot) {
-        const schemaPath = join(
-          this.workspaceRootPath(workspaceId),
-          'knowledge',
-          'schema',
-          'workspace-schema.yaml'
-        );
-
-        if (existsSync(schemaPath)) {
-          scopeSchemaText = readCanonicalTextFile(schemaPath);
-        }
-      }
-      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter(
-        (reference) =>
-          /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
-      );
-      if (qualifiedLocalReferences.length > 0) {
-        resolvedReferences = this.resolveKnowledgePageSourceReferences(
-          workspaceId,
-          qualifiedLocalReferences,
-          []
-        );
-      }
-    } catch {
-      throw new KnowledgePageValidationError();
-    }
-
+    const parsed = parseOkfDocument({ path: candidate.path, content: candidate.content });
+    const sourceReferences = parsed.document
+      ? stringListFrontmatterField(parsed.document, 'source_refs')
+      : null;
+    if (!parsed.ok || sourceReferences === null) throw new KnowledgePageValidationError();
+    const qualifiedLocalReferences = sourceReferences.filter(
+      (reference) =>
+        /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
+    );
+    const resolvedReferences = this.resolveKnowledgePageSourceReferences(
+      workspaceId,
+      qualifiedLocalReferences,
+      []
+    );
     const report = validateKnowledgePageCandidate({
-      path: `knowledge/pages/${candidate.id}.md`,
-      content: candidateContent,
-      ...(pageScopeId === undefined ? {} : { pageScopeId }),
-      ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
+      path: candidate.path,
+      content: candidate.content,
+      expectedOwnerScope: { kind: 'workspace', workspaceId },
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
           .filter((source) => source.workspaceId === workspaceId)
           .map((source) => [source.id, source.contentDigest])
       ),
-      knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
+      knowledgeIds: new Set(knowledge.map((page) => page.id)),
       resolvedReferences,
     });
-
     if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
       throw new KnowledgePageValidationError();
     }
@@ -1910,13 +1875,13 @@ export class FsStore {
    *
    * @param proposal Proposal owner to verify.
    * @param verifiedExternalReferences Exact Core/S39 references verified by their owners.
-   * @returns Candidate Knowledge entry projected from the fixed page bytes.
+   * @returns Canonical candidate page with its exact bytes, when the proposal has one page.
    * @throws KnowledgePageValidationError when any candidate or source authority is invalid.
    */
   private assertValidKnowledgeProposal(
     proposal: KnowledgeProposalRecord,
     verifiedExternalReferences: readonly string[]
-  ): KnowledgeEntry | undefined {
+  ): KnowledgeNotebookPage | undefined {
     let scopeSchemaText: string | undefined;
     let pageScopeId: string | undefined;
     try {
@@ -2046,8 +2011,8 @@ export class FsStore {
     }
 
     try {
-      return parseOwnedKnowledgeEntry(
-        candidatePath,
+      return parseOwnedKnowledgePage(
+        `${proposal.knowledgePageId}.md`,
         proposal.knowledgePageId,
         proposal.canonicalPageBytes
       );
@@ -2158,7 +2123,8 @@ export class FsStore {
       if (
         !parsed.ok ||
         parsed.document.conceptId !== ownerId ||
-        parsed.document.frontmatter.openkit_entry_id !== ownerId ||
+        (parsed.document.frontmatter.openkit_entry_id !== undefined &&
+          parsed.document.frontmatter.openkit_entry_id !== ownerId) ||
         parsed.document.frontmatter.type !== 'KnowledgePage' ||
         parsed.document.frontmatter.openkit_status !== 'active' ||
         (parsed.document.frontmatter.status !== undefined &&
@@ -2456,7 +2422,7 @@ export class FsStore {
     defaultKnowledgeBaseId?: string;
     threads: readonly Thread[];
     turns: readonly Turn[];
-    knowledge: readonly KnowledgeEntry[];
+    knowledge: readonly KnowledgeNotebookPage[];
     itemRevisions: readonly Item[];
     artifacts: readonly Artifact[];
     agentSessions: readonly AgentSession[];
@@ -2781,7 +2747,7 @@ export class FsStore {
     const project = this.workspaceAgentCatalogProjection;
 
     const knowledge = this.dataRoot
-      ? readWorkspaceKnowledgeEntries(this.workspaceRootPath(workspaceId))
+      ? readWorkspaceKnowledgePages(this.workspaceRootPath(workspaceId))
       : resources.knowledge;
     return { ...resources, knowledge, ...(project ? { agents: project() } : {}) };
   }
@@ -2824,22 +2790,23 @@ export class FsStore {
     }
   }
 
-  public listKnowledge(workspaceId: string): KnowledgeEntry[] {
+  /** Returns canonical published pages, or explicit in-memory fixture pages. */
+  public listKnowledge(workspaceId: string): KnowledgeNotebookPage[] {
     return this.getWorkspaceResources(workspaceId).knowledge;
   }
 
   /**
-   * Returns one workspace knowledge entry by id.
+   * Returns one canonical Workspace Notebook page by id.
    *
-   * @param workspaceId Workspace that owns the knowledge entry.
-   * @param knowledgeEntryId Knowledge entry id to return.
-   * @returns Stored knowledge entry.
+   * @param workspaceId Workspace that owns the page.
+   * @param knowledgePageId Knowledge page id to return.
+   * @returns Canonical page with complete Markdown bytes.
    */
-  public getKnowledgeEntry(workspaceId: string, knowledgeEntryId: string): KnowledgeEntry {
-    const entry = this.listKnowledge(workspaceId).find((item) => item.id === knowledgeEntryId);
+  public getKnowledgePage(workspaceId: string, knowledgePageId: string): KnowledgeNotebookPage {
+    const entry = this.listKnowledge(workspaceId).find((item) => item.id === knowledgePageId);
 
     if (!entry) {
-      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
+      throw new StoreRecordNotFoundError(`Knowledge page not found: ${knowledgePageId}`);
     }
 
     return entry;
@@ -2938,72 +2905,18 @@ export class FsStore {
     return updatedAgent;
   }
 
-  public createKnowledgeEntry(
-    workspaceId: string,
-    input: Pick<KnowledgeEntry, 'kind' | 'title' | 'content'> & {
-      sourceReferences?: string[] | undefined;
-    }
-  ): KnowledgeEntry {
-    if (this.dataRoot)
-      throw new OperationError(
-        'recovery_required',
-        'File-backed Knowledge changes require the notebook publisher.',
-        409
-      );
-    const resources = this.storedWorkspaceResources(workspaceId);
-    const entry: KnowledgeEntry = {
-      id: `mem_${resources.knowledge.length + 1}`,
-      ...input,
-      ...(input.sourceReferences === undefined ? {} : { sourceReferences: input.sourceReferences }),
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    this.assertValidKnowledgeEntryCandidate(workspaceId, entry, [...resources.knowledge, entry]);
-    this.workspaceResources.set(workspaceId, {
-      ...resources,
-      knowledge: [...resources.knowledge, entry],
-    });
-    this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
-    return entry;
-  }
-
   /**
-   * Delete one workspace knowledge entry.
+   * Adds one complete canonical page to an explicit in-memory fixture Store.
    *
-   * @param workspaceId Workspace identifier.
-   * @param knowledgeEntryId Knowledge entry identifier.
+   * @param workspaceId Workspace that owns the fixture page.
+   * @param input Bundle-relative path and exact full OKF Markdown bytes.
+   * @returns Validated canonical page with path-derived identity and digest.
+   * @throws OperationError for a file-backed Store, whose Notebook publisher owns all writes.
    */
-  public deleteKnowledgeEntry(workspaceId: string, knowledgeEntryId: string): void {
-    if (this.dataRoot)
-      throw new OperationError(
-        'recovery_required',
-        'File-backed Knowledge changes require the notebook publisher.',
-        409
-      );
-    const resources = this.storedWorkspaceResources(workspaceId);
-    const knowledge = resources.knowledge.filter((entry) => entry.id !== knowledgeEntryId);
-
-    if (knowledge.length === resources.knowledge.length) {
-      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
-    }
-
-    this.workspaceResources.set(workspaceId, {
-      ...resources,
-      knowledge,
-    });
-    this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
-  }
-
-  public updateKnowledgeEntry(
+  public createKnowledgePage(
     workspaceId: string,
-    knowledgeEntryId: string,
-    input: {
-      title?: KnowledgeEntry['title'] | undefined;
-      content?: KnowledgeEntry['content'] | undefined;
-    }
-  ): KnowledgeEntry {
+    input: Pick<KnowledgeNotebookPage, 'path' | 'content'>
+  ): KnowledgeNotebookPage {
     if (this.dataRoot)
       throw new OperationError(
         'recovery_required',
@@ -3011,35 +2924,18 @@ export class FsStore {
         409
       );
     const resources = this.storedWorkspaceResources(workspaceId);
-    const existing = resources.knowledge.find((entry) => entry.id === knowledgeEntryId);
-
-    if (!existing) {
-      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
+    validateNotebookFiles({ [input.path]: input.content }, true);
+    const page = parseOwnedKnowledgePage(input.path, input.path.slice(0, -3), input.content);
+    if (resources.knowledge.some((existing) => existing.path === page.path)) {
+      throw new OperationError('conflict', `Knowledge page already exists: ${page.path}`, 409);
     }
-
-    const updated: KnowledgeEntry = {
-      ...existing,
-      title: input.title ?? existing.title,
-      content: input.content ?? existing.content,
-      updatedAt: now(),
-    };
-    const knowledge = resources.knowledge.map((entry) =>
-      entry.id === knowledgeEntryId ? updated : entry
-    );
-    const path = `knowledge/pages/${knowledgeEntryId}.md`;
-    const currentPageBytes = this.dataRoot
-      ? (readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), knowledgeEntryId) ??
-        serializeUserAuthoredKnowledgePage(existing, { kind: 'workspace', workspaceId }))
-      : serializeUserAuthoredKnowledgePage(existing, { kind: 'workspace', workspaceId });
-    const candidatePageBytes = updateUserAuthoredKnowledgePage(path, currentPageBytes, updated);
-    this.assertValidKnowledgeEntryCandidate(workspaceId, updated, knowledge, candidatePageBytes);
+    this.assertValidKnowledgePageCandidate(workspaceId, page, [...resources.knowledge, page]);
     this.workspaceResources.set(workspaceId, {
       ...resources,
-      knowledge,
+      knowledge: [...resources.knowledge, page],
     });
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
-    return updated;
+    return page;
   }
 
   /** Lists Server narratives for a caller already admitted by the Server authority owner. */
@@ -5088,7 +4984,8 @@ export class FsStore {
     if (
       !parsed.ok ||
       parsed.document.conceptId !== knowledgePageId ||
-      parsed.document.frontmatter.openkit_entry_id !== knowledgePageId ||
+      (parsed.document.frontmatter.openkit_entry_id !== undefined &&
+        parsed.document.frontmatter.openkit_entry_id !== knowledgePageId) ||
       parsed.document.frontmatter.type !== 'KnowledgePage' ||
       parsed.document.frontmatter.openkit_status !== 'active' ||
       (parsed.document.frontmatter.status !== undefined &&
