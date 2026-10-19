@@ -11,6 +11,7 @@ import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -707,6 +708,95 @@ describe('Goal Coordinator missing Task grant routing', () => {
     expect(after.consideredRevision).toBe(before.consideredRevision);
     expect(after.disposition).toBeNull();
     expect(f.goalWake).toHaveBeenCalledExactlyOnceWith(f.scope.workspaceId, f.scope.goalId);
+  });
+
+  it('rolls back the declined gap fact when its Goal marker update fails and permits a new request', async () => {
+    const f = await fixture({ taskGrant: false, uses: 2 });
+    const mcp = await f.setupMcp();
+    const decide = vi.spyOn(mcp.interception, 'decide');
+    const calls = () =>
+      listWorkspaceCapabilityCalls(f.db, f.scope.workspaceId).filter(
+        (call) => call.operation === 'mcp.call-tool' && call.turnId === mcp.turn.id
+      );
+    const before = readGoalView(f.store, f.db, f.scope.goalId).goal!;
+    const goalPending = listThreadPendingRequests(
+      f.db.sqlite,
+      f.scope.workspaceId,
+      f.scope.threadId
+    );
+    expect(calls()).toEqual([]);
+    expect(f.goalWake).not.toHaveBeenCalled();
+    // A persistent SQLite trigger also faults the real route's separate Workspace connection.
+    f.db.sqlite.exec(`CREATE TRIGGER reject_goal_gap_marker BEFORE UPDATE ON goals
+      BEGIN SELECT RAISE(ABORT, 'Injected Goal marker update failure'); END`);
+    try {
+      expect(() =>
+        f.db.sqlite
+          .prepare('UPDATE goals SET payload_json=payload_json WHERE goal_id=?')
+          .run(f.scope.goalId)
+      ).toThrow('Injected Goal marker update failure');
+      await expect(mcp.call()).rejects.toBeInstanceOf(Error);
+    } finally {
+      f.db.sqlite.exec('DROP TRIGGER reject_goal_gap_marker');
+    }
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(await decide.mock.results[0]!.value).toMatchObject({
+      result: 'require_escalation',
+      escalation: { kind: 'coordinator', goalId: f.scope.goalId },
+    });
+    expect(readGoalView(f.store, f.db, f.scope.goalId).goal).toEqual(before);
+    expect(f.goalWake).not.toHaveBeenCalled();
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, mcp.turn.threadId)).toEqual(
+      []
+    );
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, f.scope.threadId)).toEqual(
+      goalPending
+    );
+    expect(
+      readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
+    ).toBe(0);
+    const failedCalls = calls();
+    expect(failedCalls).toHaveLength(1);
+    const failedCall = failedCalls[0]!;
+    expect(failedCall.completedAt).not.toBeNull();
+    const failedAudit = listWorkspaceAuditEvents(f.db, f.scope.workspaceId).filter(
+      (event) => event.action === 'capability.finish' && event.capabilityCallId === failedCall.id
+    );
+    expect(failedAudit).toHaveLength(1);
+
+    // The failed request is not repaired or replayed; a new MCP request must route independently.
+    expect(await mcp.call()).toMatchObject({ isError: true });
+    expect(calls()).toHaveLength(2);
+    const routedCall = calls().find((call) => call.id !== failedCall.id)!;
+    expect(routedCall).toMatchObject({
+      status: 'denied',
+      errorCode: 'policy_requires_escalation',
+    });
+    expect(calls().find((call) => call.id === failedCall.id)).toEqual(failedCall);
+    expect(
+      listWorkspaceAuditEvents(f.db, f.scope.workspaceId).filter(
+        (event) => event.action === 'capability.finish' && event.capabilityCallId === failedCall.id
+      )
+    ).toEqual(failedAudit);
+    expect(readGoalView(f.store, f.db, f.scope.goalId).goal).toMatchObject({
+      changeRevision: before.changeRevision + 1,
+      consideredRevision: before.consideredRevision,
+      disposition: null,
+    });
+    expect(f.goalWake).toHaveBeenCalledExactlyOnceWith(f.scope.workspaceId, f.scope.goalId);
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, mcp.turn.threadId)).toEqual(
+      []
+    );
+    expect(
+      readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
+    ).toBe(0);
+    // A failed operation may remain visible, but a routed decline cannot outlive its rolled-back marker.
+    expect({ call: failedCall, audit: failedAudit }).toMatchObject({
+      call: { status: 'failed' },
+      audit: [{ action: 'capability.finish', outcome: 'failed' }],
+    });
   });
 
   it('reruns ordinary current evaluation after a bounded grant and consumes that grant only on the allowed effect', async () => {
