@@ -12,12 +12,8 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   IntroduceWorkspaceArtifactResponse,
-  KnowledgeClaim,
-  KnowledgeConflict,
-  KnowledgeConflictStatus,
   KnowledgeManagerDraftProposalRequest,
   KnowledgeManagerDraftProposalResponse,
-  KnowledgeObservation,
   KnowledgeProposalApplication,
   KnowledgeProposalReview,
   MaterializedWorkspaceRoot,
@@ -176,14 +172,6 @@ import {
   writeWorkspaceMetadata,
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
-import {
-  appendWorkspaceKnowledgeClaim,
-  appendWorkspaceKnowledgeConflict,
-  appendWorkspaceKnowledgeObservation,
-  readWorkspaceKnowledgeClaimLedger,
-  readWorkspaceKnowledgeConflictLedger,
-  readWorkspaceKnowledgeObservationLedger,
-} from '../storage/workspace-portable-file-state.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
@@ -321,10 +309,6 @@ export type CommandRequestName =
   | 'knowledge.notebook.update'
   | 'knowledge.notebook.restore'
   | 'knowledge.source.register'
-  | 'knowledge.observation.record'
-  | 'knowledge.claim.record'
-  | 'knowledge.conflict.record'
-  | 'knowledge.conflict.resolve'
   | 'thread.create'
   | 'thread.update'
   | 'thread.archive'
@@ -419,9 +403,6 @@ export type CommandRequestResponseKind =
   | 'knowledge'
   | 'knowledge_notebook_revision'
   | 'knowledge_source'
-  | 'knowledge_observation'
-  | 'knowledge_claim'
-  | 'knowledge_conflict'
   | 'thread'
   | 'turn'
   | 'approval'
@@ -644,22 +625,6 @@ export interface KnowledgeSourceDerivedRepresentationRecord {
   sourceContentDigest: string;
   /** ISO timestamp when the representation was created. */
   createdAt: string;
-}
-
-/** Input for appending one Knowledge Store conflict resolution row. */
-export interface ResolveKnowledgeConflictInput {
-  /** Workspace that owns the conflict. */
-  workspaceId: string;
-  /** Conflict id to resolve. */
-  conflictId: string;
-  /** Final resolution status. */
-  status: Extract<KnowledgeConflictStatus, 'resolved' | 'superseded' | 'partially_superseded'>;
-  /** Human-readable resolution summary. */
-  resolution: string;
-  /** Actor or agent resolving the conflict. */
-  resolvedBy: string;
-  /** ISO timestamp for the resolution append. */
-  resolvedAt: string;
 }
 
 interface TurnStreamState {
@@ -5206,206 +5171,6 @@ export class FsStore {
     }
 
     return input;
-  }
-
-  /**
-   * Appends one workspace Knowledge Store observation to the monthly JSONL ledger.
-   *
-   * @param input Observation row to append.
-   * @returns Stored observation row.
-   */
-  public recordKnowledgeObservation(input: KnowledgeObservation): KnowledgeObservation {
-    this.getWorkspace(input.workspaceId);
-
-    if (!this.dataRoot) {
-      return input;
-    }
-
-    appendWorkspaceKnowledgeObservation(this.workspaceRootPath(input.workspaceId), input);
-
-    return input;
-  }
-
-  /**
-   * Returns one workspace Knowledge Store observation by id.
-   *
-   * @param workspaceId Workspace that owns the observation.
-   * @param observationId Observation id.
-   * @returns Stored observation row.
-   */
-  public getKnowledgeObservation(workspaceId: string, observationId: string): KnowledgeObservation {
-    const observation = this.listKnowledgeObservations(workspaceId).find(
-      (candidate) => candidate.id === observationId
-    );
-
-    if (!observation) {
-      throw new StoreRecordNotFoundError(`Knowledge observation not found: ${observationId}`);
-    }
-
-    return observation;
-  }
-
-  /**
-   * Lists workspace Knowledge Store observations from monthly JSONL ledgers.
-   *
-   * @param workspaceId Workspace that owns the observations.
-   * @returns Stored observation rows.
-   */
-  public listKnowledgeObservations(workspaceId: string): KnowledgeObservation[] {
-    this.getWorkspace(workspaceId);
-
-    if (!this.dataRoot) {
-      return [];
-    }
-
-    return [...readWorkspaceKnowledgeObservationLedger(this.workspaceRootPath(workspaceId), true)]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([, rows]) => rows);
-  }
-
-  /**
-   * Appends one workspace Knowledge Store claim to the monthly JSONL ledger.
-   *
-   * @param input Claim row to append.
-   * @returns Stored claim row.
-   */
-  public recordKnowledgeClaim(input: KnowledgeClaim): KnowledgeClaim {
-    this.getWorkspace(input.workspaceId);
-
-    if (!this.dataRoot) {
-      return input;
-    }
-
-    appendWorkspaceKnowledgeClaim(this.workspaceRootPath(input.workspaceId), input);
-
-    return input;
-  }
-
-  /**
-   * Returns one workspace Knowledge Store claim by id.
-   *
-   * @param workspaceId Workspace that owns the claim.
-   * @param claimId Claim id.
-   * @returns Stored claim row.
-   */
-  public getKnowledgeClaim(workspaceId: string, claimId: string): KnowledgeClaim {
-    const claim = this.listKnowledgeClaims(workspaceId).find(
-      (candidate) => candidate.id === claimId
-    );
-
-    if (!claim) {
-      throw new StoreRecordNotFoundError(`Knowledge claim not found: ${claimId}`);
-    }
-
-    return claim;
-  }
-
-  /**
-   * Lists workspace Knowledge Store claims from monthly JSONL ledgers.
-   *
-   * @param workspaceId Workspace that owns the claims.
-   * @returns Stored claim rows.
-   */
-  public listKnowledgeClaims(workspaceId: string): KnowledgeClaim[] {
-    this.getWorkspace(workspaceId);
-
-    if (!this.dataRoot) {
-      return [];
-    }
-
-    return [...readWorkspaceKnowledgeClaimLedger(this.workspaceRootPath(workspaceId), true)]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([, rows]) => rows);
-  }
-
-  /**
-   * Appends one workspace Knowledge Store conflict to the monthly JSONL ledger.
-   *
-   * @param input Conflict row to append.
-   * @returns Stored conflict row.
-   */
-  public recordKnowledgeConflict(input: KnowledgeConflict): KnowledgeConflict {
-    this.getWorkspace(input.workspaceId);
-
-    if (!this.dataRoot) {
-      return input;
-    }
-
-    appendWorkspaceKnowledgeConflict(this.workspaceRootPath(input.workspaceId), input);
-
-    return input;
-  }
-
-  /**
-   * Appends one resolution update for an existing workspace Knowledge Store conflict.
-   *
-   * @param input Conflict resolution input.
-   * @returns Latest conflict row after resolution.
-   */
-  public resolveKnowledgeConflict(input: ResolveKnowledgeConflictInput): KnowledgeConflict {
-    const current = this.getKnowledgeConflict(input.workspaceId, input.conflictId);
-    const resolved: KnowledgeConflict = {
-      ...current,
-      status: input.status,
-      resolution: input.resolution,
-      resolvedAt: input.resolvedAt,
-      resolvedBy: input.resolvedBy,
-      updatedAt: input.resolvedAt,
-    };
-
-    if (!this.dataRoot) {
-      return resolved;
-    }
-
-    appendWorkspaceKnowledgeConflict(this.workspaceRootPath(input.workspaceId), resolved);
-
-    return resolved;
-  }
-
-  /**
-   * Returns one workspace Knowledge Store conflict by id.
-   *
-   * @param workspaceId Workspace that owns the conflict.
-   * @param conflictId Conflict id.
-   * @returns Stored conflict row.
-   */
-  public getKnowledgeConflict(workspaceId: string, conflictId: string): KnowledgeConflict {
-    const conflict = this.listKnowledgeConflicts(workspaceId).find(
-      (candidate) => candidate.id === conflictId
-    );
-
-    if (!conflict) {
-      throw new StoreRecordNotFoundError(`Knowledge conflict not found: ${conflictId}`);
-    }
-
-    return conflict;
-  }
-
-  /**
-   * Lists workspace Knowledge Store conflicts from monthly JSONL ledgers.
-   *
-   * @param workspaceId Workspace that owns the conflicts.
-   * @returns Stored conflict rows.
-   */
-  public listKnowledgeConflicts(workspaceId: string): KnowledgeConflict[] {
-    this.getWorkspace(workspaceId);
-
-    if (!this.dataRoot) {
-      return [];
-    }
-
-    const rows = [
-      ...readWorkspaceKnowledgeConflictLedger(this.workspaceRootPath(workspaceId), true),
-    ]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([, revisions]) => revisions);
-    const latestById = new Map<string, KnowledgeConflict>();
-
-    for (const row of rows) {
-      latestById.set(row.id, row);
-    }
-
-    return [...latestById.values()];
   }
 
   /**

@@ -9,9 +9,6 @@ import {
   EvidenceBundleRecordSchema,
   InjectionVisibilitySchema,
   JudgementRecordReaderSchema,
-  KnowledgeClaimSchema,
-  KnowledgeConflictSchema,
-  KnowledgeObservationSchema,
   KnowledgeRetrievalTraceSchema,
   type ProductRetrievalTrace,
   StagedWorkspaceReviewReaderSchema,
@@ -272,9 +269,6 @@ const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.safeExtend
 }).strip();
 
 const ImportedUsageRecordSchema = UsageRecordSchema.strip();
-const ImportedKnowledgeObservationSchema = KnowledgeObservationSchema.strip();
-const ImportedKnowledgeClaimSchema = KnowledgeClaimSchema.strip();
-const ImportedKnowledgeConflictSchema = KnowledgeConflictSchema.strip();
 const ExportedResolvedAgentSetupSchema = z
   .object({
     id: z.string().min(1),
@@ -4760,46 +4754,6 @@ function readPortableFileStateFromExport(
   notebookPages: ReadonlyMap<string, string>
 ): WorkspacePortableFileState {
   const files = context.files;
-  const replacements = portableReferenceReplacements(context);
-  const observations = readImportJsonl(files, 'records/knowledge-observations.jsonl').map(
-    (record) => {
-      const parsed = ImportedKnowledgeObservationSchema.parse(record);
-      assertPortableWorkspaceOwner(
-        parsed.workspaceId,
-        context.report.exportedWorkspaceId,
-        'observation'
-      );
-      return ImportedKnowledgeObservationSchema.parse({
-        ...parsed,
-        workspaceId: context.targetWorkspaceId,
-        sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
-      });
-    }
-  );
-  const claims = readImportJsonl(files, 'records/knowledge-claims.jsonl').map((record) => {
-    const parsed = ImportedKnowledgeClaimSchema.parse(record);
-    assertPortableWorkspaceOwner(parsed.workspaceId, context.report.exportedWorkspaceId, 'claim');
-    return ImportedKnowledgeClaimSchema.parse({
-      ...parsed,
-      workspaceId: context.targetWorkspaceId,
-      sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
-    });
-  });
-  const conflicts = readImportJsonl(files, 'records/knowledge-conflicts.jsonl').map((record) => {
-    const parsed = ImportedKnowledgeConflictSchema.parse(record);
-    assertPortableWorkspaceOwner(
-      parsed.workspaceId,
-      context.report.exportedWorkspaceId,
-      'conflict'
-    );
-    return ImportedKnowledgeConflictSchema.parse({
-      ...parsed,
-      workspaceId: context.targetWorkspaceId,
-      subjectReferences: rewritePortableReferences(parsed.subjectReferences, replacements),
-      sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
-    });
-  });
-
   let workspaceConfig: string | null = null;
   let workspaceSchema: string | null = null;
   const nativeKnowledgePages = new Map<string, string>();
@@ -4850,9 +4804,6 @@ function readPortableFileStateFromExport(
 
   return {
     recurringHistory: null,
-    observations: groupPortableRecords(observations, (record) => record.observedAt),
-    claims: groupPortableRecords(claims, (record) => record.createdAt),
-    conflicts: groupPortableRecords(conflicts, (record) => record.resolvedAt ?? record.createdAt),
     retrievalTraceFiles: new Map(),
     workspaceConfig,
     workspaceSchema,
@@ -4879,26 +4830,6 @@ function rewritePortableReferences(
       reference
     )
   );
-}
-
-/** Groups append-order records by their authoritative ledger month. */
-function groupPortableRecords<T>(
-  records: readonly T[],
-  timestamp: (record: T) => string
-): ReadonlyMap<string, readonly T[]> {
-  const grouped = new Map<string, T[]>();
-  for (const record of records) {
-    const value = timestamp(record);
-    const match = /^(\d{4})-(\d{2})-/.exec(value);
-    if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) {
-      throw new Error(`Portable ledger timestamp is invalid: ${value}`);
-    }
-    const month = `${match[1]}${match[2]}`;
-    const rows = grouped.get(month) ?? [];
-    rows.push(record);
-    grouped.set(month, rows);
-  }
-  return grouped;
 }
 
 /** Reads every exact immutable original and the acknowledged current projection from verified export files. */

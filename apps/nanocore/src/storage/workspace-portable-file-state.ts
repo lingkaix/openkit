@@ -11,12 +11,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
-import {
-  KnowledgeClaimSchema,
-  KnowledgeConflictSchema,
-  KnowledgeObservationSchema,
-  type ProductRetrievalTrace,
-} from '@openkit/app-api-schemas';
+import type { ProductRetrievalTrace } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   type RetrievalTraceReference,
@@ -24,7 +19,6 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
-import type { z } from 'zod';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { assertPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
@@ -32,52 +26,14 @@ import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
-import {
-  appendCanonicalTextFile,
-  assertCanonicalDirectory,
-  preserveDescriptiveRecord,
-  readCanonicalJsonLines,
-  readCanonicalTextFile,
-} from './workspace-file-records.js';
+import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
 
-const ObservationRowSchema = KnowledgeObservationSchema.strict();
-const ClaimRowSchema = KnowledgeClaimSchema.strict();
-const ConflictRowSchema = KnowledgeConflictSchema.strict();
-const ObservationReaderSchema = ObservationRowSchema.strip();
-const ClaimReaderSchema = ClaimRowSchema.strip();
-const ConflictReaderSchema = ConflictRowSchema.strip();
 const RetrievalTraceReaderSchema = StoredProductRetrievalTraceV1Schema;
-const retainedLedgerRow = Symbol('retainedKnowledgeLedgerRow');
-
-/** Keeps owned source annotations separate from the normalized Knowledge read model. */
-function parseRetainedLedgerRow<T>(schema: z.ZodType<T>, raw: unknown): T {
-  const core = schema.parse(raw);
-  if (typeof core === 'object' && core !== null)
-    Object.defineProperty(core, retainedLedgerRow, { value: { raw, core: structuredClone(core) } });
-  return core;
-}
-
-/** Serializes the validated core with only annotations retained from an owned read. */
-function serializeRetainedLedgerRow(row: unknown): string {
-  const retained =
-    typeof row === 'object' && row !== null
-      ? (row as { [retainedLedgerRow]?: { raw: unknown; core: unknown } })[retainedLedgerRow]
-      : undefined;
-  return JSON.stringify(
-    retained ? preserveDescriptiveRecord(retained.raw, retained.core, row) : row
-  );
-}
 
 /** Authoritative file-backed workspace state that is portable but not owned by canonical protocol records. */
 export interface WorkspacePortableFileState {
   /** Immutable imported source history; never interpreted as target schedule authority. */
   readonly recurringHistory?: string | null;
-  /** Observation rows grouped by canonical ledger month in append order. */
-  readonly observations: ReadonlyMap<string, readonly z.infer<typeof ObservationRowSchema>[]>;
-  /** Claim rows grouped by canonical ledger month in append order. */
-  readonly claims: ReadonlyMap<string, readonly z.infer<typeof ClaimRowSchema>[]>;
-  /** Complete conflict append history grouped by canonical ledger month. */
-  readonly conflicts: ReadonlyMap<string, readonly z.infer<typeof ConflictRowSchema>[]>;
   /** Immutable query-owned retrieval traces keyed by canonical Workspace-relative path. */
   readonly retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>;
   /** Exact workspace configuration text, or null when absent. */
@@ -103,129 +59,6 @@ export interface WorkspacePortableOwnerGraph {
 }
 
 /**
- * Appends one strictly validated observation to its canonical monthly ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param row Observation row to append.
- * @throws Error for malformed rows, timestamps, paths, links, or non-regular files.
- */
-export function appendWorkspaceKnowledgeObservation(
-  workspaceRoot: string,
-  row: z.infer<typeof ObservationRowSchema>
-): void {
-  appendMonthlyLedgerRow(
-    workspaceRoot,
-    'knowledge/observations',
-    row,
-    ObservationRowSchema,
-    (entry) => entry.observedAt
-  );
-}
-
-/**
- * Reads the complete strictly validated observation ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param repairFinalFragment Whether to repair an interrupted final JSON fragment.
- * @returns Observation rows grouped by canonical ledger month.
- * @throws Error for malformed rows, month placement, paths, links, or non-regular files.
- */
-export function readWorkspaceKnowledgeObservationLedger(
-  workspaceRoot: string,
-  repairFinalFragment = false
-): ReadonlyMap<string, readonly z.infer<typeof ObservationRowSchema>[]> {
-  return readMonthlyLedger(
-    workspaceRoot,
-    'knowledge/observations',
-    ObservationReaderSchema,
-    (row) => row.observedAt,
-    repairFinalFragment
-  );
-}
-
-/**
- * Appends one strictly validated claim to its canonical monthly ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param row Claim row to append.
- * @throws Error for malformed rows, timestamps, paths, links, or non-regular files.
- */
-export function appendWorkspaceKnowledgeClaim(
-  workspaceRoot: string,
-  row: z.infer<typeof ClaimRowSchema>
-): void {
-  appendMonthlyLedgerRow(
-    workspaceRoot,
-    'knowledge/claims',
-    row,
-    ClaimRowSchema,
-    (entry) => entry.createdAt
-  );
-}
-
-/**
- * Reads the complete strictly validated claim ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param repairFinalFragment Whether to repair an interrupted final JSON fragment.
- * @returns Claim rows grouped by canonical ledger month.
- * @throws Error for malformed rows, month placement, paths, links, or non-regular files.
- */
-export function readWorkspaceKnowledgeClaimLedger(
-  workspaceRoot: string,
-  repairFinalFragment = false
-): ReadonlyMap<string, readonly z.infer<typeof ClaimRowSchema>[]> {
-  return readMonthlyLedger(
-    workspaceRoot,
-    'knowledge/claims',
-    ClaimReaderSchema,
-    (row) => row.createdAt,
-    repairFinalFragment
-  );
-}
-
-/**
- * Appends one strictly validated conflict revision to its canonical monthly ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param row Conflict row to append.
- * @throws Error for malformed rows, timestamps, paths, links, or non-regular files.
- */
-export function appendWorkspaceKnowledgeConflict(
-  workspaceRoot: string,
-  row: z.infer<typeof ConflictRowSchema>
-): void {
-  appendMonthlyLedgerRow(
-    workspaceRoot,
-    'knowledge/conflicts',
-    row,
-    ConflictRowSchema,
-    (entry) => entry.resolvedAt ?? entry.createdAt
-  );
-}
-
-/**
- * Reads the complete strictly validated conflict revision ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param repairFinalFragment Whether to repair an interrupted final JSON fragment.
- * @returns Conflict revisions grouped by canonical ledger month.
- * @throws Error for malformed rows, month placement, paths, links, or non-regular files.
- */
-export function readWorkspaceKnowledgeConflictLedger(
-  workspaceRoot: string,
-  repairFinalFragment = false
-): ReadonlyMap<string, readonly z.infer<typeof ConflictRowSchema>[]> {
-  return readMonthlyLedger(
-    workspaceRoot,
-    'knowledge/conflicts',
-    ConflictReaderSchema,
-    (row) => row.resolvedAt ?? row.createdAt,
-    repairFinalFragment
-  );
-}
-
-/**
  * Reads all authoritative portable file state beneath one real workspace root.
  *
  * @param workspaceRoot Published source workspace root.
@@ -244,9 +77,6 @@ export function readWorkspacePortableFileState(
   if (recurringHistory !== null) validateRecurringPortableHistory(recurringHistory);
   return {
     recurringHistory,
-    observations: readWorkspaceKnowledgeObservationLedger(root),
-    claims: readWorkspaceKnowledgeClaimLedger(root),
-    conflicts: readWorkspaceKnowledgeConflictLedger(root),
     retrievalTraceFiles: readWorkspaceRetrievalTraceFiles(root, owners),
     workspaceConfig: readOptionalText(root, 'config/workspace.jsonc'),
     workspaceSchema: readOptionalText(root, 'knowledge/schema/scope-schema.yaml'),
@@ -273,27 +103,6 @@ export function writeWorkspacePortableFileState(
     validateRecurringPortableHistory(state.recurringHistory);
     writeText(root, 'imports/recurrence-history.json', state.recurringHistory, false);
   }
-  writeMonthlyLedger(
-    root,
-    'knowledge/observations',
-    state.observations,
-    ObservationReaderSchema,
-    (row) => row.observedAt
-  );
-  writeMonthlyLedger(
-    root,
-    'knowledge/claims',
-    state.claims,
-    ClaimReaderSchema,
-    (row) => row.createdAt
-  );
-  writeMonthlyLedger(
-    root,
-    'knowledge/conflicts',
-    state.conflicts,
-    ConflictReaderSchema,
-    (row) => row.resolvedAt ?? row.createdAt
-  );
   if (state.workspaceConfig !== null) {
     const imported = readRetainedV1(parseJsoncObject(state.workspaceConfig), (value) =>
       WorkspaceConfigSchema.parse(value)
@@ -333,35 +142,8 @@ export function writeWorkspacePortableExportState(
   state: WorkspacePortableFileState | undefined
 ): void {
   const root = resolve(exportRoot);
-  const empty = new Map<string, readonly never[]>();
 
   assertCanonicalDirectory(root);
-  writeText(
-    root,
-    'records/knowledge-observations.jsonl',
-    serializeMonthlyLedger(
-      state?.observations ?? empty,
-      ObservationReaderSchema,
-      (row) => row.observedAt
-    ),
-    false
-  );
-  writeText(
-    root,
-    'records/knowledge-claims.jsonl',
-    serializeMonthlyLedger(state?.claims ?? empty, ClaimReaderSchema, (row) => row.createdAt),
-    false
-  );
-  writeText(
-    root,
-    'records/knowledge-conflicts.jsonl',
-    serializeMonthlyLedger(
-      state?.conflicts ?? empty,
-      ConflictReaderSchema,
-      (row) => row.resolvedAt ?? row.createdAt
-    ),
-    false
-  );
   if (!state) {
     return;
   }
@@ -380,153 +162,6 @@ export function writeWorkspacePortableExportState(
   writeWorkspaceRetrievalTraceExportFiles(root, state.retrievalTraceFiles);
   assertWorkerContextPackageFiles(state.workerContextPackageFiles);
   writeExportTextMap(root, state.workerContextPackageFiles, 'threads/');
-}
-
-/** Reads and validates one optional monthly JSONL family. */
-function readMonthlyLedger<T>(
-  root: string,
-  relativeDirectory: string,
-  schema: z.ZodType<T>,
-  timestamp: (row: T) => string,
-  repairFinalFragment = false
-): ReadonlyMap<string, readonly T[]> {
-  const workspaceRoot = resolve(root);
-
-  assertCanonicalDirectory(workspaceRoot);
-  const directory = workspaceDirectory(workspaceRoot, relativeDirectory, false);
-  const ledgers = new Map<string, readonly T[]>();
-
-  if (!directory) {
-    return ledgers;
-  }
-  for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
-    a.name.localeCompare(b.name)
-  )) {
-    if (entry.isSymbolicLink()) {
-      throw new Error(
-        `Portable workspace path must not be a symbolic link: ${join(directory, entry.name)}.`
-      );
-    }
-    if (!entry.isFile() || !/^\d{6}\.jsonl$/.test(entry.name)) {
-      throw new Error(
-        `Portable ledger directory contains an invalid entry: ${join(directory, entry.name)}.`
-      );
-    }
-    const month = entry.name.slice(0, 6);
-    const rows = readCanonicalJsonLines(join(directory, entry.name), repairFinalFragment).map(
-      (row) => parseRetainedLedgerRow(schema, row)
-    );
-
-    for (const row of rows) {
-      assertLedgerMonth(month, timestamp(row));
-    }
-    ledgers.set(month, rows);
-  }
-  return ledgers;
-}
-
-/** Appends one strictly validated row to the monthly ledger selected by its timestamp. */
-function appendMonthlyLedgerRow<T>(
-  root: string,
-  relativeDirectory: string,
-  input: T,
-  schema: z.ZodType<T>,
-  timestamp: (row: T) => string
-): void {
-  const workspaceRoot = resolve(root);
-  const row = schema.parse(input);
-  const month = ledgerMonth(timestamp(row));
-
-  assertCanonicalDirectory(workspaceRoot);
-  const directory = workspaceDirectory(workspaceRoot, relativeDirectory, true);
-  if (!directory) {
-    throw new Error(`Portable ledger directory was not created: ${relativeDirectory}.`);
-  }
-  appendCanonicalTextFile(join(directory, `${month}.jsonl`), `${JSON.stringify(row)}\n`);
-}
-
-/** Writes one monthly JSONL family without changing row order. */
-function writeMonthlyLedger<T>(
-  root: string,
-  relativeDirectory: string,
-  ledgers: ReadonlyMap<string, readonly T[]>,
-  schema: z.ZodType<T>,
-  timestamp: (row: T) => string
-): void {
-  if (ledgers.size === 0) {
-    return;
-  }
-  const directory = workspaceDirectory(root, relativeDirectory, true);
-
-  if (!directory) {
-    throw new Error(`Portable ledger directory was not created: ${relativeDirectory}.`);
-  }
-  for (const [month, inputRows] of [...ledgers].sort(([left], [right]) =>
-    left.localeCompare(right)
-  )) {
-    const rows = parseLedgerMonth(month, inputRows, schema, timestamp);
-    const path = join(directory, `${month}.jsonl`);
-    if (lstatSync(path, { throwIfNoEntry: false })) {
-      throw new Error(`Portable staging ledger already exists: ${path}.`);
-    }
-    appendCanonicalTextFile(
-      path,
-      rows.length > 0 ? `${rows.map(serializeRetainedLedgerRow).join('\n')}\n` : ''
-    );
-  }
-}
-
-/** Serializes monthly ledger maps without losing month or append order. */
-function serializeMonthlyLedger<T>(
-  ledgers: ReadonlyMap<string, readonly T[]>,
-  schema: z.ZodType<T>,
-  timestamp: (row: T) => string
-): string {
-  const rows = [...ledgers]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .flatMap(([month, inputRows]) => parseLedgerMonth(month, inputRows, schema, timestamp));
-  return rows.length > 0 ? `${rows.map(serializeRetainedLedgerRow).join('\n')}\n` : '';
-}
-
-/** Parses and validates every row stored under one monthly ledger key. */
-function parseLedgerMonth<T>(
-  month: string,
-  inputRows: readonly T[],
-  schema: z.ZodType<T>,
-  timestamp: (row: T) => string
-): T[] {
-  if (!/^\d{6}$/.test(month)) {
-    throw new Error(`Portable ledger month is invalid: ${month}.`);
-  }
-  const rows = inputRows.map((row) => {
-    const parsed = schema.parse(row);
-    if (typeof row === 'object' && row !== null && typeof parsed === 'object' && parsed !== null) {
-      const retained = (row as { [retainedLedgerRow]?: unknown })[retainedLedgerRow];
-      if (retained) Object.defineProperty(parsed, retainedLedgerRow, { value: retained });
-    }
-    return parsed;
-  });
-  for (const row of rows) {
-    assertLedgerMonth(month, timestamp(row));
-  }
-  return rows;
-}
-
-/** Ensures one row lives in the month selected by its authoritative append timestamp. */
-function assertLedgerMonth(month: string, timestamp: string): void {
-  if (ledgerMonth(timestamp) !== month) {
-    throw new Error(`Portable ledger row timestamp does not match month ${month}: ${timestamp}.`);
-  }
-}
-
-/** Returns the canonical YYYYMM ledger month selected by one ISO-like timestamp. */
-function ledgerMonth(timestamp: string): string {
-  const match = /^(\d{4})-(\d{2})-/.exec(timestamp);
-
-  if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) {
-    throw new Error(`Portable ledger row timestamp is invalid: ${timestamp}.`);
-  }
-  return `${match[1]}${match[2]}`;
 }
 
 /** Reads one optional exact text file after verifying every existing parent directory. */
