@@ -25,7 +25,7 @@ import {
   type CheckKnowledgeHealthCommand,
   type CreateKnowledgeCommand,
   type DeleteKnowledgeCommand,
-  type KnowledgeItem,
+  type KnowledgeNotebookPage,
   type KnowledgeProposalDecisionInput,
   type KnowledgeStoreProjection,
   knowledgeActionErrorMessage,
@@ -70,13 +70,12 @@ import {
   workspaceKnowledgePageScopeId,
 } from './data';
 import { KnowledgeProposalRow } from './KnowledgeProposalRow';
+import {
+  composeUserAuthoredKnowledgePage,
+  patchKnowledgePageTitleBody,
+  readKnowledgePageDisplay,
+} from './knowledge-okf';
 import { NotebookHistoryPanel } from './NotebookHistoryPanel';
-
-const KIND_LABEL: Record<KnowledgeItem['kind'], string> = {
-  preference: 'Preferences',
-  'project-context': 'Project context',
-  'task-summary': 'Task summaries',
-};
 
 const SOURCE_KIND_LABEL = {
   upload: 'Upload',
@@ -261,7 +260,7 @@ const EMPTY_RESOLVE_DRAFT: ResolveDraft = { conflictId: null, resolution: '', re
 type AddDraft = {
   adding: boolean;
   baseRevision: string | null;
-  knowledgePageId: string | null;
+  pagePath: string | null;
   title: string;
   content: string;
   sourceReference: string | null;
@@ -270,20 +269,20 @@ type AddDraft = {
 const EMPTY_ADD_DRAFT: AddDraft = {
   adding: false,
   baseRevision: null,
-  knowledgePageId: null,
+  pagePath: null,
   title: '',
   content: '',
   sourceReference: null,
 };
 
 type EditDraft = {
-  entry: KnowledgeItem | null;
+  page: KnowledgeNotebookPage | null;
   baseRevision: string | null;
   title: string;
   content: string;
 };
 
-const EMPTY_EDIT_DRAFT: EditDraft = { entry: null, baseRevision: null, title: '', content: '' };
+const EMPTY_EDIT_DRAFT: EditDraft = { page: null, baseRevision: null, title: '', content: '' };
 
 /**
  * Knowledge Store slice (WP-6, board 14).
@@ -311,7 +310,7 @@ export function KnowledgeScreen() {
     workspaceId,
     EMPTY_EDIT_DRAFT
   );
-  const editing = editDraft.entry;
+  const editing = editDraft.page;
   const writePending =
     create.isPending || update.isPending || remove.isPending || proposalDecision.isPending;
   const entryWriteBlocked =
@@ -354,14 +353,14 @@ export function KnowledgeScreen() {
     if (update.variables?.workspaceId === targetId) update.reset();
   }
 
-  /** Create one entry, or replay the exact Workspace-bound command after unknown failure. */
+  /** Create one page, or replay the exact Workspace-bound command after unknown failure. */
   function save(command?: CreateKnowledgeCommand) {
     if (!command && !selectedSourceReady) return;
     const next =
       command ??
       (workspaceId &&
       addDraft.baseRevision &&
-      addDraft.knowledgePageId &&
+      addDraft.pagePath &&
       addDraft.title.trim() &&
       addDraft.content.trim()
         ? {
@@ -369,11 +368,15 @@ export function KnowledgeScreen() {
             input: {
               requestId: createRequestId(),
               baseRevision: addDraft.baseRevision,
-              knowledgePageId: addDraft.knowledgePageId,
-              kind: 'preference' as const,
-              title: addDraft.title.trim(),
-              content: addDraft.content.trim(),
-              ...(addDraft.sourceReference ? { sourceReferences: [addDraft.sourceReference] } : {}),
+              path: addDraft.pagePath,
+              content: composeUserAuthoredKnowledgePage({
+                workspaceId,
+                path: addDraft.pagePath,
+                title: addDraft.title.trim(),
+                body: addDraft.content.trim(),
+                ...(addDraft.sourceReference ? { sourceRefs: [addDraft.sourceReference] } : {}),
+              }),
+              summary: `Create ${addDraft.pagePath}`,
             },
           }
         : undefined);
@@ -385,14 +388,15 @@ export function KnowledgeScreen() {
     });
   }
 
-  /** Prefill the edit form from one exact authoritative entry. */
-  function startEditing(entry: KnowledgeItem) {
+  /** Prefill the edit form from one exact authoritative page. */
+  function startEditing(page: KnowledgeNotebookPage) {
     if (!knowledge.data?.notebookRevision) return;
+    const display = readKnowledgePageDisplay(page.path, page.content);
     setEditDraft({
-      entry,
+      page,
       baseRevision: knowledge.data.notebookRevision,
-      title: entry.title,
-      content: entry.content,
+      title: display.title,
+      content: display.body,
     });
     update.reset();
   }
@@ -408,8 +412,9 @@ export function KnowledgeScreen() {
     let next = command;
     if (!next) {
       if (!workspaceId || !editing || !editDraft.baseRevision) return;
-      const titleChanged = editDraft.title !== editing.title;
-      const contentChanged = editDraft.content !== editing.content;
+      const baseline = readKnowledgePageDisplay(editing.path, editing.content);
+      const titleChanged = editDraft.title !== baseline.title;
+      const contentChanged = editDraft.content !== baseline.body;
       const nextTitle = editDraft.title.trim();
       const nextContent = editDraft.content.trim();
       if (
@@ -418,14 +423,19 @@ export function KnowledgeScreen() {
         (contentChanged && !nextContent)
       )
         return;
+      const nextPageContent = patchKnowledgePageTitleBody({
+        path: editing.path,
+        content: editing.content,
+        ...(titleChanged ? { title: nextTitle } : {}),
+        ...(contentChanged ? { body: nextContent } : {}),
+      });
       next = {
         workspaceId,
-        knowledgeEntryId: editing.id,
         input: {
           requestId: createRequestId(),
           baseRevision: editDraft.baseRevision,
-          ...(titleChanged ? { title: nextTitle } : {}),
-          ...(contentChanged ? { content: nextContent } : {}),
+          changes: [{ path: editing.path, content: nextPageContent }],
+          summary: `Edit ${editing.path}`,
         },
       };
     }
@@ -455,7 +465,7 @@ export function KnowledgeScreen() {
     }
   }
 
-  /** Delete one entry, then refresh only through the authoritative Knowledge read. */
+  /** Delete one page, then refresh only through the authoritative Knowledge read. */
   function removeEntry(command: DeleteKnowledgeCommand) {
     if (entryWriteBlocked) return;
     remove.mutate(command, {
@@ -487,15 +497,15 @@ export function KnowledgeScreen() {
       ? proposalDecision.variables
       : undefined;
 
+  const editingBaseline = editing ? readKnowledgePageDisplay(editing.path, editing.content) : null;
   const editCanSave = Boolean(
-    editing &&
-      (editDraft.title !== editing.title || editDraft.content !== editing.content) &&
-      (editDraft.title === editing.title || editDraft.title.trim()) &&
-      (editDraft.content === editing.content || editDraft.content.trim())
+    editingBaseline &&
+      (editDraft.title !== editingBaseline.title || editDraft.content !== editingBaseline.body) &&
+      (editDraft.title === editingBaseline.title || editDraft.title.trim()) &&
+      (editDraft.content === editingBaseline.body || editDraft.content.trim())
   );
 
-  const entries = knowledge.data?.items ?? [];
-  const byKind = groupByKind(entries);
+  const pages = knowledge.data?.pages ?? [];
   const knowledgeProposals = attention.data?.filter((row) => row.source.type === 'knowledge') ?? [];
 
   /** Submit a decision, then read the authoritative attention owner before UI settlement. */
@@ -530,7 +540,7 @@ export function KnowledgeScreen() {
                   ...current,
                   adding: true,
                   baseRevision,
-                  knowledgePageId: `notes/${createRequestId()}`,
+                  pagePath: `notes/${createRequestId()}.md`,
                 }));
               }}
             >
@@ -543,7 +553,7 @@ export function KnowledgeScreen() {
         <NotebookHistoryPanel workspaceId={workspaceId} />
         {addDraft.adding ? (
           <Card className="flex flex-col gap-3">
-            <Eyebrow>New preference</Eyebrow>
+            <Eyebrow>New notebook page</Eyebrow>
             <TextField
               label="Title"
               value={addDraft.title}
@@ -632,133 +642,138 @@ export function KnowledgeScreen() {
 
         {!workspaceId || (knowledge.isLoading && knowledge.data === undefined) ? (
           <Skeleton lines={4} />
-        ) : knowledge.data === undefined ? null : entries.length === 0 && !addDraft.adding ? (
+        ) : knowledge.data === undefined ? null : pages.length === 0 && !addDraft.adding ? (
           <EmptyState
             icon="book"
-            title="No entries yet"
-            hint="Add a preference or project context so agents start with what you already know."
+            title="No notebook pages yet"
+            hint="Add a notebook page so agents start with what you already know."
           />
         ) : (
-          Object.entries(byKind).map(([kind, items]) =>
-            items.length === 0 ? null : (
-              <section key={kind} className="flex flex-col gap-2">
-                <Eyebrow>{KIND_LABEL[kind as KnowledgeItem['kind']]}</Eyebrow>
-                <Card className="p-0 px-4">
-                  {items.map((entry) => (
-                    <ListRow key={entry.id}>
-                      <div
-                        id={knowledgeContentId(workspaceId, entry.id)}
-                        tabIndex={-1}
-                        className="min-w-0 flex-1 rounded-ok py-1 outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                      >
-                        <div className="flex items-start gap-3">
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-bold text-fg-strong">{entry.title}</p>
-                            <p className="mt-0.5 text-xs text-fg-muted">{entry.content}</p>
-                          </div>
-                          <div className="flex shrink-0 gap-2">
-                            <Button
-                              size="sm"
-                              variant="quiet"
-                              aria-label={`Edit ${entry.title}`}
-                              isDisabled={entryWriteBlocked}
-                              onPress={() => startEditing(entry)}
-                            >
-                              {'Edit '}
-                            </Button>
-                            <Modal
-                              trigger={
-                                <Button
-                                  size="sm"
-                                  variant="negative-outline"
-                                  aria-label={`Remove ${entry.title}`}
-                                  isDisabled={entryWriteBlocked}
-                                >
-                                  {'Remove '}
-                                </Button>
-                              }
-                            >
-                              <Dialog title="Remove knowledge">
-                                <p className="text-sm text-fg-muted">
-                                  This removes the entry from the workspace knowledge store.
-                                </p>
-                                <div className="flex justify-end gap-2">
-                                  <Button slot="close" size="sm" variant="quiet">
-                                    Cancel
-                                  </Button>
-                                  <Button
-                                    slot="close"
-                                    size="sm"
-                                    variant="negative"
-                                    isDisabled={entryWriteBlocked}
-                                    onPress={() => {
-                                      if (!workspaceId || !knowledge.data?.notebookRevision) return;
-                                      removeEntry({
-                                        workspaceId,
-                                        knowledgeEntryId: entry.id,
-                                        input: {
-                                          requestId: createRequestId(),
-                                          baseRevision: knowledge.data.notebookRevision,
-                                          expectedContentDigest: entry.contentDigest,
-                                          confirmRemoval: true,
-                                        },
-                                      });
-                                    }}
-                                  >
-                                    Remove
-                                  </Button>
-                                </div>
-                              </Dialog>
-                            </Modal>
-                          </div>
+          <section className="flex flex-col gap-2">
+            <Eyebrow>Notebook pages</Eyebrow>
+            <Card className="p-0 px-4">
+              {pages.map((page) => {
+                const display = readKnowledgePageDisplay(page.path, page.content);
+                return (
+                  <ListRow key={page.id}>
+                    <div
+                      id={knowledgeContentId(workspaceId, page.id)}
+                      tabIndex={-1}
+                      className="min-w-0 flex-1 rounded-ok py-1 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-bold text-fg-strong">{display.title}</p>
+                          <p className="mt-0.5 text-xs text-fg-muted">{display.body}</p>
+                          <p className="mt-1 text-xs text-fg-muted">{page.path}</p>
+                          {display.type ? (
+                            <p className="mt-1 text-xs text-fg-muted">Type: {display.type}</p>
+                          ) : null}
+                          <p className="mt-1 text-xs text-fg-muted">
+                            Content digest: {page.contentDigest}
+                          </p>
                         </div>
-                        {editing?.id === entry.id ? (
-                          <div className="mt-3 flex flex-col gap-3 border-t border-separator pt-3">
-                            <TextField
-                              label="Title"
-                              value={editDraft.title}
-                              onChange={(title) =>
-                                setEditDraft((current) => ({ ...current, title }))
-                              }
-                              isDisabled={entryWriteBlocked}
-                            />
-                            <TextField
-                              label="Content"
-                              value={editDraft.content}
-                              onChange={(content) =>
-                                setEditDraft((current) => ({ ...current, content }))
-                              }
-                              isDisabled={entryWriteBlocked}
-                            />
-                            {failedUpdate ? (
-                              <fieldset disabled={entryWriteBlocked} className="contents">
-                                <ErrorBanner
-                                  message="Couldn't save those changes."
-                                  onRetry={() => saveEdit(failedUpdate)}
-                                />
-                              </fieldset>
-                            ) : null}
-                            <div className="flex gap-2">
+                        <div className="flex shrink-0 gap-2">
+                          <Button
+                            size="sm"
+                            variant="quiet"
+                            aria-label={`Edit ${display.title}`}
+                            isDisabled={entryWriteBlocked}
+                            onPress={() => startEditing(page)}
+                          >
+                            {'Edit '}
+                          </Button>
+                          <Modal
+                            trigger={
                               <Button
                                 size="sm"
-                                isDisabled={entryWriteBlocked || !editCanSave}
-                                onPress={() => saveEdit()}
+                                variant="negative-outline"
+                                aria-label={`Remove ${display.title}`}
+                                isDisabled={entryWriteBlocked}
                               >
-                                Save changes
+                                {'Remove '}
                               </Button>
-                              <Button size="sm" variant="outline" onPress={stopEditing}>
-                                Cancel
-                              </Button>
-                            </div>
-                          </div>
-                        ) : null}
+                            }
+                          >
+                            <Dialog title="Remove knowledge">
+                              <p className="text-sm text-fg-muted">
+                                This removes the page from the workspace knowledge notebook.
+                              </p>
+                              <div className="flex justify-end gap-2">
+                                <Button slot="close" size="sm" variant="quiet">
+                                  Cancel
+                                </Button>
+                                <Button
+                                  slot="close"
+                                  size="sm"
+                                  variant="negative"
+                                  isDisabled={entryWriteBlocked}
+                                  onPress={() => {
+                                    if (!workspaceId || !knowledge.data?.notebookRevision) return;
+                                    removeEntry({
+                                      workspaceId,
+                                      input: {
+                                        requestId: createRequestId(),
+                                        baseRevision: knowledge.data.notebookRevision,
+                                        path: page.path,
+                                        expectedContentDigest: page.contentDigest,
+                                        confirmRemoval: true,
+                                        summary: `Remove ${page.path}`,
+                                      },
+                                    });
+                                  }}
+                                >
+                                  Remove
+                                </Button>
+                              </div>
+                            </Dialog>
+                          </Modal>
+                        </div>
                       </div>
-                    </ListRow>
-                  ))}
-                </Card>
-              </section>
-            )
-          )
+                      {editing?.id === page.id ? (
+                        <div className="mt-3 flex flex-col gap-3 border-t border-separator pt-3">
+                          <TextField
+                            label="Title"
+                            value={editDraft.title}
+                            onChange={(title) => setEditDraft((current) => ({ ...current, title }))}
+                            isDisabled={entryWriteBlocked}
+                          />
+                          <TextField
+                            label="Content"
+                            value={editDraft.content}
+                            onChange={(content) =>
+                              setEditDraft((current) => ({ ...current, content }))
+                            }
+                            isDisabled={entryWriteBlocked}
+                          />
+                          {failedUpdate ? (
+                            <fieldset disabled={entryWriteBlocked} className="contents">
+                              <ErrorBanner
+                                message="Couldn't save those changes."
+                                onRetry={() => saveEdit(failedUpdate)}
+                              />
+                            </fieldset>
+                          ) : null}
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              isDisabled={entryWriteBlocked || !editCanSave}
+                              onPress={() => saveEdit()}
+                            >
+                              Save changes
+                            </Button>
+                            <Button size="sm" variant="outline" onPress={stopEditing}>
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </ListRow>
+                );
+              })}
+            </Card>
+          </section>
         )}
 
         <KnowledgeSourcesPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
@@ -767,13 +782,13 @@ export function KnowledgeScreen() {
           connectionBlocked={connectionBlocked}
           workspaceId={workspaceId}
           knowledgeBaseId={knowledge.data?.knowledgeBaseId}
-          currentEntries={knowledge.isSuccess ? entries : []}
+          currentEntries={knowledge.isSuccess ? pages : []}
         />
         <KnowledgeManagerPanel
           connectionBlocked={connectionBlocked}
           workspaceId={workspaceId}
           knowledgeBaseId={knowledge.data?.knowledgeBaseId}
-          currentEntries={knowledge.isSuccess ? entries : []}
+          currentEntries={knowledge.isSuccess ? pages : []}
         />
 
         {attention.isLoading ? (
@@ -1593,7 +1608,7 @@ function KnowledgeRetrievalPanel({
   workspaceId: string | null;
   connectionBlocked: boolean;
   knowledgeBaseId: string | undefined;
-  currentEntries: KnowledgeItem[];
+  currentEntries: KnowledgeNotebookPage[];
 }) {
   const indexes = useKnowledgeIndexes(workspaceId);
   const retrieve = useRetrieveKnowledge();
@@ -1703,22 +1718,25 @@ function KnowledgeRetrievalPanel({
                 row.reference.scopeId === currentPageScopeId
                   ? currentEntries.find((candidate) => candidate.id === row.reference.objectId)
                   : undefined;
+              const entryDisplay = entry
+                ? readKnowledgePageDisplay(entry.path, entry.content)
+                : null;
               return (
                 <li
                   key={`${row.reference.scopeId}:${row.reference.objectId}`}
                   className="flex flex-col gap-1"
                 >
                   <p className="text-xs text-fg-muted">{row.reference.objectId}</p>
-                  {entry ? (
+                  {entry && entryDisplay ? (
                     <>
-                      <p className="text-sm font-bold text-fg-strong">{entry.title}</p>
+                      <p className="text-sm font-bold text-fg-strong">{entryDisplay.title}</p>
                       <p className="text-sm text-fg">
-                        {entry.content.length > 240
-                          ? `${entry.content.slice(0, 240)}…`
-                          : entry.content}
+                        {entryDisplay.body.length > 240
+                          ? `${entryDisplay.body.slice(0, 240)}…`
+                          : entryDisplay.body}
                       </p>
                       <Link
-                        aria-label={`View current content: ${entry.title}`}
+                        aria-label={`View current content: ${entryDisplay.title}`}
                         href={`#${encodeURIComponent(knowledgeContentId(workspaceId, entry.id))}`}
                         className="text-sm text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus"
                       >
@@ -1756,7 +1774,7 @@ function KnowledgeManagerPanel({
   workspaceId: string | null;
   connectionBlocked: boolean;
   knowledgeBaseId: string | undefined;
-  currentEntries: KnowledgeItem[];
+  currentEntries: KnowledgeNotebookPage[];
 }) {
   const answer = useAnswerKnowledgeManager();
   const suggest = useSuggestKnowledgeRepairs();
@@ -1902,6 +1920,9 @@ function KnowledgeManagerPanel({
                         (candidate) => candidate.id === citation.reference.objectId
                       )
                     : undefined;
+                const entryDisplay = entry
+                  ? readKnowledgePageDisplay(entry.path, entry.content)
+                  : null;
                 return (
                   <li key={`${citation.reference.scopeId}:${citation.reference.objectId}`}>
                     <p className="text-sm font-bold text-fg-strong">{citation.title}</p>
@@ -1922,9 +1943,9 @@ function KnowledgeManagerPanel({
                       <p className="text-xs text-fg-muted">{evidence.referenceUri}</p>
                     ) : null}
                     <p className="text-sm text-fg">{citation.excerpt}</p>
-                    {entry ? (
+                    {entry && entryDisplay ? (
                       <Link
-                        aria-label={`View current content: ${citation.title}`}
+                        aria-label={`View current content: ${entryDisplay.title}`}
                         href={`#${encodeURIComponent(knowledgeContentId(workspaceId, entry.id))}`}
                         className="text-sm text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus"
                       >
@@ -1950,16 +1971,4 @@ function KnowledgeManagerPanel({
       {healthResult ? <p className="text-sm text-fg">{healthResult.summary}</p> : null}
     </section>
   );
-}
-
-function groupByKind(entries: KnowledgeItem[]): Record<KnowledgeItem['kind'], KnowledgeItem[]> {
-  const groups: Record<KnowledgeItem['kind'], KnowledgeItem[]> = {
-    preference: [],
-    'project-context': [],
-    'task-summary': [],
-  };
-  for (const entry of entries) {
-    groups[entry.kind].push(entry);
-  }
-  return groups;
 }

@@ -10,6 +10,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { useWorkspaceStore } from '../workspace-store';
 import { workspaceKeys } from './data';
 import { KnowledgeScreen } from './KnowledgeScreen';
+import { knowledgeNotebookPageFixture } from './knowledge-test-fixtures';
 
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
 const WORKSPACE_ID = allocateEntityId('ws');
@@ -19,25 +20,25 @@ const OTHER_KNOWLEDGE_BASE_ID = allocateEntityId('kb');
 const OWNER_USER_ID = allocateEntityId('usr');
 const WORKSPACE_PAGE_SCOPE = `page/workspace/${WORKSPACE_ID}/${KNOWLEDGE_BASE_ID}`;
 const QUESTION = 'When does the reading room open?';
-const PAGE = {
+const PAGE = knowledgeNotebookPageFixture({
   id: 'reading-room',
-  contentDigest: `sha256:${'a'.repeat(64)}`,
-  kind: 'preference' as const,
   title: 'Reading room opening hours',
-  content: 'The reading room opens at 09:00 on weekdays. Bring the blue access card.',
-  createdAt: TIMESTAMP,
-  updatedAt: TIMESTAMP,
-};
-const UNRELATED_PAGE = {
-  ...PAGE,
+  body: 'The reading room opens at 09:00 on weekdays. Bring the blue access card.',
+  workspaceId: WORKSPACE_ID,
+  timestamp: TIMESTAMP,
+  contentDigest: `sha256:${'a'.repeat(64)}`,
+});
+const UNRELATED_PAGE = knowledgeNotebookPageFixture({
   id: 'unrelated-page',
-  contentDigest: `sha256:${'b'.repeat(64)}`,
   title: 'Unrelated current page title',
-  content: 'Unrelated current page content must not become a citation.',
-};
+  body: 'Unrelated current page content must not become a citation.',
+  workspaceId: WORKSPACE_ID,
+  timestamp: TIMESTAMP,
+  contentDigest: `sha256:${'b'.repeat(64)}`,
+});
 const CITATION = {
   reference: { scopeId: WORKSPACE_PAGE_SCOPE, objectId: PAGE.id },
-  kind: PAGE.kind,
+  kind: 'preference',
   title: PAGE.title,
   excerpt: 'The reading room opens at 09:00 on weekdays.',
 };
@@ -88,12 +89,12 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
             })),
           };
           break;
-        case operationHttpPath('knowledge.list'):
+        case operationHttpPath('knowledge.notebook.list'):
           if (pageRead) return pageRead();
           body = {
             knowledgeBaseId: KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [UNRELATED_PAGE, PAGE],
+            pages: [UNRELATED_PAGE, PAGE],
           };
           break;
         case operationHttpPath('knowledge.indexes'):
@@ -194,12 +195,12 @@ describe('Knowledge Manager answer citations', () => {
     );
     expect(target).not.toBeNull();
     expect(target).toHaveTextContent(PAGE.title);
-    expect(target).toHaveTextContent(PAGE.content);
+    expect(target).toHaveTextContent(PAGE.body);
     expect(target).not.toHaveTextContent(UNRELATED_PAGE.title);
     expect(manager).not.toContainElement(target);
     expect(within(manager).getAllByRole('link')).toHaveLength(1);
     expect(within(manager).queryByText(UNRELATED_PAGE.title)).not.toBeInTheDocument();
-    expect(within(manager).queryByText(UNRELATED_PAGE.content)).not.toBeInTheDocument();
+    expect(within(manager).queryByText(UNRELATED_PAGE.body)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -229,9 +230,9 @@ describe('Knowledge Manager answer citations', () => {
 
     expect(within(manager).queryByRole('link')).not.toBeInTheDocument();
     expect(within(manager).queryByText(PAGE.title)).not.toBeInTheDocument();
-    expect(within(manager).queryByText(PAGE.content)).not.toBeInTheDocument();
+    expect(within(manager).queryByText(PAGE.body)).not.toBeInTheDocument();
     expect(within(manager).queryByText(UNRELATED_PAGE.title)).not.toBeInTheDocument();
-    expect(within(manager).queryByText(UNRELATED_PAGE.content)).not.toBeInTheDocument();
+    expect(within(manager).queryByText(UNRELATED_PAGE.body)).not.toBeInTheDocument();
   });
 
   it('does not invent citations from available pages when the answer returns none', async () => {
@@ -240,7 +241,7 @@ describe('Knowledge Manager answer citations', () => {
 
     expect(within(manager).queryByRole('link')).not.toBeInTheDocument();
     expect(within(manager).queryByText(PAGE.title)).not.toBeInTheDocument();
-    expect(within(manager).queryByText(PAGE.content)).not.toBeInTheDocument();
+    expect(within(manager).queryByText(PAGE.body)).not.toBeInTheDocument();
     expect(within(manager).queryByText(UNRELATED_PAGE.title)).not.toBeInTheDocument();
   });
 
@@ -262,10 +263,18 @@ describe('Knowledge Manager answer citations', () => {
     });
 
     expect(
-      fixture.queryClient.getQueryData<{ items: (typeof PAGE)[] }>(
+      fixture.queryClient.getQueryData<{ pages: (typeof PAGE)[] }>(
         workspaceKeys.knowledge(WORKSPACE_ID)
-      )?.items
-    ).toContainEqual(PAGE);
+      )?.pages
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: PAGE.id,
+          path: PAGE.path,
+          contentDigest: PAGE.contentDigest,
+        }),
+      ])
+    );
     await waitFor(() => expect(within(manager).queryByRole('link')).not.toBeInTheDocument());
     expect(within(manager).getByText('Current content unavailable.')).toBeVisible();
   });
