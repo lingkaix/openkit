@@ -3,13 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { describe, expect, it, vi } from 'vitest';
+import { listServerAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
+  listServerCapabilityCalls,
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { type ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -24,7 +27,7 @@ import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 
 const requestId = '12345678-1234-4234-8234-123456789abc';
 /** Actual public routes, stock synthetic models and Workspace ledger; no ledger double. */
-function fixture(missingKey = false) {
+function fixture(missingKey = false, enabled = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-lineage-'));
   const store = createDemoStore({ dataRoot });
   const workspaceId = store.createWorkspace('Lineage').id;
@@ -94,7 +97,7 @@ function fixture(missingKey = false) {
     ]),
     gatewayConfig: {
       schemaVersion: 1,
-      enabled: true,
+      enabled,
       logicalModels: [
         {
           id: 'tier',
@@ -152,6 +155,173 @@ function fixture(missingKey = false) {
     },
   };
 }
+
+describe('public Gateway decision Audit call linkage', () => {
+  for (const endpoint of ['responses', 'chat/completions']) {
+    for (const attributed of [true, false]) {
+      it(`${endpoint} ${attributed ? 'Workspace' : 'Server'} decision links the exact assigned call`, async () => {
+        const f = fixture();
+        f.primary.setResponses([fauxAssistantMessage('served')]);
+        try {
+          const response = await f.post(endpoint, false, attributed);
+          expect(response.status, await response.text()).toBe(200);
+          const calls = attributed ? f.read().calls : listServerCapabilityCalls(f.coreDb);
+          expect(calls).toHaveLength(1);
+          expect(calls[0]).toMatchObject({ status: 'succeeded' });
+          const decisions = listServerPermissionDecisions(f.coreDb);
+          expect(decisions).toHaveLength(1);
+          const decision = decisions[0];
+          expect(decision).toMatchObject({
+            action: `llm.gateway.${endpoint === 'responses' ? 'responses' : 'chat_completions'}`,
+            result: 'allow',
+            reasonCode: 'gateway_allowed',
+            enforcementPoint: 'llm.gateway.policy',
+          });
+          const audits = listServerAuditEvents(f.coreDb).filter(
+            (event) => event.permissionDecisionId === decision?.decisionId
+          );
+          expect(audits).toHaveLength(1);
+          expect(audits[0]).toMatchObject({
+            id: decision?.auditEventId,
+            action: 'permission.decision',
+            capabilityCallId: calls[0]?.id,
+            permissionDecisionId: decision?.decisionId,
+          });
+          expect(decision?.contextSummary).toMatchObject({ capabilityCallId: calls[0]?.id });
+          expect(f.primary.state.callCount).toBe(1);
+          expect(f.backup.state.callCount).toBe(0);
+        } finally {
+          f.close();
+        }
+      });
+
+      it(`${endpoint} ${attributed ? 'Workspace' : 'Server'} Audit write failure blocks credentials and Provider effects and settles opened calls`, async () => {
+        const f = fixture(true);
+        f.backup.setResponses([fauxAssistantMessage('must not run')]);
+        try {
+          // Fail only the required allowed-decision Audit crossing, leaving call closeout writable.
+          f.coreDb.sqlite.exec(`
+            CREATE TRIGGER fail_gateway_decision_audit
+            BEFORE INSERT ON audit_events
+            WHEN NEW.action = 'permission.decision' AND EXISTS (
+              SELECT 1 FROM permission_decisions
+              WHERE decision_id = NEW.permission_decision_id
+                AND enforcement_point = 'llm.gateway.policy' AND result = 'allow'
+            )
+            BEGIN
+              SELECT RAISE(ABORT, 'synthetic required Gateway Audit write failure');
+            END;
+          `);
+          const response = await f.post(endpoint, false, attributed);
+          await response.text();
+          expect.soft(response.status).toBeGreaterThanOrEqual(400);
+          // Existing model readiness may inspect presence without a governed call context.
+          expect.soft(f.credentialResolver.mock.calls.filter(([, context]) => context)).toEqual([]);
+          expect.soft(f.primary.state.callCount).toBe(0);
+          expect.soft(f.backup.state.callCount).toBe(0);
+          const calls = attributed ? f.read().calls : listServerCapabilityCalls(f.coreDb);
+          expect(calls.length).toBeLessThanOrEqual(1);
+          for (const call of calls) expect.soft(call.status).toBe('failed');
+          expect(listServerPermissionDecisions(f.coreDb)).toEqual([]);
+          expect(
+            listServerAuditEvents(f.coreDb).filter(
+              (event) => event.action === 'permission.decision'
+            )
+          ).toEqual([]);
+        } finally {
+          f.close();
+        }
+      });
+    }
+
+    it(`${endpoint} disabled policy denies without a call link or Provider effects`, async () => {
+      const f = fixture(true, false);
+      try {
+        const response = await f.post(endpoint);
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ error: { code: 'gateway_disabled' } });
+        const decisions = listServerPermissionDecisions(f.coreDb);
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0]).toMatchObject({ result: 'deny', reasonCode: 'gateway_disabled' });
+        expect(decisions[0]?.contextSummary).not.toHaveProperty('capabilityCallId');
+        const audits = listServerAuditEvents(f.coreDb).filter(
+          (event) => event.permissionDecisionId === decisions[0]?.decisionId
+        );
+        expect(audits).toHaveLength(1);
+        expect(audits[0]).toMatchObject({
+          id: decisions[0]?.auditEventId,
+          capabilityCallId: null,
+        });
+        expect(f.read().calls).toEqual([]);
+        expect(listServerCapabilityCalls(f.coreDb)).toEqual([]);
+        expect(f.credentialResolver).not.toHaveBeenCalled();
+        expect(f.primary.state.callCount).toBe(0);
+        expect(f.backup.state.callCount).toBe(0);
+      } finally {
+        f.close();
+      }
+    });
+
+    it(`${endpoint} denied Workspace access creates no call or false Audit join`, async () => {
+      const f = fixture(true);
+      try {
+        const response = await f.app.request(`/v1/${endpoint}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'tier',
+            ...(endpoint === 'responses'
+              ? { input: 'Hello' }
+              : { messages: [{ role: 'user', content: 'Hello' }] }),
+            metadata: { openkit: { workspaceId: 'ws_00000000-0000-7000-8000-000000000099' } },
+          }),
+        });
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
+        expect(f.read().calls).toEqual([]);
+        expect(listServerCapabilityCalls(f.coreDb)).toEqual([]);
+        for (const event of listServerAuditEvents(f.coreDb))
+          expect(event.capabilityCallId).toBeNull();
+        for (const decision of listServerPermissionDecisions(f.coreDb))
+          expect(decision.contextSummary).not.toHaveProperty('capabilityCallId');
+        expect(f.credentialResolver).not.toHaveBeenCalled();
+        expect(f.primary.state.callCount).toBe(0);
+        expect(f.backup.state.callCount).toBe(0);
+      } finally {
+        f.close();
+      }
+    });
+
+    it(`${endpoint} reused request creates no new call and cannot link a new decision to the earlier call`, async () => {
+      const f = fixture();
+      f.primary.setResponses([fauxAssistantMessage('served')]);
+      try {
+        expect((await f.post(endpoint)).status).toBe(200);
+        const before = f.read();
+        const priorDecisionIds = new Set(
+          listServerPermissionDecisions(f.coreDb).map((decision) => decision.decisionId)
+        );
+        const priorAuditIds = new Set(listServerAuditEvents(f.coreDb).map((event) => event.id));
+        const response = await f.post(endpoint);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({
+          error: { code: 'gateway_provider_request_invalid' },
+        });
+        expect(f.read()).toEqual(before);
+        for (const event of listServerAuditEvents(f.coreDb))
+          if (!priorAuditIds.has(event.id)) expect(event.capabilityCallId).toBeNull();
+        for (const decision of listServerPermissionDecisions(f.coreDb))
+          if (!priorDecisionIds.has(decision.decisionId))
+            expect(decision.contextSummary).not.toHaveProperty('capabilityCallId');
+        expect(f.primary.state.callCount).toBe(1);
+        expect(f.backup.state.callCount).toBe(0);
+        expect(f.credentialResolver).not.toHaveBeenCalled();
+      } finally {
+        f.close();
+      }
+    });
+  }
+});
 
 describe('public durable logical Gateway lineage', () => {
   it('retains a public call without Workspace metadata in the Server ledger and keeps Core open', async () => {
