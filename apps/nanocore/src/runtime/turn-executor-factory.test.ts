@@ -4575,6 +4575,9 @@ describe('createConfiguredTurnExecutor', () => {
         ),
       });
       expect(JSON.stringify(preparation.error)).not.toContain(coreDb.dataRoot);
+      expect((preparation.error as Error).message).toContain(
+        'package-binding-lineage/workspace-deleted'
+      );
       expect(() => readFileSync(deletedDb)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
       expect(effects).toEqual(beforeEffects);
     } finally {
