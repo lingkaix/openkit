@@ -5919,6 +5919,45 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
     expect(transport.bodies).toHaveLength(0);
   });
 
+  it('keeps a fresh full observation when an overlapping cold-cache admission read fails', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    transport.quota.rate_limit_reset_credits.available_count = 0;
+    const firstStarted = deferredGate();
+    const secondStarted = deferredGate();
+    const requests: Array<{
+      resolve: (response: Response) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    transport.fetchSpy.mockImplementation((input) => {
+      expect(String(input)).toBe('https://chatgpt.com/backend-api/wham/usage');
+      return new Promise<Response>((resolve, reject) => {
+        requests.push({ resolve, reject });
+        if (requests.length === 1) firstStarted.resolve();
+        if (requests.length === 2) secondStarted.resolve();
+      });
+    });
+    const first = fixture.manager.codexInferenceAllowed(fixture.pair);
+    await firstStarted.promise;
+    const second = fixture.manager.codexInferenceAllowed(fixture.pair);
+    await secondStarted.promise;
+
+    // A publishes a successful current-material reading before B's older in-flight read fails.
+    requests[0]!.resolve(Response.json(transport.quota));
+    expect(await first).toBe(false);
+    expect(await fixture.manager.getCodexQuota(fixture.pair)).toMatchObject({
+      observedAt: DEFAULT_TIME,
+      quota: {
+        availability: 'available',
+        windows: [{ limitWindowSeconds: 604800, usedPercent: 100 }],
+      },
+    });
+    expect(transport.fetchSpy).toHaveBeenCalledTimes(2);
+    requests[1]!.reject(new TypeError('Synthetic overlapping usage read failure.'));
+    expect(await second).toBe(false);
+    expect(transport.fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('spends one weekly reset for settled quota and guards the same window on the next request', async () => {
     const fixture = await codexManagementFixture();
     const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
