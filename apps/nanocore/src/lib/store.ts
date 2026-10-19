@@ -292,6 +292,7 @@ export type CommandRequestName =
   | 'user.disable'
   | 'knowledge.notebook.create'
   | 'knowledge.notebook.delete'
+  | 'knowledge.package.import'
   | 'knowledge.notebook.update'
   | 'knowledge.notebook.restore'
   | 'knowledge.source.register'

@@ -243,6 +243,7 @@ import {
   openWorkspaceDb,
   type WorkspaceDb,
 } from './storage/db.js';
+import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -2466,6 +2467,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     setPendingRequestAttentionObserver(sharedStore, channelServices.attentionRaised);
     channelServices.recoverAttention();
   }
+
+  registerKnowledgePackageRoutes({
+    app,
+    coreDb: options.coreDb,
+    requestStore,
+    repositoryWorkspaceDb,
+    inflightCommands,
+    workspaceMutationAdmission,
+    dataRoot,
+    fileAdmission,
+    runtimeConfigManager,
+  });
 
   registerArtifactFileRoutes({
     app,

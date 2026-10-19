@@ -7,6 +7,146 @@
   },
   "x-openkit-protocol-version": "0.6.0",
   "paths": {
+    "/api/app/operations/knowledge.package.export": {
+      "post": {
+        "operationId": "knowledge.package.export",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Export the currently authorized Workspace Knowledge Base as a streamed package.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Knowledge package transfer completed.",
+            "content": {
+              "application/x-tar": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/knowledge.package.import": {
+      "post": {
+        "operationId": "knowledge.package.import",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Import verified package bytes into a bootstrap-only Workspace Knowledge Base.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-tar": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Knowledge package transfer completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string",
+                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "knowledgeBaseId": {
+                      "type": "string",
+                      "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    "notebookRevision": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "knowledgeBaseId",
+                    "notebookRevision"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/caller.read": {
       "post": {
         "operationId": "caller.read",
@@ -149103,5 +149243,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:b120e7e7640664e0787d6d0a0e7fc326db0212109f88b14e2cbb6fe2c85d9b17"
+  "x-openkit-source-digest": "sha256:a35c0306d499c53afde36bf4d281c0a99395ff3bf2da9e2cbee82cd951acbb84"
 }
