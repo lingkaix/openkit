@@ -641,6 +641,8 @@ export class ProviderSubscriptionAccountManager {
       readonly signal?: AbortSignal | undefined;
       readonly trigger?: 'manual' | 'weekly' | 'expiring';
       readonly weeklyResetsAt?: string;
+      /** Failed inference material, checked while holding this same effect fence. */
+      readonly expectedVersion?: string;
     } = {}
   ): Promise<CodexAccountResetResult> {
     const exactPair = requireCodexPair(this.requirePair(pair));
@@ -649,6 +651,12 @@ export class ProviderSubscriptionAccountManager {
       options.signal?.throwIfAborted();
       const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(exactPair));
       if (inspection.kind !== 'live') throw providerUnavailableError();
+      if (
+        options.expectedVersion !== undefined &&
+        options.expectedVersion !==
+          `${inspection.entry.referenceId}:${inspection.entry.currentVersion}`
+      )
+        throw providerUnavailableError();
       const record = inspection.record;
       const prefix = codexResetResourcePrefix(exactPair);
       const prior = this.coreDb.sqlite
@@ -671,10 +679,10 @@ export class ProviderSubscriptionAccountManager {
       }
       const pending = this.coreDb.sqlite
         .prepare(`SELECT a.request_id AS requestId FROM audit_events a
-        WHERE a.action IN (${CODEX_RESET_ACTIONS.map(() => '?').join(',')}) AND a.resource LIKE ? AND a.outcome = 'unknown'
+        WHERE a.action IN (${CODEX_RESET_ACTIONS.map(() => '?').join(',')}) AND substr(a.resource, 1, ?) = ? AND a.outcome = 'unknown'
           AND NOT EXISTS (SELECT 1 FROM audit_events b WHERE b.request_id = a.request_id AND b.action = a.action AND b.rowid > a.rowid)
         LIMIT 1`)
-        .get(...CODEX_RESET_ACTIONS, `${prefix}%`) as { requestId: string } | undefined;
+        .get(...CODEX_RESET_ACTIONS, prefix.length, prefix) as { requestId: string } | undefined;
       if (pending && pending.requestId !== redeemRequestId) throw resetConflictError();
       const credential = this.resolveCredential(inspection.entry.referenceId);
       if (typeof credential.accountId !== 'string' || !credential.accountId)
@@ -704,11 +712,17 @@ export class ProviderSubscriptionAccountManager {
             (options.weeklyResetsAt && options.weeklyResetsAt !== weekly.resetsAt)
           )
             return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
+          const suffix = `:${encodeURIComponent(weekly.resetsAt)}`;
           const previousWindow = this.coreDb.sqlite
-            .prepare(`SELECT 1 FROM audit_events WHERE action = ? AND resource LIKE ? LIMIT 1`)
+            .prepare(
+              `SELECT 1 FROM audit_events WHERE action = ? AND substr(resource, 1, ?) = ? AND substr(resource, -?) = ? LIMIT 1`
+            )
             .get(
               'provider_subscription.reset.weekly',
-              `${prefix}%:${encodeURIComponent(weekly.resetsAt)}`
+              prefix.length,
+              prefix,
+              suffix.length,
+              suffix
             );
           if (previousWindow) return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
         }
@@ -761,13 +775,18 @@ export class ProviderSubscriptionAccountManager {
   /** Runs only after the Gateway has exhausted its eligible failover targets. */
   public async tryWeeklyCodexReset(
     pair: ProviderSubscriptionAccountPair,
-    signal?: AbortSignal
+    signal: AbortSignal | undefined,
+    expectedVersion: string
   ): Promise<boolean> {
     if (pair.subscriptionProviderId !== 'openai-codex') return false;
     const account = await this.getStatus(pair);
     if (account.codexAutoUseWeeklyReset === false) return false;
     try {
-      const result = await this.useCodexReset(pair, randomUUID(), { signal, trigger: 'weekly' });
+      const result = await this.useCodexReset(pair, randomUUID(), {
+        signal,
+        trigger: 'weekly',
+        expectedVersion,
+      });
       return result.outcome === 'reset';
     } catch (error) {
       if (
@@ -782,15 +801,19 @@ export class ProviderSubscriptionAccountManager {
     }
   }
 
-  /** One opt-in expiry pass; concurrent passes do not queue duplicate background spends. */
+  /** One enabled-account expiry pass; concurrent passes do not queue duplicate background spends. */
   public async checkExpiringCodexResets(signal?: AbortSignal): Promise<void> {
     if (this.codexExpiryCheck) return this.codexExpiryCheck;
     const pass = (async () => {
-      const accounts = await this.listAccounts('openai-codex');
-      for (const account of accounts) {
+      for (const accountSlotId of this.listAccountSlots('openai-codex')) {
         if (signal?.aborted) return;
-        if (account.codexAutoUseExpiringReset === false || account.status !== 'logged_in') continue;
         try {
+          const account = await this.getStatus({
+            subscriptionProviderId: 'openai-codex',
+            accountSlotId,
+          });
+          if (account.codexAutoUseExpiringReset === false || account.status !== 'logged_in')
+            continue;
           await this.useCodexReset(account, randomUUID(), { signal, trigger: 'expiring' });
         } catch {
           /* A failed or unknown account check cannot spend again or affect another account. */
@@ -2044,15 +2067,8 @@ export class ProviderSubscriptionAccountManager {
     return backend;
   }
 
-  /**
-   * Reads every strict account record for one provider in slot order.
-   *
-   * @param providerId Supported subscription provider.
-   * @returns Strict durable account records.
-   */
-  private readProviderRecords(
-    providerId: SubscriptionProviderId
-  ): ProviderSubscriptionAccountRecord[] {
+  /** Lists existing slot names only; each caller must still use the ordinary strict pair reader. */
+  private listAccountSlots(providerId: SubscriptionProviderId): string[] {
     const accountsDirectory = this.accountsDirectory(providerId);
     this.assertSafeAncestors(accountsDirectory);
     const stat = lstatOrNull(accountsDirectory);
@@ -2063,21 +2079,26 @@ export class ProviderSubscriptionAccountManager {
       throw persistenceError();
     }
 
-    return readdirSync(accountsDirectory)
-      .sort()
-      .map((accountSlotId) => {
-        if (!ProviderSubscriptionAccountSlotIdSchema.safeParse(accountSlotId).success) {
-          throw persistenceError();
-        }
-        const record = this.readAccount({
-          accountSlotId,
-          subscriptionProviderId: providerId,
-        });
-        if (!record) {
-          throw persistenceError();
-        }
-        return record;
+    return readdirSync(accountsDirectory).sort();
+  }
+
+  /** Reads all strict records; public inventory retains its all-or-nothing validity boundary. */
+  private readProviderRecords(
+    providerId: SubscriptionProviderId
+  ): ProviderSubscriptionAccountRecord[] {
+    return this.listAccountSlots(providerId).map((accountSlotId) => {
+      if (!ProviderSubscriptionAccountSlotIdSchema.safeParse(accountSlotId).success) {
+        throw persistenceError();
+      }
+      const record = this.readAccount({
+        accountSlotId,
+        subscriptionProviderId: providerId,
       });
+      if (!record) {
+        throw persistenceError();
+      }
+      return record;
+    });
   }
 
   /**

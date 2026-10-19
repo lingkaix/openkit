@@ -73,7 +73,7 @@ const AccountBaseShape = {
   accountLabel: z.string().min(1).optional(),
   planLabel: z.string().min(1).optional(),
   inferenceObservation: InferenceObservationSchema.optional(),
-  // Absence preserves the Codex defaults: false, false, true. Readers do not materialize them.
+  // Stored absence means weekly on, expiry on and credits off; native account reads project effective values.
   codexAutoUseWeeklyReset: z.boolean().optional(),
   codexAutoUseExpiringReset: z.boolean().optional(),
   codexUseCredits: z.boolean().optional(),

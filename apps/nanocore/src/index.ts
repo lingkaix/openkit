@@ -733,7 +733,7 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
   intervalMs: SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS,
 });
 
-/** The account owner joins overlapping passes; the process owns this opt-in timer and cancellation. */
+/** The account owner joins overlapping enabled-account passes; the process owns timer cancellation. */
 const codexResetMaintenanceAbort = new AbortController();
 const codexResetMaintenance = setInterval(() => {
   void providerSubscriptionAccountManager

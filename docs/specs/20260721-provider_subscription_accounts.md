@@ -60,7 +60,7 @@ NanoCore does not depend on Codex app-server, `CODEX_HOME`, Codex-managed `auth.
 
 ### Non-goals
 
-- Do not build user-owned account slots, organization account sharing, an account-manager load balancer, or a general background quota scheduler. The bounded opt-in Codex reset-expiry check below is the only periodic quota consumer. Gateway may independently advance across ordered logical-model route members that reference distinct Provider profiles and slots under its own [pre-commit](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) failure contract.
+- Do not build user-owned account slots, organization account sharing, an account-manager load balancer, or a general background quota scheduler. The bounded enabled-account Codex reset-expiry check below is the only periodic quota consumer. Gateway may independently advance across ordered logical-model route members that reference distinct Provider profiles and slots under its own [pre-commit](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) failure contract.
 - Do not purchase, cancel, or modify a vendor subscription.
 - Do not claim that local logout revokes a token remotely; it only removes OpenKit's local authority to use that credential.
 - Do not scrape provider web pages or mutate provider billing, top-up, or subscription state. Private interfaces remain limited to the release-coupled quota readers and the explicitly accepted Codex banked-reset endpoints below.
@@ -218,11 +218,13 @@ POST /api/app/operations/provider-subscription.login-cancel
 POST /api/app/operations/provider-subscription.account-logout
 POST /api/app/operations/provider-subscription.account-quota
 POST /api/app/operations/provider-subscription.account-auto-topup
+POST /api/app/operations/provider-subscription.codex-settings
+POST /api/app/operations/provider-subscription.account-use-reset
 ```
 
-The canonical operation ids are the eleven `provider-subscription.*` identities listed above, declared once in `packages/app-api-schemas/src/provider-subscription-operations.ts`.
+The canonical operation ids are the thirteen `provider-subscription.*` identities listed above, declared once in `packages/app-api-schemas/src/provider-subscription-operations.ts`.
 
-All provider-subscription operations require deployment-admin authority and register through the canonical App API operation catalog. Inventory, account list, status, quota, and auto-top-up are read operations; create, update, delete, login, cancel, and logout are mutations. `provider-subscription.account-delete` succeeds with `204`, an empty body, and no response `Content-Type`; every other lifecycle read or mutation succeeds with `200`; quota normally returns its typed union with `200`. Every operation uses a complete logical JSON input; create, update, login, and cancel retain the strict payload fields defined below. Logout accepts only the complete logical provider and slot selectors. Provider ids and slot ids are validated before storage or credential access. For auto-top-up, the xAI-only capability check is part of request validation and precedes account reconciliation; a valid non-xAI pair yields `invalid_request` regardless of its metadata state.
+All provider-subscription operations require deployment-admin authority and register through the canonical App API operation catalog. Inventory, account list, status, quota, and auto-top-up are read operations; create, update, delete, login, cancel, logout, Codex settings and reset consumption are mutations. `provider-subscription.account-delete` succeeds with `204`, an empty body, and no response `Content-Type`; every other lifecycle read or mutation succeeds with `200`; quota normally returns its typed union with `200`. Every operation uses a complete logical JSON input; create, update, login, and cancel retain the strict payload fields defined below. Logout accepts only the complete logical provider and slot selectors. Provider ids and slot ids are validated before storage or credential access. For auto-top-up, the xAI-only capability check is part of request validation and precedes account reconciliation; a valid non-xAI pair yields `invalid_request` regardless of its metadata state.
 
 Provider inventory is the only account-state-free operation. The other ten ordinary operations—account list, create, update, delete, status, login start, login cancellation, logout, quota, and auto-top-up—must apply the failed-closed metadata, whole-backend-inventory, and exact Core-row checks defined by this spec before account existence, conflict, lifecycle, or quota handling. A pair-addressed operation checks its requested pair; an account list checks every account-directory pair for that provider and every live or revoked backend inventory row whose non-secret owner metadata names that provider. If any checked current state or historical row violates the ordinary validity invariant above, the entire operation fails, and an account list must not return a partial array that omits the pair. Completed historical tombstones are validated but never projected as accounts. Delete and logout have only the narrow exception that the exact backend-recognized revoked tombstone for the current binding, together with its exact same-version Core row, may continue the already-started removal sequence; no other operation may treat that prefix as an ordinarily valid account.
 
@@ -326,7 +328,7 @@ Public account payloads must not contain credential values, raw provider account
 
 ## Quota Capability
 
-Quota is an on-demand read capability separate from login state and inference. Every quota response uses this envelope:
+The App API quota read is separate from login state. Codex controls may reuse a fresh observation for their bounded dispatch and expiry checks. Every quota response uses this envelope:
 
 ```ts
 type SubscriptionAccountObservation = {
@@ -512,11 +514,11 @@ When any ordinary account operation encounters invalid metadata, a binding misma
 
 ## Current Implementation Projection
 
-`packages/config-schema` now owns the closed `openai-codex | xai` subscription-provider identity, bounded account-slot identity, strict `extensions.openkit.subscriptionAccount` profile field, and deterministic provider-family classification. `@openkit/app-api-schemas`, NanoCore's checked operation catalog, generated OpenAPI, and `client.operations[id]` for the provider-subscription family expose the provider-neutral contract and all eleven accepted operations.
+`packages/config-schema` now owns the closed `openai-codex | xai` subscription-provider identity, bounded account-slot identity, strict `extensions.openkit.subscriptionAccount` profile field, and deterministic provider-family classification. `@openkit/app-api-schemas`, NanoCore's checked operation catalog, generated OpenAPI, and `client.operations[id]` for the provider-subscription family expose the provider-neutral contract and all thirteen accepted operations.
 
 `apps/nanocore/src/app.ts` composes the provider-subscription manager and routes. The manager strictly reads and atomically replaces version-1 `account.json`, classifies each pair against the exact generic Core reference and encrypted-file Vault authorities, fences same-pair mutations while permitting cross-pair concurrency, and supplies one slot-scoped stock pi-ai `CredentialStore` and `Models` runtime per pair with ambient environment and file authentication disabled. Stock pi-ai owns both providers' device-code login, refresh through `CredentialStore.modify`, logout, and authenticated inference; OpenKit retains interaction cancellation, Vault custody, account projection, authorization, and audit.
 
-The seven server `AuditEvent` actions are active through the composed manager, and the existing audited `vault.resolve` path remains the credential-read producer. The unified Gateway resolves the explicit pair before dispatch and uses stock pi-ai for native Codex Responses and reviewed xAI inference. The administrator CLI derives the same eleven operations from their shared definitions through its existing generic `ops call` path without a provider-specific command branch.
+The lifecycle and Codex reset server `AuditEvent` actions are active through the composed manager, and the existing audited `vault.resolve` path remains the credential-read producer. The unified Gateway resolves the explicit pair before dispatch and uses stock pi-ai for native Codex Responses and reviewed xAI inference. The administrator CLI derives the same thirteen operations from their shared definitions through its existing generic `ops call` path without a provider-specific command branch.
 
 The Web Gateway destination's Provider cards now project the fixed Codex and xAI inventory and the complete provider-scoped account lifecycle through `client.operations[id]` for the provider-subscription family, including slot creation, rename, deletion, device-code login, polling, cancellation, logout, refresh, and quota posture. Generic API-key provider profiles use the separate Vault-owned `vault.provider-api-key-set` operation and do not enter this subscription-account state machine.
 

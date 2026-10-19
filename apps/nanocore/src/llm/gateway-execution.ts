@@ -140,6 +140,11 @@ export async function executeGatewayPlan<T>(input: {
   autoFailover: boolean;
   signal: AbortSignal;
   attempt(selection: GatewaySelection, context: GatewayAttemptContext): Promise<T>;
+  /** Read-only eligibility prevents an unrecoverable member from discarding a recoverable failure. */
+  quotaRecoveryEligible?(
+    selection: GatewaySelection,
+    context: Pick<GatewayAttemptContext, 'signal' | 'deadline'>
+  ): Promise<boolean>;
   /** One confirmed account reset may recover a settled quota failure only after route exhaustion. */
   recoverSettledQuota?(
     selection: GatewaySelection,
@@ -246,7 +251,13 @@ export async function executeGatewayPlan<T>(input: {
           )
             throw new GatewayAttemptFailure(failure, error);
           if (expired || clock.now() >= deadline) throw new GatewayAttemptFailure(failure, error);
-          if (failure.kind === 'quota_exhausted') quotaSelection = selection;
+          if (
+            failure.kind === 'quota_exhausted' &&
+            input.recoverSettledQuota &&
+            (!input.quotaRecoveryEligible ||
+              (await input.quotaRecoveryEligible(selection, { signal: input.signal, deadline })))
+          )
+            quotaSelection = selection;
           if (
             !resetRetry &&
             decision.retry &&

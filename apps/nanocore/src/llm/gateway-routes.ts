@@ -2660,6 +2660,36 @@ export async function dispatchLogicalModel<T>(input: {
   const subscriptionVersions = new Map<string, string | undefined>();
   return executeGatewayPlan({
     selections,
+    quotaRecoveryEligible: async (selection, execution) => {
+      const provider = providers.get(selection.route.id);
+      const manager = input.providerSubscriptionAccountManager;
+      if (
+        !manager ||
+        provider?.subscriptionProviderId !== 'openai-codex' ||
+        !provider.accountSlotId
+      )
+        return false;
+      const pair = {
+        subscriptionProviderId: 'openai-codex' as const,
+        accountSlotId: provider.accountSlotId,
+      };
+      const handle = await manager.getPairHandle(pair);
+      const version = subscriptionVersions.get(selection.route.id);
+      if (!version || (await handle.getCredentialVersion()) !== version) return false;
+      const account = await manager.getStatus(pair);
+      if (account.codexAutoUseWeeklyReset === false) return false;
+      const remaining = execution.deadline - (input.clock?.now() ?? Date.now());
+      if (remaining <= 0 || execution.signal.aborted) return false;
+      const signal = AbortSignal.any([execution.signal, AbortSignal.timeout(Math.ceil(remaining))]);
+      const { quota } = await manager.getCodexQuota(pair, signal, true);
+      return (
+        quota?.availability === 'available' &&
+        (quota.resetCredits?.available.length ?? 0) > 0 &&
+        quota.windows.some(
+          (window) => window.limitWindowSeconds === 604_800 && window.usedPercent >= 100
+        )
+      );
+    },
     recoverSettledQuota: async (selection, execution) => {
       const provider = providers.get(selection.route.id);
       const manager = input.providerSubscriptionAccountManager;
@@ -2679,7 +2709,7 @@ export async function dispatchLogicalModel<T>(input: {
       const remaining = execution.deadline - (input.clock?.now() ?? Date.now());
       if (remaining <= 0 || execution.signal.aborted) return false;
       const signal = AbortSignal.any([execution.signal, AbortSignal.timeout(Math.ceil(remaining))]);
-      return manager.tryWeeklyCodexReset(pair, signal);
+      return manager.tryWeeklyCodexReset(pair, signal, version);
     },
     autoFailover: input.logicalModel.autoFailover,
     signal: input.signal,
