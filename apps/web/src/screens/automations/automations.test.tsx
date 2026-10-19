@@ -94,7 +94,7 @@ function fixture(overrides: Partial<CoreClient['operations']> = {}, initial = [o
         items: [
           {
             id: 'th1',
-            workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceId },
             name: 'Target thread',
             preview: 'Target',
             status: 'active',

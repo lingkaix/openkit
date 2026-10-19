@@ -1,4 +1,3 @@
-/// <reference types="node" />
 import { createHash, webcrypto } from 'node:crypto';
 import type { GenerativePresentation } from '@openkit/app-api-schemas';
 import type { CoreClient } from '@openkit/core-client';
@@ -12,7 +11,7 @@ import { exactGenerativeSource, useGenerativeSourceGroups } from './source-group
 
 const source = {
   id: 'it_00000000-0000-7000-8000-000000000001',
-  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
   threadId: 'th_00000000-0000-7000-8000-000000000001',
   turnId: 'tu_00000000-0000-7000-8000-000000000001',
   type: 'assistant-message',
@@ -31,7 +30,7 @@ const reference = {
 } as const satisfies ThreadItem;
 const presentation = {
   id: 'pres_00000000-0000-7000-8000-000000000001',
-  workspaceId: source.workspaceId,
+  workspaceId: source.owner.kind === 'workspace' ? source.owner.workspaceId : '',
   threadId: source.threadId,
   turnId: source.turnId,
   itemId: reference.id,
@@ -60,6 +59,12 @@ describe('exact source and presentation grouping', () => {
       durationMs: 1,
     } as const;
     expect(await exactGenerativeSource([tool], reference, presentation)).toEqual(tool);
+  });
+
+  it('returns null for a server-owned reference without throwing', async () => {
+    vi.stubGlobal('crypto', webcrypto);
+    const serverReference = { ...reference, owner: { kind: 'server' as const } };
+    expect(await exactGenerativeSource([source], serverReference, presentation)).toBeNull();
   });
 
   it('refuses wrong identity, changed bytes, incomplete results and other Turns', async () => {

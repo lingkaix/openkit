@@ -14,7 +14,7 @@ import { chatKeys } from './data';
 
 const THREAD = {
   id: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   name: 'Effort conversation',
   preview: 'Effort conversation',
   status: 'active',
@@ -24,7 +24,7 @@ const THREAD = {
 
 const COMPLETED_TURN = TurnSchema.parse({
   id: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
   triggerActor: { kind: 'user', id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
   items: [],

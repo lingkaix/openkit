@@ -16,7 +16,7 @@ test('contains long conversation previews and keeps the next row clickable', asy
         items: [title, 'Next conversation'].map((name, index) => ({
           thread: {
             id: threadIds[index],
-            workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceId },
             name,
             preview: 'Conversation preview',
             status: 'active',

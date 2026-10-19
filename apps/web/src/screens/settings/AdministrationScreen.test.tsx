@@ -57,7 +57,7 @@ const ENVIRONMENT = {
 };
 const ADMIN_THREAD = {
   id: 'th_00000000-0000-79b7-9009-e76cfeceddee',
-  workspaceId: QUICK_CHAT.id,
+  owner: { kind: 'workspace', workspaceId: QUICK_CHAT.id },
   name: 'Administration',
   preview: 'Administration',
   status: 'active',
@@ -110,7 +110,7 @@ const CANDIDATE_PAYLOAD = {
 } as const;
 const CANDIDATE_ITEM = {
   id: 'it_00000000-0000-7689-b82f-01221681dc60',
-  workspaceId: QUICK_CHAT.id,
+  owner: { kind: 'workspace', workspaceId: QUICK_CHAT.id },
   threadId: ADMIN_THREAD.id,
   turnId: 'tu_00000000-0000-72c5-a55e-00fc996645c0',
   status: 'completed',
@@ -281,7 +281,7 @@ function makeClient(
           ({ workspaceId, threadId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve({
               id: threadId,
-              workspaceId,
+              owner: { kind: 'workspace', workspaceId: workspaceId },
               name: 'Administration',
               preview: 'Administration',
               status: 'active',
@@ -957,7 +957,7 @@ describe('Administration', () => {
                       entryPath: 'conversation',
                       id: 'th_00000000-0000-7661-815f-0101e9c6c0d8',
                       name: 'Project implementation',
-                      workspaceId: PROJECT.id,
+                      owner: { kind: 'workspace', workspaceId: PROJECT.id },
                     },
                   ],
           })

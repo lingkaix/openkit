@@ -56,7 +56,7 @@ describe('displayed conversation receipts', () => {
         'thread.items': async () => ({
           items: ['first', 'second'].map((id) => ({
             id,
-            workspaceId: 'workspace',
+            owner: { kind: 'workspace', workspaceId: 'workspace' },
             threadId: 'thread',
             turnId: 'turn',
             type: 'assistant-message',
@@ -140,6 +140,61 @@ describe('displayed conversation receipts', () => {
       expect(mark).toHaveBeenCalledWith({ workspaceId: 'workspace', threadId: 'thread' })
     );
     await screen.findByText('All replies read');
+    queryClient.clear();
+  });
+
+  it('does not admit a server-owned dashboard Thread into workspace-scoped focus', async () => {
+    const client = {
+      core: { meta: async () => ({}) },
+      operations: {
+        'thread.items': async () => ({
+          items: [
+            {
+              id: 'first',
+              owner: { kind: 'workspace', workspaceId: 'workspace' },
+              threadId: 'thread',
+              turnId: 'turn',
+              type: 'assistant-message',
+              status: 'completed',
+              text: 'first reply',
+            },
+          ],
+          nextCursor: null,
+        }),
+        'thread.dashboard': async () => ({
+          thread: {
+            id: 'thread',
+            owner: { kind: 'server' },
+            name: null,
+            preview: 'Server thread',
+            status: 'active',
+            entryPath: 'conversation',
+            visibility: 'server',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+          turns: [],
+          participants: [],
+          viewerUserId: 'viewer',
+        }),
+        'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: ['first'] }),
+        'thread.mark-read': async () => ({ readItemIds: ['first'], unreadItemIds: [] }),
+      },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <ThreadStream workspaceId="workspace" threadId="thread" focusTurnId="focus-turn" />
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+    await screen.findByText('first reply');
+    expect(
+      screen.queryByText('This turn failed. Review the conversation before trying again.')
+    ).not.toBeInTheDocument();
     queryClient.clear();
   });
 });
