@@ -91,8 +91,19 @@ function fixture(profile: 'omitted-limits' | 'no-profile' | 'explicit-limit') {
   const createResponses = vi.fn<LLMGatewayProviderDispatcher['createResponses']>(
     async (_provider, _request, context) => {
       providerSignal = context?.transport?.signal;
+      if (!providerSignal) throw new Error('Provider transport has no cancellation signal.');
+      const signal = providerSignal;
       dispatched.resolve();
-      return response.promise;
+      let abort!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+      });
+      try {
+        return await Promise.race([response.promise, cancelled]);
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
     }
   );
   const controller = new AbortController();
@@ -207,11 +218,14 @@ describe('Knowledge Manager run deadline', () => {
       status: 'completed',
       internalExecution: { limits: { deadlineMs: 300_000 } },
     });
-    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toHaveLength(1);
+    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toMatchObject([
+      { status: 'succeeded', turnId: f.turn.id },
+    ]);
   });
 
   it.each([
     { profile: 'omitted-limits' as const, deadline: 300_000 },
+    { profile: 'no-profile' as const, deadline: 300_000 },
     { profile: 'explicit-limit' as const, deadline: 90_000 },
   ])('retains a typed timeout at $deadline ms with $profile, without retry or late completion', async ({
     profile,
@@ -228,19 +242,30 @@ describe('Knowledge Manager run deadline', () => {
     };
     await vi.advanceTimersByTimeAsync(1);
     const outcome = await result;
+    const settledTurn = f.store.getTurnById(f.turn.id);
+    const settledCalls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
     f.finish();
     await vi.advanceTimersByTimeAsync(1);
-    expect(before).toEqual({ status: 'running', aborted: false });
-    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'knowledge_manager_timeout' } });
+    expect.soft(before).toEqual({ status: 'running', aborted: false });
+    expect
+      .soft(outcome)
+      .toMatchObject({ kind: 'failed', error: { code: 'knowledge_manager_timeout' } });
     expect(f.providerSignal()?.aborted).toBe(true);
     expect(f.createResponses).toHaveBeenCalledTimes(1);
-    expect(f.store.getTurnById(f.turn.id)).toMatchObject({
+    expect.soft(settledTurn).toMatchObject({
       status: 'failed',
       error: { code: 'knowledge_manager_timeout' },
       internalExecution: { limits: { deadlineMs: deadline } },
     });
     expect(f.store.getTurnById(f.turn.id).items.map(({ type }) => type)).toEqual(['user-message']);
-    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toHaveLength(1);
+    expect.soft(settledCalls).toEqual([
+      expect.objectContaining({
+        status: expect.stringMatching(/^(failed|aborted)$/),
+        turnId: f.turn.id,
+      }),
+    ]);
+    expect(f.store.getTurnById(f.turn.id)).toEqual(settledTurn);
+    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toEqual(settledCalls);
   });
 
   it('keeps caller cancellation distinct from a deadline and never retries the call', async () => {
@@ -252,11 +277,21 @@ describe('Knowledge Manager run deadline', () => {
     const reason = new DOMException('Caller cancelled.', 'AbortError');
     f.controller.abort(reason);
     expect(await result).toEqual({ kind: 'failed', error: reason });
+    const settledTurn = f.store.getTurnById(f.turn.id);
+    const settledCalls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
     f.finish();
     await vi.advanceTimersByTimeAsync(300_000);
     expect(f.createResponses).toHaveBeenCalledTimes(1);
     expect(f.store.getTurnById(f.turn.id)).toMatchObject({ status: 'cancelled' });
     expect(f.store.getTurnById(f.turn.id).error?.code).not.toBe('knowledge_manager_timeout');
     expect(f.store.getTurnById(f.turn.id).items.map(({ type }) => type)).toEqual(['user-message']);
+    expect(settledCalls).toEqual([
+      expect.objectContaining({
+        status: expect.stringMatching(/^(failed|aborted)$/),
+        turnId: f.turn.id,
+      }),
+    ]);
+    expect(f.store.getTurnById(f.turn.id)).toEqual(settledTurn);
+    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toEqual(settledCalls);
   });
 });
