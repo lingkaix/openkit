@@ -288,7 +288,7 @@ it.each([
   }
 });
 
-it('withholds historical human page bodies when their original Source is unavailable', async () => {
+it('keeps independent historical human page bodies when their original Source is unavailable', async () => {
   const f = fixture(true);
   const source = await registerServerKnowledgeSource(
     { ...f.dependencies, actor: f.requestActor },
@@ -299,7 +299,7 @@ it('withholds historical human page bodies when their original Source is unavail
       content: 'Historical private evidence.',
     }
   );
-  let baseRevision = f.human;
+  let baseRevision = f.notebook.publishedRevision();
   for (const historical of [true, false]) {
     const content = serializeUserAuthoredKnowledgePage(
       {
@@ -328,15 +328,34 @@ it('withholds historical human page bodies when their original Source is unavail
     baseRevision = revision;
   }
   writeFileSync(
-    join(f.coreDb.dataRoot, 'server', 'sources', 'materials', source.id, 'content.txt'),
+    join(f.coreDb.dataRoot, 'server', 'knowledge', 'raw', 'sources', source.id, 'original'),
     'Changed Source bytes.'
   );
+  f.run.mockImplementationOnce(async (run) => {
+    const context = run.messages[0]!.content.flatMap((part) =>
+      part.type === 'text' ? [part.text] : []
+    ).join('');
+    expect(context).toContain('Historical private evidence.');
+    expect(context).toContain('Current independent human note.');
+    expect(context).not.toContain('Changed Source bytes.');
+    await run.tools
+      .find((tool) => tool.name === 'knowledge.notebook.update')!
+      .execute(
+        { summary: 'Preserve the independent human edits.' },
+        { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
+      );
+    f.store.updateServerTurn(run.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    return { turnId: run.turn.id, text: '{"summary":"Preserved."}' };
+  });
   const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, {
     ...f.input,
     tellContent: undefined,
   });
-  expect(result.outcome).toBe('failed');
-  expect(f.run).not.toHaveBeenCalled();
+  expect(result.outcome).toBe('no-change');
+  expect(f.run).toHaveBeenCalledTimes(1);
   expect(f.notebook.publishedRevision()).toBe(baseRevision);
 });
 

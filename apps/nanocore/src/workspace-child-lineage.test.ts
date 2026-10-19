@@ -90,21 +90,22 @@ async function createLineageFixture() {
     const foreignKnowledgeBytes = foreignNotebook.readRevision(foreignNotebook.publishedRevision())
       .files[`${foreignKnowledge.id}.md`]!;
     const foreignKnowledgeDigest = `sha256:${createHash('sha256').update(foreignKnowledgeBytes).digest('hex')}`;
-    const timestamp = new Date().toISOString();
-    const foreignKnowledgeSource = store.createKnowledgeSource({
-      id: 'ks_00000000-0000-756d-9b79-fde0d969c5fa',
-      workspaceId: foreignWorkspace.id,
-      kind: 'document',
-      title: 'Foreign knowledge source',
-      uri: null,
-      contentDigest: 'sha256:foreign-lineage-source',
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: timestamp,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    const foreignSourceResponse = await app.request(
+      ...operationRequest(
+        'knowledge.source.register',
+        { workspaceId: foreignWorkspace.id },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            kind: 'document',
+            title: 'Foreign knowledge source',
+            content: 'Foreign Source exact original bytes.',
+          }),
+        }
+      )
+    );
+    expect(foreignSourceResponse.status, await foreignSourceResponse.clone().text()).toBe(200);
+    const { source: foreignKnowledgeSource } = await foreignSourceResponse.json();
     const artifactBody = 'Foreign Artifact content.';
     const artifactRequestId = 'foreign-artifact-lineage';
     const foreignArtifact = store.createArtifact({
