@@ -78,6 +78,7 @@ import {
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
+import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
 import { KnowledgeNotebook, validateNotebookFiles } from '../knowledge/notebook.js';
 import {
   initializeWorkspaceNotebook,
@@ -221,14 +222,6 @@ type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
 type Agent = RuntimeAgent;
 type ProtocolAgentSession = import('zod').infer<typeof AgentSessionSchema>;
-
-/** Conflict states that remain unresolved for Knowledge Proposal publication. */
-const UNRESOLVED_KNOWLEDGE_CONFLICT_STATUSES = new Set<KnowledgeConflictStatus>([
-  'conflicting',
-  'needs_review',
-  'weak_evidence',
-  'stale',
-]);
 
 /** Durable app-local AgentSession stored beside protocol-safe session fields. */
 export type AgentSession = ProtocolAgentSession & {
@@ -2199,13 +2192,12 @@ export class FsStore {
       if (pagePin) relevantReferences.add(formatReferenceUri(pagePin.reference));
     }
 
-    if (
-      this.listKnowledgeConflicts(proposal.workspaceId).some(
-        (conflict) =>
-          UNRESOLVED_KNOWLEDGE_CONFLICT_STATUSES.has(conflict.status) &&
-          conflict.subjectReferences.some((reference) => relevantReferences.has(reference))
-      )
-    ) {
+    const notebook = this.proposalNotebook(proposal.workspaceId);
+    const subjects = unresolvedNotebookSubjects(
+      notebook.readRevision(notebook.publishedRevision()).files,
+      scopeId
+    );
+    if ([...relevantReferences].some((reference) => subjects.has(reference))) {
       throw knowledgeProposalAuthorityError('conflict');
     }
   }

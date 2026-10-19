@@ -10,11 +10,14 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
+  formatReferenceUri,
   type PageReference,
   parseReferenceScope,
   type RetrievalTraceReference,
 } from '@openkit/protocol';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
@@ -43,7 +46,6 @@ import {
   collectUserMemoryInventory,
   currentKnowledgeReferenceProofs,
   type KnowledgeRetrievalAccess,
-  knowledgePageConflicted,
   knowledgePageDelegated,
   knowledgePageReadable,
   knowledgeSourceReferencesReadable,
@@ -54,7 +56,7 @@ import {
   type UserMemoryRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
-import { resolveDataRootPath } from './fs-layout.js';
+import { resolveDataRootPath, serverKnowledgeRoot, userMemoryRoot } from './fs-layout.js';
 import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
 import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
 
@@ -686,6 +688,20 @@ async function retrieveNotebookSelection(
   const notebookRevision = admittedPages.notebookRevision;
   const pinnedInput = { ...input, notebookRevision };
   const pinnedPages = new Map(admittedPages.pages.map((page) => [page.id, page.content]));
+  const conflictNotebook = new KnowledgeNotebook({
+    repositoryPath: join(
+      memory
+        ? userMemoryRoot(input.dataRoot, input.access.actor.id)
+        : server
+          ? serverKnowledgeRoot(input.dataRoot)
+          : join(workspaceRoot, 'knowledge'),
+      'notebook.git'
+    ),
+  });
+  const conflictSubjects = unresolvedNotebookSubjects(
+    conflictNotebook.readRevision(conflictNotebook.publishedRevision()).files,
+    sourceScope
+  );
   const scopeSchemaText =
     scopedPages?.scopeSchemaText ?? readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources =
@@ -967,9 +983,10 @@ async function retrieveNotebookSelection(
       !states.includes(
         stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
       ) ||
-      (!memory &&
-        !server &&
-        knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId, sourceScope)) ||
+      (stringFrontmatterField(document, 'openkit_status') === 'active' &&
+        conflictSubjects.has(
+          formatReferenceUri({ scopeId: sourceScope, objectId: candidate.knowledgePageId })
+        )) ||
       (reviewState !== 'accepted' &&
         reviewState !== 'user-authored' &&
         !(
