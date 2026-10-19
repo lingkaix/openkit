@@ -160,8 +160,8 @@ import {
   parseOwnedKnowledgePage,
   publishCanonicalPath,
   readCanonicalTextFile,
-  readWorkspaceKnowledgePages,
   readWorkspaceKnowledgePage,
+  readWorkspaceKnowledgePages,
   readWorkspaceTurnEvents,
   serializeKnowledgeProposalRecord,
   TURN_STREAM_EVENT_WINDOW_SIZE,
@@ -1245,7 +1245,7 @@ function sandboxSummaryForWorkspaceRoots(
 /**
  * Returns empty dynamic resources for a workspace.
  *
- * @param knowledge Seed knowledge entries.
+ * @param knowledge Seed canonical Notebook pages.
  * @returns Workspace resources without a second agent or model catalog.
  */
 function createWorkspaceResources(knowledge: KnowledgeNotebookPage[] = []): WorkspaceResources {
@@ -1875,13 +1875,12 @@ export class FsStore {
    *
    * @param proposal Proposal owner to verify.
    * @param verifiedExternalReferences Exact Core/S39 references verified by their owners.
-   * @returns Canonical candidate page with its exact bytes, when the proposal has one page.
    * @throws KnowledgePageValidationError when any candidate or source authority is invalid.
    */
   private assertValidKnowledgeProposal(
     proposal: KnowledgeProposalRecord,
     verifiedExternalReferences: readonly string[]
-  ): KnowledgeNotebookPage | undefined {
+  ): void {
     let scopeSchemaText: string | undefined;
     let pageScopeId: string | undefined;
     try {
@@ -1974,6 +1973,8 @@ export class FsStore {
       proposal.contentDigest !== contentDigest(proposal.canonicalPageBytes) ||
       !parsed.ok ||
       parsed.document.conceptId !== proposal.knowledgePageId ||
+      (parsed.document.frontmatter.openkit_entry_id !== undefined &&
+        parsed.document.frontmatter.openkit_entry_id !== proposal.knowledgePageId) ||
       parsed.document.frontmatter.type !== 'KnowledgePage' ||
       parsed.document.frontmatter.openkit_status !== 'active' ||
       (parsed.document.frontmatter.status !== undefined &&
@@ -2007,16 +2008,6 @@ export class FsStore {
       resolvedReferences,
     });
     if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
-      throw new KnowledgePageValidationError();
-    }
-
-    try {
-      return parseOwnedKnowledgePage(
-        `${proposal.knowledgePageId}.md`,
-        proposal.knowledgePageId,
-        proposal.canonicalPageBytes
-      );
-    } catch {
       throw new KnowledgePageValidationError();
     }
   }

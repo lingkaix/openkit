@@ -60,6 +60,7 @@ import {
   parseOkfDocument,
   stringFrontmatterField,
   stringListFrontmatterField,
+  validateOpenKitKnowledgeProfile,
 } from '../knowledge/okf.js';
 import type {
   AgentSession,
@@ -1583,24 +1584,26 @@ export function parseOwnedKnowledgePage(
   content: string
 ): KnowledgeNotebookPage {
   const parsed = parseOkfDocument({ path, content });
-  const id = parsed.document ? stringFrontmatterField(parsed.document, 'openkit_entry_id') : null;
+  const id = parsed.document?.frontmatter.openkit_entry_id;
 
   if (
     !parsed.ok ||
+    !KnowledgeProposalPageIdSchema.safeParse(knowledgePageId).success ||
     path !== `${knowledgePageId}.md` ||
-    (id !== null && id !== knowledgePageId) ||
+    (id !== undefined && id !== knowledgePageId) ||
     parsed.document.conceptId !== knowledgePageId
   ) {
     throw new Error(`Knowledge page ${knowledgePageId} is not a valid owned record.`);
   }
 
+  const profile = validateOpenKitKnowledgeProfile(parsed.document);
+  if (profile.conformance !== 'OpenKit-profile-valid' || profile.errors.length > 0) {
+    throw new Error(`Knowledge page ${knowledgePageId} violates the OpenKit Knowledge Profile.`);
+  }
   const sourceReferences = stringListFrontmatterField(parsed.document, 'source_refs');
-  if (parsed.document.frontmatter.source_refs !== undefined && sourceReferences === null) {
+  if (!sourceReferences || sourceReferences.some((reference) => reference.length === 0)) {
     throw new Error(`Knowledge page ${knowledgePageId} has invalid source_refs.`);
   }
-  requiredFrontmatterString(parsed.document, 'title', path);
-  requiredFrontmatterString(parsed.document, 'created_at', path);
-  requiredFrontmatterString(parsed.document, 'updated_at', path);
   return KnowledgeNotebookPageSchema.parse({
     id: knowledgePageId,
     path,
