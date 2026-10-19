@@ -422,17 +422,17 @@ describe('Light App migration recovery', () => {
     );
   });
 
-  it('captures a real pending native format migration and restores its old format without silent re-upgrade', async () => {
+  it('captures a pending post-reset native migration and restores its journal without silent re-upgrade', async () => {
     const ctx = context();
     const app = await createLightApp(ctx, schema);
     const path = lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId);
     const db = new Database(path);
-    // Rewind a complete native journal prefix, including the Audit shape before format migration.
+    // Keep the reset-only Audit format in the baseline; rewind only the later nullable authentication migration.
     db.exec(
-      'ALTER TABLE app_metadata DROP COLUMN definition_source_json; ALTER TABLE app_metadata DROP COLUMN kernel_format_version; ALTER TABLE audit_events DROP COLUMN authentication_json; DELETE FROM __drizzle_migrations WHERE created_at >= 1792227600000'
+      'ALTER TABLE audit_events DROP COLUMN authentication_json; DELETE FROM __drizzle_migrations WHERE created_at >= 1792367635406'
     );
     db.close();
-    expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).lifecycle).toBe('unavailable');
+    expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).kernelFormatVersion).toBe(2);
     const snapshotDirectory = join(
       lightAppRoot(ctx.dataRoot, ctx.workspaceId, app.appId),
       'snapshots'
@@ -444,7 +444,7 @@ describe('Light App migration recovery', () => {
     const unchanged = new Database(path);
     expect(
       unchanged
-        .prepare('SELECT COUNT(*) FROM __drizzle_migrations WHERE created_at = 1792227600000')
+        .prepare('SELECT COUNT(*) FROM __drizzle_migrations WHERE created_at = 1792367635406')
         .pluck()
         .get()
     ).toBe(0);
@@ -467,7 +467,7 @@ describe('Light App migration recovery', () => {
     expect(upgraded.kernelFormatVersion).toBe(2);
     expect(await upgradeLightAppFormat(upgrade, app.appId, 1)).toEqual(upgraded);
     const selected = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots[0]!;
-    expect(selected).toMatchObject({ reason: 'kernel-format-migration', kernelFormatVersion: 1 });
+    expect(selected).toMatchObject({ reason: 'kernel-format-migration', kernelFormatVersion: 2 });
     const restored = await rollbackLightAppSnapshot(
       request(ctx),
       app.appId,
@@ -475,22 +475,22 @@ describe('Light App migration recovery', () => {
       selected.snapshotId
     );
     expect(restored).toMatchObject({
-      lifecycle: 'unavailable',
+      lifecycle: 'active',
       appRevision: 3,
-      kernelFormatVersion: 1,
+      kernelFormatVersion: 2,
       definitionVersion: app.schemaDigest,
     });
     expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId)).toMatchObject({
-      lifecycle: 'unavailable',
+      lifecycle: 'active',
       appRevision: 3,
-      kernelFormatVersion: 1,
+      kernelFormatVersion: 2,
     });
     const raw = new Database(path);
     expect(
-      (raw.pragma('table_info(app_metadata)') as Array<{ name: string }>).map(
+      (raw.pragma('table_info(audit_events)') as Array<{ name: string }>).map(
         (column) => column.name
       )
-    ).not.toContain('kernel_format_version');
+    ).not.toContain('authentication_json');
     raw.close();
     expect((await upgradeLightAppFormat(request(ctx), app.appId, 3)).kernelFormatVersion).toBe(2);
     const unknown = new Database(path);

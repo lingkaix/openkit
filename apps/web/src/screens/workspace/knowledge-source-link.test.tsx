@@ -14,6 +14,7 @@ import { KnowledgeScreen } from './KnowledgeScreen';
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
 const WORKSPACE_A = allocateEntityId('ws');
 const WORKSPACE_B = allocateEntityId('ws');
+const KNOWLEDGE_BASE_ID = allocateEntityId('kb');
 const OWNER_USER_ID = allocateEntityId('usr');
 const CONTENT = 'The reading room opens at 09:00 on weekdays. Bring the blue access card.';
 // SHA-256 of CONTENT: equal captured bytes must not select a Source identity.
@@ -94,6 +95,7 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
           break;
         case operationHttpPath('knowledge.list'):
           body = {
+            knowledgeBaseId: KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: creates.some((command) => command.workspaceId === request.workspaceId)
               ? [PAGE]

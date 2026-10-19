@@ -14997,6 +14997,7 @@ describe('createConfiguredTurnExecutor', () => {
   it('refuses retained storage after current named Thread Policy revokes the exact Agent', async () => {
     const fixture = prepareNonmemberAdminWorkerStorage('resource_policy_revoked');
     const boundary = WorkspaceConfigSchema.parse({
+      schemaVersion: 1,
       requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
       workspace: {
         name: 'Managed retained storage',
