@@ -6068,6 +6068,48 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
 });
 
 describe('Codex review regressions', () => {
+  it('R5 does not republish a predecessor full-window observation after a confirmed reset', async () => {
+    const fixture = await codexManagementFixture();
+    let currentZeroReads = 0;
+    const transport = codexManagementTransport(() => {
+      transport.quota.rate_limit.primary_window.used_percent = 0;
+      transport.quota.rate_limit.allowed = true;
+      transport.quota.rate_limit.limit_reached = false;
+      return Response.json({ code: 'reset', windows_reset: true });
+    });
+    const predecessor = structuredClone(transport.quota);
+    const readStarted = deferredGate();
+    let releasePredecessor!: (response: Response) => void;
+    let usageReads = 0;
+    const originalFetch = transport.fetchSpy.getMockImplementation()!;
+    transport.fetchSpy.mockImplementation((input, init) => {
+      if (String(input) === 'https://chatgpt.com/backend-api/wham/usage') {
+        if (++usageReads === 1) {
+          return new Promise<Response>((resolve) => {
+            releasePredecessor = resolve;
+            readStarted.resolve();
+          });
+        }
+        if (transport.quota.rate_limit.primary_window.used_percent === 0) currentZeroReads++;
+      }
+      return originalFetch(input, init);
+    });
+    const pending = fixture.manager.getCodexQuota(fixture.pair, undefined, true);
+    await readStarted.promise;
+    const reset = await fixture.manager.useCodexReset(
+      fixture.pair,
+      '3638acdd-3c8d-491c-a354-199f319e46c6'
+    );
+    expect(reset).toMatchObject({ outcome: 'reset', windowsReset: true });
+    expect(transport.bodies).toHaveLength(1);
+
+    // The older response can settle, but it cannot undo the completed reset's invalidation.
+    releasePredecessor(Response.json(predecessor));
+    await pending;
+    expect(await fixture.manager.codexInferenceAllowed(fixture.pair)).toBe(true);
+    expect(currentZeroReads).toBeGreaterThan(0);
+  });
+
   it('R1 binds weekly recovery to the failed material inside reset admission', async () => {
     const fixture = await codexManagementFixture();
     const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
