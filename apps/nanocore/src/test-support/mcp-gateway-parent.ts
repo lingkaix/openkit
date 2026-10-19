@@ -17,9 +17,7 @@ const server = resolveWorkspaceMcpServer({
     servers: [
       {
         allowedTools: ['echo'],
-        approvalRequiredTools: [],
         credentialBindings: [],
-        deniedTools: [],
         enabled: true,
         id: 'echo',
         pinnedSchemaSnapshotId: null,

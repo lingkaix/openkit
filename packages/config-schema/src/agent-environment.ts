@@ -509,8 +509,6 @@ export const AgentEnvironmentMcpServerSchema = z
     id: z.string().min(1),
     catalogDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     allowedTools: z.array(z.string().min(1)).default([]),
-    deniedTools: z.array(z.string().min(1)).default([]),
-    approvalRequiredTools: z.array(z.string().min(1)).default([]),
     schemaPolicy: z.enum(['pinned', 'tracking']),
     pinnedSchemaSnapshotId: z.string().min(1).nullable().default(null),
   })

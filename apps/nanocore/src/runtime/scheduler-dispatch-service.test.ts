@@ -340,9 +340,7 @@ describe('scheduler dispatch service', () => {
               servers: [
                 {
                   allowedTools: ['echo'],
-                  approvalRequiredTools: [],
                   credentialBindings: [],
-                  deniedTools: [],
                   enabled: true,
                   id: 'echo',
                   pinnedSchemaSnapshotId: null,

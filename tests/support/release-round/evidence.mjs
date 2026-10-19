@@ -34,7 +34,7 @@ function checker(scenario, refs) {
   };
 }
 /** Compare each runtime row independently, including failed Turns that produced files. */
-export function runtimeRows(r, issue, p, runtime, refs, binding) {
+export function runtimeRows(r, issue, p, runtime, refs) {
   return ['A', 'B', 'C', 'D'].map((letter) => {
     const c = checker(`${runtime}.${letter}`, refs),
       steps = r?.steps?.filter((s) => s.scenario.toUpperCase() === letter) ?? [];
@@ -105,16 +105,15 @@ export function runtimeRows(r, issue, p, runtime, refs, binding) {
             typeof i.causationId === 'string'
         )
       );
-      const github = binding?.find((v) => v.id === 'github');
       c.test(
         'issue read without completed GitHub writes',
-        Array.isArray(github?.approvalRequiredTools) && coverage,
+        coverage,
         !items.some(
           (i) =>
             i.type === 'tool-call' &&
             i.status === 'completed' &&
             i.server === 'github' &&
-            github?.approvalRequiredTools?.includes(i.tool)
+            !['issue_read', 'get_issue'].includes(i.tool)
         )
       );
     }
@@ -248,8 +247,7 @@ export function evaluate(bundle, p) {
       bundle.issues?.[r],
       p,
       r,
-      bundle.runtimes?.[r]?.refs ?? [`round.json#runtimes.${r}`],
-      data(bundle.binding)?.items
+      bundle.runtimes?.[r]?.refs ?? [`round.json#runtimes.${r}`]
     )
   );
   if (global.length)

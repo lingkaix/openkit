@@ -85,7 +85,7 @@ describe('one scoped resource catalog owner', () => {
         catalog: projectEffectiveWorkspaceMcpCatalog(loaded),
         serverId: 'echo',
       }).catalogDigest
-    ).toBe('sha256:822279732d3a4eb33062c7ade755dbc87956c52d7eb587033f81f23c8ef1b188');
+    ).toBe('sha256:395ed21496f3ffeb99bc4b56026828a206b359001c9872917591015aceba94e6');
     updateMcpBinding({
       dataRoot: f.dataRoot,
       owner: { kind: 'workspace', workspaceId: f.workspaceId },
@@ -114,7 +114,7 @@ describe('one scoped resource catalog owner', () => {
         ),
         serverId: 'echo',
       }).catalogDigest
-    ).toBe('sha256:822279732d3a4eb33062c7ade755dbc87956c52d7eb587033f81f23c8ef1b188');
+    ).toBe('sha256:395ed21496f3ffeb99bc4b56026828a206b359001c9872917591015aceba94e6');
   });
 
   it('rejects missing Workspace scope without converting the catalog', () => {

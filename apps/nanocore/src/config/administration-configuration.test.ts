@@ -23,6 +23,7 @@ import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { createMcpConfig, updateMcpBinding } from '../catalog/resource-catalog.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import * as policyConfiguration from '../policy/configuration.js';
@@ -30,12 +31,15 @@ import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { evaluateAdministratorWorkspaceAccess } from '../policy/server-access.js';
 import { policyDigest } from '../policy/statements.js';
-import { openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { recordMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
@@ -49,7 +53,7 @@ afterEach(() => {
 });
 
 /** Real temporary configuration, private Artifact store and current durable token authority. */
-function fixture() {
+function fixture(withWorkspaceSchemas = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-proposal-'));
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => {
@@ -129,6 +133,11 @@ function fixture() {
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
+  const workspaceDb = withWorkspaceSchemas ? openWorkspaceDb(dataRoot, workspaceId) : null;
+  if (workspaceDb) {
+    applyScopedMigrations(workspaceDb);
+    cleanup.unshift(() => workspaceDb.sqlite.close());
+  }
   const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
   const inflightCommands = new WeakMap();
   const options = {
@@ -140,7 +149,8 @@ function fixture() {
     inflightCommands,
     runtimeConfig: () => manager.current(),
     repositoryWorkspaceDb: () => {
-      throw new Error('Catalog tests use no retained Worker snapshot.');
+      if (!workspaceDb) throw new Error('Catalog tests use no retained Worker snapshot.');
+      return workspaceDb;
     },
   };
   const service = createAdministrationConfiguration(options);
@@ -175,7 +185,92 @@ function fixture() {
     confirm,
     token,
     workspaceId,
+    turn,
   };
+}
+
+/** Composes retained catalog supply, the real AEP producer, and current schema observations. */
+function mcpPolicyFixture() {
+  const f = fixture(true);
+  const owner = { kind: 'workspace' as const, workspaceId: f.workspaceId };
+  const created = createMcpConfig({
+    dataRoot: f.dataRoot,
+    owner,
+    expectedRevision: 0,
+    id: 'issues',
+    displayName: 'Issues',
+    createdAt: new Date().toISOString(),
+    allowedTools: ['read'],
+    selectCurrent: true,
+    declaration: { kind: 'http', endpoint: 'https://mcp.example.test/mcp' },
+  });
+  updateMcpBinding({
+    dataRoot: f.dataRoot,
+    owner,
+    entryId: 'issues',
+    expectedRevision: created.catalog.revision,
+    binding: { ...created.catalog.mcp.bindings[0]!, enabled: true },
+  });
+  f.manager.reload({ mode: 'safe', dryRun: false });
+  const catalog = f.manager
+    .current()
+    .workspaceMcpServerCatalogs.find((entry) => entry.workspaceId === f.workspaceId)!.catalog;
+  const environmentPackage = resolveAgentEnvironmentPackage({
+    captureCoverage: { scope: 'server', value: 'off' },
+    agentSessionId: allocateEntityId('as'),
+    agentSetup: createTestAgentSetup({ mcpIds: ['issues'] }),
+    backend: { kind: 'openshell' },
+    createdAt: new Date().toISOString(),
+    requestId: 'req_mcp_policy_schema',
+    triggerActor: f.turn.triggerActor,
+    turn: f.turn,
+    workspaceCwd: '/workspace',
+    workspaceMcpServerCatalog: catalog,
+    workspaceRoots: [],
+  });
+  const observe = (tools: Array<{ name: string; inputSchema: Record<string, unknown> }>) =>
+    recordMcpToolSchemaSnapshot({
+      environmentPackage,
+      schemaSnapshotId: `schema_${randomUUID()}`,
+      serverId: 'issues',
+      source: 'live',
+      tools,
+      workspaceDb: f.repositoryWorkspaceDb(),
+      workspaceId: f.workspaceId,
+    });
+  observe([{ name: 'read', inputSchema: { type: 'object' } }]);
+  const policyRequest = (toolName = 'read') => ({
+    targetFamily: 'policy' as const,
+    targetId: 'server',
+    expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+    changes: {
+      rationale: 'Require a human decision for this exact Workspace Tool.',
+      proposed: {
+        schemaVersion: 1,
+        statements: [
+          {
+            id: 'human-tool-condition',
+            kind: 'permission',
+            effect: 'require_approval',
+            grant: { kind: 'ordinary' },
+            author: { kind: 'human', id: f.actor.userId },
+            authority: { kind: 'human', userId: f.actor.userId },
+            authoredAt: new Date().toISOString(),
+            state: 'active',
+            scope: {
+              subjects: [{ kind: 'human', id: f.actor.userId }],
+              actions: ['tool.use'],
+              resources: [
+                { kind: 'mcp-tool', workspaceId: f.workspaceId, serverId: 'issues', toolName },
+              ],
+            },
+            lifetime: { anchor: { owner, kind: 'workspace', id: f.workspaceId } },
+          },
+        ],
+      },
+    },
+  });
+  return { ...f, observe, policyRequest };
 }
 
 describe('administration catalog configuration', () => {
@@ -450,6 +545,77 @@ describe('administration catalog configuration', () => {
     } finally {
       await storage.close();
     }
+  });
+
+  it('reviews and applies a human Tool condition without pinning its observed input schema', async () => {
+    const f = mcpPolicyFixture();
+    const serverPath = join(f.dataRoot, 'config/server.jsonc');
+    const original = readFileSync(serverPath, 'utf8');
+    const proposal = f.service.propose(f.policyRequest(), f.home);
+    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+    const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
+    if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
+    const candidate = JSON.parse(artifact.content.body);
+    expect(Object.keys(candidate.policyProposal).sort()).toEqual([
+      'baseRevision',
+      'proposed',
+      'proposer',
+      'rationale',
+      'schemaVersion',
+      'validation',
+    ]);
+    expect(candidate.after.statements).toEqual([
+      expect.objectContaining({
+        id: 'human-tool-condition',
+        kind: 'permission',
+        effect: 'require_approval',
+        state: 'active',
+        scope: {
+          subjects: [{ kind: 'human', id: f.actor.userId }],
+          actions: ['tool.use'],
+          resources: [
+            { kind: 'mcp-tool', workspaceId: f.workspaceId, serverId: 'issues', toolName: 'read' },
+          ],
+        },
+      }),
+    ]);
+    // Schema validation is current-name validation, not a retained argument-schema pin.
+    f.observe([
+      { name: 'read', inputSchema: { type: 'object', properties: { count: { type: 'number' } } } },
+    ]);
+    const confirmed = f.confirm(proposal);
+    expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true, reload: 'applied' });
+    expect(
+      readAdmittedPolicyDocument(f.coreDb, f.manager.current().openKitConfig.policy?.mediation)
+    ).toEqual(candidate.after);
+    expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true });
+    expect(f.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an unobserved Tool name after a valid full Policy candidate', () => {
+    const f = mcpPolicyFixture();
+    expect(f.service.propose(f.policyRequest(), f.home)).toHaveProperty('candidate');
+    const serverPath = join(f.dataRoot, 'config/server.jsonc');
+    const original = readFileSync(serverPath, 'utf8');
+    expect(() =>
+      f.service.propose(f.policyRequest('missing'), { ...f.home, requestId: randomUUID() })
+    ).toThrow(/tool|schema/i);
+    f.observe([]);
+    expect(() =>
+      f.service.propose(f.policyRequest(), { ...f.home, requestId: randomUUID() })
+    ).toThrow(/tool|schema/i);
+    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+  });
+
+  it('rechecks current Tool names when the human confirms an existing Policy candidate', async () => {
+    const f = mcpPolicyFixture();
+    const proposal = f.service.propose(f.policyRequest(), f.home);
+    const serverPath = join(f.dataRoot, 'config/server.jsonc');
+    const original = readFileSync(serverPath, 'utf8');
+    f.observe([{ name: 'renamed', inputSchema: { type: 'object' } }]);
+    await expect(f.service.apply(f.confirm(proposal))).rejects.toThrow(/tool|schema/i);
+    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+    expect(f.reload).not.toHaveBeenCalled();
   });
 
   it('retains inactive Policy forms through the exact human candidate and records actual activation', async () => {

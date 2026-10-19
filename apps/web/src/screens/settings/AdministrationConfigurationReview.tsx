@@ -206,9 +206,9 @@ function configurationStatus(
 
 /** Names the deployment catalog affected by the candidate. */
 function targetLabel(details: ConfigurationCandidateArtifact): string {
-  return details.targetFamily === 'provider'
-    ? `Provider ${details.targetId}`
-    : `Gateway ${details.targetId}`;
+  if (details.targetFamily === 'provider') return `Provider ${details.targetId}`;
+  if (details.targetFamily === 'policy') return `Policy ${details.targetId}`;
+  return `Gateway ${details.targetId}`;
 }
 
 /** Keeps a fresh-render confirmation on the same server receipt, including unknown outcomes. */
