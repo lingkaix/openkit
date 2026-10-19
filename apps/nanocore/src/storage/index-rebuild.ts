@@ -264,6 +264,7 @@ export interface WorkspaceKnowledgeRetrievalExclusion {
     | 'sensitive_content'
     | 'lower_conformance'
     | 'policy_excluded'
+    | 'selector_mismatch'
     | 'freshness_expired'
     | 'budget_exceeded'
     | 'source_unavailable';
@@ -1009,7 +1010,7 @@ async function retrieveNotebookSelection(
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest,
-        reason: 'policy_excluded',
+        reason: 'selector_mismatch',
       });
       continue;
     }
