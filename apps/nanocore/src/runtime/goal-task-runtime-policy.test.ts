@@ -3,9 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { deriveEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AuthVariables } from '../auth/middleware.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -38,6 +40,13 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
+  admitCapturedPendingCall,
+  evaluateCapturedPendingCall,
+  executeCapturedPendingCall,
+  type PreparedCapturedPendingCall,
+  prepareCapturedPendingCall,
+} from './captured-pending-call.js';
+import {
   acceptSchedulerExecutionObservation,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
@@ -45,7 +54,8 @@ import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import { commandInputHash } from './idempotent-command.js';
-import { listThreadPendingRequests } from './pending-requests.js';
+import { respondRecordedApproval } from './pending-request-flow.js';
+import { executionCallIdForRequest, listThreadPendingRequests } from './pending-requests.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
 import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
 import type { WorkerControlGateway } from './worker-control-gateway.js';
@@ -246,7 +256,10 @@ async function fixture(
       coordinatorTurnId: coordinator.id,
       ...{ goalTaskPolicy },
     });
-    const result = await tool.execute({ ...dispatchInput, agentId: selectedAgentId });
+    const result = await tool.execute(
+      { ...dispatchInput, agentId: selectedAgentId },
+      { callId: 'goal-task-test', toolOccurrence: 1, signal: new AbortController().signal }
+    );
     return { result, startWorker };
   };
   const setupMcp = async () => {
@@ -304,7 +317,7 @@ async function fixture(
       createdAt: turn.startedAt!,
       updatedAt: turn.startedAt!,
     });
-    const catalog = {
+    const catalog = parseWorkspaceMcpServerCatalog({
       schemaVersion: 1 as const,
       servers: [
         {
@@ -320,7 +333,7 @@ async function fixture(
           transport: { kind: 'http' as const, endpoint: 'https://issues.invalid/mcp' },
         },
       ],
-    };
+    });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId,
@@ -397,7 +410,7 @@ async function fixture(
         tools: [
           {
             name: 'read',
-            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+            inputSchema: { type: 'object' as const, properties: {}, additionalProperties: false },
           },
         ],
       })),
@@ -410,7 +423,7 @@ async function fixture(
       closeWorkspace: vi.fn(async () => {}),
       getServerHealth: () => 'ready',
     };
-    const app = new Hono();
+    const app = new Hono<{ Variables: AuthVariables }>();
     const interception = new PolicyInterception();
     const routes = {
       app,
@@ -443,7 +456,7 @@ async function fixture(
       new StreamableHTTPClientTransport(
         new URL('http://nanocore.test/api/worker-capabilities/mcp/issues'),
         {
-          fetch: (input, init) => app.fetch(new Request(input, init)),
+          fetch: async (input, init) => app.fetch(new Request(input, init)),
           requestInit: { headers: { authorization: 'Bearer synthetic-worker-package' } },
         }
       )
@@ -550,6 +563,118 @@ describe('Goal-domain Task consumers', () => {
     release();
     await assertion;
     expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('withholds a captured result after Goal closure while preserving the settled effect and usage', async () => {
+    const f = await fixture({ approval: true });
+    const mcp = await f.setupMcp();
+    expect(await mcp.call()).toMatchObject({
+      isError: true,
+      structuredContent: { status: 'pending-approval' },
+    });
+    const record = listThreadPendingRequests(
+      f.db.sqlite,
+      f.scope.workspaceId,
+      mcp.turn.threadId
+    )[0]!;
+    let prepared: PreparedCapturedPendingCall | undefined;
+    let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+    let entered!: () => void;
+    let release!: () => void;
+    const upstreamEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(mcp.gateway.callTool).mockImplementationOnce(async () => {
+      entered();
+      await hold;
+      return { content: [{ type: 'text', text: 'ISSUE_RESULT_CANARY' }] };
+    });
+    const outcome = respondRecordedApproval({
+      store: f.store,
+      sqlite: f.db.sqlite,
+      workspaceId: f.scope.workspaceId,
+      threadId: mcp.turn.threadId,
+      approvalRequestId: record.requestId,
+      decision: 'granted',
+      actorId: f.actor.userId,
+      coreDb: f.coreDb,
+      requestActor: f.actor,
+      dependencies: { coreDb: f.coreDb, openWorkspace: () => f.db },
+      prepare: async () => {
+        prepared = await prepareCapturedPendingCall({
+          actor: f.actor,
+          record,
+          catalog: mcp.catalog,
+          coreDb: f.coreDb,
+          vaultBackend: undefined,
+          workerMcpGateway: mcp.gateway,
+          workspaceDb: f.db,
+          reviewPolicy: () =>
+            reviewCapturedMcpPolicy({
+              record,
+              actor: f.actor,
+              workspaceDb: f.db,
+              routes: mcp.routes,
+              catalog: mcp.catalog,
+              interception: mcp.interception,
+            }),
+        });
+        expect(prepared.failed).toBe(false);
+      },
+      evaluate: () =>
+        evaluateCapturedPendingCall({
+          manifest: createTestAgentSetup({ agentId: f.agentId, mcpIds: ['issues'] }).manifest,
+          catalog: mcp.catalog,
+          coreDb: f.coreDb,
+          record,
+          sqlite: f.db.sqlite,
+          prepared,
+        }),
+      admitExecution: () => {
+        executionCall = admitCapturedPendingCall(record, f.db, randomUUID(), prepared);
+      },
+      execute: (claimed) =>
+        executeCapturedPendingCall({
+          catalog: mcp.catalog,
+          coreDb: f.coreDb,
+          record: claimed,
+          workerMcpGateway: mcp.gateway,
+          workspaceDb: f.db,
+          prepared,
+          executionCall,
+        }),
+    });
+    await upstreamEntered;
+    await executeGoalOperation(
+      'goal.cancel',
+      {
+        ...f.scope,
+        requestId: randomUUID(),
+        expectedRevision: readGoalView(f.store, f.db, f.scope.goalId).goal!.changeRevision,
+        reason: 'End authority while captured effect runs',
+      },
+      { actor: f.actor },
+      f.store,
+      f.db,
+      { coreDb: f.coreDb }
+    );
+    release();
+    const settled = await outcome;
+    expect(settled).toMatchObject({ claim: 'finished', disposition: 'approved-executed' });
+    expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+    const callId = executionCallIdForRequest(record.requestId);
+    expect(
+      f.db.sqlite.prepare('SELECT status FROM capability_calls WHERE call_id = ?').get(callId)
+    ).toEqual({ status: 'succeeded' });
+    expect(
+      f.db.sqlite
+        .prepare('SELECT quantity FROM usage_records WHERE capability_call_id = ?')
+        .all(callId)
+    ).toEqual([{ quantity: 1 }]);
+    expect(JSON.stringify(settled.heldResult)).not.toContain('ISSUE_RESULT_CANARY');
   });
 
   it('invalidates a captured human response when Goal authority ends without a Policy revision change', async () => {
