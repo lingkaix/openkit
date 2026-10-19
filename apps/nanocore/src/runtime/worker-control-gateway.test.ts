@@ -1,4 +1,6 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,6 +13,16 @@ import type {
 } from '@openkit/worker-protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
+import type {
+  WorkerAdapterResult,
+  WorkerResidentTurnInput,
+} from '../../../../packages/worker-shim/src/adapter-registry.js';
+import { deepseekResidentAdapter } from '../../../../packages/worker-shim/src/adapters/deepseek.js';
+import {
+  createOpenCodeAdapter,
+  OPENCODE_PROVIDER_ID,
+} from '../../../../packages/worker-shim/src/adapters/opencode.js';
+import { PiRuntimeCapture } from '../../../../packages/worker-shim/src/adapters/pi-runtime-capture.js';
 import { CodexRuntimeCapture } from '../../../../packages/worker-shim/src/codex-runtime-capture.js';
 import {
   RuntimeSemanticCapture,
@@ -38,17 +50,20 @@ import { createWorkerControlSequenceRecorder } from './worker-control-sequences.
  * Creates an OpenShell-targeted package fixture for worker control tests.
  *
  * @param suffix Stable suffix used to create a distinct complete lineage.
+ * @param dataRoot Optional canonical storage root.
+ * @param captureValue Capture policy bound when the fixture Turn is admitted.
  * @returns Package fixture and lineage expected by the control gateway.
  */
 function createWorkerControlFixture(
   suffix = '1',
-  dataRoot?: string
+  dataRoot?: string,
+  captureValue: 'off' | 'on' = 'on'
 ): {
   environmentPackage: AgentEnvironmentPackage;
   lineage: WorkerControlLineage;
 } {
   const store = createDemoStore(dataRoot ? { dataRoot } : {});
-  if (dataRoot) store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
+  if (dataRoot) store.setLiveCaptureCoverage({ scope: 'server', value: captureValue });
   const turn = store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -263,6 +278,412 @@ describe('descriptive admission normalization', () => {
 });
 
 describe('WorkerControlGateway', () => {
+  it.each(
+    (['codex', 'opencode', 'pi', 'deepseek'] as const).flatMap((adapter) =>
+      (['off', 'on'] as const).map((value) => ({ adapter, value }))
+    )
+  )('retains $adapter capture with bodies $value after native and transcript removal', async ({
+    adapter,
+    value,
+  }) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-adapter-retention-'));
+    const fixture = createWorkerControlFixture(`retention-${adapter}-${value}`, root, value);
+    let coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    let workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    });
+    registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:retention');
+    const nativeRoot = join(root, 'native');
+    const sessionDir = join(root, 'transcript');
+    mkdirSync(nativeRoot, { recursive: true });
+    vi.stubEnv('HOME', nativeRoot);
+    const writer = new WorkerTranscriptWriter({
+      lineage: fixture.lineage,
+      sessionDir,
+      appendEvent: async (record) => {
+        gateway.appendEvent({
+          authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
+          lineage: fixture.lineage,
+          record,
+        });
+      },
+    });
+    const runtimeCapture = {
+      packageSnapshotId: fixture.lineage.packageSnapshotId,
+      captureCoverage: fixture.environmentPackage.observability.captureCoverage,
+      credentialValues: [],
+      emit: (record: Parameters<typeof writer.writeObservation>[0], body?: Uint8Array) =>
+        writer.writeObservation(record, body),
+    };
+    const text = '  Retained outward answer 世界\n';
+    const args = { command: 'echo retained' };
+    const result = { text: 'Retained tool result' };
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      if (adapter === 'codex') {
+        const capture = await CodexRuntimeCapture.create(runtimeCapture, nativeRoot, '0.153.4');
+        stop = () => capture.invalidate();
+        mkdirSync(join(nativeRoot, 'sessions'), { recursive: true });
+        writeFileSync(
+          join(nativeRoot, 'sessions', 'rollout-root.jsonl'),
+          `${JSON.stringify({
+            type: 'session_meta',
+            payload: { id: 'root', session_id: 'root', cli_version: '0.153.4' },
+          })}\n`
+        );
+        await capture.writeStdout(
+          Buffer.from(`${JSON.stringify({ type: 'thread.started', thread_id: 'root' })}\n`)
+        );
+        // The real collector reads the new rollout tail; this is not a fabricated observation.
+        writeFileSync(
+          join(nativeRoot, 'sessions', 'rollout-root.jsonl'),
+          `${[
+            {
+              type: 'session_meta',
+              payload: { id: 'root', session_id: 'root', cli_version: '0.153.4' },
+            },
+            {
+              type: 'response_item',
+              payload: {
+                type: 'function_call',
+                call_id: 'call',
+                name: 'shell',
+                arguments: JSON.stringify(args),
+              },
+            },
+            {
+              type: 'response_item',
+              payload: {
+                type: 'function_call_output',
+                call_id: 'call',
+                output: JSON.stringify(result),
+              },
+            },
+            {
+              type: 'response_item',
+              payload: {
+                type: 'message',
+                role: 'assistant',
+                channel: 'final',
+                content: [{ type: 'output_text', text }],
+              },
+            },
+          ]
+            .map((frame) => JSON.stringify(frame))
+            .join('\n')}\n`
+        );
+        await capture.finalize();
+      } else if (adapter === 'pi') {
+        const capture = new PiRuntimeCapture(runtimeCapture, fixture.lineage.turnId);
+        stop = async () => capture.abandon();
+        const path = join(nativeRoot, 'events.json');
+        writeFileSync(
+          path,
+          JSON.stringify([
+            { type: 'tool_execution_start', toolCallId: 'call', toolName: 'shell', args },
+            {
+              type: 'tool_execution_end',
+              toolCallId: 'call',
+              toolName: 'shell',
+              result,
+              isError: false,
+            },
+            {
+              type: 'message_end',
+              message: {
+                role: 'assistant',
+                stopReason: 'stop',
+                content: [
+                  { type: 'text', text },
+                  { type: 'thinking', thinking: 'private reasoning' },
+                ],
+              },
+            },
+          ])
+        );
+        await capture.start();
+        for (const frame of JSON.parse(readFileSync(path, 'utf8'))) capture.observe(frame);
+        await capture.finalize('completed', null);
+      } else {
+        const loopback = {
+          inferenceBaseUrl: 'http://127.0.0.1:9',
+          inferenceCredential: WORKER_INFERENCE_TOKEN,
+          capabilityBaseUrl: 'http://127.0.0.1:9',
+          capabilityCredential: WORKER_CAPABILITY_TOKEN,
+        };
+        const route = {
+          credentialVisibility: 'placeholder' as const,
+          endpoint: {
+            kind: 'openai-compatible' as const,
+            upstream: { kind: 'nanocore-gateway' as const },
+            workerBaseUrl: loopback.inferenceBaseUrl,
+          },
+          id: 'worker-inference',
+          model: 'prompt-model',
+          providerInstanceId: 'provider-evidence',
+        };
+        const input: WorkerResidentTurnInput = {
+          allowedLlmRoutes: [route],
+          llmRoute: route,
+          mcpServerIds: [],
+          skillTargetPaths: [],
+          runtimeCapture,
+          turnId: fixture.lineage.turnId,
+          turnInput: 'Control worker',
+          turnDirectory: join(nativeRoot, 'turn'),
+          workingDirectory: nativeRoot,
+        };
+        const openInput = {
+          agentSessionId: fixture.lineage.agentSessionId,
+          controlRoot: join(nativeRoot, 'control'),
+          stateRoot: join(nativeRoot, 'state'),
+          environment: { HOME: nativeRoot },
+          loopback,
+          resumeReference: null,
+        };
+        mkdirSync(openInput.stateRoot, { recursive: true });
+        mkdirSync(openInput.controlRoot, { recursive: true });
+        if (adapter === 'deepseek') {
+          const session = await deepseekResidentAdapter.openSession(openInput);
+          stop = () => session.close();
+          // Inject ACP frames beyond the production collector. This does not qualify native launch or terminal proof.
+          const native = session as unknown as {
+            sessionId: string;
+            beginTurn(input: WorkerResidentTurnInput): {
+              settled: Promise<WorkerAdapterResult>;
+              finish(reason: string, failed: boolean): void;
+            };
+            classifyNativeLine(line: string): string | null;
+            onUpdate(params: { sessionId: string; update: object }): void;
+          };
+          native.sessionId = 'native-session';
+          const active = native.beginTurn(input);
+          const path = join(nativeRoot, 'updates.json');
+          writeFileSync(
+            path,
+            JSON.stringify([
+              { sessionUpdate: 'tool_call', toolCallId: 'call', status: 'pending', rawInput: args },
+              {
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'call',
+                status: 'completed',
+                rawOutput: result,
+              },
+              { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+            ])
+          );
+          for (const update of JSON.parse(readFileSync(path, 'utf8'))) {
+            const params = { sessionId: 'native-session', update };
+            const line = native.classifyNativeLine(
+              JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params })
+            );
+            if (line !== null) native.onUpdate(params);
+          }
+          active.finish('end_turn', false);
+          expect(await active.settled).toMatchObject({ status: 'completed' });
+        } else {
+          let prompted = false;
+          let sourceAvailable = true;
+          const child = Object.assign(new EventEmitter(), {
+            exitCode: null as number | null,
+            signalCode: null,
+            pid: 424242,
+            stdout: new EventEmitter(),
+            stderr: new EventEmitter(),
+            stdin: Object.assign(new EventEmitter(), { end: () => child.kill() }),
+            kill: () => {
+              child.exitCode = 0;
+              child.stdout.emit('end');
+              child.stderr.emit('end');
+              child.emit('exit', 0, null);
+              child.emit('close', 0, null);
+              return true;
+            },
+          });
+          const historyPath = join(nativeRoot, 'messages.json');
+          writeFileSync(
+            historyPath,
+            JSON.stringify([
+              { id: 'user', type: 'user' },
+              {
+                id: 'answer',
+                type: 'assistant',
+                finish: 'stop',
+                content: [
+                  { type: 'text', text },
+                  { type: 'reasoning', text: 'private reasoning' },
+                  {
+                    type: 'tool',
+                    id: 'call',
+                    name: 'shell',
+                    state: {
+                      status: 'completed',
+                      input: args,
+                      content: [{ type: 'text', text: result.text }],
+                    },
+                  },
+                ],
+              },
+              { id: 'idle', type: 'idle', outcome: 'succeeded' },
+            ])
+          );
+          const client = {
+            agent: { get: async () => ({ data: { permissions: [] } }) },
+            config: { get: async () => [] },
+            debug: { location: { evict: async () => undefined } },
+            location: { reload: async () => undefined },
+            model: {
+              list: async () => ({
+                data: [{ id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID, enabled: true }],
+              }),
+            },
+            mcp: {
+              add: async () => undefined,
+              list: async () => ({ data: [] }),
+              remove: async () => undefined,
+            },
+            message: {
+              list: async () => {
+                if (!sourceAvailable) throw new Error('Native history is unavailable');
+                return {
+                  cursor: {},
+                  data: prompted ? JSON.parse(readFileSync(historyPath, 'utf8')) : [],
+                };
+              },
+            },
+            permission: { list: async () => [] },
+            session: {
+              update: async () => undefined,
+              create: async () => ({ id: 'native-session' }),
+              form: { list: async () => [] },
+              get: async () => ({
+                id: 'native-session',
+                model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+                time: prompted ? { idle: Number.MAX_SAFE_INTEGER } : {},
+                ...(prompted ? { outcome: 'succeeded' } : {}),
+              }),
+              switchModel: async () => undefined,
+              interrupt: async () => undefined,
+              move: async () => undefined,
+              wait: async () => undefined,
+              prompt: async () => {
+                prompted = true;
+                return { id: 'user' };
+              },
+            },
+          };
+          const adapter = createOpenCodeAdapter({
+            loadClient: async () =>
+              ({ OpenCode: { make: () => client } }) as unknown as Awaited<
+                ReturnType<NonNullable<Parameters<typeof createOpenCodeAdapter>[0]['loadClient']>>
+              >,
+            resolveBinary: () => '/unused',
+            spawnServer: () => {
+              setTimeout(
+                () =>
+                  child.stdout.emit(
+                    'data',
+                    Buffer.from('server listening on http://127.0.0.1:9\n')
+                  ),
+                0
+              );
+              return child as unknown as ChildProcess;
+            },
+          });
+          const session = await adapter.openSession(openInput);
+          stop = async () => {
+            sourceAvailable = false;
+            await session.close();
+          };
+          expect(await (await session.startTurn(input)).settled).toMatchObject({
+            status: 'completed',
+          });
+        }
+      }
+      await stop?.();
+      stop = undefined;
+      // Core must not fall back to either native history or the shim's retained local files.
+      rmSync(nativeRoot, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+      expect(existsSync(nativeRoot) || existsSync(sessionDir)).toBe(false);
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(root);
+      workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
+      const rows = readWorkObservations(workspaceDb, fixture.lineage);
+      const observations = rows
+        .filter((row) => row.type === 'runtime.observed')
+        .map((row) => ({ row, data: WorkerObservationDataSchema.parse(row.payload) }));
+      expect(observations.map(({ data }) => data.fact)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
+          expect.objectContaining({ kind: 'tool', phase: 'completed' }),
+          expect.objectContaining({
+            kind: 'coverage',
+            family: 'primary-content',
+            coverage: 'ended',
+          }),
+        ])
+      );
+      expect(JSON.stringify(rows)).not.toContain('private reasoning');
+      const publications = rows.filter((row) => row.type === 'content.published');
+      if (value === 'off') {
+        expect(publications).toHaveLength(0);
+        expect(observations.map(({ data }) => data.fact)).toContainEqual(
+          expect.objectContaining({ kind: 'coverage', family: 'primary-content', coverage: 'off' })
+        );
+        expect(observations.some(({ data }) => data.content.state === 'off')).toBe(true);
+        expect(
+          observations
+            .filter(({ data }) => data.fact.kind === 'assistant' || data.fact.kind === 'tool')
+            .every(({ data }) => ['off', 'not-applicable'].includes(data.content.state))
+        ).toBe(true);
+      } else {
+        const retained = publications.map((publication) => {
+          const parent = observations.find(({ row }) => row.id === publication.parent)!;
+          const ref = publication.refs![0]!;
+          return {
+            boundary:
+              parent.data.content.state === 'expected' ? parent.data.content.boundary : null,
+            text: readWorkObservationBody(workspaceDb, {
+              ...fixture.lineage,
+              bundleId: ref.locator,
+              createdAt: parent.row.ts,
+              sha256: ref.digest!,
+            })?.toString('utf8'),
+          };
+        });
+        expect(retained.map((body) => body.text).join('')).not.toContain('private reasoning');
+        expect(retained).toEqual(
+          expect.arrayContaining([
+            { boundary: 'runtime.assistant.text', text },
+            { boundary: 'runtime.tool.arguments', text: JSON.stringify(args) },
+            {
+              boundary: 'runtime.tool.result',
+              text:
+                adapter === 'opencode'
+                  ? JSON.stringify([{ type: 'text', text: result.text }])
+                  : JSON.stringify(result),
+            },
+          ])
+        );
+      }
+    } finally {
+      try {
+        await stop?.();
+      } finally {
+        if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+        vi.unstubAllEnvs();
+      }
+    }
+  });
+
   it('persists rejected tool arguments and results under their exact expected observations', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-rejected-observation-'));
     const fixture = createWorkerControlFixture('rejected-observation', root);
