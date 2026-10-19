@@ -1,14 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  linkSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackageSnapshotRecord as AppApiAgentEnvironmentPackageSnapshotRecord } from '@openkit/app-api-schemas';
@@ -29,6 +20,11 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
+import {
+  syncCanonicalDirectory,
+  syncCanonicalTree,
+  writeFileAtomic,
+} from '../storage/workspace-file-records.js';
 
 /** Fixed outer v1 metadata; the embedded versioned AEP retains its own safety and digest checks. */
 const StoredAgentEnvironmentSnapshotV1Schema = z
@@ -354,28 +350,16 @@ function writeSnapshotRecord(
     return requireMatchingSnapshotRecord(workspaceDb, path, record);
   }
 
-  mkdirSync(dirname(path), { recursive: true });
-  const temporaryPath = join(
-    dirname(path),
-    `.${record.snapshotId}.${process.pid}.${randomUUID()}.tmp`
-  );
-
   try {
-    writeFileSync(
-      temporaryPath,
+    writeFileAtomic(
+      path,
       `${JSON.stringify(writeRetainedV1({ ...record, snapshot: 'retainedSnapshot' in record ? record.retainedSnapshot : record.snapshot }), null, 2)}\n`,
-      { flag: 'wx' }
+      undefined,
+      'create'
     );
-    try {
-      linkSync(temporaryPath, path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw error;
-      }
-      return requireMatchingSnapshotRecord(workspaceDb, path, record);
-    }
-  } finally {
-    rmSync(temporaryPath, { force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    return requireMatchingSnapshotRecord(workspaceDb, path, record);
   }
 
   return readSnapshotRecord(workspaceDb, path, record.agentSessionId, record.snapshotId);
@@ -444,6 +428,9 @@ function requireMatchingSnapshotRecord(
     JSON.stringify(existing.retainedSnapshot) ===
       JSON.stringify('retainedSnapshot' in expected ? expected.retainedSnapshot : expected.snapshot)
   ) {
+    // Identical replay must finish an interrupted publication acknowledgement.
+    syncCanonicalTree(path);
+    syncCanonicalDirectory(dirname(path));
     return existing;
   }
 

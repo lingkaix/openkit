@@ -6,6 +6,7 @@ import {
   fchmodSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -73,6 +74,7 @@ import {
   stageArtifactVersionRecord,
 } from './artifacts/artifact-version-records.js';
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
+import { CanonicalPublicationError } from './canonical-publication-error.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 import {
@@ -1020,6 +1022,9 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
   rmSync(join(root, '.staging'), { recursive: true, force: true });
 }
 
+/** Reports only an acknowledged canonical record, never an unpublished staged leaf. */
+type RecordPublished = (kind: 'thread' | 'turn' | 'agent-session', id: string) => void;
+
 /**
  * Writes one workspace's mutable canonical file records under a resolved root.
  *
@@ -1027,22 +1032,24 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
  * @param records Current workspace records.
  * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
  * @param initialArtifact Actual admitted v1 record and optional original for one initial directory publication.
+ * @param onRecordPublished Publishes a derivative cache at its own durable commit, even if a later record fails.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
   updateWorkspaceConfigName = false,
-  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
+  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string },
+  onRecordPublished?: RecordPublished
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
-  writeThreads(workspaceRoot, records);
+  writeThreads(workspaceRoot, records, onRecordPublished);
   writeKnowledge(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records, initialArtifact);
-  writeAgentSessions(workspaceRoot, records);
+  writeAgentSessions(workspaceRoot, records, onRecordPublished);
 }
 
 /**
@@ -2192,7 +2199,13 @@ export function publishNewRecordDirectory(
   try {
     mkdirSync(stagingRoot, { mode: 0o700 });
     assertCanonicalDirectory(stagingRoot);
-    writeContents(stagingRoot);
+    try {
+      writeContents(stagingRoot);
+    } catch (error) {
+      // A staged leaf is not a published record. Its failure leaves the canonical owner absent.
+      if (error instanceof CanonicalPublicationError) throw error.cause;
+      throw error;
+    }
     publishCanonicalPath(stagingRoot, destination);
   } catch (error) {
     rmSync(stagingRoot, { recursive: true, force: true });
@@ -2206,8 +2219,14 @@ export function publishNewRecordDirectory(
  * @param turnRoot Existing Turn directory, either canonical or staged.
  * @param turn Turn record to write.
  * @param records Workspace records that own the Turn's items and events.
+ * @param onMetadataPublished Acknowledges existing canonical metadata before any later log preparation.
  */
-function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFileRecords): void {
+function writeTurnDirectory(
+  turnRoot: string,
+  turn: Turn,
+  records: WorkspaceFileRecords,
+  onMetadataPublished?: () => void
+): void {
   const itemsPath = join(turnRoot, 'items.jsonl');
   const eventsPath = join(turnRoot, 'runtime', 'events.jsonl');
   const runtimeRoot = dirname(eventsPath);
@@ -2256,6 +2275,7 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
     },
     StoredTurnV1Schema
   );
+  onMetadataPublished?.();
   const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
   const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
   if (!itemLogMetadata) {
@@ -2424,8 +2444,13 @@ function writeStagedThreadDirectory(
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param onRecordPublished Reports acknowledged references before processing later records.
  */
-function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeThreads(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords,
+  onRecordPublished?: RecordPublished
+): void {
   const root = join(workspaceRoot, 'threads');
   const expectedThreadIds = new Set(records.threads.map((thread) => thread.id));
 
@@ -2441,6 +2466,8 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
       publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
         writeStagedThreadDirectory(stage, thread, threadTurns, records);
       });
+      for (const turn of threadTurns) onRecordPublished?.('turn', turn.id);
+      onRecordPublished?.('thread', thread.id);
       continue;
     }
     ensureCanonicalDirectory(threadRoot);
@@ -2455,17 +2482,19 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     for (const turn of threadTurns) {
       const turnRoot = join(turnsRoot, turn.id);
       if (lstatSync(turnRoot, { throwIfNoEntry: false })) {
-        writeTurnDirectory(turnRoot, turn, records);
+        writeTurnDirectory(turnRoot, turn, records, () => onRecordPublished?.('turn', turn.id));
         continue;
       }
       publishNewRecordDirectory(workspaceRoot, turnRoot, (stage) => {
         writeTurnDirectory(stage, turn, records);
       });
+      onRecordPublished?.('turn', turn.id);
     }
     const nextBytes = Buffer.from(
       `${JSON.stringify(projectCanonicalThreadRecord(thread, previous), null, 2)}\n`
     );
     if (!previousBytes?.equals(nextBytes)) writeFileAtomic(threadPath, nextBytes);
+    onRecordPublished?.('thread', thread.id);
   }
 }
 
@@ -2608,8 +2637,13 @@ function writeArtifacts(
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param onRecordPublished Reports acknowledged references before processing later sessions.
  */
-function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeAgentSessions(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords,
+  onRecordPublished?: RecordPublished
+): void {
   const root = join(workspaceRoot, 'runtime', 'agent-sessions');
   const expectedIds = new Set(records.agentSessions.map((session) => session.id));
 
@@ -2624,6 +2658,7 @@ function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords
         session,
         StoredAgentSessionV1Schema
       );
+      onRecordPublished?.('agent-session', session.id);
       continue;
     }
     publishNewRecordDirectory(workspaceRoot, sessionRoot, (stage) => {
@@ -2634,6 +2669,7 @@ function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords
         StoredAgentSessionV1Schema
       );
     });
+    onRecordPublished?.('agent-session', session.id);
   }
 }
 
@@ -2847,13 +2883,19 @@ export function appendCanonicalTextFile(path: string, content: string): void {
 }
 
 /**
- * Writes text through a same-directory temporary file and atomic rename.
+ * Writes complete bytes durably through a same-directory temporary file.
  *
  * @param path Target file path.
  * @param content Complete file content.
  * @param mode Exact replacement mode when supplied; otherwise the private writer default.
+ * @param publication Replace by rename, or create by link without clobbering an existing file.
  */
-export function writeFileAtomic(path: string, content: string | Uint8Array, mode?: number): void {
+export function writeFileAtomic(
+  path: string,
+  content: string | Uint8Array,
+  mode?: number,
+  publication: 'replace' | 'create' = 'replace'
+): void {
   const byteLength = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
   const reservation = reserveCanonicalFileWrite(byteLength);
   const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
@@ -2878,8 +2920,20 @@ export function writeFileAtomic(path: string, content: string | Uint8Array, mode
     } finally {
       closeSync(descriptor);
     }
-    renameSync(temporaryPath, path);
-    syncCanonicalDirectory(dirname(path));
+    if (publication === 'create') {
+      linkSync(temporaryPath, path);
+      rmSync(temporaryPath);
+    } else {
+      renameSync(temporaryPath, path);
+    }
+    try {
+      syncCanonicalDirectory(dirname(path));
+    } catch (error) {
+      throw new CanonicalPublicationError(
+        `Directory sync after ${publication === 'create' ? 'link' : 'rename'} failed during publication acknowledgement: ${error instanceof Error ? error.message : 'I/O failure'}`,
+        error
+      );
+    }
     reservation?.assertAvailable();
     safeToRelease = true;
   } catch (error) {
@@ -3160,8 +3214,15 @@ export function syncCanonicalTree(path: string): void {
 export function publishCanonicalPath(staged: string, destination: string): void {
   syncCanonicalTree(staged);
   renameSync(staged, destination);
-  syncCanonicalDirectory(dirname(destination));
-  if (dirname(staged) !== dirname(destination)) syncCanonicalDirectory(dirname(staged));
+  try {
+    syncCanonicalDirectory(dirname(destination));
+    if (dirname(staged) !== dirname(destination)) syncCanonicalDirectory(dirname(staged));
+  } catch (error) {
+    throw new CanonicalPublicationError(
+      `Directory sync after rename failed during publication acknowledgement: ${error instanceof Error ? error.message : 'I/O failure'}`,
+      error
+    );
+  }
 }
 
 /** Synchronizes one directory without blocking asynchronous file collection or following a link. */

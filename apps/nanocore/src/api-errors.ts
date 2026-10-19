@@ -9,6 +9,7 @@ import {
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
+import { CanonicalPublicationError } from './storage/canonical-publication-error.js';
 
 /**
  * Creates a protocol-stamped API error response.
@@ -74,6 +75,10 @@ export function publishedErrorMessage(error: unknown, fallback?: string): string
  * @returns JSON API error response.
  */
 export function asCommandError(error: unknown, code: string, status = 404): Response {
+  if (error instanceof CanonicalPublicationError) {
+    return asApiError(publishedErrorMessage(error), error.code, error.status);
+  }
+
   if (error instanceof IdempotencyKeyConflictError) {
     return asApiError(error.message, error.code, error.status);
   }

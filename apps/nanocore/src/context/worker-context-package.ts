@@ -10,8 +10,8 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  unlinkSync,
-  writeFileSync,
+  renameSync,
+  rmSync,
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -59,6 +59,8 @@ import {
   readCanonicalFile,
   readCanonicalTextFile,
   syncCanonicalDirectory,
+  syncCanonicalTree,
+  writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { PdfTextLayerEvidenceSchema } from './pdf-text-layer.js';
 
@@ -938,6 +940,15 @@ export async function writeWorkerContextPackageFiles(
       throw new Error('Worker Context Package retained publication conflict.');
     return;
   }
+  const packageRoot = join(workspaceRoot, ...rootParts);
+  if (lstatSync(packageRoot, { throwIfNoEntry: false })) {
+    canonicalWorkspaceDirectory(workspaceRoot, rootParts, false);
+    if (!lstatSync(join(packageRoot, 'package.json'), { throwIfNoEntry: false })) {
+      // No commit marker exists. These are unfinished derived files, not retained delivery history.
+      rmSync(packageRoot, { recursive: true });
+      syncCanonicalDirectory(dirname(packageRoot));
+    }
+  }
   const directories = new Set<string>();
   for (const entry of packageFiles.fileInventory) {
     const parts = [...rootParts, ...safeRelativePathSegments(entry.path).slice(0, -1)];
@@ -1007,6 +1018,8 @@ export async function writeWorkerContextPackageFiles(
         const path = pathFor(file.path);
         if (existsSync(path)) {
           assertFileProof(path, inventoryEntry(file));
+          syncCanonicalTree(path);
+          syncCanonicalDirectory(dirname(path));
           continue;
         }
         const reservation = options.admission.reserve({
@@ -1018,10 +1031,13 @@ export async function writeWorkerContextPackageFiles(
         let descriptor: number | undefined;
         let created = false;
         let safeToRelease = true;
+        // The last file is the commit marker. Its own partial write must never look committed.
+        const writePath =
+          file.path === 'package.json' ? join(dirname(path), '.package.json.tmp') : path;
         try {
           reservation.assertAvailable();
           descriptor = openSync(
-            path,
+            writePath,
             constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
             0o600
           );
@@ -1042,7 +1058,8 @@ export async function writeWorkerContextPackageFiles(
           fsyncSync(descriptor);
           closeSync(descriptor);
           descriptor = undefined;
-          assertFileProof(path, inventoryEntry(file));
+          assertFileProof(writePath, inventoryEntry(file));
+          if (writePath !== path) renameSync(writePath, path);
           syncCanonicalDirectory(dirname(path));
           safeToRelease = true;
         } catch (error) {
@@ -1051,7 +1068,7 @@ export async function writeWorkerContextPackageFiles(
             descriptor = undefined;
           }
           if (created) {
-            unlinkSync(path);
+            rmSync(writePath, { force: true });
             syncCanonicalDirectory(dirname(path));
             safeToRelease = true;
           }
@@ -2569,13 +2586,20 @@ function assertSourceFile(
 
 /** Writes one immutable file or accepts an exact identical replay. */
 function writeImmutableFile(path: string, bytes: Uint8Array, conflictMessage: string): void {
-  if (existsSync(path)) {
-    if (!lstatSync(path).isFile() || !readFileSync(path).equals(Buffer.from(bytes))) {
-      throw new Error(conflictMessage);
+  if (!existsSync(path)) {
+    try {
+      writeFileAtomic(path, bytes, undefined, 'create');
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    return;
   }
-  writeFileSync(path, bytes, { flag: 'wx' });
+  if (!lstatSync(path).isFile() || !readFileSync(path).equals(Buffer.from(bytes))) {
+    throw new Error(conflictMessage);
+  }
+  // A prior publication or a racing winner can still need its durability acknowledgement.
+  syncCanonicalTree(path);
+  syncCanonicalDirectory(dirname(path));
 }
 
 /** Builds one exact file inventory entry. */
