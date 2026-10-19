@@ -76,3 +76,5 @@ The Policy v1 mode contract mapping fixes the current I16 input/output contracts
 The additive Goal-domain family uses `PolicyDelegationV1Schema` with `purpose: goal-domain` and required Workspace, Goal, Plan version/digest and approval-request source. The existing Pending Request retains the full inactive statement and its content digest beside the Plan. The Protocol package validates the declaration only; native publication and the Goal owner supply activation and current authority. Agent-principal declarations and storage leases remain absent from this increment.
 
 `ArtifactVersionRecordSchema` retains one exact Artifact snapshot and only its actual parent, producing actor, publication Thread/Turn, mutation request and accepted time beside it. `ArtifactVersionSchema` describes the derived public summary; identity, Workspace, content version, title, summary and content digest come from the snapshot.
+
+Artifact version descriptors keep one snapshot and only actual producer actor, Thread and Turn facts. Public parent, request and time fields derive from that snapshot. Physical descriptors use the shared retained-v1 `schemaVersion` codec.
