@@ -351,6 +351,8 @@ describe('authoritative NanoHost session dispatch', () => {
         resourceSummary: sparseSummary,
       });
 
+      const unowned = { memoryPeakBytes: 1, log: 'PRIVATE_RESOURCE_TEXT' };
+      expect(Buffer.byteLength(JSON.stringify(unowned))).toBeLessThanOrEqual(1024);
       const oversized = { memoryPeakBytes: 1, log: 'PRIVATE_RESOURCE_TEXT'.repeat(64) };
       expect(Buffer.byteLength(JSON.stringify(oversized))).toBeGreaterThan(1024);
       // One invalid field drops the whole summary, including otherwise valid fields.
@@ -362,6 +364,7 @@ describe('authoritative NanoHost session dispatch', () => {
         { resourceSummary: { cpuUsageSeconds: -0.5, memoryPeakBytes: 1 } },
         { resourceSummary: { cpuThrottledSeconds: 'PRIVATE_RESOURCE_TEXT', pidsPeak: 1 } },
         { resourceSummary: { exitState: 'oom-killed', oomKillCount: 1 } },
+        { resourceSummary: unowned },
         { resourceSummary: oversized },
       ]) {
         const pending = await queue();
