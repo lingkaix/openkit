@@ -603,6 +603,9 @@ export function writeWorkspaceExportTree(
         revision: portableFileState.notebookRevision,
         exportRoot: input.exportRoot,
         sources: history.knowledgeSources,
+        knowledgeBaseId: workspaceConfig.workspace.defaultKnowledgeBaseId,
+        scopeSchemaText: portableFileState.workspaceSchema,
+        mounts: workspaceConfig.workspace.knowledgeMounts,
       });
     } else if (history.knowledgeSources.length) {
       throw new Error('Source export requires the pinned canonical Notebook.');

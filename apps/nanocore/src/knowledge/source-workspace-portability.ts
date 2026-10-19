@@ -1,20 +1,19 @@
 import { constants, copyFileSync, mkdirSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { KnowledgeMountsSchema } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import type { z } from 'zod';
-import { readKnowledgeMounts } from '../config/knowledge-base.js';
 import { reserveCanonicalFileWrite } from '../storage/canonical-write-capacity.js';
 import {
   assertCanonicalDirectory,
   measureCanonicalFile,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
+import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 import {
   decodeSourcePointer,
-  readSourcePointers,
   type SourceMetadataSchema,
   type SourcePointer,
 } from './source-pointers.js';
@@ -48,10 +47,29 @@ export function exportWorkspaceSources(input: {
   readonly revision: string;
   readonly exportRoot: string;
   readonly sources: readonly (z.infer<typeof SourceMetadataSchema> & { workspaceId: string })[];
+  readonly knowledgeBaseId: string | undefined;
+  readonly scopeSchemaText: string | null;
+  readonly mounts: unknown;
 }): void {
   const scope = { kind: 'workspace' as const, workspaceId: input.workspaceId };
-  const owner = { dataRoot: resolve(input.workspaceRoot, '../..'), ownerScope: scope };
-  const pointers = readSourcePointers(owner, input.revision);
+  const notebookRoot = join(input.workspaceRoot, 'knowledge');
+  assertCanonicalDirectory(notebookRoot);
+  const notebook = new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
+  const blobs = Object.entries(notebook.readSourcePointers(input.revision));
+  if (blobs.length && (!input.knowledgeBaseId || !input.scopeSchemaText))
+    throw new Error('Source export scope facts are unavailable.');
+  const pointers = new Map(
+    blobs.map(([id, content]) => [
+      id,
+      decodeSourcePointer({
+        ownerScope: scope,
+        knowledgeBaseId: input.knowledgeBaseId!,
+        scopeSchemaText: input.scopeSchemaText!,
+        id,
+        content,
+      }),
+    ])
+  );
   const expected = new Map(
     input.sources.map(({ workspaceId: _workspaceId, ...source }) => [source.id, source])
   );
@@ -61,7 +79,9 @@ export function exportWorkspaceSources(input: {
   )
     throw new Error('Source export snapshot does not match the pinned Notebook.');
   if (!pointers.size) return;
-  const mounts = readKnowledgeMounts({ dataRoot: owner.dataRoot, scope });
+  const mounts = KnowledgeMountsSchema.parse(input.mounts);
+  if (mounts.some((mount) => mount.knowledgeBaseId !== input.knowledgeBaseId))
+    throw new Error('Source mounts belong to a different Knowledge Base.');
   for (const [id, pointer] of pointers) {
     const target = join(input.exportRoot, `${pointerPrefix}${id}.md`);
     mkdirSync(dirname(target), { recursive: true });
