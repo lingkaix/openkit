@@ -25,7 +25,10 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { importWorkspaceSkill, skillSnapshotPath } from '../catalog/resource-catalog.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -926,7 +929,10 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     sandboxBindingRef: `lease-binding:${label}`,
     serverAdminTokenId: tokenId,
   });
-  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot });
+  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: coreDb.dataRoot,
+    workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
+  });
   const runtime = createConfiguredWorkerLifecycleRuntime({
     readRuntimeConfig: () => currentConfiguration,
     coreDb,
@@ -968,16 +974,18 @@ function observeExecutionAttempts(
     : [];
 }
 
-/** Supplies the explicit current Policy input required by real retained-storage admission. */
+/** Reads current authored Policy after each fixture creates its owned Workspace. */
 function createConfiguredWorkerLifecycleRuntime(
   options: Parameters<typeof createWorkerLifecycleOwner>[0] = {}
 ) {
-  const current = createInMemoryRuntimeConfigSnapshot({
-    dataRoot: options.coreDb?.dataRoot ?? null,
-  });
   return createWorkerLifecycleOwner({
     ...options,
-    readRuntimeConfig: options.readRuntimeConfig ?? (() => current),
+    readRuntimeConfig:
+      options.readRuntimeConfig ??
+      (() =>
+        options.coreDb
+          ? loadRuntimeConfig(options.coreDb.dataRoot)
+          : createInMemoryRuntimeConfigSnapshot({ dataRoot: null })),
   });
 }
 
@@ -2211,8 +2219,9 @@ describe('createConfiguredTurnExecutor', () => {
         : {
             readRuntimeConfig: () =>
               createInMemoryRuntimeConfigSnapshot({
-                dataRoot: null,
+                dataRoot: coreDb.dataRoot,
                 openKitConfig: { nanohost: { maxActiveTurnsPerSandbox: options.capacity! } },
+                workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
               }),
           }),
       env: {},
@@ -15013,16 +15022,9 @@ describe('createConfiguredTurnExecutor', () => {
         },
       },
     });
-    fixture.currentConfiguration.workspaceConfigs.push({
-      workspaceId: fixture.workspaceId,
-      path: join(
-        fixture.coreDb.dataRoot,
-        'workspaces',
-        fixture.workspaceId,
-        'config/workspace.jsonc'
-      ),
-      config: boundary,
-    });
+    fixture.currentConfiguration.workspaceConfigs.find(
+      (entry) => entry.workspaceId === fixture.workspaceId
+    )!.config = boundary;
     fixture.hooks.onInspect = () => {
       const policy = boundary.workspace.policy!.mediation;
       policy.statements = policy.statements.filter(
