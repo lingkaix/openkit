@@ -21,6 +21,7 @@ mod openshell_policy;
 use openshell_policy::render_sandbox_policy;
 mod openshell_release;
 mod persistent_volume;
+mod resource_summary;
 mod sandbox_bridge;
 mod start_barrier;
 mod telemetry;
