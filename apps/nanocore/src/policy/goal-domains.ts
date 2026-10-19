@@ -2,9 +2,13 @@ import { createHash } from 'node:crypto';
 import { OpenKitConfigSchema } from '@openkit/config-schema';
 import {
   allocateEntityId,
+  isSealedTurnTerminal,
   PolicyDelegationV1Schema,
   PolicyDigestV1Schema,
   type PolicyDocumentV1,
+  PolicyPermissionV1Schema,
+  type PolicySubjectV1Schema,
+  PolicyWriteProposalV1Schema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -17,8 +21,13 @@ import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
-import { readGoalView } from '../runtime/goal-owner.js';
+import { goalActor, readGoalView, requireCoordinatorGoal } from '../runtime/goal-owner.js';
+import {
+  type GoalTaskPolicyContext,
+  readGoalTaskPolicyContext,
+} from '../runtime/goal-task-policy-context.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
+import type { SchedulerExecutionLineage } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import {
@@ -28,7 +37,12 @@ import {
   recordProductPermissionDecision,
 } from './permission-decisions.js';
 import { evaluateAdministratorWorkspaceAccess } from './server-access.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest, validatePolicyDocument } from './statements.js';
+import {
+  EMPTY_POLICY_DOCUMENT,
+  policyDigest,
+  policyScopeContains,
+  validatePolicyDocument,
+} from './statements.js';
 import {
   evaluateWorkspaceMemberAccess,
   PRODUCT_OPERATION_ACCESS_RIGHTS,
@@ -36,6 +50,24 @@ import {
 
 /** Existing delegation format with the Goal lineage required by its native consumer. */
 export type GoalDomainStatement = z.infer<typeof PolicyDelegationV1Schema>;
+
+/** Existing permission grammar; native admission supplies its current Goal delegation. */
+export type GoalDomainPermission = z.infer<typeof PolicyPermissionV1Schema>;
+
+/** The actual Coordinator and affected Worker are separate native authority facts. */
+export interface GoalDomainAdministrationInput {
+  readonly workspaceDb: WorkspaceDb;
+  readonly goalId: string;
+  readonly coordinatorTurnId: string;
+  readonly taskLineage: SchedulerExecutionLineage;
+  readonly expectedPolicyRevision: string;
+  readonly grant: {
+    readonly id: string;
+    readonly scope: GoalDomainPermission['scope'];
+    readonly lifetime: GoalDomainPermission['lifetime'];
+    readonly rationale: string;
+  };
+}
 
 /** A Goal and its jointly approved request remain in their existing Workspace owner. */
 export interface GoalDomainKey {
@@ -228,10 +260,105 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     return { statement: active, actor, goal: view.goal, request };
   }
 
+  function coordinatorAuthority(input: GoalDomainAdministrationInput) {
+    if (input.workspaceDb.workspaceId !== input.taskLineage.workspaceId)
+      throw new Error('Goal administration Workspace differs from its Task lineage.');
+    const context = readGoalTaskPolicyContext({
+      coreDb: deps.coreDb,
+      store: deps.store,
+      db: input.workspaceDb,
+      lineage: input.taskLineage,
+    });
+    if (!context || context.goalId !== input.goalId)
+      throw new Error('Goal administration requires its exact current Task.');
+    const key = { workspaceId: context.workspaceId, goalId: context.goalId };
+    const current = loaded();
+    if (current.revision !== input.expectedPolicyRevision)
+      throw new Error('Goal-domain Policy revision changed.');
+    const domain = readCurrent(key);
+    if (!domain) throw new Error('Goal administration delegation is unavailable.');
+    const goal = readGoalView(deps.store, input.workspaceDb, input.goalId).goal!;
+    const actor = goalActor(goal);
+    requireCoordinatorGoal(deps.store, input.workspaceDb, {
+      actor,
+      ...key,
+      threadId: goal.threadId,
+      turnId: input.coordinatorTurnId,
+    });
+    if (
+      domain.delegate.kind !== 'agent' ||
+      domain.delegate.id !== 'goal-coordinator' ||
+      context.agentId === domain.delegate.id
+    )
+      throw new Error('Coordinator cannot widen its own Goal authority.');
+    const kernel = currentGoalHuman(goal, key.workspaceId);
+    const subject: z.infer<typeof PolicySubjectV1Schema> = {
+      principal: domain.delegate,
+      onBehalfOf: null,
+      actor: { kind: 'agent', id: domain.delegate.id, responsibleUserId: goal.responsibleUserId },
+      process: {
+        workspaceId: key.workspaceId,
+        threadId: goal.threadId,
+        turnId: input.coordinatorTurnId,
+      },
+      credentialKind: actor.kind,
+      responsibleHumanId: goal.responsibleUserId,
+    };
+    return { current, context, key, domain, goal, actor, kernel, subject };
+  }
+
+  function currentGoalHuman(
+    goal: NonNullable<ReturnType<typeof readGoalView>['goal']>,
+    workspaceId: string
+  ) {
+    const actor = goalActor(goal);
+    if (
+      !authorizeWorkspace(deps.coreDb, actor, workspaceId, {
+        policyOperation: 'workspace.configure',
+        mutating: true,
+      })
+    )
+      throw new Error('Goal Coordinator human credential is no longer authorized.');
+    const kernel = isCurrentDeploymentAdministrator(deps.coreDb, actor)
+      ? evaluateAdministratorWorkspaceAccess({
+          userId: actor.userId,
+          workspaceId,
+          operation: 'workspace.configure',
+        })
+      : evaluateWorkspaceMemberAccess({ operation: 'workspace.configure' });
+    if (kernel.effect !== 'allow') throw new Error('Goal administration Kernel admission failed.');
+    return kernel;
+  }
+
+  function permissionAnchorCurrent(
+    permission: GoalDomainPermission,
+    context: GoalTaskPolicyContext
+  ) {
+    const anchor = permission.lifetime.anchor;
+    return (
+      anchor.owner.kind === 'workspace' &&
+      anchor.owner.workspaceId === context.workspaceId &&
+      ((anchor.kind === 'goal' && anchor.id === context.goalId) ||
+        (anchor.kind === 'thread' && anchor.id === context.taskThreadId) ||
+        (anchor.kind === 'turn' &&
+          anchor.id === context.turnId &&
+          !isSealedTurnTerminal(deps.store.getTurnById(anchor.id).status)))
+    );
+  }
+
   function persist(
     current: ReturnType<typeof saved>,
     document: PolicyDocumentV1,
-    context: { key: GoalDomainKey; actor?: Actor; requestId?: string; responsibleUserId: string }
+    context: {
+      key: GoalDomainKey;
+      actor?: Actor;
+      requestId?: string;
+      responsibleUserId: string;
+      administration?: {
+        recheck: () => ReturnType<typeof coordinatorAuthority>;
+        proposal: z.infer<typeof PolicyWriteProposalV1Schema>;
+      };
+    }
   ) {
     const revision = policyDigest(document);
     const content = `${JSON.stringify(
@@ -252,17 +379,32 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     if (!validation.valid) throw new Error('Goal-domain Policy configuration validation failed.');
     // Validation reads an overlay from disk; reread live approval and credentials
     // before the final Kernel and Server file effect, rather than trusting its old snapshot.
+    const administration = context.administration?.recheck();
     if (context.actor) approved(context.key.workspaceId, context.requestId!);
 
-    const kernel = context.actor
-      ? isCurrentDeploymentAdministrator(deps.coreDb, context.actor)
-        ? evaluateAdministratorWorkspaceAccess({
-            userId: context.actor.userId,
-            workspaceId: context.key.workspaceId,
-            operation: 'workspace.write',
-          })
-        : evaluateWorkspaceMemberAccess({ operation: 'workspace.write' })
-      : null;
+    const kernel =
+      administration?.kernel ??
+      (context.actor
+        ? isCurrentDeploymentAdministrator(deps.coreDb, context.actor)
+          ? evaluateAdministratorWorkspaceAccess({
+              userId: context.actor.userId,
+              workspaceId: context.key.workspaceId,
+              operation: 'workspace.write',
+            })
+          : evaluateWorkspaceMemberAccess({ operation: 'workspace.write' })
+        : null);
+    const subject =
+      administration?.subject ??
+      (context.actor
+        ? {
+            principal: { kind: 'human' as const, id: context.actor.userId },
+            onBehalfOf: null,
+            actor: { kind: 'user' as const, id: context.actor.userId },
+            process: null,
+            credentialKind: context.actor.kind,
+            responsibleHumanId: context.actor.userId,
+          }
+        : null);
     if (kernel && kernel.effect !== 'allow')
       throw new Error('Goal-domain Kernel admission failed.');
     // Closure is a native withdrawal, not an impersonated human authorization.
@@ -273,37 +415,49 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       decisionId: allocateEntityId('pd'),
       action: 'workspace.configure',
       result: 'allow',
-      reasonCode: context.actor ? 'granted' : 'goal_domain_withdrawn',
+      reasonCode: subject ? 'granted' : 'goal_domain_withdrawn',
       policyEngineVersion: 'nanocore-policy:v1',
       policySnapshotId: current.revision,
       subjectSummary: {
-        principal: context.actor ? { kind: 'human', id: context.actor.userId } : null,
+        principal: subject?.principal ?? null,
         responsibleHumanId: context.responsibleUserId,
       },
       resourceSummary: { kind: 'policy', policyRevision: revision },
       contextSummary: {
         operation: 'policy.write',
-        cause: context.actor ? 'goal-domain.activate' : 'goal-domain.close',
+        cause: administration
+          ? 'goal-domain.administer'
+          : context.actor
+            ? 'goal-domain.activate'
+            : 'goal-domain.close',
+        ...(context.administration
+          ? {
+              proposal: context.administration.proposal,
+              threadId: subject!.process!.threadId,
+              turnId: subject!.process!.turnId,
+            }
+          : {}),
         ...context.key,
         requestId: context.requestId ?? null,
         responsibleUserId: context.responsibleUserId,
       },
       enforcementPoint: 'policy.write@decide',
-      ...(context.actor
+      ...(subject
         ? {
             mediation: {
               operation: 'policy.write',
               stage: 'decide' as const,
-              proposalDigest: policyDigest({ requestId: context.requestId, proposed: document }),
-              authorizationRevision: policyDigest({ actor: context.actor, kernel }),
-              subject: {
-                principal: { kind: 'human' as const, id: context.actor.userId },
-                onBehalfOf: null,
-                actor: { kind: 'user' as const, id: context.actor.userId },
-                process: null,
-                credentialKind: context.actor.kind,
-                responsibleHumanId: context.actor.userId,
-              },
+              proposalDigest: policyDigest(
+                context.administration?.proposal ?? {
+                  requestId: context.requestId,
+                  proposed: document,
+                }
+              ),
+              authorizationRevision: policyDigest({
+                actor: administration?.actor ?? context.actor,
+                kernel,
+              }),
+              subject,
               role: 'final' as const,
               kernel: { effect: kernel!.effect, reason: kernel!.reasons[0]?.code ?? 'not_granted' },
               invocations: [],
@@ -311,8 +465,8 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
             },
           }
         : {}),
-      auditActor: context.actor
-        ? { kind: 'user', id: context.actor.userId }
+      auditActor: subject
+        ? subject.actor
         : {
             kind: 'system',
             id: 'goal-domain-closure',
@@ -330,6 +484,118 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
   }
 
   return {
+    /** Publishes only an explicitly bounded exception under the current human-approved domain. */
+    administer(input: GoalDomainAdministrationInput) {
+      const authority = coordinatorAuthority(input);
+      const { current, context, domain, goal, key } = authority;
+      const grant = input.grant;
+      const permission = PolicyPermissionV1Schema.parse({
+        id: grant.id,
+        kind: 'permission',
+        state: 'active',
+        effect: 'allow',
+        grant: { kind: 'ordinary' },
+        author: domain.delegate,
+        authority: {
+          kind: 'delegation',
+          statement: { id: domain.id, digest: policyDigest(domain) },
+        },
+        authoredAt: new Date().toISOString(),
+        scope: grant.scope,
+        lifetime: grant.lifetime,
+      });
+      if (
+        !grant.rationale.trim() ||
+        permission.scope.subjects.length !== 1 ||
+        permission.scope.subjects[0]?.kind !== 'agent' ||
+        permission.scope.subjects[0].id !== context.agentId ||
+        !policyScopeContains(domain.scope, permission.scope) ||
+        !permissionAnchorCurrent(permission, context) ||
+        (permission.lifetime.notAfter &&
+          (Date.now() >= Date.parse(permission.lifetime.notAfter) ||
+            (domain.lifetime.notAfter &&
+              Date.parse(permission.lifetime.notAfter) > Date.parse(domain.lifetime.notAfter)))) ||
+        (domain.lifetime.uses !== undefined &&
+          permission.lifetime.uses !== undefined &&
+          permission.lifetime.uses > domain.lifetime.uses)
+      )
+        throw new Error(
+          'Goal permission exceeds its current delegation, Task identity or lifetime.'
+        );
+      const previous = current.document.statements.find(({ id }) => id === permission.id);
+      if (
+        previous &&
+        (previous.kind !== 'permission' ||
+          previous.authority.kind !== 'delegation' ||
+          policyDigest(previous.authority) !== policyDigest(permission.authority) ||
+          policyDigest(previous.author) !== policyDigest(permission.author))
+      )
+        throw new Error('Policy statement identity belongs to another authority.');
+      const document = validatePolicyDocument({
+        schemaVersion: 1,
+        statements: [
+          ...current.document.statements.filter(({ id }) => id !== permission.id),
+          permission,
+        ],
+      });
+      const proposal = PolicyWriteProposalV1Schema.parse({
+        schemaVersion: 1,
+        proposer: domain.delegate,
+        rationale: grant.rationale,
+        baseRevision: current.revision,
+        proposed: document,
+        validation: 'valid',
+      });
+      const policyRevision = persist(current, document, {
+        key,
+        responsibleUserId: goal.responsibleUserId,
+        administration: { proposal, recheck: () => coordinatorAuthority(input) },
+      });
+      return { statement: permission, policyRevision };
+    },
+
+    /** Current native Task facts select only live exceptions; a historical allow is never a new use. */
+    readPermissions(input: {
+      readonly context: GoalTaskPolicyContext;
+      readonly decision?: PolicyUseDecision;
+    }): GoalDomainPermission[] {
+      const { context, decision } = input;
+      const key = { workspaceId: context.workspaceId, goalId: context.goalId };
+      const current = loaded();
+      const domain = readCurrent(key, decision);
+      if (!domain) return [];
+      const goal = readGoalView(
+        deps.store,
+        deps.repositoryWorkspaceDb(context.workspaceId),
+        context.goalId
+      ).goal!;
+      currentGoalHuman(goal, context.workspaceId);
+      const reference = { id: domain.id, digest: policyDigest(domain) };
+      const db = deps.repositoryWorkspaceDb(context.workspaceId);
+      return current.document.statements.filter((value): value is GoalDomainPermission => {
+        if (
+          value.kind !== 'permission' ||
+          value.state !== 'active' ||
+          value.effect !== 'allow' ||
+          value.grant.kind !== 'ordinary' ||
+          value.authority.kind !== 'delegation' ||
+          policyDigest(value.authority.statement) !== policyDigest(reference) ||
+          policyDigest(value.author) !== policyDigest(domain.delegate) ||
+          value.scope.subjects.length !== 1 ||
+          value.scope.subjects[0]?.kind !== 'agent' ||
+          value.scope.subjects[0].id !== context.agentId ||
+          !policyScopeContains(domain.scope, value.scope) ||
+          !permissionAnchorCurrent(value, context) ||
+          (value.lifetime.notAfter && Date.now() >= Date.parse(value.lifetime.notAfter))
+        )
+          return false;
+        if (value.lifetime.uses === undefined) return true;
+        const ref = { id: value.id, digest: policyDigest(value) };
+        const own = decision && policyStatementUsedByDecision(db, ref, decision) ? 1 : 0;
+        return readPolicyStatementUseCount(db, ref) - own < value.lifetime.uses;
+      });
+    },
+
     /** Reads all authority from the completed joint request; no second human approval exists. */
     activate(input: {
       readonly workspaceId: string;
