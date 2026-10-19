@@ -1,9 +1,12 @@
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { type FileHandle, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import type Database from 'better-sqlite3';
 import { createApp } from '../app.js';
+import { importArtifactFile } from '../artifact-file-commands.js';
 import { FsStore } from '../lib/store.js';
 import {
   raiseRecordedPendingRequest,
@@ -14,6 +17,8 @@ import {
   readPendingRequest,
   validateCanonicalLoad,
 } from '../runtime/pending-requests.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -30,8 +35,9 @@ ensureLocalUser(coreDb);
 const store = retainedRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
 const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 applyScopedMigrations(db);
-if (mode === 'command-commit') {
-  await probeCommandCommit();
+if (mode === 'command-commit' || mode === 'artifact-commit') {
+  if (mode === 'command-commit') await probeCommandCommit();
+  else await probeArtifactCommit();
   db.sqlite.close();
   coreDb.sqlite.close();
   process.exit(0);
@@ -444,6 +450,132 @@ async function probePendingOutcome(
       responseStatus: response.status,
       responseBody,
       notifications,
+      live: snapshot(store),
+      cold: snapshot(new FsStore({ dataRoot })),
+    })
+  );
+}
+
+/** Composes the real streamed Storage producer and Artifact/receipt consumer across native faults. */
+async function probeArtifactCommit(): Promise<void> {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const userId = 'usr_00000000-0000-7000-8000-000000000001';
+  const requestId = '10000000-0000-4000-8000-000000000103';
+  const bytes = Buffer.from('00ff800d0a', 'hex');
+  const title = 'Immutable handoff original';
+  const snapshot = (reader: FsStore) => {
+    const artifacts = reader.listArtifacts(workspaceId);
+    const target = artifacts.find((artifact) => artifact.title === title);
+    return {
+      artifacts: artifacts
+        .map(({ id, version, contentDigest }) => ({ id, version, contentDigest }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      receipts: db.sqlite
+        .prepare(
+          'SELECT request_id, response_kind, response_id FROM idempotency_requests WHERE request_id = ?'
+        )
+        .all(requestId),
+      payload: target
+        ? {
+            content: reader.getArtifact(workspaceId, target.id).content,
+            hex: readFileSync(
+              artifactFilePayloadPath(
+                join(dataRoot, 'workspaces', workspaceId),
+                target.id,
+                target.version
+              )
+            ).toString('hex'),
+          }
+        : null,
+    };
+  };
+  if (phase === 'inspect') {
+    console.log(JSON.stringify({ dataRoot, state: snapshot(store) }));
+    return;
+  }
+  console.log(JSON.stringify({ dataRoot, before: snapshot(store) }));
+  const probePath = join(dataRoot, '.sync-probe');
+  const handle = await open(probePath, 'wx');
+  const handlePrototype = Object.getPrototypeOf(handle) as FileHandle;
+  await handle.close();
+  rmSync(probePath);
+  const sync = handlePrototype.sync;
+  let contentSynchronized = false;
+  let checkpoint: string | null = null;
+  // Directory synchronization remains real. The fixture has one five-byte content file.
+  handlePrototype.sync = async function () {
+    const stat = await this.stat();
+    if (stat.isFile() && stat.size === bytes.length) {
+      if (phase === 'before-sync') {
+        console.log(
+          JSON.stringify({ dataRoot, checkpoint: 'before-content-sync', contentSynchronized })
+        );
+        process.exit(23);
+      }
+      if (phase === 'sync-failure') {
+        checkpoint = 'content-sync-failure';
+        throw new Error('Injected content synchronization failure.');
+      }
+      await sync.call(this);
+      contentSynchronized = true;
+      return;
+    }
+    await sync.call(this);
+  };
+  const restore = interceptReceiptWrite(requestId, () => {
+    if (phase !== 'before-receipt' && phase !== 'receipt-failure') return;
+    checkpoint = 'before-receipt';
+    if (phase === 'before-receipt') {
+      console.log(JSON.stringify({ dataRoot, checkpoint, contentSynchronized }));
+      process.exit(23);
+    }
+    throw new Error('Injected Artifact receipt write failure.');
+  });
+  let result: Awaited<ReturnType<typeof importArtifactFile>> | undefined;
+  let failure: string | undefined;
+  try {
+    result = await importArtifactFile({
+      store,
+      workspaceDb: db,
+      admission: new FileStorageAdmission(dataRoot, () => 0n),
+      inflightCommands: new WeakMap(),
+      metadata: {
+        workspaceId,
+        requestId,
+        title,
+        mediaType: 'application/octet-stream',
+        byteLength: bytes.length,
+        contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      },
+      source: Readable.from([bytes]),
+      // Authorization is outside this storage fault; both data owners remain real.
+      assertAuthorized: () => {},
+      context: {
+        kind: 'public',
+        actor: { kind: 'session', userId },
+        actorRef: { kind: 'user', id: userId },
+        scope: { kind: 'workspace', workspaceId },
+      },
+    });
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+  } finally {
+    restore();
+    handlePrototype.sync = sync;
+  }
+  if (phase === 'after-commit') {
+    console.log(
+      JSON.stringify({ dataRoot, checkpoint: 'result-ready', contentSynchronized, result, failure })
+    );
+    process.exit(23);
+  }
+  console.log(
+    JSON.stringify({
+      dataRoot,
+      checkpoint,
+      contentSynchronized,
+      result,
+      failure,
       live: snapshot(store),
       cold: snapshot(new FsStore({ dataRoot })),
     })

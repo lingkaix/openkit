@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +34,102 @@ function fixture() {
   );
   return { root, target, admission };
 }
+/** Reuses the retained publication child; the parent owns cleanup of only its new roots. */
+function contentProbe(phase: string, root?: string) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      'src/test-support/pending-publication-crash.ts',
+      'artifact-commit',
+      phase,
+      ...(root ? [root] : []),
+    ],
+    { encoding: 'utf8', timeout: 60_000 }
+  );
+  const lines = result.stdout
+    .trim()
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line));
+  const retainedRoot = lines[0]?.dataRoot as string | undefined;
+  if (!root && retainedRoot) roots.push(retainedRoot);
+  return { result, value: lines.at(-1), initial: lines[0], root: retainedRoot };
+}
+
+it('publishes no Artifact reference when the process dies before immutable content synchronization', () => {
+  const crashed = contentProbe('before-sync');
+  expect(crashed.result.status, crashed.result.stderr).toBe(23);
+  expect(crashed.value).toMatchObject({
+    checkpoint: 'before-content-sync',
+    contentSynchronized: false,
+  });
+  const cold = contentProbe('inspect', crashed.root);
+  expect(cold.result.status, cold.result.stderr).toBe(0);
+  expect(cold.value.state).toEqual(crashed.initial.before);
+}, 90_000);
+
+it('refuses failed content synchronization without exposing a reference or cache candidate', () => {
+  const failed = contentProbe('sync-failure');
+  expect(failed.result.status, failed.result.stderr).toBe(0);
+  expect(failed.value).toMatchObject({
+    checkpoint: 'content-sync-failure',
+    contentSynchronized: false,
+  });
+  expect(failed.value.result).toBeUndefined();
+  expect(failed.value.failure).toEqual(expect.any(String));
+  expect(failed.value.live).toEqual(failed.initial.before);
+  expect(failed.value.cold).toEqual(failed.initial.before);
+}, 90_000);
+
+it('leaves only unreferenced synchronized content when the process dies before the owning receipt', () => {
+  const crashed = contentProbe('before-receipt');
+  expect(crashed.result.status, crashed.result.stderr).toBe(23);
+  expect(crashed.value).toMatchObject({ checkpoint: 'before-receipt', contentSynchronized: true });
+  const cold = contentProbe('inspect', crashed.root);
+  expect(cold.result.status, cold.result.stderr).toBe(0);
+  expect(cold.value.state).toEqual(crashed.initial.before);
+}, 90_000);
+
+it('does not expose an immutable reference or cache candidate after a receipt commit failure', () => {
+  const failed = contentProbe('receipt-failure');
+  expect(failed.result.status, failed.result.stderr).toBe(0);
+  expect(failed.value).toMatchObject({ checkpoint: 'before-receipt', contentSynchronized: true });
+  expect(failed.value.result).toBeUndefined();
+  expect(failed.value.failure).toEqual(expect.any(String));
+  expect.soft(failed.value.live).toEqual(failed.initial.before);
+  expect.soft(failed.value.cold).toEqual(failed.initial.before);
+}, 90_000);
+
+it('resolves a committed Artifact reference to exact cold bytes after losing its acknowledgement', () => {
+  const crashed = contentProbe('after-commit');
+  expect(crashed.result.status, crashed.result.stderr).toBe(23);
+  expect(crashed.value).toMatchObject({ checkpoint: 'result-ready', contentSynchronized: true });
+  expect(crashed.value.failure).toBeUndefined();
+  expect(crashed.value.result.artifactVersion).toBe(1);
+  const cold = contentProbe('inspect', crashed.root);
+  expect(cold.result.status, cold.result.stderr).toBe(0);
+  const state = cold.value.state;
+  expect(state.artifacts).toHaveLength(crashed.initial.before.artifacts.length + 1);
+  expect(state.artifacts).toContainEqual({
+    id: crashed.value.result.artifactId,
+    version: 1,
+    contentDigest: `sha256:${createHash('sha256').update(Buffer.from('00ff800d0a', 'hex')).digest('hex')}`,
+  });
+  expect(state.payload.hex).toBe('00ff800d0a');
+  expect(state.receipts).toEqual([
+    expect.objectContaining({
+      response_kind: 'artifact',
+      response_id: crashed.value.result.artifactId,
+    }),
+  ]);
+  const replay = contentProbe('replay', crashed.root);
+  expect(replay.result.status, replay.result.stderr).toBe(0);
+  expect(replay.value.result).toEqual(crashed.value.result);
+  expect(replay.value.cold).toEqual(state);
+}, 90_000);
+
 const writes = { stagingBytes: 3n, extractionBytes: 0n, derivativeBytes: 0n, publicationBytes: 0n };
 it('releases a refused temporary write only after actual cleanup is proved', () => {
   const f = fixture();
