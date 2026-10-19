@@ -10,7 +10,7 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
-import { admitKnowledgeRetrieval } from './retrieval-knowledge-adapter.js';
+import { admitKnowledgeRetrieval, knowledgePageDelegated } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import {
@@ -66,6 +66,63 @@ describe('canonical local retrieval identity', () => {
 });
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
+  it('excludes an unpublished proposal despite its delegated label and exact candidate bytes', async () => {
+    const fixture = createFixture('unpublished-proposal');
+    const id = 'pending-rule';
+    const content = updateOkfFrontmatter({
+      path: `${id}.md`,
+      content: serializeKnowledgePageFixture(
+        {
+          title: 'Pending metric rule',
+          content: 'pending-proposal-marker is not confirmed reusable meaning.',
+          sourceReferences: [],
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        { kind: 'workspace', workspaceId: fixture.workspaceId }
+      ),
+      updates: {
+        type: 'Rule',
+        review_state: 'delegated',
+        applies_to: ['step:metric-close'],
+      },
+    });
+    const baseRevision = fixture.notebook.publishedRevision();
+    const proposalId = `kp_${'2'.repeat(64)}`;
+    const candidateRevision = fixture.notebook.prepare({
+      baseRevision,
+      changes: { [`${id}.md`]: content },
+      metadata: {
+        summary: 'Retain an unreviewed rule candidate',
+        producer: { kind: 'agent', id: 'knowledge-manager', responsibleUserId: fixture.userId },
+        authority: { kind: 'proposal', proposalId },
+        sourceReferences: [],
+        changeRequest: { requestId: randomUUID(), inputDigest: sha256(content) },
+      },
+    });
+    fixture.notebook.retainCandidate({ proposalId, candidateRevision });
+    expect(fixture.notebook.retainedCandidate(proposalId).revision).toBe(candidateRevision);
+    expect(fixture.notebook.readRevision(candidateRevision).files[`${id}.md`]).toBe(content);
+    expect(() =>
+      knowledgePageDelegated(
+        {
+          ...retrievalInput(fixture, 'pending-proposal-marker'),
+          notebookRevision: candidateRevision,
+        },
+        id,
+        content
+      )
+    ).toThrow(expect.objectContaining({ code: 'invalid_request' }));
+    const result = await retrieveWorkspaceKnowledge({
+      ...retrievalInput(fixture, 'pending-proposal-marker'),
+      types: ['Rule'],
+      appliesTo: ['step:metric-close'],
+      pinnedReferences: [pageReference(fixture, id)],
+    });
+    expect(result.selected).toEqual([]);
+    expect(fixture.notebook.publishedRevision()).toBe(baseRevision);
+  });
+
   it.each([
     'Claim',
     'Observation',
