@@ -18,6 +18,7 @@ import {
   PolicyDelegationV1Schema,
   readRetainedV1,
   type TurnSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -348,7 +349,7 @@ function coordinatorTurn(context: GoalOwnerContext, store: FsStore, goal: GoalRe
   if (!context.coordinatorTurnId) return null;
   const turn = store.getTurnById(context.coordinatorTurnId);
   if (
-    turn.workspaceId !== goal.workspaceId ||
+    workspaceIdForOwner(turn.owner) !== goal.workspaceId ||
     turn.threadId !== goal.threadId ||
     turn.agentId !== 'goal-coordinator' ||
     turn.agentSessionId ||
@@ -422,7 +423,7 @@ function raiseIntent(
   });
   store.createItem({
     id: itemId,
-    workspaceId: goal.workspaceId,
+    owner: { kind: 'workspace', workspaceId: goal.workspaceId },
     threadId: goal.threadId,
     turnId: turn.id,
     type: 'approval-request',
@@ -1070,7 +1071,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
             { turnId: deriveEntityId('tu', ['goal_handoff', commandInput.requestId]) }
           );
       if (
-        turn.workspaceId !== input.workspaceId ||
+        workspaceIdForOwner(turn.owner) !== input.workspaceId ||
         turn.threadId !== origin ||
         turn.triggerActor.id !== context.actor.userId
       )
@@ -1082,7 +1083,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       const at = now();
       store.createItem({
         id: itemId,
-        workspaceId: input.workspaceId,
+        owner: { kind: 'workspace', workspaceId: input.workspaceId },
         threadId: origin,
         turnId: turn.id,
         type: 'assistant-message',

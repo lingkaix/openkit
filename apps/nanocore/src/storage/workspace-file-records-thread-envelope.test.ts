@@ -1,4 +1,3 @@
-// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -129,7 +128,20 @@ function predecessorRecord(value: Record<string, unknown>) {
   delete predecessor.parentThreadId;
   predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
   const { id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
-  predecessor.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify({ id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt })).digest('hex')}`;
+  predecessor.contentDigest = `sha256:${createHash('sha256')
+    .update(
+      JSON.stringify({
+        id,
+        owner: { kind: 'workspace', workspaceId: workspaceId },
+        name,
+        preview,
+        status,
+        entryPath,
+        createdAt,
+        updatedAt,
+      })
+    )
+    .digest('hex')}`;
   return predecessor;
 }
 

@@ -1,5 +1,3 @@
-// openkit-test-platform: posix
-
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
@@ -84,7 +82,7 @@ function workspaceImportPayload(
 ): Parameters<FsStore['importWorkspaceSnapshot']>[0] {
   const item = ItemSchema.parse({
     id: itemId,
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
     threadId,
     turnId: testEntityId('tu', `turn_${workspaceId}`),
     type: 'user-message',
@@ -123,7 +121,7 @@ function workspaceImportPayload(
     threads: [
       ThreadSchema.parse({
         id: threadId,
-        workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceId },
         name: 'Imported thread',
         preview: 'Imported thread',
         status: 'active',
@@ -137,7 +135,7 @@ function workspaceImportPayload(
     turns: [
       TurnSchema.parse({
         id: item.turnId,
-        workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceId },
         threadId,
         triggerActor: localActor,
         items: [item],
@@ -170,7 +168,7 @@ describe('FsStore canonical reload', () => {
     );
     const firstItem = store.createItem({
       id: testEntityId('it', `it_${firstTurn.id}`),
-      workspaceId: firstWorkspace.id,
+      owner: { kind: 'workspace', workspaceId: firstWorkspace.id },
       threadId: firstThread.id,
       turnId: firstTurn.id,
       type: 'assistant-message',
@@ -192,7 +190,7 @@ describe('FsStore canonical reload', () => {
     );
     const secondItem = store.createItem({
       id: testEntityId('it', `it_${secondTurn.id}`),
-      workspaceId: secondWorkspace.id,
+      owner: { kind: 'workspace', workspaceId: secondWorkspace.id },
       threadId: secondThread.id,
       turnId: secondTurn.id,
       type: 'user-message',
@@ -256,7 +254,7 @@ describe('FsStore canonical reload', () => {
 
     store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
@@ -284,7 +282,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Append item revisions', localActor);
     const item = store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -362,7 +360,7 @@ describe('FsStore canonical reload', () => {
     );
     const userItem = store.createItem({
       id: testEntityId('it', `it_user_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
@@ -374,7 +372,7 @@ describe('FsStore canonical reload', () => {
     });
     store.createItem({
       id: testEntityId('it', `it_assistant_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -397,7 +395,7 @@ describe('FsStore canonical reload', () => {
     });
     const approvalRequestItem = store.createItem({
       id: testEntityId('it', `it_approval_request_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-request',
@@ -411,7 +409,7 @@ describe('FsStore canonical reload', () => {
     });
     const approvalDecisionItem = store.createItem({
       id: testEntityId('it', `it_approval_decision_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-decision',
@@ -762,7 +760,7 @@ describe('FsStore canonical reload', () => {
     });
     const requestItem = store.createItem({
       id: testEntityId('it', `it_approval_request_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-request',
@@ -827,7 +825,7 @@ describe('FsStore canonical reload', () => {
     });
     const requestItem = store.createItem({
       id: testEntityId('it', `it_approval_request_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-request',
@@ -842,7 +840,7 @@ describe('FsStore canonical reload', () => {
 
     store.createItem({
       id: testEntityId('it', `it_approval_decision_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-decision',
@@ -905,7 +903,7 @@ describe('FsStore canonical reload', () => {
 
     store.createItem({
       id: testEntityId('it', `it_approval_request_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-request',
@@ -972,7 +970,7 @@ describe('FsStore canonical reload', () => {
     );
     const item = store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -1022,7 +1020,7 @@ describe('FsStore canonical reload', () => {
     );
     const item = store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -1153,7 +1151,7 @@ describe('FsStore canonical reload', () => {
     );
     const item = store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -1196,7 +1194,7 @@ describe('FsStore canonical reload', () => {
     );
     const item = store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
@@ -1770,7 +1768,7 @@ describe('FsStore canonical reload', () => {
     const turn = input.turns[0]!;
     const approvalItem = ItemSchema.parse({
       id: 'it_00000000-0000-7111-b184-6426d094dd88',
-      workspaceId: input.workspace.id,
+      owner: { kind: 'workspace', workspaceId: input.workspace.id },
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'approval-request',

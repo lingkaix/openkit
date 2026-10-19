@@ -5,6 +5,7 @@ import {
   deriveEntityId,
   readRetainedV1,
   type StopReason,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
@@ -285,7 +286,7 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     !isDeepStrictEqual(pkg.scope.triggerActor, admission.triggerActor) ||
     initiatingItem?.type !== 'user-message' ||
     initiatingItem.status !== 'completed' ||
-    initiatingItem.workspaceId !== checkpoint.workspaceId ||
+    workspaceIdForOwner(initiatingItem.owner) !== checkpoint.workspaceId ||
     initiatingItem.threadId !== checkpoint.threadId ||
     initiatingItem.turnId !== turn.id ||
     !isDeepStrictEqual(initiatingItem, originalInput) ||
@@ -351,14 +352,14 @@ export function hasWorkerCheckpointNeverSubmittedProof(
       .listCommandRequests()
       .some(
         (receipt) =>
-          receipt.scope.workspaceId === turn.workspaceId &&
+          receipt.scope.workspaceId === workspaceIdForOwner(turn.owner) &&
           receipt.scope.turnId === turn.id &&
           ['approval.respond', 'user_input.answer', 'pending_request.withdraw'].includes(
             receipt.command
           )
       ) ||
     store
-      .listThreadTurns(turn.workspaceId, turn.threadId)
+      .listThreadTurns(workspaceIdForOwner(turn.owner), turn.threadId)
       .some(
         (other) =>
           other.id !== turn.id &&
@@ -374,7 +375,7 @@ export function hasWorkerCheckpointNeverSubmittedProof(
   const sessionEvents = events.filter((event) => event.event === 'agent.session.updated');
   const requestId = projectTurnEventRequestId(
     checkpoint.requestId,
-    turn.workspaceId,
+    workspaceIdForOwner(turn.owner),
     turn.threadId
   );
   const completedAt = turn.completedAt ?? (session.status === 'failed' ? session.updatedAt : null);
@@ -385,7 +386,7 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     terminals.some(
       (event) =>
         event.requestId !== requestId ||
-        event.workspaceId !== turn.workspaceId ||
+        event.workspaceId !== workspaceIdForOwner(turn.owner) ||
         event.threadId !== turn.threadId ||
         event.turnId !== turn.id ||
         event.data.type !== 'turn-completed' ||
@@ -414,7 +415,7 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     sessionEvents.some(
       (event) =>
         event.requestId !== requestId ||
-        event.workspaceId !== turn.workspaceId ||
+        event.workspaceId !== workspaceIdForOwner(turn.owner) ||
         event.threadId !== turn.threadId ||
         event.turnId !== turn.id ||
         event.data.type !== 'agent-session-updated' ||
@@ -589,7 +590,7 @@ export function recoverWorkerCheckpointStopReason(
     terminalEvent.threadId !== checkpoint.threadId ||
     terminalEvent.turnId !== checkpoint.turnId ||
     terminalEvent.data.turn.id !== checkpoint.turnId ||
-    terminalEvent.data.turn.workspaceId !== checkpoint.workspaceId ||
+    workspaceIdForOwner(terminalEvent.data.turn.owner) !== checkpoint.workspaceId ||
     terminalEvent.data.turn.threadId !== checkpoint.threadId ||
     terminalEvent.data.turn.agentId !== turn.agentId ||
     !isDeepStrictEqual(terminalEvent.data.turn.triggerActor, turn.triggerActor)
@@ -769,7 +770,7 @@ export function classifyClosedWorkerApprovalGate(
     try {
       const approval = store.getApproval(response.approvalRequestId);
       if (
-        approval.workspaceId !== turn.workspaceId ||
+        approval.workspaceId !== workspaceIdForOwner(turn.owner) ||
         approval.threadId !== turn.threadId ||
         approval.turnId !== turn.id ||
         approval.status !== response.decision ||

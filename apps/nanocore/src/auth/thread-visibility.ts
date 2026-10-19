@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { type ArtifactSchema, ThreadSchema } from '@openkit/protocol';
+import { type ArtifactSchema, ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
 
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 
@@ -20,8 +20,8 @@ export function isThreadVisible(
   operation: string | null = 'thread.read',
   policyActor?: ResourcePolicyActor
 ): boolean {
-  if (!userId || !ThreadSchema.safeParse(thread).success) return false;
-  const workspace = store.getWorkspace(thread.workspaceId);
+  if (!userId || !ThreadSchema.safeParse(thread).success || thread.owner.kind !== 'workspace') return false;
+  const workspace = store.getWorkspace(workspaceIdForOwner(thread.owner));
   if (
     !administratorEligible &&
     workspace.kind === 'personal' &&
@@ -44,7 +44,7 @@ export function isThreadVisible(
         operation,
         resourceAccess:
           thread.visibility === 'workspace'
-            ? store.getWorkspaceResourceAccess(thread.workspaceId)
+            ? store.getWorkspaceResourceAccess(workspaceIdForOwner(thread.owner))
             : [],
       }).effect === 'allow'
     );
@@ -118,7 +118,9 @@ export function canDiscloseThreadToAudience(
   source: Thread,
   destination: Thread | null
 ): boolean {
-  if (destination && source.workspaceId !== destination.workspaceId) return false;
+  if (source.owner.kind !== 'workspace' || (destination && destination.owner.kind !== 'workspace')) return false;
+  if (destination && workspaceIdForOwner(source.owner) !== workspaceIdForOwner(destination.owner))
+    return false;
   if (destination?.id === source.id) return true;
   if (source.visibility === 'private')
     return (
@@ -126,7 +128,7 @@ export function canDiscloseThreadToAudience(
       destination.privateOwnerUserId === source.privateOwnerUserId
     );
   try {
-    const entries = store.getWorkspaceResourceAccess(source.workspaceId);
+    const entries = store.getWorkspaceResourceAccess(workspaceIdForOwner(source.owner));
     const sourceBoundary = entries.find(
       (entry) => entry.resource.family === 'thread' && entry.resource.id === source.id
     );

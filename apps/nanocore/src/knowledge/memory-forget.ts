@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { isSealedTurnTerminal, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  isSealedTurnTerminal,
+  responsibleUserIdForActor,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -143,7 +147,7 @@ function admitContext(
   if (input.turnId) {
     const turn = store.getTurnById(input.turnId);
     if (
-      turn.workspaceId !== input.workspaceId ||
+      workspaceIdForOwner(turn.owner) !== input.workspaceId ||
       turn.threadId !== input.threadId ||
       responsibleUserIdForActor(turn.triggerActor) !== privateOwner ||
       turn.agentSessionId
@@ -447,7 +451,7 @@ export function prepareMemoryForget(writer: MemoryForgetWriter, input: PrepareMe
   });
   writer.store.createItem({
     id: record.requestItemId,
-    workspaceId: record.workspaceId,
+    owner: { kind: 'workspace', workspaceId: record.workspaceId },
     threadId: record.threadId,
     turnId: record.raisingTurnId,
     type: 'approval-request',

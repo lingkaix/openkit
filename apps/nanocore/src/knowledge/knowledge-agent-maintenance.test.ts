@@ -69,7 +69,7 @@ function fixture(enabled = true, protectedPages: string[] = []) {
   const timestamp = new Date().toISOString();
   store.createItem({
     id: allocateEntityId('it'),
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: ordinary.id,
     turnId: ordinaryTurn.id,
     type: 'user-message',
@@ -299,7 +299,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     const timestamp = new Date().toISOString();
     f.store.createItem({
       id: allocateEntityId('it'),
-      workspaceId: f.workspace.id,
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: own.threadId,
       turnId: own.id,
       type: 'user-message',

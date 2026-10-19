@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
-import { formatReferenceUri } from '@openkit/protocol';
+import { formatReferenceUri, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
@@ -380,7 +380,7 @@ describe('User-private bounded Memory maintenance', () => {
       responsibleUserId: userId,
     });
     const turn = f.store.getTurnById(result.turnId);
-    expect(f.store.getThread(turn.workspaceId, turn.threadId)).toMatchObject({
+    expect(f.store.getThread(workspaceIdForOwner(turn.owner), turn.threadId)).toMatchObject({
       visibility: 'private',
       privateOwnerUserId: userId,
       entryPath: 'knowledge-manager',
@@ -435,7 +435,12 @@ describe('User-private bounded Memory maintenance', () => {
     expect(f.run).toHaveBeenCalledTimes(1);
     const published = f.notebook().readRevision(accepted.notebookRevision!);
     const work = f.store.getTurnById(result.turnId);
-    const timeline = openAssistantTimeline(f.store, work.workspaceId, userId, 'Private Assistant');
+    const timeline = openAssistantTimeline(
+      f.store,
+      workspaceIdForOwner(work.owner),
+      userId,
+      'Private Assistant'
+    );
     const access = {
       coreDb: f.coreDb,
       userDb: f.userDb,
@@ -447,7 +452,7 @@ describe('User-private bounded Memory maintenance', () => {
     try {
       const selection = await retrieveUserMemory({
         dataRoot: f.coreDb.dataRoot,
-        workspaceId: work.workspaceId,
+        workspaceId: workspaceIdForOwner(work.owner),
         access,
         caller: 'app-api',
         query: 'green labels',
@@ -456,7 +461,7 @@ describe('User-private bounded Memory maintenance', () => {
       expect(
         resolveWorkspaceKnowledgeRetrievalPages({
           dataRoot: f.coreDb.dataRoot,
-          workspaceId: work.workspaceId,
+          workspaceId: workspaceIdForOwner(work.owner),
           access,
           caller: 'app-api',
           selection,

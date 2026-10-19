@@ -26,6 +26,7 @@ import {
   SystemPromptDigestSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
@@ -435,7 +436,7 @@ export function readWorkObservationTurnBinding(
   if (
     turn.id !== input.turnId ||
     turn.threadId !== input.threadId ||
-    turn.workspaceId !== workspaceDb.workspaceId
+    workspaceIdForOwner(turn.owner) !== workspaceDb.workspaceId
   )
     throw new Error('recovery_required: observation Turn lineage mismatch');
   return {

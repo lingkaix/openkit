@@ -504,7 +504,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       for (const type of ['user-message', 'assistant-message'] as const) {
         f.store.createItem({
           id: allocateEntityId('it'),
-          workspaceId: f.workspaceId,
+          owner: { kind: 'workspace', workspaceId: f.workspaceId },
           threadId: f.threadId,
           turnId: earlier.id,
           type,

@@ -3,6 +3,7 @@ import {
   responsibleUserIdForActor,
   type StopReason,
   type TurnSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
@@ -294,7 +295,7 @@ export async function runWorkerTurnLoop(
             });
             if (
               created.id !== turn.turnId ||
-              created.workspaceId !== input.workspaceId ||
+              workspaceIdForOwner(created.owner) !== input.workspaceId ||
               created.threadId !== input.threadId ||
               (admission.attempt?.agentSessionId ?? null) !== agentSessionId ||
               admission.admission.turnInput !==

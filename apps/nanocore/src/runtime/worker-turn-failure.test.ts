@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProductTurnSchema, SseEventEnvelopeSchema } from '@openkit/protocol';
+import { ProductTurnSchema, SseEventEnvelopeSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -29,7 +29,7 @@ function createFixture() {
     status: 'busy',
     threadId: turn.threadId,
     updatedAt: turn.startedAt ?? '2026-07-15T00:00:00.000Z',
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
   });
   return { dataRoot, store, turn };
 }
@@ -118,8 +118,9 @@ describe('governed worker turn failure projection', () => {
     projectFailure(cold);
     expect(cold.getTurnById(turn.id).error?.explanation).toEqual(explanation);
     expect(
-      ProductTurnSchema.parse(cold.listThreadTurns(turn.workspaceId, turn.threadId)[0]).error
-        ?.explanation
+      ProductTurnSchema.parse(
+        cold.listThreadTurns(workspaceIdForOwner(turn.owner), turn.threadId)[0]
+      ).error?.explanation
     ).toEqual(explanation);
     const events = cold.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed');
     expect(events).toHaveLength(1);
@@ -228,7 +229,7 @@ describe('governed worker turn failure projection', () => {
       requestId: null,
       threadId: turn.threadId,
       turnId: turn.id,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
 
     expect(projectFailure(store)).toMatchObject({ status: 'completed' });
@@ -299,7 +300,7 @@ describe('governed worker turn failure projection', () => {
       requestId: null,
       threadId: completed.threadId,
       turnId: completed.id,
-      workspaceId: completed.workspaceId,
+      workspaceId: workspaceIdForOwner(completed.owner),
     });
 
     expect(projectFailure(store)).toMatchObject({ status: 'completed' });

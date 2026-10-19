@@ -244,7 +244,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: turn.id,
     type: 'user-message',
-    workspaceId: WORKSPACE_ID,
+    owner: { kind: 'workspace', workspaceId: WORKSPACE_ID },
   });
   const assistantItem = store.createItem({
     completedAt,
@@ -255,7 +255,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: turn.id,
     type: 'assistant-message',
-    workspaceId: WORKSPACE_ID,
+    owner: { kind: 'workspace', workspaceId: WORKSPACE_ID },
   });
 
   for (const item of [userItem, assistantItem]) {

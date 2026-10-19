@@ -10,6 +10,7 @@ import {
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type CapabilityAuditLineage,
@@ -144,7 +145,10 @@ describe('internal Agent Gateway provider', () => {
         gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
         modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
       }),
-      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      promptCacheScope: {
+        sessionId: 'internal',
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
+      },
       usageEndpoint: 'responses',
     });
     await expect(
@@ -163,7 +167,7 @@ describe('internal Agent Gateway provider', () => {
       message: 'Internal Gateway logical call failed.',
       phase: 'output-projection',
       failureKind: 'unsupported',
-      workspaceId: capture.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(capture.turn.owner),
       threadId: capture.threadId,
       turnId: capture.turnId,
       corr: expect.any(String),
@@ -219,7 +223,10 @@ describe('internal Agent Gateway provider', () => {
       resolveLogicalModel: () => model,
       dispatcher: { createResponses },
       resolveGatewayProvider,
-      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      promptCacheScope: {
+        sessionId: 'internal',
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
+      },
       usageEndpoint: 'responses',
     });
     await expect(provider(request())).rejects.toMatchObject({
@@ -234,7 +241,7 @@ describe('internal Agent Gateway provider', () => {
       message: 'Internal Gateway logical call failed.',
       phase: 'pre-transport',
       failureKind: 'provider_unavailable',
-      workspaceId: capture.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(capture.turn.owner),
       threadId: capture.threadId,
       turnId: capture.turnId,
       corr: expect.any(String),
@@ -304,11 +311,11 @@ describe('internal Agent Gateway provider', () => {
       }),
       promptCacheScope: {
         sessionId: 'private-session-canary',
-        workspaceId: capture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
       },
       usageEndpoint: 'responses',
       callContext: {
-        workspaceId: capture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
         authorityActor: capture.turn.triggerActor,
         family: 'llm',
         operation: 'administration',
@@ -335,7 +342,10 @@ describe('internal Agent Gateway provider', () => {
       'Tool "goal_task_dispatch" requires JSON-schema constrained sampling, but prefixItems schemas are unsupported.'
     );
     expect(fetch).not.toHaveBeenCalled();
-    const calls = listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId);
+    const calls = listWorkspaceCapabilityCalls(
+      capture.workspaceDb,
+      workspaceIdForOwner(capture.turn.owner)
+    );
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ status: 'failed', errorCode: 'internal_inference_failed' });
     expect(log).toHaveBeenCalledTimes(1);
@@ -346,7 +356,7 @@ describe('internal Agent Gateway provider', () => {
       phase: 'pre-transport',
       failureKind: 'unknown',
       requestId: '00000000-0000-4000-8000-000000000001',
-      workspaceId: capture.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(capture.turn.owner),
       threadId: capture.threadId,
       turnId: capture.turnId,
       capabilityCallId: calls[0]!.id,
@@ -417,10 +427,13 @@ describe('internal Agent Gateway provider', () => {
           gatewayCapabilities: {},
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      promptCacheScope: {
+        sessionId: 'internal',
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
+      },
       usageEndpoint: 'responses',
       callContext: {
-        workspaceId: capture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
         authorityActor: capture.turn.triggerActor,
         family: 'llm',
         operation: 'administration',
@@ -435,7 +448,7 @@ describe('internal Agent Gateway provider', () => {
       expect(error).toHaveProperty('cause.cause', original);
     else expect(error).toHaveProperty('cause', original);
     expect(
-      listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId)
+      listWorkspaceCapabilityCalls(capture.workspaceDb, workspaceIdForOwner(capture.turn.owner))
     ).toMatchObject([
       {
         status: 'failed',
@@ -462,7 +475,7 @@ describe('internal Agent Gateway provider', () => {
             ? 'unsupported'
             : 'unknown',
       ...(scenario === 'provider-response' ? { httpStatus: 401 } : {}),
-      workspaceId: capture.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(capture.turn.owner),
       threadId: capture.threadId,
       turnId: capture.turnId,
       capabilityCallId: expect.any(String),
@@ -508,7 +521,10 @@ describe('internal Agent Gateway provider', () => {
               model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
             },
           }) as never,
-        promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+        promptCacheScope: {
+          sessionId: 'internal',
+          workspaceId: workspaceIdForOwner(capture.turn.owner),
+        },
         usageEndpoint: 'responses',
       });
       const pending = provider(request()).catch((error: unknown) => error);
@@ -522,7 +538,7 @@ describe('internal Agent Gateway provider', () => {
         phase: 'provider-response',
         failureKind: 'rate_limited',
         httpStatus: 429,
-        workspaceId: capture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
         threadId: capture.threadId,
         turnId: capture.turnId,
         corr: expect.any(String),
@@ -561,12 +577,15 @@ describe('internal Agent Gateway provider', () => {
       resolveLogicalModel: () => null,
       dispatcher: { createResponses },
       resolveGatewayProvider,
-      promptCacheScope: { sessionId: 'admin:missing', workspaceId: capture.turn.workspaceId },
+      promptCacheScope: {
+        sessionId: 'admin:missing',
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
+      },
       usageEndpoint: 'responses',
       callContext: {
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         agentId: 'assistant',
-        workspaceId: capture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
         family: 'llm',
         operation: 'administration',
         capabilityId: 'inference.local.administration',
@@ -583,16 +602,18 @@ describe('internal Agent Gateway provider', () => {
     expect(resolveGatewayProvider).not.toHaveBeenCalled();
     expect(createResponses).not.toHaveBeenCalled();
     expect(
-      listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId)
+      listWorkspaceCapabilityCalls(capture.workspaceDb, workspaceIdForOwner(capture.turn.owner))
     ).toMatchObject([{ status: 'failed', errorCode: 'gateway_logical_model_unavailable' }]);
-    expect(listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId)).toEqual([]);
+    expect(
+      listWorkspaceUsageRecords(capture.workspaceDb, workspaceIdForOwner(capture.turn.owner))
+    ).toEqual([]);
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(log.mock.calls[0]![0]))).toEqual({
       code: 'internal_gateway_call_failed',
       message: 'Internal Gateway logical call failed.',
       phase: 'pre-transport',
       failureKind: 'unknown',
-      workspaceId: capture.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(capture.turn.owner),
       threadId: capture.threadId,
       turnId: capture.turnId,
       capabilityCallId: expect.any(String),
@@ -1086,7 +1107,7 @@ describe('internal Agent Gateway provider', () => {
             }),
             promptCacheScope: {
               sessionId: 'internal-google',
-              workspaceId: capture.turn.workspaceId,
+              workspaceId: workspaceIdForOwner(capture.turn.owner),
             },
             usageEndpoint: 'responses',
           });
@@ -1649,10 +1670,13 @@ describe('slice 1d internal logical call', () => {
       },
       dispatcher: { createResponses } as never,
       resolveGatewayProvider,
-      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      promptCacheScope: {
+        sessionId: 'internal',
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
+      },
       usageEndpoint: 'responses',
       callContext: {
-        workspaceId: capture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
         authorityActor: capture.turn.triggerActor,
         agentId: 'administration',
         family: 'llm',
@@ -1664,7 +1688,10 @@ describe('slice 1d internal logical call', () => {
     await expect(provider(request())).rejects.toMatchObject({
       code: 'gateway_logical_model_unavailable',
     });
-    const calls = listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId);
+    const calls = listWorkspaceCapabilityCalls(
+      capture.workspaceDb,
+      workspaceIdForOwner(capture.turn.owner)
+    );
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       status: 'failed',
@@ -1672,7 +1699,9 @@ describe('slice 1d internal logical call', () => {
       turnId: capture.turn.id,
       extensions: { 'openkit.gateway/routeLineage': { entries: [{ kind: 'unavailable' }] } },
     });
-    expect(listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId)).toEqual([]);
+    expect(
+      listWorkspaceUsageRecords(capture.workspaceDb, workspaceIdForOwner(capture.turn.owner))
+    ).toEqual([]);
     expect(
       readWorkObservations(capture.workspaceDb, capture).filter(
         (row) => row.type === 'model.observed'
@@ -1727,12 +1756,12 @@ describe('slice 1d round 2 internal lifecycle', () => {
             }),
             promptCacheScope: {
               sessionId: capture.threadId,
-              workspaceId: capture.turn.workspaceId,
+              workspaceId: workspaceIdForOwner(capture.turn.owner),
             },
             usageEndpoint: 'responses',
             onDispatch,
             callContext: {
-              workspaceId: capture.turn.workspaceId,
+              workspaceId: workspaceIdForOwner(capture.turn.owner),
               authorityActor: capture.turn.triggerActor,
               family: 'llm',
               operation: 'knowledge.run',
@@ -1753,8 +1782,14 @@ describe('slice 1d round 2 internal lifecycle', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(stream).toHaveBeenCalledOnce();
       const read = () => ({
-        calls: listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId),
-        usage: listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId),
+        calls: listWorkspaceCapabilityCalls(
+          capture.workspaceDb,
+          workspaceIdForOwner(capture.turn.owner)
+        ),
+        usage: listWorkspaceUsageRecords(
+          capture.workspaceDb,
+          workspaceIdForOwner(capture.turn.owner)
+        ),
       });
       expect(read().calls).toEqual([expect.objectContaining({ status: 'running' })]);
 
@@ -1825,10 +1860,13 @@ describe('slice 1d round 2 internal lifecycle', () => {
               model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
             },
           }) as never,
-        promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+        promptCacheScope: {
+          sessionId: 'internal',
+          workspaceId: workspaceIdForOwner(capture.turn.owner),
+        },
         usageEndpoint: 'responses',
         callContext: {
-          workspaceId: capture.turn.workspaceId,
+          workspaceId: workspaceIdForOwner(capture.turn.owner),
           authorityActor: capture.turn.triggerActor,
           family: 'llm',
           operation: 'administration',
@@ -1840,8 +1878,14 @@ describe('slice 1d round 2 internal lifecycle', () => {
         await expect(provider(request())).rejects.toHaveProperty('failure.kind', 'invalid_request');
       else await provider(request());
       const read = () => ({
-        calls: listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId),
-        usage: listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId),
+        calls: listWorkspaceCapabilityCalls(
+          capture.workspaceDb,
+          workspaceIdForOwner(capture.turn.owner)
+        ),
+        usage: listWorkspaceUsageRecords(
+          capture.workspaceDb,
+          workspaceIdForOwner(capture.turn.owner)
+        ),
         rows: capture.workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all(),
       });
       const before = read();
@@ -1898,7 +1942,10 @@ describe('slice 1d round 2 internal lifecycle', () => {
           gatewayCapabilities: {},
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      promptCacheScope: {
+        sessionId: 'internal',
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
+      },
       usageEndpoint: 'responses',
     });
     try {
@@ -2307,10 +2354,13 @@ describe('command audit lineage at the internal Gateway seam', () => {
           gatewayCapabilities: {},
           modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
-      promptCacheScope: { sessionId: capture.threadId, workspaceId: capture.turn.workspaceId },
+      promptCacheScope: {
+        sessionId: capture.threadId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
+      },
       usageEndpoint: 'responses' as const,
       callContext: {
-        workspaceId: capture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(capture.turn.owner),
         authorityActor: capture.turn.triggerActor,
         agentId: 'assistant',
         family: 'llm' as const,
@@ -2352,7 +2402,10 @@ describe('command audit lineage at the internal Gateway seam', () => {
 
     await f.provider(request());
 
-    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    const calls = listWorkspaceCapabilityCalls(
+      f.capture.workspaceDb,
+      workspaceIdForOwner(f.capture.turn.owner)
+    );
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       requestId: storedRequestId,
@@ -2360,7 +2413,9 @@ describe('command audit lineage at the internal Gateway seam', () => {
       threadId: f.capture.threadId,
       turnId: f.capture.turnId,
     });
-    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual([
+    expect(
+      listWorkspaceUsageRecords(f.capture.workspaceDb, workspaceIdForOwner(f.capture.turn.owner))
+    ).toEqual([
       expect.objectContaining({
         requestId: storedRequestId,
         capabilityCallId: calls[0]!.id,
@@ -2396,12 +2451,15 @@ describe('command audit lineage at the internal Gateway seam', () => {
     await expect(f.provider(request())).rejects.toHaveProperty('failure.kind', 'invalid_request');
 
     expect(f.createResponses).toHaveBeenCalledOnce();
-    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    const calls = listWorkspaceCapabilityCalls(
+      f.capture.workspaceDb,
+      workspaceIdForOwner(f.capture.turn.owner)
+    );
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ requestId: null, status: 'failed' });
-    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual(
-      []
-    );
+    expect(
+      listWorkspaceUsageRecords(f.capture.workspaceDb, workspaceIdForOwner(f.capture.turn.owner))
+    ).toEqual([]);
     expect(
       f.capture.workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
@@ -2412,7 +2470,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
         action: 'capability.finish',
         request_id: commandRequestId,
         capability_call_id: calls[0]!.id,
-        workspace_id: f.capture.turn.workspaceId,
+        workspace_id: workspaceIdForOwner(f.capture.turn.owner),
         thread_id: f.capture.threadId,
         turn_id: f.capture.turnId,
         outcome: 'failed',
@@ -2443,16 +2501,19 @@ describe('command audit lineage at the internal Gateway seam', () => {
     await expect(f.provider(request())).rejects.toBeInstanceOf(Error);
 
     expect(f.createResponses).toHaveBeenCalledOnce();
-    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    const calls = listWorkspaceCapabilityCalls(
+      f.capture.workspaceDb,
+      workspaceIdForOwner(f.capture.turn.owner)
+    );
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       requestId: null,
       status: 'failed',
       errorCode: 'usage_record_failed',
     });
-    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual(
-      []
-    );
+    expect(
+      listWorkspaceUsageRecords(f.capture.workspaceDb, workspaceIdForOwner(f.capture.turn.owner))
+    ).toEqual([]);
     expect(
       f.capture.workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
@@ -2463,7 +2524,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
         action: 'capability.finish',
         capability_call_id: calls[0]!.id,
         request_id: commandRequestId,
-        workspace_id: f.capture.turn.workspaceId,
+        workspace_id: workspaceIdForOwner(f.capture.turn.owner),
         thread_id: f.capture.threadId,
         turn_id: f.capture.turnId,
         outcome: 'failed',

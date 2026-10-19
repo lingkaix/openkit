@@ -10,6 +10,7 @@ import {
   responsibleUserIdForActor,
   type TurnSchema,
   WorkspaceIdSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -63,7 +64,7 @@ export function assistantPendingOutcomeSource(
   responsibleUserId: string
 ) {
   return {
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
     responsibleUserId,
@@ -1404,7 +1405,9 @@ export function loadApprovalProjections(
       for (const row of rows) {
         try {
           const record = parsePendingRequestRow(row);
-          const threadTurns = turns.filter((turn) => turn.workspaceId === record.workspaceId);
+          const threadTurns = turns.filter(
+            (turn) => workspaceIdForOwner(turn.owner) === record.workspaceId
+          );
           if (validateCanonicalLoad(record, threadTurns, receipts)) continue;
           const approval = projectApprovalRequest(record);
           if (approval) approvals.push(approval);
@@ -1442,7 +1445,7 @@ export function validateCanonicalLoad(
   const raising = turns.find((turn) => turn.id === record.raisingTurnId);
   if (
     !raising ||
-    raising.workspaceId !== record.workspaceId ||
+    workspaceIdForOwner(raising.owner) !== record.workspaceId ||
     raising.threadId !== record.threadId
   ) {
     return { requestId: record.requestId, reason: 'raising-turn-lineage' };
@@ -1477,7 +1480,7 @@ export function validateCanonicalLoad(
     return { requestId: record.requestId, reason: 'handoff-producer' };
   const request = requestItems[0]!;
   if (
-    request.workspaceId !== record.workspaceId ||
+    workspaceIdForOwner(request.owner) !== record.workspaceId ||
     request.threadId !== record.threadId ||
     (record.requesterKind !== 'coordinator' &&
       responsibleUserIdForActor(raising.triggerActor) !== record.responsibleUserId) ||
@@ -1712,7 +1715,7 @@ export function validateCanonicalLoad(
     record.deliveryTurnId &&
     (!deliveryTurn ||
       deliveryTurn.threadId !== record.threadId ||
-      deliveryTurn.workspaceId !== record.workspaceId ||
+      workspaceIdForOwner(deliveryTurn.owner) !== record.workspaceId ||
       (!policyGrant &&
         (deliveryTurn.id === record.raisingTurnId ||
           !deliveryTurn.startedAt ||
@@ -1771,7 +1774,7 @@ export function validateCanonicalLoad(
       item.actor.id !== record.decidingActor?.id ||
       !isDeepStrictEqual(item.answers, record.answerMap) ||
       item.answeredAt !== record.decidedAt ||
-      item.workspaceId !== record.workspaceId ||
+      workspaceIdForOwner(item.owner) !== record.workspaceId ||
       item.threadId !== record.threadId
     )
       return { requestId: record.requestId, reason: 'answer-content' };
@@ -1793,7 +1796,7 @@ export function validateCanonicalLoad(
     const publication = turns.find((turn) => turn.id === record.publicationTurnId);
     if (
       !publication ||
-      publication.workspaceId !== record.workspaceId ||
+      workspaceIdForOwner(publication.owner) !== record.workspaceId ||
       publication.threadId !== record.threadId ||
       (!policyGrant && publication.id === record.raisingTurnId)
     )
@@ -1848,7 +1851,7 @@ export function validateCanonicalLoad(
           !expectedTurnId ||
           item.id !== id ||
           item.turnId !== expectedTurnId ||
-          item.workspaceId !== record.workspaceId ||
+          workspaceIdForOwner(item.owner) !== record.workspaceId ||
           item.threadId !== record.threadId ||
           item.causationId !== record.requestItemId
       )
@@ -1889,7 +1892,7 @@ export function validateCanonicalLoad(
       if (
         !expected ||
         !invalidation ||
-        invalidation.workspaceId !== record.workspaceId ||
+        workspaceIdForOwner(invalidation.owner) !== record.workspaceId ||
         invalidation.threadId !== record.threadId ||
         invalidation.id === record.raisingTurnId ||
         (invalidation.id === record.publicationTurnId &&

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { deriveEntityId, isSealedTurnTerminal } from '@openkit/protocol';
+import { deriveEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
@@ -77,7 +77,7 @@ export function createCoordinatorTaskTool(options: {
     execute: async (value) => {
       const input = CoordinatorTaskInputSchema.parse(value);
       const coordinator = options.store.getTurnById(options.coordinatorTurnId);
-      const db = options.openWorkspace(coordinator.workspaceId);
+      const db = options.openWorkspace(workspaceIdForOwner(coordinator.owner));
       let receivingThreadId: string | undefined;
       try {
         const goal = readGoalView(options.store, db, options.goalId).goal;

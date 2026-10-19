@@ -397,7 +397,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         store.createItem(
           {
             id: markerId,
-            workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId,
             turnId,
             type: 'status',

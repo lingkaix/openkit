@@ -10,12 +10,11 @@ import {
   RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
-  type ServerCapabilityCall,
-  ServerCapabilityCallSchema,
   type ServerUsageRecord,
   ServerUsageRecordSchema,
   type UsageRecord,
   UsageRecordSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -75,10 +74,6 @@ export interface CapabilityCallLedgerRecord extends CapabilityCall {
   /** Redaction class applied by the producer. */
   redactionClass: string;
 }
-
-/** Server call record using the same SQL columns and lifecycle as Workspace calls. */
-export type ServerCapabilityCallLedgerRecord = Omit<CapabilityCallLedgerRecord, 'workspaceId'> &
-  ServerCapabilityCall;
 
 /** Gateway call context accepted by the shared capability usage ledger. */
 export interface GatewayCallContext {
@@ -286,13 +281,11 @@ export function startCapabilityCall(
       ) {
         throw new Error('Capability call database owner mismatch.');
       }
-      const protocolCall = (
-        input.workspaceDb.scope === 'core' ? ServerCapabilityCallSchema : CapabilityCallSchema
-      ).parse({
+      const protocolCall = CapabilityCallSchema.parse({
         id: callId,
         ...(input.workspaceDb.scope === 'core'
           ? { owner: { kind: 'server' } }
-          : { workspaceId: input.workspaceId }),
+          : { owner: { kind: 'workspace', workspaceId: input.workspaceId } }),
         threadId: input.threadId ?? null,
         turnId: input.turnId ?? null,
         itemId: input.itemId ?? null,
@@ -345,7 +338,7 @@ export function startCapabilityCall(
         .run(
           writeRetainedV1(protocolCall).schemaVersion,
           protocolCall.id,
-          protocolCall.workspaceId ?? null,
+          protocolCall.owner.kind === 'workspace' ? protocolCall.owner.workspaceId : null,
           protocolCall.threadId,
           protocolCall.turnId,
           protocolCall.itemId,
@@ -430,9 +423,9 @@ export function startCapabilityCall(
           summary: stored.summary,
           threadId: stored.thread_id,
           turnId: stored.turn_id,
-          ...(stored.workspace_id === null
+          ...(input.workspaceDb.scope === 'core'
             ? { owner: { kind: 'server' as const } }
-            : { workspaceId: stored.workspace_id }),
+            : { workspaceId: input.workspaceDb.workspaceId }),
         },
       };
     })
@@ -785,11 +778,11 @@ export function listWorkspaceUsageRecords(
 }
 
 /** Reads Server calls from the same ledger family after Server audience authorization. */
-export function listServerCapabilityCalls(coreDb: CoreDb): ServerCapabilityCallLedgerRecord[] {
+export function listServerCapabilityCalls(coreDb: CoreDb): CapabilityCallLedgerRecord[] {
   return coreDb.sqlite
     .prepare('SELECT * FROM capability_calls ORDER BY started_at, call_id')
     .all()
-    .map((row) => capabilityCallFromRow(row, true) as ServerCapabilityCallLedgerRecord);
+    .map((row) => capabilityCallFromRow(row, true));
 }
 
 /** Reads Server measurements after Server audience authorization. */
@@ -889,6 +882,10 @@ export function importWorkspaceCapabilityUsageLedger(input: {
   usageRecords: readonly UsageRecord[];
 }): void {
   for (const call of input.capabilityCalls) {
+    if (call.owner.kind !== 'workspace' || call.owner.workspaceId !== input.workspaceDb.workspaceId)
+      throw new Error('Imported capability call owner does not match the target Workspace.');
+  }
+  for (const call of input.capabilityCalls) {
     insertCapabilityCall(input.workspaceDb, call);
   }
   for (const usage of input.usageRecords) {
@@ -951,7 +948,7 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
     .run(
       writeRetainedV1(call).schemaVersion,
       call.id,
-      call.workspaceId,
+      workspaceIdForOwner(call.owner),
       call.threadId,
       call.turnId,
       call.itemId,
@@ -1031,24 +1028,19 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
 }
 
 /** Converts one stored capability call row into an exportable record. */
-function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord;
-function capabilityCallFromRow(
-  row: unknown,
-  server: boolean
-): CapabilityCallLedgerRecord | ServerCapabilityCallLedgerRecord;
-function capabilityCallFromRow(
-  row: unknown,
-  server = false
-): CapabilityCallLedgerRecord | ServerCapabilityCallLedgerRecord {
+
+function capabilityCallFromRow(row: unknown, server = false): CapabilityCallLedgerRecord {
   const call = row as CapabilityCallRow;
+  if (server && call.workspace_id !== null)
+    throw new Error('Server capability call database owner mismatch.');
   readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
   const extensions =
     call.extensions_json === null
       ? undefined
       : CanonicalCapabilityCallExtensionsSchema.parse(JSON.parse(call.extensions_json));
-  const protocolCall = (server ? ServerCapabilityCallSchema : CapabilityCallSchema).parse({
+  const protocolCall = CapabilityCallSchema.parse({
     id: call.call_id,
-    ...(server ? { owner: { kind: 'server' } } : { workspaceId: call.workspace_id }),
+    owner: server ? { kind: 'server' } : { kind: 'workspace', workspaceId: call.workspace_id },
     threadId: call.thread_id,
     turnId: call.turn_id,
     itemId: call.item_id,
@@ -1262,7 +1254,7 @@ function findCapabilityCallByIdOrIdempotency(
  */
 function assertMatchingCapabilityCallAttribution(
   stored: CapabilityCallRow,
-  incoming: CapabilityCall | ServerCapabilityCall,
+  incoming: CapabilityCall,
   input: StartCapabilityCallInput | StartServerCapabilityCallInput
 ): void {
   if (

@@ -9,7 +9,7 @@ import {
   OPERATION_DEFINITIONS,
   operationToolName,
 } from '@openkit/app-api-schemas';
-import { ApiErrorSchema } from '@openkit/protocol';
+import { ApiErrorSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -119,7 +119,7 @@ describe('shared family contract', () => {
       turn,
       item: f.store.createItem({
         id: 'it_00000000-0000-714e-b73b-fee7fe0cf1a3',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
@@ -463,7 +463,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     requestId: 'request_operation',
     triggerActor: turn.triggerActor,
     serverAdminTokenId: workerAuthority.record.tokenId,
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
     turnInput: 'Operation invariant',

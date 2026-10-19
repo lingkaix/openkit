@@ -109,7 +109,7 @@ describe('Workspace JSON transfer cutover', () => {
     const item = store.createItem({
       id: testEntityId('it', 'it_export_history'),
       type: 'assistant-message',
-      workspaceId: DEMO_WORKSPACE_ID,
+      owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
       threadId: thread.id,
       turnId: turn.id,
       text: 'A',

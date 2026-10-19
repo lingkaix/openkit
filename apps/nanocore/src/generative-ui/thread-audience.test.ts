@@ -1,5 +1,3 @@
-// openkit-test-platform: posix
-
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -175,7 +173,7 @@ describe('Generative UI Thread audience', () => {
     });
     const ownPrivateSource = store.createItem({
       id: testEntityId('it', `it_${ownPrivateTurn.id}_source`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: ownPrivateThread.id,
       turnId: ownPrivateTurn.id,
       type: 'assistant-message',
@@ -186,7 +184,7 @@ describe('Generative UI Thread audience', () => {
     });
     const otherPrivateSource = store.createItem({
       id: testEntityId('it', `it_${otherPrivateTurn.id}_source`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: otherPrivateThread.id,
       turnId: otherPrivateTurn.id,
       type: 'assistant-message',
@@ -197,7 +195,7 @@ describe('Generative UI Thread audience', () => {
     });
     const sharedSource = store.createItem({
       id: testEntityId('it', `it_${sharedTurn.id}_source`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: sharedThread.id,
       turnId: sharedTurn.id,
       type: 'assistant-message',

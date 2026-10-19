@@ -3,7 +3,6 @@
   "schema": "capability-call",
   "data": {
     "id": "cap_00000000-0000-7dab-b906-9484bf8db5d0",
-    "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a",
     "threadId": "th_00000000-0000-7162-9ddb-378c8b96b0a3",
     "turnId": "tu_00000000-0000-7a7e-8dd5-ad6ea5188a9c",
     "itemId": "it_00000000-0000-7805-99c2-9f7445de7927",
@@ -20,6 +19,10 @@
     "summary": "Turn start command accepted.",
     "errorCode": null,
     "startedAt": "2026-05-15T10:07:00Z",
-    "completedAt": "2026-05-15T10:07:01Z"
+    "completedAt": "2026-05-15T10:07:01Z",
+    "owner": {
+      "kind": "workspace",
+      "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a"
+    }
   }
 }

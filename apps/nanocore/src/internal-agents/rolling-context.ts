@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { Item, ServerItem } from '@openkit/protocol';
-import { deriveEntityId } from '@openkit/protocol';
+import type { Item } from '@openkit/protocol';
+import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { PiAiFailure } from '../llm/pi-ai-failure.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
@@ -17,7 +17,6 @@ import { redactInternalAgentText } from './redaction.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 type Summary = Extract<Item, { type: 'context-summary' }>;
-type ServerSummary = Extract<ServerItem, { type: 'context-summary' }>;
 
 /** Inputs of the shared assembler; the existing role owns admission, source authority and Provider dispatch. */
 export interface InternalAgentContextInput {
@@ -61,7 +60,7 @@ export function internalContextDigest(value: unknown): string {
 /** Derives stable Thread history using Turn order and the canonical first-seen per-Turn Item sequence. */
 export function internalContextItems(store: Pick<FsStore, 'listThreadTurns'>, turn: Turn): Item[] {
   return store
-    .listThreadTurns(turn.workspaceId, turn.threadId)
+    .listThreadTurns(workspaceIdForOwner(turn.owner), turn.threadId)
     .filter((candidate) => candidate.id !== turn.id)
     .sort(
       (left, right) =>
@@ -106,7 +105,7 @@ export function internalContextRange(
     if (!rolling) throw capacity();
     return { items: rolling, strategy: 'rolling' };
   }
-  for (const turn of store.listThreadTurns(query.workspaceId, range.threadId)) {
+  for (const turn of store.listThreadTurns(workspaceIdForOwner(query.owner), range.threadId)) {
     for (const [index, summary] of turn.items.entries()) {
       if (
         summary.type !== 'context-summary' ||
@@ -138,7 +137,7 @@ export function internalContextRange(
 /** Binds canonical source Items; only cross-run rolling history also binds terminal Turn outcomes. */
 export function internalContextSourceDigest(
   store: Pick<FsStore, 'getTurnById'>,
-  items: readonly (Item | ServerItem)[],
+  items: readonly Item[],
   strategy: Summary['strategy'] = 'rolling'
 ): string {
   if (strategy === 'compaction') return internalContextDigest({ version: 1, sources: items });
@@ -152,14 +151,14 @@ export function internalContextSourceDigest(
 }
 
 /** Exact visible body whose digest binds history search and range-read evidence. */
-export function internalContextHistoryBody(item: Item | ServerItem): string {
+export function internalContextHistoryBody(item: Item): string {
   return item.type === 'user-message' || item.type === 'assistant-message'
     ? item.text
     : redactInternalAgentText(JSON.stringify(item));
 }
 
 /** Projects accepted history as inert observations; Tool records never execute or acquire instruction authority. */
-export function internalContextMessage(item: Item | ServerItem): AgentMessage {
+export function internalContextMessage(item: Item): AgentMessage {
   const text =
     item.type === 'user-message' || item.type === 'assistant-message'
       ? redactInternalAgentText(item.text)
@@ -320,7 +319,7 @@ export async function prepareInternalAgentContext(
     }
   };
   const allSummaries = input.store
-    .listThreadItems(input.turn.workspaceId, input.turn.threadId)
+    .listThreadItems(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
     .filter((item): item is Summary => item.type === 'context-summary');
   const summaries = new Map(allSummaries.map((item) => [item.id, item]));
   const validSummary = (summary: Summary, seen = new Set<string>()): boolean => {
@@ -482,7 +481,7 @@ export async function prepareInternalAgentContext(
         environmentDigest,
         sourceRange,
       }),
-      workspaceId: input.turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(input.turn.owner) },
       threadId: input.turn.threadId,
       turnId: input.turn.id,
       type: 'context-summary',
@@ -521,7 +520,7 @@ export async function prepareInternalAgentContext(
 }
 
 /** Range annotation remains model-visible untrusted context and gives exact history retrieval endpoints. */
-export function internalContextSummaryMessage(summary: Summary | ServerSummary): AgentMessage {
+export function internalContextSummaryMessage(summary: Summary | Summary): AgentMessage {
   return {
     role: 'assistant',
     truncated: false,
@@ -530,7 +529,7 @@ export function internalContextSummaryMessage(summary: Summary | ServerSummary):
         type: 'text',
         text: `<context_summary>${JSON.stringify({
           summaryItemId: summary.id,
-          ...('owner' in summary ? { owner: summary.owner } : { workspaceId: summary.workspaceId }),
+          owner: summary.owner,
           threadId: summary.threadId,
           strategy: summary.strategy,
           logicalModelId: summary.logicalModelId,

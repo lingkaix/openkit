@@ -342,3 +342,5 @@ Worker Skill selection copies the winning catalog pin's optional Audit reference
 Capacity inspection and whole-Sandbox retirement share the already-recorded native-proof check for an idle binding in a physically fenced predecessor Epoch. The existing AgentSession digest, retained-storage association and original snapshot must agree with its Core binding; historical AEP bytes are preserved without executing or decoding them again. Live bindings and incomplete or conflicting proof keep the complete handoff path. See [AgentSession continuity](../../../../docs/specs/20260704-agent_session_continuity.md).
 
 The capacity-inspection diagnostic logs the fixed message and nominal class of a retained-AEP read failure. Its attached decoder cause, arbitrary exception messages and retained content stay private.
+
+Turn and Item narrative records carry the Protocol work owner. Workspace runtime consumers require that owner before deriving Workspace addresses. Scheduler request, checkpoint and execution-attempt selectors keep their existing addressing fields. Terminal Turn projections use the record owner when locating the accepted attempt.

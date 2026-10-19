@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Item } from '@openkit/protocol';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Actor } from './auth/identity.js';
 import {
@@ -93,7 +93,7 @@ function message(
 ) {
   return f.store.createItem({
     id: allocateEntityId('it'),
-    workspaceId: turn.workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
     turnId: turn.id,
     type,
@@ -112,7 +112,7 @@ function context(f: ReturnType<typeof deployment>, turn: Turn, capacity: number)
     store: f.store,
     coreDb: f.coreDb,
     actor,
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
   };
@@ -293,7 +293,7 @@ async function seedTiedOrderSummaryChain() {
       const previous = summaries.at(-1);
       const summary = f.store.createItem({
         id: allocateEntityId('it'),
-        workspaceId: f.workspace.id,
+        owner: { kind: 'workspace', workspaceId: f.workspace.id },
         threadId: thread.id,
         turnId: turn.id,
         type: 'context-summary',
@@ -379,7 +379,7 @@ describe('Assistant conversation context portability', () => {
     expect(priorRead.isError).not.toBe(true);
     const tool = source.store.createItem({
       id: allocateEntityId('it'),
-      workspaceId: source.workspace.id,
+      owner: { kind: 'workspace', workspaceId: source.workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'tool-call',

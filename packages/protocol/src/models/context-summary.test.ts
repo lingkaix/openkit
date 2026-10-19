@@ -4,7 +4,7 @@ import { ItemSchema } from './item.js';
 
 const summary = {
   id: allocateEntityId('it'),
-  workspaceId: allocateEntityId('ws'),
+  owner: { kind: 'workspace', workspaceId: allocateEntityId('ws') },
   threadId: allocateEntityId('th'),
   turnId: allocateEntityId('tu'),
   type: 'context-summary',

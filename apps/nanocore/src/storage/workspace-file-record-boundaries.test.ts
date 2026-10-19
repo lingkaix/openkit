@@ -365,7 +365,7 @@ describe('workspace file-record write and load boundaries', () => {
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const original = store.createItem({
       id: 'it_00000000-0000-7c6d-b3b1-e8c48c8b327a',
-      workspaceId: first.workspace.id,
+      owner: { kind: 'workspace', workspaceId: first.workspace.id },
       threadId: first.thread.id,
       turnId: first.turn.id,
       type: 'assistant-message',
@@ -383,7 +383,7 @@ describe('workspace file-record write and load boundaries', () => {
         case 'type':
           store.createItem({
             id: original.id,
-            workspaceId: first.workspace.id,
+            owner: { kind: 'workspace', workspaceId: first.workspace.id },
             threadId: first.thread.id,
             turnId: first.turn.id,
             type: 'status',
@@ -528,7 +528,7 @@ describe('workspace file-record write and load boundaries', () => {
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const item = ItemSchema.parse({
       id: 'it_00000000-0000-7fc4-aae8-dd5cf69e5992',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       status: 'completed',
@@ -541,7 +541,7 @@ describe('workspace file-record write and load boundaries', () => {
       changedItem.type === 'user-input-response'
         ? ItemSchema.parse({
             id: 'it_00000000-0000-7562-879d-36174aa716fa',
-            workspaceId: workspace.id,
+            owner: { kind: 'workspace', workspaceId: workspace.id },
             threadId: thread.id,
             turnId: turn.id,
             type: 'user-input-request',
@@ -601,7 +601,7 @@ describe('workspace file-record write and load boundaries', () => {
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const request = store.createItem({
       id: 'it_00000000-0000-77d0-8f57-fa3818abb424',
-      workspaceId: first.workspace.id,
+      owner: { kind: 'workspace', workspaceId: first.workspace.id },
       threadId: first.thread.id,
       turnId: first.turn.id,
       type: 'user-input-request',
@@ -624,7 +624,7 @@ describe('workspace file-record write and load boundaries', () => {
     });
     const response = ItemSchema.parse({
       id: 'it_00000000-0000-7d43-84e8-cc9f1f1a67e0',
-      workspaceId: first.workspace.id,
+      owner: { kind: 'workspace', workspaceId: first.workspace.id },
       threadId: first.thread.id,
       turnId: first.turn.id,
       type: 'user-input-response',
@@ -651,7 +651,7 @@ describe('workspace file-record write and load boundaries', () => {
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const original = store.createItem({
       id: 'it_00000000-0000-72d9-a1ba-fc94cc09ebec',
-      workspaceId: first.workspace.id,
+      owner: { kind: 'workspace', workspaceId: first.workspace.id },
       threadId: first.thread.id,
       turnId: first.turn.id,
       type: 'assistant-message',
@@ -959,7 +959,7 @@ describe('workspace file-record write and load boundaries', () => {
       case 'item': {
         const item = store.createItem({
           id: 'it_00000000-0000-78f6-9e01-ea1ec12708fe',
-          workspaceId: second.workspace.id,
+          owner: { kind: 'workspace', workspaceId: second.workspace.id },
           threadId: second.thread.id,
           turnId: second.turn.id,
           type: 'assistant-message',
@@ -1141,7 +1141,7 @@ describe('workspace file-record write and load boundaries', () => {
     if (duplicateAuthority === 'turn items') {
       const item = store.createItem({
         id: 'it_00000000-0000-7456-9649-697d49ec361e',
-        workspaceId: first.workspace.id,
+        owner: { kind: 'workspace', workspaceId: first.workspace.id },
         threadId: first.thread.id,
         turnId: first.turn.id,
         type: 'assistant-message',

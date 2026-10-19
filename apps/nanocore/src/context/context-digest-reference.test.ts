@@ -1,4 +1,3 @@
-// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -171,7 +170,7 @@ function deliveryAuthorities(
   const workspaceId = files.workspaceId;
   const turn = {
     id: turnId,
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
     threadId,
     agentSessionId,
     startedAt,
@@ -248,7 +247,7 @@ function deliveryAuthorities(
     readThreadItems: () => [
       {
         id: itemId,
-        workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceId },
         threadId,
         turnId,
         type: 'user-message',

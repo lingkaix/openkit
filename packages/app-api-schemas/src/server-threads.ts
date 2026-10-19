@@ -1,10 +1,10 @@
 import {
   KnowledgeMaintenanceOutcomeSchema,
   RequestIdSchema,
-  ServerThreadSchema,
-  ServerTurnSchema,
   ThreadIdSchema,
+  ThreadSchema,
   TurnIdSchema,
+  TurnSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { KnowledgeProposalReviewSchema } from './action-center.js';
@@ -29,11 +29,20 @@ export const ServerKnowledgeTellRequestSchema = KnowledgeTellRequestSchema.omit(
 /** General Server Thread history retains the same Turn and Item families without a Workspace anchor. */
 export const ReadServerThreadRequestSchema = z.object({ threadId: ThreadIdSchema }).strict();
 export const ReadServerThreadResponseSchema = z
-  .object({ thread: ServerThreadSchema, turns: z.array(ServerTurnSchema) })
-  .strict();
+  .object({ thread: ThreadSchema, turns: z.array(TurnSchema) })
+  .strict()
+  .refine(
+    ({ thread, turns }) =>
+      thread.owner.kind === 'server' && turns.every((turn) => turn.owner.kind === 'server'),
+    'Server history requires Server-owned records.'
+  );
 export const ListServerThreadsResponseSchema = z
-  .object({ items: z.array(ServerThreadSchema) })
-  .strict();
+  .object({ items: z.array(ThreadSchema) })
+  .strict()
+  .refine(
+    ({ items }) => items.every((thread) => thread.owner.kind === 'server'),
+    'Server history requires Server-owned records.'
+  );
 export const InterruptServerTurnRequestSchema = z.object({ turnId: TurnIdSchema }).strict();
 export const InterruptServerTurnResponseSchema = z
   .object({ turnId: TurnIdSchema, interrupted: z.boolean() })

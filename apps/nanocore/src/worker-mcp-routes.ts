@@ -28,6 +28,7 @@ import {
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
@@ -932,7 +933,7 @@ function mcpBootDecidedPublicationEqual(
   const reconstructed = candidate as unknown as Record<string, unknown>;
   return (
     existing.id === candidate.id &&
-    existing.workspaceId === candidate.workspaceId &&
+    workspaceIdForOwner(existing.owner) === workspaceIdForOwner(candidate.owner) &&
     existing.threadId === candidate.threadId &&
     existing.turnId === candidate.turnId &&
     existing.type === candidate.type &&
@@ -1073,7 +1074,7 @@ function decidedMcpPublicationItem(
     tool: row.service_ref.slice('mcp-tool:'.length),
     turnId: row.turn_id,
     type: 'tool-call',
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
   });
 }
 
@@ -1458,7 +1459,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       if (!input.input.store.listAllItems().some((item) => item.id === raised.requestItemId))
         input.input.store.createItem({
           id: raised.requestItemId,
-          workspaceId: raised.workspaceId,
+          owner: { kind: 'workspace', workspaceId: raised.workspaceId },
           threadId: raised.threadId,
           turnId: raised.raisingTurnId,
           status: 'completed',
@@ -2738,7 +2739,7 @@ function publishWorkerMcpItem(input: {
       tool: input.toolName,
       turnId: input.environmentPackage.scope.turnId,
       type: 'tool-call',
-      workspaceId: input.environmentPackage.scope.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.environmentPackage.scope.workspaceId },
     },
     ALREADY_DECIDED_PUBLICATION_ADMISSION
   );
@@ -2859,7 +2860,7 @@ function hasMcpCapabilityTurnAdmission(
 ): boolean {
   const turn = store.getTurnById(environmentPackage.scope.turnId);
   return (
-    turn.workspaceId === environmentPackage.scope.workspaceId &&
+    workspaceIdForOwner(turn.owner) === environmentPackage.scope.workspaceId &&
     turn.threadId === environmentPackage.scope.threadId &&
     turn.status === 'running'
   );

@@ -88,3 +88,5 @@ Complete originals selected for a running Turn stream directly from the existing
 The Worker manifest alone retains inventory, selected payloads, policy version and request facts. The sibling trace retains routing, execution lineage, exclusions and its existing digest. Native and portable readers join the exact canonical manifest, derive its self-entry, and verify the complete logical trace digest; missing or changed manifest bytes are refused.
 
 The Thread Material read projection uses the same portable trace reader as export and import. That reader reconstructs shared facts from the exact canonical manifest before strict or imported-history verification; compact trace metadata alone is not a complete logical trace.
+
+Canonical Turn and Item authority snapshots carry the Protocol work owner. Context verification requires the exact Workspace owner before it accepts their IDs, digests or source bytes. Context request selectors, trace addresses and scheduler admission references keep their existing Workspace fields.

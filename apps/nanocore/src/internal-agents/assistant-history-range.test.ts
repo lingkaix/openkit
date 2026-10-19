@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Item, RetrievalTraceReference } from '@openkit/protocol';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
@@ -129,7 +129,7 @@ function message(
 ): MessageItem {
   return store.createItem({
     id: allocateEntityId('it'),
-    workspaceId: turn.workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'user-message',
@@ -320,7 +320,7 @@ describe('Assistant exact source-bound history ranges', () => {
     );
     const item = f.store.createItem({
       id: allocateEntityId('it'),
-      workspaceId: f.workspace.id,
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: run.threadId,
       turnId: run.id,
       type: 'tool-call',
@@ -370,7 +370,7 @@ describe('Assistant exact source-bound history ranges', () => {
     const f = fixture([]);
     const item = f.store.createItem({
       id: allocateEntityId('it'),
-      workspaceId: f.workspace.id,
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: f.source.id,
       turnId: f.sourceTurn.id,
       type: 'tool-call',
@@ -529,7 +529,7 @@ describe('Assistant exact source-bound history ranges', () => {
     else if (fault === 'hidden reasoning' || fault === 'hidden summary') {
       const base = {
         id: allocateEntityId('it'),
-        workspaceId: f.workspace.id,
+        owner: { kind: 'workspace', workspaceId: f.workspace.id },
         threadId: f.source.id,
         turnId: f.sourceTurn.id,
         status: 'completed' as const,

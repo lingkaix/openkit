@@ -14,6 +14,7 @@ import {
 import { TimestampSchema } from '../common/timestamps.js';
 import { ActorRefSchema, UserActorRefSchema } from './actor.js';
 import { KnowledgeMaintenanceOutcomeSchema } from './knowledge-notebook.js';
+import { WorkOwnerSchema } from './work-owner.js';
 
 /**
  * Closed lifecycle states shared by all turn item records.
@@ -55,7 +56,8 @@ export type ItemType = z.infer<typeof ItemTypeSchema>;
 
 const BaseItemSchema = z.object({
   id: ItemIdSchema,
-  workspaceId: WorkspaceIdSchema,
+  owner: WorkOwnerSchema,
+  workspaceId: z.never().optional(),
   threadId: ThreadIdSchema,
   turnId: TurnIdSchema,
   status: ItemStatusSchema,
@@ -378,83 +380,3 @@ export const ItemSchema = z.discriminatedUnion('type', [
 
 /** Item union for turn streams. */
 export type Item = z.infer<typeof ItemSchema>;
-
-/** Server Items preserve the existing closed Item vocabulary without a Workspace anchor. */
-export const ServerItemSchema = z.discriminatedUnion('type', [
-  UserMessageItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  AssistantMessageItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  ContextSummaryItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  ReasoningItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  ArtifactReferenceItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  CommandExecutionItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  ApprovalRequestItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  z
-    .object({
-      ...ApprovalDecisionItemSchema.shape,
-      owner: z.object({ kind: z.literal('server') }),
-      workspaceId: z.never().optional(),
-    })
-    .refine(isPermittedApprovalDecision, {
-      message: 'A system approval decision must be a repository-push policy grant.',
-    }),
-  UserInputRequestItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  UserInputResponseItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  FileChangeItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  ToolCallItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  AgentHandoffItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  StatusItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  PlanItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  KnowledgeInjectionItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-  GenerativeUiReferenceItemSchema.omit({ workspaceId: true }).extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-  }),
-]);
-
-/** Canonical Item inherited from a Server-owned Thread. */
-export type ServerItem = z.infer<typeof ServerItemSchema>;

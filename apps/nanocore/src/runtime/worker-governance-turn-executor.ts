@@ -20,6 +20,7 @@ import {
   isSealedTurnTerminal,
   responsibleUserIdForActor,
   type StopReason,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { publishedErrorMessage } from '../api-errors.js';
@@ -1035,7 +1036,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     );
     input = { ...input, ...(workerStorageChoice ? { workerStorageChoice } : {}) };
     const currentSessions = store
-      .listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId)
+      .listThreadAgentSessions(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
       .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
     if (currentSessions.length > 1) {
       throw new TurnStartValidationError(
@@ -1050,7 +1051,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       try {
         blockingBinding = this.backend.readThreadAgentSessionBinding?.({
           threadId: input.turn.threadId,
-          workspaceId: input.turn.workspaceId,
+          workspaceId: workspaceIdForOwner(input.turn.owner),
         });
       } catch (error) {
         if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
@@ -1072,7 +1073,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
         if (
           current.threadId !== input.turn.threadId ||
-          current.workspaceId !== input.turn.workspaceId ||
+          current.workspaceId !== workspaceIdForOwner(input.turn.owner) ||
           (current.status !== 'failed' &&
             current.status !== 'interrupted' &&
             current.status !== 'closed')
@@ -1088,7 +1089,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (current) {
       const currentAgentSessionId = current.id;
       const currentTurns = store
-        .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
+        .listThreadTurns(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
         .filter((turn) => turn.agentSessionId === currentAgentSessionId);
       if (currentTurns.some((turn) => !isSealedTurnTerminal(turn.status))) {
         throw new TurnStartValidationError(
@@ -1115,7 +1116,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             this.recordNativeHandleDigest(store, current!.id, digest, retainedStorage),
           reuseAllowed: true,
           threadId: input.turn.threadId,
-          workspaceId: input.turn.workspaceId,
+          workspaceId: workspaceIdForOwner(input.turn.owner),
         });
       } catch (error) {
         if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
@@ -1166,7 +1167,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ...(workerStorageChoice ? { workerStorageChoice } : {}),
           reuseAllowed: true,
           threadId: input.turn.threadId,
-          workspaceId: input.turn.workspaceId,
+          workspaceId: workspaceIdForOwner(input.turn.owner),
         });
       } catch (error) {
         if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
@@ -1217,7 +1218,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           this.recordNativeHandleDigest(store, current.id, digest, retainedStorage),
         reuseAllowed: true,
         threadId: input.turn.threadId,
-        workspaceId: input.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(input.turn.owner),
       });
     } catch (error) {
       if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
@@ -1303,7 +1304,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       ...(workerStorageChoice ? { workerStorageChoice } : {}),
     };
     const currentSessions = store
-      .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
+      .listThreadAgentSessions(
+        workspaceIdForOwner(preparation.turn.owner),
+        preparation.turn.threadId
+      )
       .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
     if (!this.backend.prepareAgentSessionContinuity) {
       throw new TurnStartValidationError(
@@ -1335,7 +1339,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             ? { workerStorageChoice: preparation.workerStorageChoice }
             : {}),
           threadId: preparation.turn.threadId,
-          workspaceId: preparation.turn.workspaceId,
+          workspaceId: workspaceIdForOwner(preparation.turn.owner),
         });
       } catch (error) {
         if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
@@ -1439,7 +1443,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     const hasActiveTurn = store
-      .listThreadTurns(preparation.turn.workspaceId, preparation.turn.threadId)
+      .listThreadTurns(workspaceIdForOwner(preparation.turn.owner), preparation.turn.threadId)
       .some((turn) => turn.agentSessionId === current.id && !isSealedTurnTerminal(turn.status));
     if (hasActiveTurn) {
       throw new TurnStartValidationError(
@@ -1585,7 +1589,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     if (
       store
-        .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
+        .listThreadAgentSessions(
+          workspaceIdForOwner(preparation.turn.owner),
+          preparation.turn.threadId
+        )
         .some((candidate) => isCurrentAgentSessionStatus(candidate.status))
     ) {
       throw new TurnStartValidationError(
@@ -1603,11 +1610,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     input: PrepareAgentSessionForTurnInput,
     choice: SchedulerWorkerStorageChoice | undefined
   ): SchedulerWorkerStorageChoice | undefined {
-    const workspaceDb = this.openWorkspaceDb(input.turn.workspaceId);
+    const workspaceDb = this.openWorkspaceDb(workspaceIdForOwner(input.turn.owner));
     let source: ReturnType<FsStore['getAgentSession']> | null;
     try {
       source = selectThreadNativeResumeSource(
-        store.listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId),
+        store.listThreadAgentSessions(workspaceIdForOwner(input.turn.owner), input.turn.threadId),
         input.freshAgentSessionId,
         {
           agentId: input.agentSetup.manifest.id,
@@ -1676,7 +1683,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           event: 'worker.admission.capacity-inspection-failed',
           errorCode: 'recovery_required',
           requestId: input.requestId,
-          workspaceId: input.turn.workspaceId,
+          workspaceId: workspaceIdForOwner(input.turn.owner),
           threadId: input.turn.threadId,
           agentId: input.agentSetup.manifest.id,
           agentSessionId,
@@ -1742,8 +1749,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /** Reads durable admission before preview or dispatch; missing history cannot become default-off. */
-  private requireTurnCaptureCoverage(turn: { workspaceId: string; threadId: string; id: string }) {
-    const workspaceDb = this.openWorkspaceDb(turn.workspaceId);
+  private requireTurnCaptureCoverage(
+    turn: Pick<import('@openkit/protocol').Turn, 'owner' | 'threadId' | 'id'>
+  ) {
+    const workspaceDb = this.openWorkspaceDb(workspaceIdForOwner(turn.owner));
     if (!workspaceDb)
       throw new TurnStartValidationError(
         'recovery_required',
@@ -1797,7 +1806,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       });
     const plannedWorkSlotRef = workerStorageWorkSlotRef(
       input.workerStorageChoice,
-      input.turn.workspaceId,
+      workspaceIdForOwner(input.turn.owner),
       input.turn.threadId,
       this.coreDb,
       responsibleUserIdForActor(input.turn.triggerActor)
@@ -1933,19 +1942,23 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      workspaceDb = this.openWorkspaceDb(turn.workspaceId);
+      workspaceDb = this.openWorkspaceDb(workspaceIdForOwner(turn.owner));
       if (workspaceDb) {
         applyScopedMigrations(workspaceDb);
       }
       const checkpoint = workspaceDb
-        ? getWorkerCheckpoint(workspaceDb, turn.workspaceId, turn.threadId, turn.id)
+        ? getWorkerCheckpoint(workspaceDb, workspaceIdForOwner(turn.owner), turn.threadId, turn.id)
         : null;
       const workerInput = workspaceDb
         ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
         : input;
       // Delivery cause owns initiating-request identity; carried outcomes do not replace it.
       const outcomeInitiated = workspaceDb
-        ? listThreadPendingRequests(workspaceDb.sqlite, turn.workspaceId, turn.threadId).some(
+        ? listThreadPendingRequests(
+            workspaceDb.sqlite,
+            workspaceIdForOwner(turn.owner),
+            turn.threadId
+          ).some(
             (record) => record.deliveryTurnId === turn.id && record.deliveryCause === 'outcome'
           )
         : false;
@@ -1976,7 +1989,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             threadId: turn.threadId,
             turnId: turn.id,
             workerRequest: contextRequest,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
           },
           this.fileAdmission
         );
@@ -2074,7 +2087,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      const threadAgentSessions = store.listThreadAgentSessions(turn.workspaceId, turn.threadId);
+      const threadAgentSessions = store.listThreadAgentSessions(
+        workspaceIdForOwner(turn.owner),
+        turn.threadId
+      );
       let existingAgentSession: ReturnType<FsStore['getAgentSession']> | undefined;
       try {
         existingAgentSession = store.getAgentSession(resolvedAgentSessionId);
@@ -2096,7 +2112,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       if (
         existingAgentSession &&
-        (existingAgentSession.workspaceId !== turn.workspaceId ||
+        (existingAgentSession.workspaceId !== workspaceIdForOwner(turn.owner) ||
           existingAgentSession.threadId !== turn.threadId ||
           existingAgentSession.agentId !== manifest.id ||
           existingAgentSession.status !== 'idle' ||
@@ -2181,7 +2197,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             coreDb: this.coreDb!,
             workspaceDb,
             store,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             turnId: turn.id,
             requestId,
@@ -2208,7 +2224,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               status: 'created',
               threadId: turn.threadId,
               updatedAt: timestamp,
-              workspaceId: turn.workspaceId,
+              workspaceId: workspaceIdForOwner(turn.owner),
               workspaceRoots: launchContext.workspaceRoots,
             });
         store.updateTurn(turnId, {
@@ -2227,7 +2243,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           threadId: turn.threadId,
           turnId,
           type: 'user-message',
-          workspaceId: turn.workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         });
 
         this.emitTurnStarted(store, launchPackage, requestId);
@@ -2832,10 +2848,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (
       agentSession.stale ||
       agentSession.status !== 'busy' ||
-      agentSession.workspaceId !== turn.workspaceId ||
+      agentSession.workspaceId !== workspaceIdForOwner(turn.owner) ||
       agentSession.threadId !== turn.threadId ||
       !snapshot ||
-      snapshot.workspaceId !== turn.workspaceId ||
+      snapshot.workspaceId !== workspaceIdForOwner(turn.owner) ||
       snapshot.threadId !== turn.threadId ||
       snapshot.turnId !== turn.id ||
       snapshot.agentSessionId !== turn.agentSessionId
@@ -2844,7 +2860,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
 
     const attempts = listSchedulerExecutionAttemptsForTurn(this.coreDb!, {
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
     });
@@ -3691,7 +3707,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): void {
     const terminalCause = this.coreDb
       ? listSchedulerExecutionAttemptsForTurn(this.coreDb, {
-          workspaceId: turnScope.workspaceId,
+          workspaceId: workspaceIdForOwner(turnScope.owner),
           threadId: turnScope.threadId,
           turnId: turnScope.id,
         }).find(
@@ -3707,7 +3723,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const agentSessionRetained =
       this.backend.readThreadAgentSessionBinding?.({
         threadId: turnScope.threadId,
-        workspaceId: turnScope.workspaceId,
+        workspaceId: workspaceIdForOwner(turnScope.owner),
       })?.agentSessionId === agentSessionId;
     if (
       stopReason === 'completed' ||
@@ -3746,11 +3762,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     let inferenceDetail = '';
     let unsupportedInference = false;
-    const workspaceDb = packageSnapshotId ? this.openWorkspaceDb(turnScope.workspaceId) : null;
+    const workspaceDb = packageSnapshotId
+      ? this.openWorkspaceDb(workspaceIdForOwner(turnScope.owner))
+      : null;
     try {
       const lastInference =
         workspaceDb && packageSnapshotId
-          ? listWorkspaceCapabilityCalls(workspaceDb, turnScope.workspaceId).findLast(
+          ? listWorkspaceCapabilityCalls(
+              workspaceDb,
+              workspaceIdForOwner(turnScope.owner)
+            ).findLast(
               (call) =>
                 call.serviceRef === 'worker-inference-gateway' &&
                 call.threadId === turnScope.threadId &&
@@ -3843,7 +3864,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         requestId,
         threadId: turnScope.threadId,
         turnId: turnScope.id,
-        workspaceId: turnScope.workspaceId,
+        workspaceId: workspaceIdForOwner(turnScope.owner),
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
@@ -3855,7 +3876,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         requestId,
         threadId: turnScope.threadId,
         turnId: turnScope.id,
-        workspaceId: turnScope.workspaceId,
+        workspaceId: workspaceIdForOwner(turnScope.owner),
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
@@ -3886,7 +3907,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       this.coreDb &&
       agentSessionId !== null &&
       listSchedulerExecutionAttemptsForTurn(this.coreDb, {
-        workspaceId: turnScope.workspaceId,
+        workspaceId: workspaceIdForOwner(turnScope.owner),
         threadId: turnScope.threadId,
         turnId: turnScope.id,
       }).some(

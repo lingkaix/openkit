@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
-import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
+import { allocateEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -307,7 +307,7 @@ export function prepareUserMemoryMaintenance(
     const now = new Date().toISOString();
     store.createItem({
       id: allocateEntityId('it'),
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId: thread.id,
       turnId: turn.id,
       type: 'status',
@@ -878,7 +878,7 @@ export async function runUserMemoryMaintenanceCommand(
     replay: (receipt) => {
       admitMemoryContext(context);
       const turn = dependencies.store.getTurnById(receipt.response.id);
-      const thread = dependencies.store.getThread(turn.workspaceId, turn.threadId);
+      const thread = dependencies.store.getThread(workspaceIdForOwner(turn.owner), turn.threadId);
       if (
         turn.agentId !== 'knowledge-manager' ||
         thread.visibility !== 'private' ||

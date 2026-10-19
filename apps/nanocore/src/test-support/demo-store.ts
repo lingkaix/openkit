@@ -74,7 +74,7 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
   ];
   const thread: Thread = {
     id: ids.threadId,
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
     name: 'Protocol design review',
     preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
     status: 'active',

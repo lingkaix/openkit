@@ -1108,7 +1108,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
   const requestItemId = id('it', 'context-request');
   store.createItem({
     id: requestItemId,
-    workspaceId,
+    owner: turn.owner,
     threadId,
     turnId: turn.id,
     type: 'user-message',
@@ -1236,7 +1236,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
   });
   store.createItem({
     id: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
-    workspaceId,
+    owner: turn.owner,
     threadId,
     turnId: turn.id,
     type: 'approval-request',

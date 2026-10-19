@@ -86,6 +86,8 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 
 ## Record Families
 
+CapabilityCall uses the [Protocol owner union](../core/protocol.md#thread-semantics). Workspace calls remain in their Workspace database; Server calls remain in Core. The admitted database scope supplies storage authority. A nullable SQL Workspace column alone supplies none. Wire and portable records retain the explicit owner. Usage measurements keep their existing attribution contract.
+
 Use these record families:
 
 - `AuditEvent`: explains who or what caused an action, what policy applied, and what happened.

@@ -13,6 +13,7 @@ import {
   isSealedTurnTerminal,
   ListArtifactsResponseSchema,
   responsibleUserIdForActor,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
@@ -872,7 +873,7 @@ function requireCurrentReviewedArtifact(
     throw recoveryRequired('The Artifact Review source Turn is unavailable.');
   }
   if (
-    sourceTurn.workspaceId !== review.workspaceId ||
+    workspaceIdForOwner(sourceTurn.owner) !== review.workspaceId ||
     sourceTurn.threadId !== review.sourceThreadId ||
     sourceTurn.id !== review.sourceTurnId ||
     sourceTurn.agentId !== review.sourceAgentId
@@ -958,7 +959,7 @@ function assertArtifactReviewFollowUpProof(input: {
     statuses: ['queued', 'admitted'],
   }).filter((entry) => entry.turnId === turnId);
   if (
-    turn.workspaceId !== input.review.workspaceId ||
+    workspaceIdForOwner(turn.owner) !== input.review.workspaceId ||
     turn.threadId !== input.review.sourceThreadId ||
     turn.agentId !== input.review.sourceAgentId ||
     admissions.length !== 1 ||
@@ -1122,7 +1123,7 @@ function replayArtifactIntroduction(
     origin.sourceKind !== 'direct-import' ||
     origin.sourceId !== origin.requestId ||
     origin.recordedAt !== artifact.createdAt ||
-    turn.workspaceId !== expected.workspaceId ||
+    workspaceIdForOwner(turn.owner) !== expected.workspaceId ||
     turn.threadId !== expected.threadId ||
     canonicalIdentifierName(turn.triggerActor) !== canonicalIdentifierName(expected.actor) ||
     turn.status !== 'completed' ||
@@ -1133,7 +1134,7 @@ function replayArtifactIntroduction(
     turn.durationMs !== 0 ||
     turn.items.length !== 1 ||
     !item ||
-    item.workspaceId !== expected.workspaceId ||
+    workspaceIdForOwner(item.owner) !== expected.workspaceId ||
     item.threadId !== expected.threadId ||
     item.turnId !== expected.turnId ||
     item.type !== 'artifact-reference' ||

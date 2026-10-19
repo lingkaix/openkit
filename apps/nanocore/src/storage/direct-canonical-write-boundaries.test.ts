@@ -1,5 +1,3 @@
-// openkit-test-platform: posix
-
 import {
   existsSync,
   mkdirSync,
@@ -325,7 +323,7 @@ describe('direct canonical write boundaries', () => {
     });
     const item = store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',

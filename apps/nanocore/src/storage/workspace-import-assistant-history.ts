@@ -12,6 +12,7 @@ import {
   RetrievalTraceReferenceSchema,
   type ThreadSchema,
   TurnSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import {
@@ -120,7 +121,7 @@ export function importAssistantHistoryTrace(input: {
       !sourceItem ||
       sourceItem.type === 'reasoning' ||
       sourceItem.type === 'context-summary' ||
-      sourceItem.workspaceId !== entry.reference.workspaceId ||
+      workspaceIdForOwner(sourceItem.owner) !== entry.reference.workspaceId ||
       sourceItem.threadId !== entry.reference.threadId ||
       sourceItem.turnId !== entry.reference.turnId ||
       entry.reference.workspaceId !== context.report.exportedWorkspaceId ||
@@ -136,7 +137,7 @@ export function importAssistantHistoryTrace(input: {
       throw new Error('Portable conversation trace has no reminted Item.');
     return {
       reference: {
-        workspaceId: targetItem.workspaceId,
+        workspaceId: workspaceIdForOwner(targetItem.owner),
         threadId: targetItem.threadId,
         turnId: targetItem.turnId,
         itemId: targetItem.id,
@@ -458,7 +459,8 @@ function importedContextRange(
     {
       listThreadTurns: (workspaceId, selectedThreadId) =>
         turns.filter(
-          (turn) => turn.workspaceId === workspaceId && turn.threadId === selectedThreadId
+          (turn) =>
+            workspaceIdForOwner(turn.owner) === workspaceId && turn.threadId === selectedThreadId
         ),
       getTurnById: (id) => {
         const turn = turns.find((turn) => turn.id === id);

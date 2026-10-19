@@ -1,4 +1,3 @@
-// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsPromises from 'node:fs/promises';
@@ -10,7 +9,7 @@ import {
   AgentEnvironmentPackageSchema,
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import {
@@ -204,7 +203,7 @@ describe('NanoHost worker governance helpers', () => {
             path: 'SKILL.md',
           },
         ],
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       const pinAuditRef = allocateEntityId('aud');
       if (selection === 'pinned-audit') {
@@ -214,7 +213,7 @@ describe('NanoHost worker governance helpers', () => {
           entryId: 'repo-guidelines',
           expectedRevision: created.catalog.revision,
           pinAuditRef,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
         });
       }
       const environmentPackage = AgentEnvironmentPackageSchema.parse(
@@ -239,7 +238,12 @@ describe('NanoHost worker governance helpers', () => {
       if (selection === 'removed-during-context-read') {
         const inputId = `context_${turn.id}`;
         const pathRef = `threads/${turn.threadId}/turns/${turn.id}/context-package`;
-        const sourcePath = join(dataRoot, 'workspaces', turn.workspaceId, ...pathRef.split('/'));
+        const sourcePath = join(
+          dataRoot,
+          'workspaces',
+          workspaceIdForOwner(turn.owner),
+          ...pathRef.split('/')
+        );
         mkdirSync(sourcePath, { recursive: true });
         environmentPackage.workspace.inputs.push({
           access: 'read-only',
@@ -270,7 +274,7 @@ describe('NanoHost worker governance helpers', () => {
             removed = true;
             removeWorkspaceSkill({
               dataRoot,
-              workspaceId: turn.workspaceId,
+              workspaceId: workspaceIdForOwner(turn.owner),
               entryId: 'repo-guidelines',
               expectedRevision: created.catalog.revision,
             });

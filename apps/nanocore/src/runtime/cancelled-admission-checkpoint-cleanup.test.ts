@@ -661,7 +661,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       title: 'Unresolved approval',
       turnId: unrelated.id,
       type: 'approval-request',
-      workspaceId: fixture.workspaceId,
+      owner: { kind: 'workspace', workspaceId: fixture.workspaceId },
     });
     fixture.store.updateTurn(unrelated.id, {
       completedAt: timestamp,
@@ -960,7 +960,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
             status: 'running',
             threadId: fixture.threadId,
             triggerActor: ACTOR,
-            workspaceId: fixture.workspaceId,
+            owner: { kind: 'workspace', workspaceId: fixture.workspaceId },
           },
           turnInput: 'Run tests',
           workspaceCwd: '/workspace',

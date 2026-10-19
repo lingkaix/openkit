@@ -1,4 +1,4 @@
-import { ProductSseEventEnvelopeSchema } from '@openkit/protocol';
+import { ProductSseEventEnvelopeSchema, workspaceIdForOwner } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 
@@ -66,7 +66,7 @@ export function registerTurnEventRoutes({
     }
 
     if (workspaceAccess) {
-      assertAuthorizedWorkspaceLineage(workspaceAccess, ownerTurn.workspaceId);
+      assertAuthorizedWorkspaceLineage(workspaceAccess, workspaceIdForOwner(ownerTurn.owner));
     }
 
     try {

@@ -1,5 +1,5 @@
-import type { Item, ServerItem, ServerTurn } from '@openkit/protocol';
-import { deriveEntityId, ItemSchema, ServerItemSchema } from '@openkit/protocol';
+import type { Item } from '@openkit/protocol';
+import { deriveEntityId, ItemSchema } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
 import {
@@ -18,9 +18,8 @@ import {
   internalContextSummaryMessage,
 } from './rolling-context.js';
 
-type ContextItem = Item | ServerItem;
-type Summary = Extract<ContextItem, { type: 'context-summary' }>;
-type Turn = ReturnType<FsStore['getTurnById']> | ServerTurn;
+type Summary = Extract<Item, { type: 'context-summary' }>;
+type Turn = ReturnType<FsStore['getTurnById']>;
 
 /** Fixed summary task; canonical observations never become executable instructions. */
 const COMPACTION_INSTRUCTION =
@@ -34,13 +33,13 @@ export interface CompactingInternalAgentProviderInput {
   readonly limits: InternalAgentLoopInput['limits'];
   readonly environmentFacts?: unknown;
   readonly assertCurrent: () => void;
-  readonly readEvidence: (items: readonly ContextItem[]) => string;
+  readonly readEvidence: (items: readonly Item[]) => string;
   /**
    * Commits the exact full loop transcript through existing Item owners and returns its ordered source Items.
    *
    * This is not a one-to-one mapping: assistant text and calls may create several Items, while a completed Tool-call Item binds both call and result messages. Only complete accepted Items from this Turn may be returned. The caller owns this binding and current source/audience authority. Compaction replaces whole message prefixes, so no per-message durable mapping is needed.
    */
-  readonly commitMessages: (messages: readonly AgentMessage[]) => readonly ContextItem[];
+  readonly commitMessages: (messages: readonly AgentMessage[]) => readonly Item[];
   readonly callProvider: InternalAgentProviderCall;
 }
 
@@ -84,14 +83,14 @@ export function createCompactingInternalAgentProvider(
     environmentDigest ??= environment;
     if (environment !== environmentDigest) throw capacity();
     const sources = structuredClone(input.commitMessages(request.messages));
-    const sourceDigest = (items: readonly ContextItem[]) =>
+    const sourceDigest = (items: readonly Item[]) =>
       internalContextSourceDigest(input.store, items, 'compaction');
     const digest = sourceDigest(sources);
     const evidenceDigest = input.readEvidence(sources);
     const assertSources = () => {
       request.signal.throwIfAborted();
       const currentTurn =
-        'owner' in input.turn
+        input.turn.owner.kind === 'server'
           ? input.store.getServerTurnById(input.turn.id)
           : input.store.getTurnById(input.turn.id);
       if (currentTurn.agentSessionId || currentTurn.agentId !== 'knowledge-manager')
@@ -103,8 +102,7 @@ export function createCompactingInternalAgentProvider(
         if (
           index <= lastIndex ||
           item.turnId !== input.turn.id ||
-          JSON.stringify('owner' in item ? item.owner : item.workspaceId) !==
-            JSON.stringify('owner' in input.turn ? input.turn.owner : input.turn.workspaceId) ||
+          JSON.stringify(item.owner) !== JSON.stringify(input.turn.owner) ||
           item.threadId !== input.turn.threadId ||
           item.type === 'context-summary' ||
           item.type === 'reasoning' ||
@@ -221,9 +219,7 @@ export function createCompactingInternalAgentProvider(
           environmentDigest,
           sourceRange,
         }),
-        ...('owner' in input.turn
-          ? { owner: input.turn.owner }
-          : { workspaceId: input.turn.workspaceId }),
+        owner: input.turn.owner,
         threadId: input.turn.threadId,
         turnId: input.turn.id,
         type: 'context-summary',
@@ -244,8 +240,8 @@ export function createCompactingInternalAgentProvider(
         throw invalidSummary();
       assertSources();
       const stored =
-        'owner' in next
-          ? input.store.createServerItem(ServerItemSchema.parse(next))
+        next.owner.kind === 'server'
+          ? input.store.createServerItem(ItemSchema.parse(next))
           : input.store.createItem(ItemSchema.parse(next));
       if (stored.type !== 'context-summary') throw invalidSummary();
       summary = stored;

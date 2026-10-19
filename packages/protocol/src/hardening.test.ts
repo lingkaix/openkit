@@ -140,7 +140,7 @@ describe('protocol hardening boundary', () => {
   it('accepts turn assignment and trigger source without runtime-native payloads', () => {
     const turn = protocol.TurnSchema.parse({
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       agentId: 'agent_codex',
       agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
@@ -163,7 +163,7 @@ describe('protocol hardening boundary', () => {
   it('accepts item lineage and the stable status, plan, and knowledge-injection item types', () => {
     const status = protocol.ItemSchema.parse({
       id: 'it_00000000-0000-7b1d-a7c8-f4b99f722af0',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       parentItemId: null,
@@ -179,7 +179,7 @@ describe('protocol hardening boundary', () => {
 
     const plan = protocol.ItemSchema.parse({
       id: 'it_00000000-0000-7176-aaff-c7d9630f5424',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       parentItemId: 'it_00000000-0000-7b1d-a7c8-f4b99f722af0',
@@ -198,7 +198,7 @@ describe('protocol hardening boundary', () => {
 
     const knowledgeInjection = protocol.ItemSchema.parse({
       id: 'it_00000000-0000-7f8b-94e7-63fea6aa4468',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       parentItemId: null,
@@ -218,7 +218,7 @@ describe('protocol hardening boundary', () => {
 
     const generativeUi = protocol.ItemSchema.parse({
       id: 'it_00000000-0000-7bb6-8066-ce7052fdf58e',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       parentItemId: null,
@@ -448,7 +448,7 @@ describe('protocol hardening boundary', () => {
     expect(
       protocol.CapabilityCallSchema.parse({
         id: 'cap_00000000-0000-7b43-b8ca-b360c4c6c4f4',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
@@ -475,7 +475,7 @@ describe('protocol hardening boundary', () => {
     expect(() =>
       protocol.CapabilityCallSchema.parse({
         id: 'cap_00000000-0000-7162-afa6-f2a3e6f9dd42',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
@@ -536,7 +536,7 @@ describe('protocol hardening boundary', () => {
   it('orders capability terminal timestamps by their parsed instants', () => {
     const call = {
       id: 'cap_00000000-0000-7671-b0c5-f1dcbc995386',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',

@@ -245,3 +245,5 @@ Knowledge retrieval accepts optional nonempty `types` and `appliesTo` identifier
 Light App reads may include request-local `meaning` rows for their exact admitted references. Available rows carry exact target text; unavailable rows omit content and target metadata. Empty dependencies omit the projection. This response field is not a retained definition, version, authority or default selection. Native Knowledge and Skill readers own current access and version integrity.
 
 Evaluation sets and judgements use the shared retained-v1 `schemaVersion` marker. Retained readers reject absent or unknown markers before decoding the family; current writers use `writeRetainedV1`.
+
+Thread, Turn, Item and CapabilityCall outputs reuse Protocol's explicit Workspace-or-Server owner family. Server Thread list/read responses validate Server ownership through the same canonical record schemas. Workspace-scoped operation input selectors remain addressing fields.

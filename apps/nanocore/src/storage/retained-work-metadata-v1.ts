@@ -17,6 +17,12 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
+/** Fixed retained authority is shared by the Thread, Turn and Item families. */
+export const StoredWorkOwnerV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }),
+  z.object({ kind: z.literal('server'), workspaceId: z.never().optional() }),
+]);
+
 // These payloads fix retained v1 meaning. Current wire objects project from admitted records; they do not select stored fields or vocabularies. Native I/O checks the marker before decoding.
 const Sha256DigestV1Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const CanonicalTimestampV1Schema = z.string().datetime();
@@ -52,8 +58,8 @@ const StoredActorV1Schema = z.union([
 
 const StoredKnowledgeOwnerV1Schema = z.union([
   z.object({ kind: z.literal('user'), userId: UserIdSchema }).strict(),
-  z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }).strict(),
-  z.object({ kind: z.literal('server') }).strict(),
+  z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }),
+  z.object({ kind: z.literal('server'), workspaceId: z.never().optional() }),
 ]);
 
 /** Fixed header-free system fields; event snapshots add their editable and derived projections. */
@@ -206,7 +212,8 @@ const StoredInternalExecutionV1Schema = z
 /** Fixed header-free Turn fields; metadata and event snapshots admit Items at separate boundaries. */
 export const StoredTurnPayloadV1Shape = {
   id: TurnIdSchema,
-  workspaceId: WorkspaceIdSchema,
+  owner: StoredWorkOwnerV1Schema,
+  workspaceId: z.never().optional(),
   threadId: ThreadIdSchema,
   triggerActor: StoredActorV1Schema,
   fileInputs: StoredTurnFileInputsV1Schema.optional(),

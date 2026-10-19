@@ -6,9 +6,46 @@
       "type": "string",
       "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
+    "owner": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "workspace"
+            },
+            "workspaceId": {
+              "type": "string",
+              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "required": [
+            "kind",
+            "workspaceId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "server"
+            },
+            "workspaceId": {
+              "not": {}
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "workspaceId": {
-      "type": "string",
-      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+      "not": {}
     },
     "parentThreadId": {
       "type": "string",
@@ -55,7 +92,8 @@
       "type": "string",
       "enum": [
         "private",
-        "workspace"
+        "workspace",
+        "server"
       ]
     },
     "privateOwnerUserId": {
@@ -73,7 +111,7 @@
   },
   "required": [
     "id",
-    "workspaceId",
+    "owner",
     "name",
     "preview",
     "status",

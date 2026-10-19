@@ -21,7 +21,7 @@ function runningCapabilityCall() {
     summary: 'Public chat_completions LLM gateway call.',
     threadId: null,
     turnId: null,
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
   };
 }
 

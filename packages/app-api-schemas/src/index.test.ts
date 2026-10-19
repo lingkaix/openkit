@@ -2516,7 +2516,7 @@ describe('app api schemas', () => {
       capabilityCalls: [
         {
           id: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           itemId: 'it_00000000-0000-7d53-9abb-fba003a3df39',
@@ -3643,7 +3643,7 @@ describe('app api schemas', () => {
   it('keeps AgentSession identity out of ordinary embedded Turn projections', () => {
     const turn = {
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
       items: [],
@@ -3662,7 +3662,7 @@ describe('app api schemas', () => {
       ],
       thread: {
         id: 'th_00000000-0000-7000-8000-000000000001',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         entryPath: 'conversation',
         visibility: 'workspace',
         name: 'Demo',
@@ -3695,7 +3695,7 @@ describe('app api schemas', () => {
       turn,
       item: {
         id: 'it_00000000-0000-7636-ae96-fc295661d12a',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         type: 'status',
@@ -3882,7 +3882,7 @@ describe('app api schemas', () => {
       state: 'completed',
       turn: {
         id: 'tu_00000000-0000-7535-81b9-0d55f9492809',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
         items: [],
@@ -3931,7 +3931,7 @@ describe('app api schemas', () => {
         },
         turn: {
           id: 'tu_00000000-0000-7ae2-b8ad-bd9415f8e874',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
           items: [],
@@ -4016,7 +4016,7 @@ describe('app api schemas', () => {
         },
         turn: {
           id: 'tu_00000000-0000-72d8-abbb-24b8f02f0976',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
           items: [],
@@ -4030,7 +4030,7 @@ describe('app api schemas', () => {
         },
         item: {
           id: 'it_00000000-0000-77cd-a3ff-b9fd6e85f6b3',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-72d8-abbb-24b8f02f0976',
           type: 'status',

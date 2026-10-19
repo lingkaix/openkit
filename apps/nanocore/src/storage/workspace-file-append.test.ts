@@ -140,7 +140,7 @@ describe('canonical append writes', () => {
     const turnId = 'tu_00000000-0000-7726-a488-91b3274371a4';
     const item = {
       id: 'it_00000000-0000-7399-9fe3-0b3d37002502',
-      workspaceId: 'ws_00000000-0000-739a-9803-af1c03be9d3f',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-739a-9803-af1c03be9d3f' },
       threadId,
       turnId,
       type: 'assistant-message',

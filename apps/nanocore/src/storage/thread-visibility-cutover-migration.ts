@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { deriveEntityId, isEntityId, ThreadSchema, TurnSchema } from '@openkit/protocol';
+import {
+  deriveEntityId,
+  isEntityId,
+  ThreadSchema,
+  TurnSchema,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { coreDbPath } from './fs-layout.js';
@@ -189,7 +195,10 @@ export function migrateThreadVisibilityCutover(
 
         const thread = ThreadSchema.parse({
           id: typeof raw.id === 'string' ? raw.id : threadId,
-          workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : workspaceId,
+          owner: {
+            kind: 'workspace',
+            workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : workspaceId,
+          },
           name: raw.name ?? null,
           preview: raw.preview,
           status: raw.status,
@@ -249,7 +258,10 @@ export function migrateThreadVisibilityCutover(
       }
       const thread = ThreadSchema.parse({
         id: typeof raw.id === 'string' ? raw.id : row.threadId,
-        workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : row.workspaceId,
+        owner: {
+          kind: 'workspace',
+          workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : row.workspaceId,
+        },
         name: raw.name ?? null,
         preview: raw.preview,
         status: raw.status,
@@ -431,7 +443,7 @@ function projectCanonicalThreadRecord(
     schemaVersion: 1,
     recordType: 'thread',
     ownerScope: 'workspace',
-    lineage: { workspaceId: thread.workspaceId, threadId: thread.id },
+    lineage: { workspaceId: workspaceIdForOwner(thread.owner), threadId: thread.id },
     contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(thread)).digest('hex')}`,
     redactionLevel: 'none',
     sensitivity: thread.visibility,

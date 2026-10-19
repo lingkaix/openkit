@@ -161,7 +161,7 @@ it.each([
           });
           store.createItem({
             id: testEntityId('it', `it_user_${turnId}`),
-            workspaceId: ws.id,
+            owner: { kind: 'workspace', workspaceId: ws.id },
             threadId: input.threadId,
             turnId,
             type: 'user-message',

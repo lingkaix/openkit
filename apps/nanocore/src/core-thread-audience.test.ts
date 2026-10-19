@@ -97,7 +97,7 @@ function createCoreAudienceFixture() {
   ] as const) {
     store.createItem({
       id: requestItemId,
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'approval-request',
@@ -256,7 +256,7 @@ function seedCompletedSurface(
     threadId: thread.id,
     turnId: turn.id,
     type: 'assistant-message',
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
   });
   store.emitTurnEvent(turn.id, {
     data: { status: 'running', turnId: turn.id, type: 'turn-started' },

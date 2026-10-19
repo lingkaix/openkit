@@ -10,7 +10,12 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { UserConfigSchema, WorkspaceConfigSchema } from '@openkit/config-schema';
-import { allocateEntityId, deriveEntityId, formatReferenceUri } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  formatReferenceUri,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
@@ -127,13 +132,13 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
     if (!coreDb || !context.attemptId || !context.agentSessionId)
       throw new Error('Worker fixture lacks exact Core preparation.');
     const turn = store.getTurnById(turnId);
-    const db = openWorkspaceDb(coreDb.dataRoot, turn.workspaceId);
+    const db = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
       bindWorkerCheckpointToPreparedSession({
         coreDb,
         workspaceDb: db,
         store,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
         requestId: context.requestId ?? null,
@@ -179,7 +184,7 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
           stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
           transientProviderInstanceId: null,
         },
-        lineage: { workspaceId: turn.workspaceId, threadId: turn.threadId, turnId },
+        lineage: { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId, turnId },
         sandboxBindingRef: requireSchedulerExecutionAttempt(coreDb, context.attemptId).bindingRef!,
       });
       markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendSession.attemptId });
@@ -187,7 +192,7 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
       const sessionInput = {
         id: context.agentSessionId,
         agentId: turn.agentId!,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         status: 'busy',
         message: null,
@@ -310,7 +315,7 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
     });
     store.createItem({
       id: testEntityId('it', `it_assistant_${turnId}`),
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
       turnId,
       type: 'assistant-message',
@@ -334,7 +339,7 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
       {
         event: 'turn.completed',
         requestId: context.requestId ?? null,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
         data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
@@ -399,11 +404,14 @@ class HoldingTurnExecutor extends CompletingTurnExecutor {
     this.inputs.push(input);
     try {
       await this.beginTurn(store, turnId, context, input);
-      const checkpointDb = openWorkspaceDb(this.fixtureCoreDb.dataRoot, launchedTurn.workspaceId);
+      const checkpointDb = openWorkspaceDb(
+        this.fixtureCoreDb.dataRoot,
+        workspaceIdForOwner(launchedTurn.owner)
+      );
       try {
         this.checkpointAtLaunch = getWorkerCheckpoint(
           checkpointDb,
-          launchedTurn.workspaceId,
+          workspaceIdForOwner(launchedTurn.owner),
           launchedTurn.threadId,
           turnId
         );
@@ -416,7 +424,7 @@ class HoldingTurnExecutor extends CompletingTurnExecutor {
       const at = turn.startedAt ?? new Date().toISOString();
       store.createItem({
         id: deriveEntityId('it', ['task-user', turnId]),
-        workspaceId: turn.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         threadId: turn.threadId,
         turnId,
         type: 'user-message',
@@ -509,7 +517,7 @@ function confirmTaskRequest(
     {
       body: JSON.stringify({
         requestId,
-        workspaceId: item.workspaceId,
+        workspaceId: workspaceIdForOwner(item.owner),
         threadId: item.threadId,
         answers: { [item.questions[0]!.id]: ['Confirm exact handoff'] },
       }),
@@ -4571,13 +4579,14 @@ describe('#144 real Assistant command wiring', () => {
       } finally {
         userDb.sqlite.close();
       }
-      const delivery = listWorkspaceCapabilityCalls(f.workspaceDb, f.thread.workspaceId).find(
-        (entry) => entry.extensions?.['openkit.knowledge/delivery']
-      );
+      const delivery = listWorkspaceCapabilityCalls(
+        f.workspaceDb,
+        workspaceIdForOwner(f.thread.owner)
+      ).find((entry) => entry.extensions?.['openkit.knowledge/delivery']);
       expect(delivery?.extensions?.['openkit.knowledge/delivery']).toEqual({
         answer: JSON.stringify(observations[1]),
       });
-      const usage = listWorkspaceUsageRecords(f.workspaceDb, f.thread.workspaceId);
+      const usage = listWorkspaceUsageRecords(f.workspaceDb, workspaceIdForOwner(f.thread.owner));
       expect(
         usage.some(
           (entry) =>
@@ -4673,7 +4682,7 @@ describe('#144 real Assistant command wiring', () => {
       const requestId = uuidv5(
         JSON.stringify([
           'assistant-generative',
-          f.thread.workspaceId,
+          workspaceIdForOwner(f.thread.owner),
           f.thread.id,
           f.actorUserId,
           f.requestId,
@@ -4682,7 +4691,7 @@ describe('#144 real Assistant command wiring', () => {
       );
       expect(invoked).toHaveBeenCalledExactlyOnceWith(
         'kernel.apps.create',
-        { ...schema, workspaceId: f.thread.workspaceId, requestId },
+        { ...schema, workspaceId: workspaceIdForOwner(f.thread.owner), requestId },
         expect.objectContaining({
           kind: 'public',
           actor: { kind: 'local', userId: f.actorUserId },
@@ -4691,7 +4700,7 @@ describe('#144 real Assistant command wiring', () => {
           signal: expect.any(AbortSignal),
         })
       );
-      const apps = listLightApps(f.dataRoot, f.thread.workspaceId);
+      const apps = listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner));
       expect(apps.items).toHaveLength(1);
       expect(apps.items[0]).toMatchObject({ title: schema.title });
       expect(skillModelObservations(f.createResponses.mock.calls[2]![1]).join('')).toContain(
@@ -4701,7 +4710,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(replay.status).toBe(200);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(body);
       expect(invoked).toHaveBeenCalledOnce();
-      expect(listLightApps(f.dataRoot, f.thread.workspaceId)).toEqual(apps);
+      expect(listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner))).toEqual(apps);
       expect(f.dispatchCount()).toBe(3);
       const nextRequest = '00000000-0000-4000-8000-000000001441';
       f.createResponses.mockResolvedValueOnce(selectedSkillCall(f)).mockResolvedValueOnce({
@@ -4724,7 +4733,7 @@ describe('#144 real Assistant command wiring', () => {
         requestId: uuidv5(
           JSON.stringify([
             'assistant-generative',
-            f.thread.workspaceId,
+            workspaceIdForOwner(f.thread.owner),
             f.thread.id,
             f.actorUserId,
             nextRequest,
@@ -4733,7 +4742,7 @@ describe('#144 real Assistant command wiring', () => {
         ),
       });
       expect(invoked.mock.calls[1]![1].requestId).not.toBe(requestId);
-      expect(listLightApps(f.dataRoot, f.thread.workspaceId).items).toHaveLength(2);
+      expect(listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner)).items).toHaveLength(2);
     } finally {
       f.close();
     }
@@ -4759,7 +4768,7 @@ describe('#144 real Assistant command wiring', () => {
           .prepare(
             "UPDATE workspace_members SET status = 'removed', removed_at = ? WHERE workspace_id = ? AND user_id = ?"
           )
-          .run(new Date().toISOString(), f.thread.workspaceId, f.actorUserId).changes
+          .run(new Date().toISOString(), workspaceIdForOwner(f.thread.owner), f.actorUserId).changes
       ).toBe(1);
       return {
         id: 'native-read-after-revocation',
@@ -4780,7 +4789,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(results).toHaveLength(0);
       expect(f.createResponses).toHaveBeenCalledOnce();
-      expect(listLightApps(f.dataRoot, f.thread.workspaceId).items).toEqual([]);
+      expect(listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner)).items).toEqual([]);
     } finally {
       f.close();
     }
@@ -4834,12 +4843,12 @@ describe('#144 real Assistant command wiring', () => {
       const response = await f.submit();
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(f.dispatchCount()).toBe(1);
-      expect(listLightApps(f.dataRoot, f.thread.workspaceId).items).toEqual([
+      expect(listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner)).items).toEqual([
         expect.objectContaining({ title: 'Retained native effect' }),
       ]);
       expect(
         f.store
-          .listThreadItems(f.thread.workspaceId, f.thread.id)
+          .listThreadItems(workspaceIdForOwner(f.thread.owner), f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {

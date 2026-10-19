@@ -24,6 +24,7 @@ export * from './models/thread.js';
 export * from './models/turn.js';
 export * from './models/turn-status-sets.js';
 export * from './models/usage.js';
+export * from './models/work-owner.js';
 export * from './models/workspace.js';
 export * from './requests/approval.js';
 export * from './requests/artifact.js';

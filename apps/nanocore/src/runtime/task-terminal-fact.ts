@@ -2,6 +2,7 @@ import {
   isSealedTurnTerminal,
   readRetainedV1,
   type TurnSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -58,7 +59,7 @@ export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void 
       .listThreadTurns(db.workspaceId, fact.threadId)
       .find((turn) => turn.id === fact.id);
     if (!turn) continue;
-    if (turn.workspaceId !== fact.workspaceId || turn.threadId !== fact.threadId)
+    if (workspaceIdForOwner(turn.owner) !== fact.workspaceId || turn.threadId !== fact.threadId)
       throw new Error('Task terminal fact lineage conflicts with the Turn owner.');
     if (!isSealedTurnTerminal(turn.status))
       store.updateTurn(turn.id, {

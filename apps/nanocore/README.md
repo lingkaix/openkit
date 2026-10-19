@@ -615,3 +615,5 @@ Primary product admission intersects current identity and scope eligibility with
 Artifact version descriptors retain the snapshot plus actual producer actor, Thread and Turn. Version readers derive parent, mutation request and accepted time from that snapshot. Artifact descriptors, evaluation sets and judgements use the shared retained-v1 `schemaVersion` codec; pre-reset format aliases are not read.
 
 Explicit native Memory tells check current self and private Thread authority before the existing User notebook producer initializes a fresh scope. Memory reads additionally require its retained Knowledge Base binding and never allocate an identity or create a notebook. Shared and foreign callers remain refused.
+
+Thread, Turn, Item and CapabilityCall records use one explicit Workspace-or-Server owner family. Producers, retained readers, capture, Context and portable history preserve that owner. Operation selectors remain addresses; Server work receives no Workspace membership. The Protocol package owns the record grammar.

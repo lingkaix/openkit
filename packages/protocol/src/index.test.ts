@@ -158,7 +158,7 @@ describe('protocol schemas', () => {
   it('projects ordinary SSE without AgentSession events or Turn identity', () => {
     const turn = {
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       items: [],
@@ -228,7 +228,7 @@ describe('protocol schemas', () => {
       items: [
         {
           id: 'it_00000000-0000-76f4-b126-04a05f2f3735',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
           status: 'completed' as const,
@@ -328,7 +328,7 @@ describe('protocol schemas', () => {
       items: [
         {
           id: 'it_00000000-0000-7d53-9abb-fba003a3df39',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
           type: 'assistant-message',
@@ -514,7 +514,7 @@ describe('protocol schemas', () => {
     ).toBe(false);
     const turn = {
       id: allocateEntityId('tu'),
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: input.threadId,
       triggerActor: { kind: 'user', id: allocateEntityId('usr') },
       items: [],
@@ -784,7 +784,7 @@ describe('protocol schemas', () => {
   it('parses a codex-like thread summary', () => {
     const parsed = ThreadSchema.parse({
       id: 'th_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       name: 'Protocol design review',
       preview: 'Update the protocol package to thin workspace payloads.',
       status: 'active',
@@ -815,7 +815,7 @@ describe('protocol schemas', () => {
   it('parses a codex-like turn with separately streamed items', () => {
     const parsed = TurnSchema.parse({
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       items: [],
@@ -834,7 +834,7 @@ describe('protocol schemas', () => {
   it('keeps the turn read projection strict and separate from durable Turn authority', () => {
     const turn = {
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       items: [],
@@ -873,7 +873,7 @@ describe('protocol schemas', () => {
   it('omits AgentSession identity from ordinary Turn projections while durable Turn retains it', () => {
     const turn = {
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       items: [],
@@ -903,7 +903,7 @@ describe('protocol schemas', () => {
       items: [
         {
           id: 'it_00000000-0000-76f4-b126-04a05f2f3735',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
           status: 'completed' as const,
@@ -924,7 +924,7 @@ describe('protocol schemas', () => {
   it('requires immutable source actors only on the three human-authored item variants', () => {
     const baseItem = {
       id: 'it_00000000-0000-7d53-9abb-fba003a3df39',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       status: 'completed',
@@ -980,7 +980,7 @@ describe('protocol schemas', () => {
   it('requires every user-input request to name the owning turn responsible user', () => {
     const requestItem = {
       id: 'it_00000000-0000-72e3-96d6-1643f43f9ac5',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       status: 'completed',
@@ -1002,7 +1002,7 @@ describe('protocol schemas', () => {
     } as const;
     const baseTurn = {
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       status: 'running',
       error: null,
@@ -1013,7 +1013,7 @@ describe('protocol schemas', () => {
     } as const;
     const responseItem = {
       id: 'it_00000000-0000-76f4-b126-04a05f2f3735',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       status: 'completed',
@@ -1085,7 +1085,7 @@ describe('protocol schemas', () => {
     expect(
       TurnSchema.safeParse({
         id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         items: [],
         status: 'running',
@@ -1102,7 +1102,7 @@ describe('protocol schemas', () => {
     expect(() =>
       TurnSchema.parse({
         id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         items: [],
         status: 'running',
@@ -1118,7 +1118,7 @@ describe('protocol schemas', () => {
     expect(() =>
       ItemSchema.parse({
         id: 'it_00000000-0000-7a80-9e75-ec0915e1f8ca',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         status: 'completed',
@@ -1134,7 +1134,7 @@ describe('protocol schemas', () => {
 
     const parsed = ItemSchema.parse({
       id: 'it_00000000-0000-7a80-9e75-ec0915e1f8ca',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       status: 'completed',
@@ -1154,7 +1154,7 @@ describe('protocol schemas', () => {
   it('requires artifact-reference items to identify the exact artifact version', () => {
     const item = {
       id: 'it_00000000-0000-7b7c-87e5-09f6aff91ab9',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       status: 'completed',
@@ -1186,7 +1186,7 @@ describe('protocol schemas', () => {
     expect(() =>
       TurnSchema.parse({
         id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
         items: [],
@@ -1204,7 +1204,7 @@ describe('protocol schemas', () => {
     expect(() =>
       TurnSchema.parse({
         id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         items: [],
         status: 'awaiting_approval',
@@ -1220,7 +1220,7 @@ describe('protocol schemas', () => {
   it('allows an empty assistant message while streaming deltas through item lifecycle events', () => {
     const parsed = ItemSchema.parse({
       id: 'it_00000000-0000-7087-9ee5-fdce2705f2fa',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'assistant-message',
@@ -1239,7 +1239,7 @@ describe('protocol schemas', () => {
       itemId: 'it_00000000-0000-7087-9ee5-fdce2705f2fa',
       item: {
         id: 'it_00000000-0000-7087-9ee5-fdce2705f2fa',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         type: 'assistant-message',
@@ -1371,7 +1371,7 @@ describe('protocol schemas', () => {
   it('parses a command-execution item aligned with codex CommandExecution', () => {
     const parsed = ItemSchema.parse({
       id: 'it_00000000-0000-7a80-9e75-ec0915e1f8ca',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'command-execution',
@@ -1391,7 +1391,7 @@ describe('protocol schemas', () => {
   it('parses approval request and decision items', () => {
     const approvalRequest = ItemSchema.parse({
       id: 'it_00000000-0000-72bd-895c-4502f9d34207',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'approval-request',
@@ -1405,7 +1405,7 @@ describe('protocol schemas', () => {
     });
     const approvalDecision = ItemSchema.parse({
       id: 'it_00000000-0000-70d9-8e42-c6f29b67b136',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'approval-decision',
@@ -1456,7 +1456,7 @@ describe('protocol schemas', () => {
   it('parses user input request and response items', () => {
     const userInputRequest = ItemSchema.parse({
       id: 'it_00000000-0000-73db-a3d1-8ef841cf236b',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'user-input-request',
@@ -1484,7 +1484,7 @@ describe('protocol schemas', () => {
     });
     const userInputResponse = ItemSchema.parse({
       id: 'it_00000000-0000-7f51-84c1-8fec30f0304b',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'user-input-response',
@@ -1513,7 +1513,7 @@ describe('protocol schemas', () => {
   it('parses a tool-call item aligned with codex McpToolCall', () => {
     const parsed = ItemSchema.parse({
       id: 'it_00000000-0000-7f0e-b88b-b92d0888ddf9',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'tool-call',
@@ -1534,7 +1534,7 @@ describe('protocol schemas', () => {
   it('parses an agent-handoff item', () => {
     const parsed = ItemSchema.parse({
       id: 'it_00000000-0000-770b-b660-2f7ff8a8c550',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       type: 'agent-handoff',
@@ -1681,7 +1681,7 @@ describe('protocol schemas', () => {
         type: 'thread-updated',
         thread: {
           id: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           name: 'Updated thread',
           preview: 'Some preview',
           status: 'active',
@@ -1775,7 +1775,7 @@ describe('protocol schemas', () => {
       items: [
         {
           id: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           name: 'Thread one',
           preview: 'First thread',
           status: 'active',
@@ -1795,7 +1795,7 @@ describe('protocol schemas', () => {
   it('parses a bare thread detail response', () => {
     const parsed = GetThreadResponseSchema.parse({
       id: 'th_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       name: null,
       preview: 'Preview text',
       status: 'active',
@@ -1811,7 +1811,7 @@ describe('protocol schemas', () => {
   it('parses a bare turn submission response', () => {
     const parsed = TurnSchema.parse({
       id: 'tu_00000000-0000-7d96-ae2f-ca4c2600ccce',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       items: [],

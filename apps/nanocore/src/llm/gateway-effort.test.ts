@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import type { ReasoningEffort } from '@openkit/protocol';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -412,7 +413,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
           input: 'Hello',
           stream,
           reasoning: { effort: 'medium', summary: 'unsupported-summary' },
-          metadata: { openkit: { workspaceId: f.turn.workspaceId } },
+          metadata: { openkit: { workspaceId: workspaceIdForOwner(f.turn.owner) } },
         }),
       });
       expect(response.status).toBe(400);
@@ -436,7 +437,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
         input: 'Hello',
         stream,
         reasoning: { effort: 'medium', summary: 'unsupported-summary' },
-        metadata: { openkit: { workspaceId: f.turn.workspaceId } },
+        metadata: { openkit: { workspaceId: workspaceIdForOwner(f.turn.owner) } },
       }),
     });
     expect(response.status).toBe(400);
@@ -461,7 +462,9 @@ describe('Gateway reasoning effort admission and fitting', () => {
     [undefined, undefined, undefined],
   ] as const)('persists native request %s / %s separately from bound Turn on tool-aware Responses', async (turnEffort, requested, expected) => {
     const f = fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
-    const before = structuredClone(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id));
+    const before = structuredClone(
+      f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
+    );
     const response = await f.post('responses', requested, false, true, true, true);
     expect(response.status, await response.text()).toBe(200);
     expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
@@ -475,7 +478,9 @@ describe('Gateway reasoning effort admission and fitting', () => {
       expect(entry).toHaveProperty('effectiveEffort', expected);
       expect(entry).not.toHaveProperty('effectiveEffortReason');
     }
-    expect(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)).toEqual(before);
+    expect(f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)).toEqual(
+      before
+    );
   });
 
   it.each([
@@ -510,7 +515,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
       ]);
       expect(f.fauxOptionProjections).toHaveLength(1);
       expect(f.fauxOptionProjections[0]).not.toContain('metadata');
-      expect(f.fauxOptionProjections[0]).not.toContain(f.turn.workspaceId);
+      expect(f.fauxOptionProjections[0]).not.toContain(workspaceIdForOwner(f.turn.owner));
       expect(f.fauxOptionProjections[0]).not.toContain(f.turn.threadId);
       expect(f.fauxOptionProjections[0]).not.toContain(f.turn.id);
     }
@@ -662,7 +667,9 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['chat/completions', undefined, undefined, undefined],
   ] as const)('uses native %s effort before recorded Turn, then default: turn=%s request=%s effective=%s', async (endpoint, turnEffort, requested, expected) => {
     const f = fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
-    const before = structuredClone(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id));
+    const before = structuredClone(
+      f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
+    );
     const response = await f.post(endpoint, requested, false, true);
     expect(response.status, await response.text()).toBe(200);
     expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
@@ -673,7 +680,9 @@ describe('Gateway reasoning effort admission and fitting', () => {
       expect(entry).not.toHaveProperty('effectiveEffort');
       expect(entry).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
     } else expect(entry).toHaveProperty('effectiveEffort', expected);
-    expect(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)).toEqual(before);
+    expect(f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)).toEqual(
+      before
+    );
   });
 
   it.each([
@@ -788,7 +797,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
   it('advertises current levels, empty options and absent control after reload and restart', async () => {
     const f = fixture({ levels: ['low', 'high'], discoveryProfiles: true, turnEffort: 'high' });
     const admittedTurn = structuredClone(
-      f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)
+      f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
     );
     const read = async () => (await (await f.app.request('/v1/models')).json()).data[0];
     expect(await read()).toMatchObject({ id: 'tier', reasoningEffortLevels: ['low', 'high'] });
@@ -801,7 +810,9 @@ describe('Gateway reasoning effort admission and fitting', () => {
     const restarted = f.restartedApp();
     const restartedModel = (await (await restarted.request('/v1/models')).json()).data[0];
     expect(restartedModel).toEqual(await read());
-    expect(f.store.getTurn(f.turn.workspaceId, f.turn.threadId, f.turn.id)).toEqual(admittedTurn);
+    expect(f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)).toEqual(
+      admittedTurn
+    );
     const serialized = JSON.stringify(await read());
     expect(serialized).not.toContain('effort-model');
     expect(serialized).not.toContain('providerProfileId');

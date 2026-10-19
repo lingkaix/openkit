@@ -69,7 +69,7 @@ function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
   ] as const) {
     store.createItem({
       id: allocateEntityId('it'),
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
       turnId: turn.id,
       type,

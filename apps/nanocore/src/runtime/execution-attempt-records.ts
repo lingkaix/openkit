@@ -5,7 +5,9 @@ import {
   readRetainedV1,
   ThreadIdSchema,
   TurnIdSchema,
+  type WorkOwner,
   WorkspaceIdSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -443,14 +445,14 @@ export function markSchedulerAttemptForTerminalTurn(
   coreDb: CoreDb | undefined,
   turn: {
     readonly id: string;
-    readonly workspaceId: string;
+    readonly owner: WorkOwner;
     readonly threadId: string;
     readonly status: string;
   }
 ): void {
   if (!coreDb || !['completed', 'interrupted', 'cancelled', 'failed'].includes(turn.status)) return;
   for (const attempt of listSchedulerExecutionAttemptsForTurn(coreDb, {
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
   })) {

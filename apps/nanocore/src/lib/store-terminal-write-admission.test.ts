@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
@@ -71,7 +72,7 @@ function statusItem(
 ) {
   return {
     id,
-    workspaceId: turn.workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'status' as const,
@@ -143,7 +144,7 @@ function seedMcpBootItem(input: {
       threadId: turn.threadId,
       turnId: turn.id,
       workspaceDb,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     finishCapabilityCall({
       callId: call.id,
@@ -181,7 +182,7 @@ function seedMcpBootItem(input: {
       tool: 'echo',
       turnId: turn.id,
       type: 'tool-call',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     },
     ALREADY_DECIDED_PUBLICATION_ADMISSION
   );
@@ -220,7 +221,7 @@ describe('post-terminal write admission', () => {
         event: 'error',
         threadId: turn.threadId,
         turnId: turn.id,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       })
     ).toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
     expect(() => store.updateItem(created.id, { title: 'Changed' })).toThrow(
@@ -296,7 +297,7 @@ describe('post-terminal write admission', () => {
       status: 'busy',
       threadId: turn.threadId,
       updatedAt: COMPLETED_AT,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     const input = {
       agentSessionId: 'as_00000000-0000-7b5a-a83a-78d4ea18d1f1',
@@ -355,7 +356,7 @@ describe('post-terminal write admission', () => {
         threadId: turn.threadId,
         turnId: turn.id,
         workspaceDb,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
     } finally {
@@ -394,7 +395,7 @@ describe('post-terminal write admission', () => {
         threadId: conflictTurn.threadId,
         turnId: conflictTurn.id,
         workspaceDb: conflictDb,
-        workspaceId: conflictTurn.workspaceId,
+        workspaceId: workspaceIdForOwner(conflictTurn.owner),
       });
       finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb: conflictDb });
     } finally {
@@ -416,7 +417,7 @@ describe('post-terminal write admission', () => {
         tool: 'echo',
         turnId: conflictTurn.id,
         type: 'tool-call',
-        workspaceId: conflictTurn.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(conflictTurn.owner) },
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
@@ -431,7 +432,7 @@ describe('post-terminal write admission', () => {
     const turn = seedTurn(store, 'completed');
     const decision = {
       id: 'it_00000000-0000-76be-a8ee-b6bc95c15d80',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'approval-decision' as const,
@@ -465,7 +466,7 @@ describe('post-terminal write admission', () => {
         requestId: 'req_approval_grid',
         threadId: turn.threadId,
         turnId: turn.id,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
@@ -479,7 +480,7 @@ describe('post-terminal write admission', () => {
         requestId: 'req_approval_grid',
         threadId: turn.threadId,
         turnId: turn.id,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
@@ -493,7 +494,7 @@ describe('post-terminal write admission', () => {
           requestId: 'req_approval_grid',
           threadId: turn.threadId,
           turnId: turn.id,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       )
@@ -530,7 +531,7 @@ describe('post-terminal write admission', () => {
     const marker = store.createItem(
       {
         id: 'it_00000000-0000-7930-99d0-7ca81784886e',
-        workspaceId: turn.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         threadId: turn.threadId,
         turnId: turn.id,
         type: 'status',
@@ -555,7 +556,7 @@ describe('post-terminal write admission', () => {
       event: 'turn.updated',
       threadId: turn.threadId,
       turnId: turn.id,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     expect(admitted.event).toBe('turn.updated');
     expect(admitted.data).toEqual({ type: 'turn-updated', turn: cancelled });
@@ -565,7 +566,7 @@ describe('post-terminal write admission', () => {
         event: 'turn.updated',
         threadId: turn.threadId,
         turnId: turn.id,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       })
     ).toThrow(
       `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
@@ -588,7 +589,7 @@ describe('post-terminal write admission', () => {
         event: 'error',
         threadId: turn.threadId,
         turnId: turn.id,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       })
     ).toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
   });
@@ -725,7 +726,7 @@ describe('post-terminal write admission', () => {
     expect(() =>
       store.createArtifact({
         id: 'ar_00000000-0000-78c4-95cd-6093ab5a4c37',
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId: turn.id,
         kind: 'summary',

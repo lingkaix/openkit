@@ -1,7 +1,7 @@
-// openkit-test-platform: posix
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -187,7 +187,7 @@ it.each([
       threadId: turn.threadId,
       turnId: turn.id,
       turnInput: 'Try OpenCode again',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     recordTestExecutionAttempt(coreDb, {
       entry,

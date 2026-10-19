@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -65,7 +66,7 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
   });
   store.createItem({
     id: gate.approvalItemId,
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'approval-request',
@@ -157,7 +158,7 @@ function respondToApproval(
           requestId,
           threadId: fixture.turn.threadId,
           turnId: fixture.turn.id,
-          workspaceId: fixture.turn.workspaceId,
+          workspaceId: workspaceIdForOwner(fixture.turn.owner),
         }),
       }
     )
@@ -227,7 +228,7 @@ describe('Pending Request operations', () => {
       const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue_${fixture.turn.id}`,
-        workspaceId: fixture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(fixture.turn.owner),
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
         triggerActor: fixture.turn.triggerActor,
@@ -275,7 +276,7 @@ describe('Pending Request operations', () => {
       const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue_${fixture.turn.id}`,
-        workspaceId: fixture.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(fixture.turn.owner),
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
         triggerActor: fixture.turn.triggerActor,
@@ -355,7 +356,10 @@ describe('Pending Request operations', () => {
           .getTurnEvents(fixture.turn.id)
           .filter((event) => event.event === 'turn.completed')
       ).toEqual([]);
-      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
+      const workspaceDb = openWorkspaceDb(
+        fixture.coreDb.dataRoot,
+        workspaceIdForOwner(fixture.turn.owner)
+      );
       try {
         expect(
           workspaceDb.sqlite
@@ -388,7 +392,7 @@ describe('Pending Request operations', () => {
       await expect(responses[1]?.json()).resolves.toMatchObject({ status: 'granted' });
       expect(
         fixture.store
-          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .listThreadItems(workspaceIdForOwner(fixture.turn.owner), fixture.turn.threadId)
           .filter((item) => item.type === 'approval-decision')
       ).toHaveLength(0);
       expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
@@ -416,7 +420,7 @@ describe('Pending Request operations', () => {
       );
       expect(
         fixture.store
-          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .listThreadItems(workspaceIdForOwner(fixture.turn.owner), fixture.turn.threadId)
           .filter((item) => item.type === 'approval-decision')
       ).toHaveLength(0);
       expect(
@@ -432,12 +436,15 @@ describe('Pending Request operations', () => {
 
   it('fails closed when the originating approval tuple is contradictory', async () => {
     const fixture = createApprovalFixture();
-    const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
+    const workspaceDb = openWorkspaceDb(
+      fixture.coreDb.dataRoot,
+      workspaceIdForOwner(fixture.turn.owner)
+    );
 
     try {
       fixture.store.createItem({
         id: 'it_00000000-0000-704e-85f3-3ea74d4aa3a0',
-        workspaceId: fixture.turn.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
         type: 'approval-decision',
@@ -459,7 +466,7 @@ describe('Pending Request operations', () => {
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
       expect(
         fixture.store
-          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .listThreadItems(workspaceIdForOwner(fixture.turn.owner), fixture.turn.threadId)
           .filter((item) => item.type === 'approval-decision')
           .map((item) => item.id)
       ).toEqual(['it_00000000-0000-704e-85f3-3ea74d4aa3a0']);
@@ -493,7 +500,7 @@ describe('Pending Request operations', () => {
     );
     store.createApproval({
       id: 'ap_runtime_scope',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
       kind: 'permission',
@@ -527,7 +534,7 @@ describe('Pending Request operations', () => {
               requestId: '00000000-0000-4000-8000-000000000106',
               threadId: 'th_00000000-0000-7e9e-8ca1-a96ae30af5d8',
               turnId: turn.id,
-              workspaceId: turn.workspaceId,
+              workspaceId: workspaceIdForOwner(turn.owner),
             }),
           }
         )
@@ -566,7 +573,7 @@ describe('Pending Request operations', () => {
     );
     store.createApproval({
       id: 'ap_runtime_unsupported',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
       kind: 'permission',
@@ -592,7 +599,7 @@ describe('Pending Request operations', () => {
             requestId: '00000000-0000-4000-8000-000000000109',
             threadId: turn.threadId,
             turnId: turn.id,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
           }),
         }
       )

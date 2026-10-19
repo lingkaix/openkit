@@ -120,7 +120,8 @@ function classifyTurnEventDelivery(
     envelope.workspaceId === options.workspaceId &&
     envelope.threadId === options.threadId &&
     envelope.turnId === options.turnId &&
-    turn.workspaceId === options.workspaceId &&
+    turn.owner.kind === 'workspace' &&
+    turn.owner.workspaceId === options.workspaceId &&
     turn.threadId === options.threadId &&
     turn.id === options.turnId
     ? 'terminal'

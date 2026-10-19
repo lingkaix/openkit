@@ -21,6 +21,7 @@ import {
   responsibleUserIdForActor,
   type StopReason,
   TurnSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
@@ -291,7 +292,7 @@ function persistConversationWorkerResultItem(
     return store.createItem(
       {
         id: itemId,
-        workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceId },
         threadId,
         turnId,
         type: 'status',
@@ -307,7 +308,7 @@ function persistConversationWorkerResultItem(
   }
   if (
     existing.type !== 'status' ||
-    existing.workspaceId !== workspaceId ||
+    workspaceIdForOwner(existing.owner) !== workspaceId ||
     existing.threadId !== threadId ||
     existing.turnId !== turnId
   ) {
@@ -374,7 +375,7 @@ function replayConversationCommand(
         firstUserItem.status !== 'completed' ||
         !firstUserItem.completedAt ||
         canonicalIdentifierName(firstUserItem.actor) !== canonicalIdentifierName(triggerActor) ||
-        firstUserItem.workspaceId !== workspaceId ||
+        workspaceIdForOwner(firstUserItem.owner) !== workspaceId ||
         firstUserItem.threadId !== threadId ||
         firstUserItem.turnId !== turn.id ||
         firstUserItem.createdAt !== turn.startedAt ||
@@ -405,7 +406,7 @@ function replayConversationCommand(
     const currentTurn = store.getTurnById(record.response.id);
     const itemRevisions = store.listWorkspaceItemRevisions(workspaceId);
     if (
-      currentTurn.workspaceId !== metadata.receivingWorkspaceId ||
+      workspaceIdForOwner(currentTurn.owner) !== metadata.receivingWorkspaceId ||
       currentTurn.threadId !== metadata.receivingThreadId
     ) {
       throw new Error('Conversation receiving lineage is contradictory.');
@@ -414,7 +415,7 @@ function replayConversationCommand(
       if (
         coreDb &&
         listSchedulerExecutionAttemptsForTurn(coreDb, {
-          workspaceId: currentTurn.workspaceId,
+          workspaceId: workspaceIdForOwner(currentTurn.owner),
           threadId: currentTurn.threadId,
           turnId: currentTurn.id,
         }).some((attempt) => attempt.phase === 'closing')
@@ -423,16 +424,16 @@ function replayConversationCommand(
       }
       if (currentTurn.status === 'pending' || currentTurn.status === 'running') {
         if (!coreDb) throw new Error('Conversation Worker runtime owners are unavailable.');
-        const workspaceDb = repositoryWorkspaceDb(currentTurn.workspaceId);
+        const workspaceDb = repositoryWorkspaceDb(workspaceIdForOwner(currentTurn.owner));
         try {
           const checkpoint = getWorkerCheckpoint(
             workspaceDb,
-            currentTurn.workspaceId,
+            workspaceIdForOwner(currentTurn.owner),
             currentTurn.threadId,
             currentTurn.id
           );
           const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, {
-            workspaceId: currentTurn.workspaceId,
+            workspaceId: workspaceIdForOwner(currentTurn.owner),
             threadId: currentTurn.threadId,
             turnId: currentTurn.id,
           }).filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
@@ -449,7 +450,7 @@ function replayConversationCommand(
             coreDb,
             store,
             actorId,
-            workspaceId: currentTurn.workspaceId,
+            workspaceId: workspaceIdForOwner(currentTurn.owner),
             threadId: currentTurn.threadId,
             turnId: currentTurn.id,
             requestId: record.requestId,
@@ -567,14 +568,14 @@ function replayConversationCommand(
 
     if (
       record.response.kind !== 'turn' ||
-      currentTurn.workspaceId !== workspaceId ||
+      workspaceIdForOwner(currentTurn.owner) !== workspaceId ||
       currentTurn.threadId !== threadId ||
       canonicalIdentifierName(currentTurn.triggerActor) !== canonicalIdentifierName(triggerActor) ||
       userItem?.type !== 'user-message' ||
       userItem.status !== 'completed' ||
       !userItem.completedAt ||
       canonicalIdentifierName(userItem.actor) !== canonicalIdentifierName(triggerActor) ||
-      userItem.workspaceId !== workspaceId ||
+      workspaceIdForOwner(userItem.owner) !== workspaceId ||
       userItem.threadId !== threadId ||
       userItem.turnId !== currentTurn.id ||
       resultItem?.workspaceId !== workspaceId ||
@@ -601,7 +602,7 @@ function replayConversationCommand(
         !original ||
         original.turnId !== currentTurn.id ||
         original.threadId !== threadId ||
-        original.workspaceId !== workspaceId
+        workspaceIdForOwner(original.owner) !== workspaceId
       )
         throw new Error('The original conversation Item projection is unavailable.');
       return original;
@@ -690,7 +691,7 @@ function replayConversationCommand(
         receivingThread.parentThreadId !== threadId ||
         receivingThreadId === threadId ||
         downstreamTurn.id === currentTurn.id ||
-        downstreamTurn.workspaceId !== workspaceId ||
+        workspaceIdForOwner(downstreamTurn.owner) !== workspaceId ||
         downstreamTurn.threadId !== receivingThreadId ||
         downstreamTurn.id !==
           conversationTaskTurnId(
@@ -835,7 +836,7 @@ function replayTaskModeCommand(
 
     if (
       record.response.kind !== 'turn' ||
-      currentTurn.workspaceId !== workspaceId ||
+      workspaceIdForOwner(currentTurn.owner) !== workspaceId ||
       currentTurn.threadId !== threadId
     ) {
       throw new Error('Task command owner contradiction.');
@@ -1109,7 +1110,7 @@ function recoverDirectTaskModeCheckpoint(input: {
   if (
     initiatingItem?.type !== 'user-message' ||
     initiatingItem.status !== 'completed' ||
-    initiatingItem.workspaceId !== input.workspaceId ||
+    workspaceIdForOwner(initiatingItem.owner) !== input.workspaceId ||
     initiatingItem.threadId !== input.threadId ||
     initiatingItem.turnId !== input.turnId ||
     !checkpoint.contextDigest
@@ -1300,7 +1301,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
       if (
         resultItem?.type !== 'status' ||
         resultItem.status !== 'completed' ||
-        resultItem.workspaceId !== checkpoint.workspaceId ||
+        workspaceIdForOwner(resultItem.owner) !== checkpoint.workspaceId ||
         resultItem.threadId !== checkpoint.threadId ||
         resultItem.turnId !== checkpoint.turnId
       )
@@ -1608,7 +1609,7 @@ function recoverSessionlessTaskAdmission(input: {
     initiatingItem &&
     (initiatingItem.type !== 'user-message' ||
       initiatingItem.status !== 'completed' ||
-      initiatingItem.workspaceId !== input.workspaceId ||
+      workspaceIdForOwner(initiatingItem.owner) !== input.workspaceId ||
       initiatingItem.threadId !== input.threadId ||
       initiatingItem.turnId !== input.turnId ||
       initiatingItem.text !== admission.turnInput)
@@ -1734,7 +1735,7 @@ function recoverSessionlessTaskAdmission(input: {
     terminal.threadId !== input.threadId ||
     terminal.turnId !== input.turnId ||
     terminal.data.turn.id !== turn.id ||
-    terminal.data.turn.workspaceId !== turn.workspaceId ||
+    workspaceIdForOwner(terminal.data.turn.owner) !== workspaceIdForOwner(turn.owner) ||
     terminal.data.turn.threadId !== turn.threadId ||
     terminal.data.turn.agentSessionId ||
     terminal.data.turn.status !== 'failed' ||
@@ -1889,7 +1890,7 @@ function hasClosedDirectTaskGateReceipt(store: FsStore, turn: z.infer<typeof Tur
       return false;
     }
     const receipt = store.getCommandRequest('approval.respond', approval.responseRequestId, {
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
       approvalRequestId: request.approvalRequestId,
@@ -1904,7 +1905,7 @@ function hasClosedDirectTaskGateReceipt(store: FsStore, turn: z.infer<typeof Tur
     return true;
   }
   const receipt = store.getCommandRequest('turn.input.submit', userInput.responseRequestId, {
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
   });
@@ -2078,7 +2079,7 @@ function publishAssistantHandoffConfirmation(
   ];
   const item = store.createItem({
     id: pendingRequestItemId(requestId, 'request'),
-    workspaceId: turn.workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'user-input-request',
@@ -2094,11 +2095,11 @@ function publishAssistantHandoffConfirmation(
     createdAt: turn.startedAt ?? at,
     completedAt: turn.startedAt ?? at,
   });
-  const db = repositoryWorkspaceDb(turn.workspaceId);
+  const db = repositoryWorkspaceDb(workspaceIdForOwner(turn.owner));
   try {
     raiseRecordedPendingRequest(store, db.sqlite, {
       requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       raisingTurnId: turn.id,
       requestItemId: item.id,
@@ -3001,7 +3002,7 @@ export function createConversationService({
 
           store.createItem({
             id: deriveEntityId('it', ['chat-user', turn.id]),
-            workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId,
             turnId: turn.id,
             type: 'user-message',
@@ -3015,7 +3016,7 @@ export function createConversationService({
           for (const artifact of artifacts) {
             store.createItem({
               id: artifactReferenceItemId(artifact.id, turn.id),
-              workspaceId,
+              owner: { kind: 'workspace', workspaceId: workspaceId },
               threadId,
               turnId: turn.id,
               type: 'artifact-reference',
@@ -3048,7 +3049,7 @@ export function createConversationService({
         const turn = createChatTurn(completedAt);
         const refusedItem = store.createItem({
           id: deriveEntityId('it', ['chat-refused', turn.id]),
-          workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId,
           turnId: turn.id,
           type: 'status',
@@ -3100,7 +3101,7 @@ export function createConversationService({
           .join(', ');
         const answerItem = store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
-          workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId,
           turnId: turn.id,
           type: 'assistant-message',
@@ -3380,7 +3381,7 @@ export function createConversationService({
                     for (const artifact of artifacts) {
                       store.createItem({
                         id: artifactReferenceItemId(artifact.id, created.id),
-                        workspaceId,
+                        owner: { kind: 'workspace', workspaceId: workspaceId },
                         threadId: receivingThreadId,
                         turnId: created.id,
                         type: 'artifact-reference',
@@ -3540,7 +3541,7 @@ export function createConversationService({
           const at = new Date().toISOString();
           const item = store.createItem({
             id: deriveEntityId('it', ['chat-goal-intent', turn.id]),
-            workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId,
             turnId: turn.id,
             type: 'status',
@@ -3785,7 +3786,7 @@ export function createConversationService({
         }
         const item = store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
-          workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId,
           turnId: turn.id,
           type: 'assistant-message',
@@ -3854,7 +3855,11 @@ export function createConversationService({
               )
                 throw new Error('Input inventory differs.');
               verifyTurnFileInputs(
-                resolveDataRootPath(store.getDataRoot()!, 'workspaces', inputTurn.workspaceId),
+                resolveDataRootPath(
+                  store.getDataRoot()!,
+                  'workspaces',
+                  workspaceIdForOwner(inputTurn.owner)
+                ),
                 inputTurn
               );
             } catch {
@@ -3931,7 +3936,7 @@ export function createConversationService({
           downstream,
           targetRef: chatInput.targetRef,
           logicalModelId: freshLogicalModelId,
-          receivingWorkspaceId: body.turn.workspaceId,
+          receivingWorkspaceId: workspaceIdForOwner(body.turn.owner),
           receivingThreadId: body.turn.threadId,
           resultKind,
           status,
@@ -4047,14 +4052,20 @@ export function createConversationService({
       if (
         !actorId ||
         !coreDb ||
-        !currentWorkspaceAuthority(coreDb, turn.workspaceId, turn.triggerActor, 'turn.run', true)
+        !currentWorkspaceAuthority(
+          coreDb,
+          workspaceIdForOwner(turn.owner),
+          turn.triggerActor,
+          'turn.run',
+          true
+        )
       )
         throw new TurnStartValidationError(
           'workspace_access_denied',
           'Workspace access denied.',
           403
         );
-      const workspaceDb = repositoryWorkspaceDb(turn.workspaceId);
+      const workspaceDb = repositoryWorkspaceDb(workspaceIdForOwner(turn.owner));
       let prompt: string;
       let sourceInputHash: string;
       let outcomeScope: ReturnType<typeof assistantPendingOutcomeSource>;
@@ -4063,7 +4074,7 @@ export function createConversationService({
       try {
         const frozen = listThreadPendingRequests(
           workspaceDb.sqlite,
-          turn.workspaceId,
+          workspaceIdForOwner(turn.owner),
           turn.threadId
         ).filter(
           (record) =>
@@ -4091,7 +4102,7 @@ export function createConversationService({
             store,
             workspaceDb.sqlite,
             record.requestId,
-            turn.workspaceId,
+            workspaceIdForOwner(turn.owner),
             turn.threadId
           );
         outcomeScope = assistantPendingOutcomeSource(turn, frozen, actorId);
@@ -4104,7 +4115,9 @@ export function createConversationService({
             409
           );
         handoffRecord = proposals[0];
-        selection = handoffRecord ? null : quickChatSelection(actorId, turn.workspaceId);
+        selection = handoffRecord
+          ? null
+          : quickChatSelection(actorId, workspaceIdForOwner(turn.owner));
         if (!selection && !handoffRecord)
           throw new TurnStartValidationError(
             'target_unavailable',
@@ -4127,7 +4140,7 @@ export function createConversationService({
           const at = new Date().toISOString();
           store.createItem({
             id: deriveEntityId('it', ['chat-refused', turn.id]),
-            workspaceId: turn.workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
             threadId: turn.threadId,
             turnId: turn.id,
             type: 'status',
@@ -4164,7 +4177,7 @@ export function createConversationService({
           if (
             !currentWorkspaceAuthority(
               coreDb,
-              turn.workspaceId,
+              workspaceIdForOwner(turn.owner),
               turn.triggerActor,
               'turn.run',
               true,
@@ -4176,11 +4189,11 @@ export function createConversationService({
               'Current source Workspace authority is unavailable.',
               403
             );
-          const db = repositoryWorkspaceDb(turn.workspaceId);
+          const db = repositoryWorkspaceDb(workspaceIdForOwner(turn.owner));
           try {
             const records = listThreadPendingRequests(
               db.sqlite,
-              turn.workspaceId,
+              workspaceIdForOwner(turn.owner),
               turn.threadId
             ).filter(
               (record) => record.deliveryTurnId === turn.id && record.requesterKind === 'assistant'
@@ -4190,7 +4203,7 @@ export function createConversationService({
                 store,
                 db.sqlite,
                 record.requestId,
-                turn.workspaceId,
+                workspaceIdForOwner(turn.owner),
                 turn.threadId
               );
             if (assistantPendingOutcomeSourceHash(turn, records, actorId) !== sourceInputHash)
@@ -4360,7 +4373,7 @@ export function createConversationService({
             const completedAt = new Date().toISOString();
             store.createItem({
               id: assistantPendingHandoffResultItemId(turn.id, 'task'),
-              workspaceId: turn.workspaceId,
+              owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
               threadId: turn.threadId,
               turnId: turn.id,
               type: 'status',
@@ -4405,7 +4418,7 @@ export function createConversationService({
             const at = new Date().toISOString();
             store.createItem({
               id: assistantPendingHandoffResultItemId(turn.id, 'goal'),
-              workspaceId: turn.workspaceId,
+              owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
               threadId: turn.threadId,
               turnId: turn.id,
               type: 'status',
@@ -4435,17 +4448,19 @@ export function createConversationService({
           store,
           coreDb,
           actor: outcomeActor,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           turnId: turn.id,
         });
         const fixedTools = createAssistantTools({
           actorUserId: actorId,
           commandRequestId: assistantPendingHandoffIds(outcomeScope).requestId,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           turnId: turn.id,
-          privateEntry: store.getThread(turn.workspaceId, turn.threadId).visibility === 'private',
+          privateEntry:
+            store.getThread(workspaceIdForOwner(turn.owner), turn.threadId).visibility ===
+            'private',
           history: history.tool,
           assertCurrent: history.assertCurrent,
           skill: createAssistantSkillReadTool(async () => {
@@ -4481,7 +4496,7 @@ export function createConversationService({
               knowledge: {
                 store,
                 coreDb,
-                workspaceId: turn.workspaceId,
+                workspaceId: workspaceIdForOwner(turn.owner),
                 threadId: turn.threadId,
                 turnId: turn.id,
                 actor: turn.triggerActor,
@@ -4496,7 +4511,7 @@ export function createConversationService({
                     store,
                     coreDb,
                     actor: { kind: 'session', userId: actorId },
-                    workspaceId: turn.workspaceId,
+                    workspaceId: workspaceIdForOwner(turn.owner),
                     threadId: turn.threadId,
                     items,
                   }),
@@ -4514,7 +4529,7 @@ export function createConversationService({
                 if (
                   !currentWorkspaceAuthority(
                     coreDb,
-                    turn.workspaceId,
+                    workspaceIdForOwner(turn.owner),
                     turn.triggerActor,
                     'llm.gateway.use',
                     true
@@ -4545,12 +4560,12 @@ export function createConversationService({
                   ? { providerSubscriptionAccountManager }
                   : {}),
                 promptCacheScope: {
-                  sessionId: `chat:${turn.workspaceId}:${turn.threadId}`,
-                  workspaceId: turn.workspaceId,
+                  sessionId: `chat:${workspaceIdForOwner(turn.owner)}:${turn.threadId}`,
+                  workspaceId: workspaceIdForOwner(turn.owner),
                 },
                 usageEndpoint: 'quick_chat',
                 callContext: {
-                  workspaceId: turn.workspaceId,
+                  workspaceId: workspaceIdForOwner(turn.owner),
                   authorityActor: turn.triggerActor,
                   agentId: QUICK_CHAT_AGENT_ID,
                   agentSessionId: null,
@@ -4583,7 +4598,7 @@ export function createConversationService({
         const completedAt = new Date().toISOString();
         store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
-          workspaceId: turn.workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
           threadId: turn.threadId,
           turnId: turn.id,
           type: 'assistant-message',
@@ -4598,7 +4613,7 @@ export function createConversationService({
           const at = new Date().toISOString();
           store.createItem({
             id: assistantPendingHandoffResultItemId(turn.id, 'refused'),
-            workspaceId: turn.workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
             threadId: turn.threadId,
             turnId: turn.id,
             type: 'status',

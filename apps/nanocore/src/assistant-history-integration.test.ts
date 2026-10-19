@@ -1,10 +1,9 @@
-// openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
-import { allocateEntityId, parseReferenceScope } from '@openkit/protocol';
+import { allocateEntityId, parseReferenceScope, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from './lib/store.js';
 import type {
@@ -69,7 +68,7 @@ function retainMessage(
   const turn = store.createTurn(workspaceId, threadId, text, { kind: 'user', id: LOCAL_USER_ID });
   const item = store.createItem({
     id: allocateEntityId('it'),
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
     threadId,
     turnId: turn.id,
     type: 'user-message',
@@ -271,7 +270,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   });
   const reasoning = store.createItem({
     id: allocateEntityId('it'),
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: shared.id,
     turnId: hiddenTurn.id,
     type: 'reasoning',
@@ -402,7 +401,7 @@ describe('Assistant history Tool through canonical Items and real R2', () => {
         const source = expected[index]!.find((item) => item.id === hit.reference.itemId)!;
         expect(source).toBeDefined();
         expect(hit.reference).toEqual({
-          workspaceId: source.workspaceId,
+          workspaceId: workspaceIdForOwner(source.owner),
           threadId: source.threadId,
           turnId: source.turnId,
           itemId: source.id,

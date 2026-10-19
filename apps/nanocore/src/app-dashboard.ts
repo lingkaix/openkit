@@ -16,6 +16,7 @@ import {
   isSealedTurnTerminal,
   type ThreadSchema,
   type TurnSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
@@ -128,7 +129,7 @@ function pendingApprovalItems(
       return false;
     }
     try {
-      store.getTurn(item.workspaceId, item.threadId, item.turnId);
+      store.getTurn(workspaceIdForOwner(item.owner), item.threadId, item.turnId);
       return true;
     } catch {
       return false;
@@ -177,7 +178,7 @@ function pendingQuestionItems(
       return false;
     }
     try {
-      store.getTurn(item.workspaceId, item.threadId, item.turnId);
+      store.getTurn(workspaceIdForOwner(item.owner), item.threadId, item.turnId);
       return true;
     } catch {
       return false;

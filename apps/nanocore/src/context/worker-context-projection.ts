@@ -1,4 +1,4 @@
-/** A contradictory ordinary Context Package projection remains inspect-only. */
+import { workspaceIdForOwner } from '@openkit/protocol';
 export class WorkerContextProjectionError extends Error {
   public readonly code = 'recovery_required';
   public readonly status = 409;
@@ -113,7 +113,7 @@ export function projectThreadTaskInputs(input: WorkerContextProjectionInput): Th
       const item = itemsById.get(trace.workerRequestItemId);
       if (
         !item ||
-        item.workspaceId !== workspaceId ||
+        workspaceIdForOwner(item.owner) !== workspaceId ||
         item.threadId !== input.threadId ||
         item.turnId !== turn.id ||
         item.type !== 'user-message' ||

@@ -86,7 +86,7 @@ it('permits denial of a person command intent whose exact detail is unavailable'
     });
     store.createItem({
       id: record.requestItemId,
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
       turnId: turn.id,
       type: 'approval-request',
@@ -384,7 +384,7 @@ describe('pending requests', () => {
       const input = approvalRaise(turn.id, 'ap_missing_disclosure', 'large'.repeat(120000));
       store.createItem({
         id: input.requestItemId,
-        workspaceId: input.workspaceId,
+        owner: { kind: 'workspace', workspaceId: input.workspaceId },
         threadId: input.threadId,
         turnId: turn.id,
         type: 'approval-request',
@@ -712,7 +712,7 @@ describe('pending requests', () => {
     try {
       store.createItem({
         id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -787,7 +787,7 @@ describe('pending requests', () => {
       if (fault === 'unnamed-decision' || fault === 'foreign-decision-content') {
         const item = {
           id: 'it_00000000-0000-7de5-8c97-f7a0180b82a4',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           type: 'approval-decision' as const,
@@ -839,7 +839,7 @@ describe('pending requests', () => {
       const input = approvalRaise(raising.id, 'ap_publication_matrix', 'matrix');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: input.workspaceId,
+        owner: { kind: 'workspace', workspaceId: input.workspaceId },
         threadId: input.threadId,
         turnId: raising.id,
         type: 'approval-request',
@@ -854,7 +854,7 @@ describe('pending requests', () => {
       const pending = raiseRecordedPendingRequest(store, db.sqlite, input);
       const decision = {
         id: pendingRequestItemId(input.requestId, 'decision'),
-        workspaceId: input.workspaceId,
+        owner: { kind: 'workspace', workspaceId: input.workspaceId },
         threadId: input.threadId,
         turnId: 'tu_00000000-0000-7718-9293-4265e25b9375',
         type: 'approval-decision' as const,
@@ -957,7 +957,7 @@ describe('pending requests', () => {
       const input = approvalRaise(turn.id, 'ap_binding', 'binding');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -1016,7 +1016,7 @@ describe('pending requests', () => {
       const input = approvalRaise(turn.id, 'ap_unreadable', 'unreadable');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -1134,7 +1134,7 @@ describe('pending requests', () => {
     try {
       store.createItem({
         id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -1209,7 +1209,7 @@ describe('pending requests', () => {
       if (fault === 'unnamed-decision' || fault === 'foreign-decision-content') {
         const item = {
           id: 'it_00000000-0000-7de5-8c97-f7a0180b82a4',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           type: 'approval-decision' as const,
@@ -1256,7 +1256,7 @@ describe('pending requests', () => {
       for (const id of ['good', 'bad']) {
         store.createItem({
           id: testEntityId('it', `it_attention_${id}`),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           type: 'approval-request',
@@ -1340,7 +1340,7 @@ describe('pending requests', () => {
     try {
       store.createItem({
         id: 'it_00000000-0000-7a55-b4f2-9c2a5ec7c086',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -1536,7 +1536,7 @@ describe('pending requests', () => {
       const input = approvalRaise(turn.id, 'ap_delivery_failure', 'failure');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -1638,7 +1638,7 @@ describe('pending requests', () => {
       const input = approvalRaise(turn.id, 'ap_boot_queue', 'boot');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -1730,7 +1730,7 @@ describe('pending requests', () => {
       const input = approvalRaise(turn.id, 'ap_agent_barrier', 'barrier');
       store.createItem({
         id: input.requestItemId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -1821,7 +1821,7 @@ describe('pending requests', () => {
     );
     store.createItem({
       id: testEntityId('it', 'it_ap_supply'),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       type: 'approval-request',
@@ -1969,7 +1969,7 @@ describe('pending requests', () => {
     try {
       store.createItem({
         id: 'it_00000000-0000-730f-baa3-bbcbde464aaa',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'user-input-request',
@@ -1996,7 +1996,7 @@ describe('pending requests', () => {
       });
       store.createItem({
         id: 'it_00000000-0000-7c53-9f67-b4db2e48a984',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'user-input-request',
@@ -2169,7 +2169,7 @@ describe('pending requests', () => {
     try {
       store.createItem({
         id: testEntityId('it', 'it_ap_archive'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'approval-request',
@@ -2279,7 +2279,7 @@ describe('pending requests', () => {
     try {
       store.createItem({
         id: testEntityId('it', 'it_ap_good'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: goodTurn.id,
         type: 'approval-request',
@@ -2293,7 +2293,7 @@ describe('pending requests', () => {
       });
       store.createItem({
         id: 'it_00000000-0000-70b9-a8af-9e7514095096',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: other.id,
         turnId: otherTurn.id,
         type: 'approval-request',

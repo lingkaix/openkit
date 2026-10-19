@@ -11,6 +11,7 @@ import {
   fauxThinking,
   fauxToolCall,
 } from '@earendil-works/pi-ai';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
@@ -558,7 +559,7 @@ describe('Assistant Skill admission capture', () => {
     const path = join(
       f.dataRoot,
       'workspaces',
-      f.turn.workspaceId,
+      workspaceIdForOwner(f.turn.owner),
       'threads',
       f.threadId,
       'turns',
@@ -622,7 +623,7 @@ describe('Assistant Skill admission capture', () => {
     const path = join(
       f.dataRoot,
       'workspaces',
-      f.turn.workspaceId,
+      workspaceIdForOwner(f.turn.owner),
       'threads',
       f.threadId,
       'turns',

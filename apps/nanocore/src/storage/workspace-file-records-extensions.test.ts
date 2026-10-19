@@ -198,7 +198,7 @@ describe('descriptive canonical history extensions', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7107-a6b6-12de9088d8ca',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       createdAt: workspace.createdAt,

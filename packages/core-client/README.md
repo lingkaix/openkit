@@ -119,3 +119,5 @@ Product diagnostics use `client.operations['diagnostics.app']({})` and `client.o
 Turn feedback responses include ordered attributable `history` and the current rating/note. Submit requests still contain only rating, note and the Turn selector; NanoCore binds the actor. [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md#turn-feedback-attribution-and-history) owns these semantics.
 
 Provider account login operations use `provider-subscription.login-start` and `provider-subscription.login-cancel`; provider and account selectors remain required.
+
+Thread, Turn, Item and CapabilityCall responses carry the canonical explicit Workspace-or-Server owner. Workspace operation selectors keep their existing request shape. Turn stream classification withholds valid Server-owned terminal payloads on a Workspace subscription, advances their cursor and continues to the exact owning terminal. Run the complete package suite for both Fetch and EventSource boundaries.

@@ -90,7 +90,7 @@ describe('search app API', () => {
     );
     store.createItem({
       id: 'it_00000000-0000-7c1a-9937-67af1fde2325',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: allowedThread.id,
       turnId: allowedTurn.id,
       type: 'assistant-message',
@@ -107,7 +107,7 @@ describe('search app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7259-a0ef-9cfa5f715f90',
-      workspaceId: deniedWorkspace.id,
+      owner: { kind: 'workspace', workspaceId: deniedWorkspace.id },
       threadId: deniedThread.id,
       turnId: deniedTurn.id,
       type: 'assistant-message',
@@ -175,7 +175,7 @@ describe('search app API', () => {
     );
     store.createItem({
       id: 'it_00000000-0000-75ee-bb30-08d9b9c9b051',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -283,7 +283,7 @@ describe('search app API', () => {
       });
       store.createItem({
         id: testEntityId('it', `it_search_${prefix}`),
-        workspaceId: workspace.id,
+        owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
         turnId: turn.id,
         type: 'assistant-message',

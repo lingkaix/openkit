@@ -15,6 +15,7 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 
 /** Fixed retained attribution keeps its accountability branches and permits descriptive annotations. */
 const UserActorRefSchema = z.object({ kind: z.literal('user'), id: UserIdSchema });
@@ -52,7 +53,8 @@ const ItemStatusSchema = z.enum(['in_progress', 'completed', 'failed', 'declined
 
 const BaseItemSchema = z.object({
   id: ItemIdSchema,
-  workspaceId: WorkspaceIdSchema,
+  owner: StoredWorkOwnerV1Schema,
+  workspaceId: z.never().optional(),
   threadId: ThreadIdSchema,
   turnId: TurnIdSchema,
   status: ItemStatusSchema,

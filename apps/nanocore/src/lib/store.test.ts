@@ -13,6 +13,7 @@ import {
   AgentSessionSchema,
   deriveEntityId,
   RequestIdSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
@@ -165,7 +166,7 @@ describe('FsStore persistence', () => {
     const createdAt = turn.startedAt ?? new Date().toISOString();
     const message = store.createItem({
       id: 'it_00000000-0000-76cc-a288-2e47ea36ba13',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'user-message',
@@ -177,7 +178,7 @@ describe('FsStore persistence', () => {
     });
     const request = store.createItem({
       id: 'it_00000000-0000-76bd-82f1-334f95d2a847',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'user-input-request',
@@ -201,7 +202,7 @@ describe('FsStore persistence', () => {
     expect(() =>
       store.createItem({
         id: 'it_00000000-0000-7d2f-9a91-7f939865f0c2',
-        workspaceId: turn.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         threadId: turn.threadId,
         turnId: turn.id,
         type: 'user-input-response',
@@ -217,7 +218,7 @@ describe('FsStore persistence', () => {
     ).toThrow('User-input response has invalid responsible user');
     const response = store.createItem({
       id: 'it_00000000-0000-79dc-91a5-2f09af6d2edb',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'user-input-response',
@@ -438,7 +439,7 @@ describe('FsStore persistence', () => {
     const currentReferenceId = deriveEntityId('it', [artifact.id, communicatingTurn.id]);
     const currentReference = {
       id: currentReferenceId,
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: communicatingTurn.id,
       type: 'artifact-reference' as const,

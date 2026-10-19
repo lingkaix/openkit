@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { type ActorRef, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import {
+  type ActorRef,
+  readRetainedV1,
+  workspaceIdForOwner,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -203,7 +208,7 @@ async function createFailedStartFixture(
     ];
     store.createItem({
       id: testEntityId('it', `it_request_${suffix}`),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId,
       turnId: raising.id,
       type: 'user-input-request',
@@ -1099,7 +1104,7 @@ describe('terminal failed-start product recovery', () => {
       for (let index = 0; index < 4; index += 1) {
         f.store.createItem({
           id: testEntityId('it', `it_prior_${suffix}_${index}`),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: f.threadId,
           turnId: f.turnId,
           type: 'status',
@@ -1287,7 +1292,7 @@ describe('terminal failed-start product recovery', () => {
     try {
       const display = f.store.createItem({
         id: testEntityId('it', `it_display_${owner}`),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: f.threadId,
         turnId: f.turnId,
         type: 'status',
@@ -3317,7 +3322,7 @@ describe('scheduler restart recovery', () => {
       const admission = createSchedulerAdmissionEntry(f.coreDb, {
         queueEntryId: `queued_${suffix}`,
         backendId: 'nanohost',
-        workspaceId: queued.workspaceId,
+        workspaceId: workspaceIdForOwner(queued.owner),
         threadId: queued.threadId,
         turnId: queued.id,
         requestedAgentId: 'agent_codex_host',
@@ -4331,7 +4336,7 @@ describe('scheduler restart recovery', () => {
       status: 'busy',
       threadId: turn.threadId,
       updatedAt: turn.startedAt ?? '2026-07-05T00:00:01.000Z',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
@@ -4348,7 +4353,7 @@ describe('scheduler restart recovery', () => {
       threadId: turn.threadId,
       turnId,
       turnInput: 'Recover this turn',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       now: () => '2026-07-05T00:00:01.000Z',
     });
     attempts.createSchedulerExecutionAttempt(coreDb, {

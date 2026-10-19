@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import type { Item } from '@openkit/protocol';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import {
@@ -114,7 +114,7 @@ function messageItem(
   itemIdsByTurn.set(turn.id, identities);
   return store.createItem({
     id: identities[type === 'user-message' ? 1 : 0]!,
-    workspaceId: turn.workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
     turnId: turn.id,
     type,

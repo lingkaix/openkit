@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { ActorRef } from '@openkit/protocol';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience } from '../auth/thread-visibility.js';
@@ -160,7 +161,7 @@ export function readWorkspaceNotebookAdmission(
         resolved.add(reference);
       } else if (reference.startsWith('turn:')) {
         const turn = input.store.getTurnById(reference.slice('turn:'.length));
-        if (turn.workspaceId !== workspaceId || !resolved.has(reference))
+        if (workspaceIdForOwner(turn.owner) !== workspaceId || !resolved.has(reference))
           throw new NotebookError('invalid_request');
         permitThreadDisclosure(turn.threadId);
       } else if (!resolved.has(reference)) {

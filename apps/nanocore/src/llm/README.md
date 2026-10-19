@@ -119,3 +119,5 @@ Account create, update and delete pass the current native caller and allowlisted
 Public inference without Workspace metadata uses the existing Server capability and usage families in Core. Workspace-attributed calls keep their Workspace home. Both paths capture the admitted actor before Provider contact and record only reported consumption. Closing a call closes only a newly opened Workspace database; the App retains ownership of its borrowed Core handle.
 
 The native subscription error adapter establishes transient Audit context on the existing account manager. Async-local propagation keeps the initiating caller through stock OAuth completion and credential callbacks; an interleaved status or logout caller cannot replace it. Explicit lifecycle context also reaches nested revocation. Background refresh outside a known native caller retains no invented actor or credential identity.
+
+Model capture selects the existing database and history path from the Turn owner discriminator. Workspace call parameters keep their addressing selectors; canonical CapabilityCall output carries the explicit owner. A Server Turn cannot borrow a Workspace capture database.

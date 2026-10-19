@@ -72,7 +72,7 @@ describe('conversation navigation', () => {
     store.updateTurn(olderTurn.id, { agentId: 'quick-chat' });
     store.createItem({
       id: 'it_00000000-0000-76ec-a4bd-a0ffd301133c',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: older.id,
       turnId: olderTurn.id,
       type: 'assistant-message',
