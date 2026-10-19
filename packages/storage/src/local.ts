@@ -24,9 +24,7 @@ import {
 interface Stage {
   directory: string;
   file: string;
-  grantId: string;
-  expiresAt: number;
-  knowledgeBaseId: string;
+  access: StorageAccess;
   locator: StorageLocator;
   maxByteLength: number;
   byteLength: number;
@@ -234,9 +232,7 @@ export class LocalStorage implements StorageService {
         this.stages.set(handle, {
           directory,
           file,
-          grantId: request.access.grantId,
-          expiresAt: Date.parse(request.access.expiresAt),
-          knowledgeBaseId: request.access.knowledgeBaseId,
+          access: structuredClone(request.access),
           locator: structuredClone(request.locator),
           maxByteLength: request.maxByteLength,
           byteLength: 0,
@@ -353,10 +349,17 @@ export class LocalStorage implements StorageService {
   ): LocalStorageMount {
     if (this.closed) refuse({ status: 'failed' });
     if (
-      !access.grantId ||
-      access.revoked !== false ||
-      !Number.isFinite(Date.parse(access.expiresAt)) ||
-      Date.parse(access.expiresAt) <= Date.now() ||
+      !['lease', 'knowledge'].includes(access.basis) ||
+      (access.basis === 'lease' &&
+        (!access.grantId ||
+          access.revoked !== false ||
+          !Number.isFinite(Date.parse(access.expiresAt)) ||
+          Date.parse(access.expiresAt) <= Date.now())) ||
+      (access.basis === 'knowledge' &&
+        (access.pathPrefix !== 'sources' ||
+          'grantId' in access ||
+          'expiresAt' in access ||
+          'revoked' in access)) ||
       access.mode !== mode ||
       scopeKey(access.ownerScope) !== scopeKey(locator.ownerScope) ||
       access.mount !== locator.mount ||
@@ -376,18 +379,25 @@ export class LocalStorage implements StorageService {
         candidate.name === access.mount &&
         scopeKey(candidate.ownerScope) === scopeKey(access.ownerScope)
     );
-    if (!mount) refuse({ status: 'denied' });
+    if (!mount || (access.basis === 'knowledge' && mount.managed !== true))
+      refuse({ status: 'denied' });
     return mount;
   }
 
-  /** Bind opaque staging handles to their original grant, expiry and admitted destination. */
+  /** Bind temporary handles to the same admitted basis, exact owner, mount and prefix. */
   private stageFor(access: StorageAccess, handle: string): Stage {
     const stage = this.stages.get(handle);
     if (
       !stage ||
-      stage.grantId !== access.grantId ||
-      stage.expiresAt <= Date.now() ||
-      stage.knowledgeBaseId !== access.knowledgeBaseId
+      stage.access.basis !== access.basis ||
+      (stage.access.basis === 'lease' &&
+        (access.basis !== 'lease' ||
+          stage.access.grantId !== access.grantId ||
+          Date.parse(stage.access.expiresAt) <= Date.now())) ||
+      stage.access.knowledgeBaseId !== access.knowledgeBaseId ||
+      scopeKey(stage.access.ownerScope) !== scopeKey(access.ownerScope) ||
+      stage.access.mount !== access.mount ||
+      stage.access.pathPrefix !== access.pathPrefix
     )
       refuse({ status: 'denied' });
     this.authorize(access, stage.locator, 'staged-write');

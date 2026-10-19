@@ -86,6 +86,7 @@ function fixture() {
     stagingRoot,
   });
   const access: StorageAccess = {
+    basis: 'lease',
     grantId: allocateEntityId('grant'),
     knowledgeBaseId,
     ownerScope,
