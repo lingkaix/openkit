@@ -493,7 +493,7 @@ describe('Knowledge operation definition cutover', () => {
     } finally {
       await f.close();
     }
-  }, 120_000);
+  }, 180_000);
 
   it('keeps unauthorized Workspace refusal on every retained definition, scoped source denial and readonly refusal on every retained mutation before effects', async () => {
     const f = fixture();

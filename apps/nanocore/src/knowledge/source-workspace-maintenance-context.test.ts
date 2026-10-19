@@ -23,7 +23,7 @@ import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -175,10 +175,8 @@ it('captures native Workspace tell during execution and publishes from the exact
         inspected.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
       )
     ).toMatchObject({ exitCode: 0, stdout: original, truncated: false });
-    const page = serializeUserAuthoredKnowledgePage(
+    const page = serializeKnowledgePageFixture(
       {
-        id: 'release-label',
-        kind: 'project-context',
         title: 'Release label',
         content: original,
         sourceReferences: [supplied.reference],

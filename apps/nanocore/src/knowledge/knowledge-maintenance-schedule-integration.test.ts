@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { applyEdits, modify } from 'jsonc-parser';
-import { expect, it, onTestFinished } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
@@ -77,7 +77,7 @@ it('never borrows a stored administrator credential for scheduled Server mainten
   expect(store.listServerThreadTurns(turns[0]!.threadId)).toHaveLength(1);
 });
 
-it('keeps scheduling off by default and retains a visible unavailable-model outcome once per day', () => {
+it('keeps scheduling off by default and retains a visible unavailable-model outcome once per day', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-schedule-app-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -147,11 +147,17 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   expect(retained).toHaveLength(1);
   expect(retained[0]).toMatchObject({
     agentId: 'knowledge-manager',
-    status: 'failed',
     triggerSource: { kind: 'automation', summary: 'Knowledge Manager scheduled maintenance.' },
-    error: { code: 'knowledge_maintenance_failed' },
   });
-  const turn = retained[0]!;
+  await vi.waitFor(() =>
+    expect(turns()[0]).toMatchObject({
+      agentId: 'knowledge-manager',
+      status: 'failed',
+      triggerSource: { kind: 'automation', summary: 'Knowledge Manager scheduled maintenance.' },
+      error: { code: 'knowledge_maintenance_failed' },
+    })
+  );
+  const turn = turns()[0]!;
   expect(
     store.listThreadItems(workspace.id, turn.threadId).filter((item) => item.turnId === turn.id)
   ).toContainEqual(

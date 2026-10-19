@@ -223,11 +223,11 @@ describe('published Workspace notebook reads', () => {
       ]),
       'public.md': page('Public page'),
     });
-    const read = f.store.getKnowledgeSource.bind(f.store);
-    vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => {
-      const source = read(workspaceId, sourceId);
+    const list = f.store.listKnowledgeSources.bind(f.store);
+    vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) => {
+      const sources = list(workspaceId);
       Object.assign(sourceThread, { privateOwnerUserId: randomUUID() });
-      return source;
+      return sources;
     });
     expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
       'public',
@@ -249,11 +249,11 @@ describe('published Workspace notebook reads', () => {
     const source = await registerSource(f, thread.id);
     const content = page('Direct page read', [`source:${source.id}@${source.contentDigest}`]);
     const revision = publish(f, { 'selected.md': content });
-    const read = f.store.getKnowledgeSource.bind(f.store);
-    vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => {
-      const source = read(workspaceId, sourceId);
+    const list = f.store.listKnowledgeSources.bind(f.store);
+    vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) => {
+      const sources = list(workspaceId);
       Object.assign(thread, { privateOwnerUserId: randomUUID() });
-      return source;
+      return sources;
     });
     expect(knowledgePageReadable({ ...f, notebookRevision: revision }, 'selected', content)).toBe(
       false
@@ -319,12 +319,12 @@ describe('published Workspace notebook reads', () => {
       ),
     ]);
     const revision = publish(f, { 'selected.md': content, 'nested/origin.md': origin });
-    const read = f.store.getKnowledgeSource.bind(f.store);
+    const list = f.store.listKnowledgeSources.bind(f.store);
     let next: string | undefined;
-    vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => {
+    vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) => {
       if (!next)
         next = publish(f, { 'nested/origin.md': page('Later nested source', [], 'LATER-BYTES\n') });
-      return read(workspaceId, sourceId);
+      return list(workspaceId);
     });
     const result = readAuthorizedWorkspaceNotebookPages(f);
     expect(next).toBeTruthy();
@@ -526,11 +526,12 @@ describe('published Workspace notebook reads', () => {
       : null;
     publish(f, { 'selected.md': page('Denied source page', refs), 'origin.md': origin });
     if (condition === 'turn-chain') {
-      const read = f.store.getKnowledgeSource.bind(f.store);
-      vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => ({
-        ...read(workspaceId, sourceId),
-        originatingTurnId: contradictoryTurn!.id,
-      }));
+      const list = f.store.listKnowledgeSources.bind(f.store);
+      vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) =>
+        list(workspaceId).map((entry) =>
+          entry.id === source.id ? { ...entry, originatingTurnId: contradictoryTurn!.id } : entry
+        )
+      );
     }
     expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
       'origin',

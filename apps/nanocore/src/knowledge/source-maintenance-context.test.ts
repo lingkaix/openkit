@@ -15,7 +15,7 @@ import type {
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
@@ -94,10 +94,8 @@ function fixture(kind: 'user' | 'server') {
       content: supplied.content,
       editorContent: editor.stdout,
     });
-    const page = serializeUserAuthoredKnowledgePage(
+    const page = serializeKnowledgePageFixture(
       {
-        id: 'release-label',
-        kind: 'project-context',
         title: 'Release label',
         content: original,
         sourceReferences: [supplied.reference],
