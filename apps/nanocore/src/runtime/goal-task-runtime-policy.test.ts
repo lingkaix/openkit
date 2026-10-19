@@ -2,22 +2,54 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { deriveEntityId } from '@openkit/protocol';
+import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
-import { createStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
+import {
+  createStructuredWorkerDelegationRequest,
+  serializeStructuredWorkerDelegationRequest,
+} from '../internal-agents/delegation.js';
 import { FsStore } from '../lib/store.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
+import { PolicyInterception } from '../policy/interception.js';
+import {
+  listExportableWorkspacePermissionDecisions,
+  readPolicyStatementUseCount,
+} from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { executeGoalOperation } from './goal-owner.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  acceptSchedulerExecutionObservation,
+  schedulerExecutionCorrelation,
+} from './execution-attempt-records.js';
+import { executeGoalOperation, readGoalView } from './goal-owner.js';
+import { reserveGoalTask } from './goal-task-admission.js';
+import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
+import { commandInputHash } from './idempotent-command.js';
+import { listThreadPendingRequests } from './pending-requests.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
+import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
+import type { WorkerControlGateway } from './worker-control-gateway.js';
+import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -217,8 +249,214 @@ async function fixture(
     const result = await tool.execute({ ...dispatchInput, agentId: selectedAgentId });
     return { result, startWorker };
   };
-
-  return { coreDb, db, store, actor, scope, domain, domains, plan, agentId, dispatch };
+  const setupMcp = async () => {
+    const requestId = randomUUID();
+    const thread = store.createThread(
+      workspace.id,
+      'Issue Task',
+      deriveEntityId('th', ['task', requestId]),
+      'conversation',
+      { visibility: 'workspace', threadSource: 'worker' }
+    );
+    db.sqlite.transaction(() =>
+      reserveGoalTask(store, db, { ...dispatchInput, goalId: goal.goalId }, thread.id)
+    )();
+    const prompt = serializeStructuredWorkerDelegationRequest(request);
+    const agentSessionId = testEntityId('as', requestId);
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      prompt,
+      { kind: 'user', id: userId },
+      null,
+      {
+        executorKind: 'worker',
+        agentId,
+        agentSessionId,
+        turnId: deriveEntityId('tu', {
+          command: 'task.start',
+          actorId: userId,
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          requestId,
+        }),
+      }
+    );
+    store.createItem({
+      id: deriveEntityId('it', ['task-user', turn.id]),
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'user-message',
+      status: 'completed',
+      actor: turn.triggerActor,
+      text: prompt,
+      createdAt: turn.startedAt!,
+      completedAt: turn.startedAt!,
+    });
+    store.createAgentSession({
+      id: agentSessionId,
+      agentId,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: turn.startedAt!,
+      updatedAt: turn.startedAt!,
+    });
+    const catalog = {
+      schemaVersion: 1 as const,
+      servers: [
+        {
+          id: 'issues',
+          enabled: true,
+          credentialBindings: [],
+          allowedTools: ['read'],
+          deniedTools: [],
+          approvalRequiredTools: options.approval ? ['read'] : [],
+          schemaPolicy: 'tracking' as const,
+          pinnedSchemaSnapshotId: null,
+          timeoutMs: 2000,
+          transport: { kind: 'http' as const, endpoint: 'https://issues.invalid/mcp' },
+        },
+      ],
+    };
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSessionId,
+      agentSetup: createTestAgentSetup({ agentId, mcpIds: ['issues'] }),
+      backend: { kind: 'openshell' },
+      createdAt: new Date().toISOString(),
+      requestId,
+      triggerActor: turn.triggerActor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
+      workspaceMcpServerCatalog: catalog,
+    });
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue_${requestId}`,
+      requestId,
+      triggerActor: turn.triggerActor,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      turnInput: prompt,
+      requestedAgentId: agentId,
+    });
+    const attempt = recordTestExecutionAttempt(coreDb, {
+      entry,
+      attemptId: testEntityId('attempt', requestId),
+      agentSessionId,
+      inputRef: environmentPackage.snapshotId,
+      bindingRef: `binding_${requestId}`,
+      sessionCompatibilityKey: 'fixture',
+      now: () => new Date().toISOString(),
+      operationId: `operation_${requestId}`,
+    });
+    expect(
+      acceptSchedulerExecutionObservation(coreDb, {
+        ...schedulerExecutionCorrelation(attempt),
+        disposition: 'accepted',
+        execution: 'running',
+        fenceRef: null,
+        outcomeRef: null,
+      })?.disposition
+    ).toBe('accepted');
+    upsertWorkerCheckpoint(db, {
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      requestId,
+      requestInputHash: commandInputHash({ input: prompt }),
+      stage: 'running_worker',
+      iteration: 0,
+      workerSessionId: agentSessionId,
+      contextDigest: commandInputHash(request),
+    });
+    recordAgentEnvironmentPackageSnapshot(db, {
+      environmentPackage,
+      createdAt: new Date().toISOString(),
+    });
+    expect(
+      readGoalTaskPolicyContext({
+        coreDb,
+        store,
+        db,
+        lineage: { ...environmentPackage.scope, packageSnapshotId: environmentPackage.snapshotId },
+      })
+    ).toMatchObject({
+      goalId: goal.goalId,
+      agentId,
+      resources: options.taskGrant === false ? [] : [resource],
+    });
+    const gateway: WorkerMcpGateway = {
+      listTools: vi.fn(async () => ({
+        serverVersion: 'fixture',
+        tools: [
+          {
+            name: 'read',
+            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          },
+        ],
+      })),
+      callTool: vi.fn(async () => ({
+        content: [{ type: 'text' as const, text: 'ISSUE_RESULT_CANARY' }],
+      })),
+      close: vi.fn(async () => {}),
+      closeServer: vi.fn(async () => {}),
+      closeServerIfIdle: vi.fn(async () => {}),
+      closeWorkspace: vi.fn(async () => {}),
+      getServerHealth: () => 'ready',
+    };
+    const app = new Hono();
+    const interception = new PolicyInterception();
+    const routes = {
+      app,
+      coreDb,
+      store,
+      interception,
+      goalTaskPolicy,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workerControlGateway: {
+        authenticatePackageToken: () => environmentPackage,
+      } as unknown as WorkerControlGateway,
+      workerMcpGateway: gateway,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          agentManifests: [],
+          openKitConfig: manager.current().openKitConfig,
+          workspaceMcpServerCatalogs: [
+            { catalog, workspaceId: workspace.id, path: join(dataRoot, 'catalog.json') },
+          ],
+        }),
+    };
+    registerWorkerMcpRoutes(routes);
+    const client = new Client({ name: 'goal-consumer', version: '1' });
+    cleanup.push(async () => {
+      await client.close();
+      await gateway.close();
+    });
+    await client.connect(
+      new StreamableHTTPClientTransport(
+        new URL('http://nanocore.test/api/worker-capabilities/mcp/issues'),
+        {
+          fetch: (input, init) => app.fetch(new Request(input, init)),
+          requestInit: { headers: { authorization: 'Bearer synthetic-worker-package' } },
+        }
+      )
+    );
+    await client.listTools();
+    const call = () => client.callTool({ name: 'read', arguments: {} });
+    const decisions = () =>
+      listExportableWorkspacePermissionDecisions(db, workspace.id).filter(
+        (row) => row.mediation?.role === 'final'
+      );
+    return { client, gateway, call, decisions, turn, routes, catalog, interception };
+  };
+  return { coreDb, db, store, actor, scope, domain, domains, plan, agentId, dispatch, setupMcp };
 }
 
 describe('Goal-domain Task consumers', () => {
@@ -245,5 +483,112 @@ describe('Goal-domain Task consumers', () => {
     const { result, startWorker } = await f.dispatch();
     expect(JSON.stringify(result)).toContain('SAFE_WORKER_BOUNDARY');
     expect(startWorker).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks a linked live effect without current Goal authority before contacting upstream', async () => {
+    const f = await fixture({ publish: false });
+    const mcp = await f.setupMcp();
+    await expect(mcp.call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+  });
+
+  it('delivers its own last finite use and refuses the next effect with truthful agent decisions', async () => {
+    const f = await fixture({ uses: 1 });
+    const mcp = await f.setupMcp();
+    expect(await mcp.call()).toMatchObject({ content: [{ text: 'ISSUE_RESULT_CANARY' }] });
+    expect(mcp.decisions().at(-1)).toMatchObject({
+      result: 'allow',
+      mediation: {
+        subject: {
+          principal: { kind: 'agent', id: f.agentId },
+          responsibleHumanId: f.actor.userId,
+        },
+      },
+    });
+    expect(
+      readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
+    ).toBe(1);
+    await expect(mcp.call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+    expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+    expect(
+      readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
+    ).toBe(1);
+  });
+
+  it('withholds an upstream result after the Goal closes during the effect', async () => {
+    const f = await fixture();
+    const mcp = await f.setupMcp();
+    let release!: () => void;
+    let entered!: () => void;
+    const upstreamEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(mcp.gateway.callTool).mockImplementationOnce(async () => {
+      entered();
+      await hold;
+      return { content: [{ type: 'text', text: 'ISSUE_RESULT_CANARY' }] };
+    });
+    const result = mcp.call();
+    const assertion = expect(result).rejects.toMatchObject({ data: { code: 'mcp-policy-stale' } });
+    await upstreamEntered;
+    await executeGoalOperation(
+      'goal.cancel',
+      {
+        ...f.scope,
+        requestId: randomUUID(),
+        expectedRevision: readGoalView(f.store, f.db, f.scope.goalId).goal!.changeRevision,
+        reason: 'Withdraw current Goal authority',
+      },
+      { actor: f.actor },
+      f.store,
+      f.db,
+      { coreDb: f.coreDb }
+    );
+    release();
+    await assertion;
+    expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates a captured human response when Goal authority ends without a Policy revision change', async () => {
+    const f = await fixture({ approval: true });
+    const mcp = await f.setupMcp();
+    expect(await mcp.call()).toMatchObject({
+      isError: true,
+      structuredContent: { status: 'pending-approval' },
+    });
+    const record = listThreadPendingRequests(
+      f.db.sqlite,
+      f.scope.workspaceId,
+      mcp.turn.threadId
+    )[0]!;
+    expect(record.policyDecisionId).toBeTruthy();
+    const review = () =>
+      reviewCapturedMcpPolicy({
+        record,
+        actor: f.actor,
+        workspaceDb: f.db,
+        routes: mcp.routes,
+        catalog: mcp.catalog,
+        interception: mcp.interception,
+      });
+    expect(await review()).not.toBeNull();
+    await executeGoalOperation(
+      'goal.cancel',
+      {
+        ...f.scope,
+        requestId: randomUUID(),
+        expectedRevision: readGoalView(f.store, f.db, f.scope.goalId).goal!.changeRevision,
+        reason: 'End Goal',
+      },
+      { actor: f.actor },
+      f.store,
+      f.db,
+      { coreDb: f.coreDb }
+    );
+    expect(await review()).toBeNull();
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
   });
 });
