@@ -4811,6 +4811,8 @@ function readPortableFileStateFromExport(
     assertPortableWorkspaceFilePath(workspacePath);
     if (workspacePath === 'config/workspace.jsonc') {
       const remintedConfig = remintResourcePolicyConfig({
+        sourceWorkspaceId: context.report.exportedWorkspaceId,
+        targetWorkspaceId: context.targetWorkspaceId,
         content,
         threadIds: context.threadIds,
         threads: readWorkspaceExportThreads(files),
