@@ -10,6 +10,7 @@ import { openCoreDb } from './storage/db.js';
 import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -48,27 +49,35 @@ describe('Knowledge retrieval segmentation', () => {
     const app = createApp({ coreDb, dataRoot, store });
     const currentNotebook = async () => {
       const response = await app.request(
-        ...operationRequest('knowledge.list', { workspaceId: workspace.id })
+        ...operationRequest('knowledge.notebook.list', { workspaceId: workspace.id })
       );
       expect(response.status, await response.clone().text()).toBe(200);
       return (await response.json()).notebookRevision as string;
     };
     const created = await app.request(
       ...operationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         {
           workspaceId: workspace.id,
-          knowledgePageId: 'segmentation-evidence',
+          path: 'segmentation-evidence.md',
+          summary: 'Create segmentation evidence',
           baseRevision: await currentNotebook(),
-          kind: 'project-context',
-          title: 'Unrelated',
-          content: body,
+          content: serializeKnowledgePageFixture(
+            {
+              title: 'Unrelated',
+              content: body,
+              createdAt: '2026-10-19T00:00:00.000Z',
+              updatedAt: '2026-10-19T00:00:00.000Z',
+            },
+            { kind: 'workspace', workspaceId: workspace.id }
+          ),
         },
         { body: JSON.stringify({ requestId: randomUUID() }) }
       )
     );
     expect(created.status, await created.clone().text()).toBe(200);
-    const page = await created.json();
+    expect((await created.json()).changedPageIds).toEqual(['segmentation-evidence']);
+    const page = { id: 'segmentation-evidence' };
     const retrieve = (query: string) =>
       retrieveWorkspaceKnowledge({
         dataRoot,
@@ -104,12 +113,25 @@ describe('Knowledge retrieval segmentation', () => {
     });
     const updated = await app.request(
       ...operationRequest(
-        'knowledge.update',
+        'knowledge.notebook.update',
         {
           workspaceId: workspace.id,
-          knowledgeEntryId: page.id,
           baseRevision: await currentNotebook(),
-          title: one,
+          changes: [
+            {
+              path: `${page.id}.md`,
+              content: serializeKnowledgePageFixture(
+                {
+                  title: one,
+                  content: body,
+                  createdAt: '2026-10-19T00:00:00.000Z',
+                  updatedAt: '2026-10-19T00:00:00.000Z',
+                },
+                { kind: 'workspace', workspaceId: workspace.id }
+              ),
+            },
+          ],
+          summary: 'Update segmentation evidence title',
         },
         { body: JSON.stringify({ requestId: randomUUID() }) }
       )

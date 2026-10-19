@@ -55,7 +55,6 @@ import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-a
 import {
   KnowledgePageValidationError,
   parseOkfDocument,
-  resolveRegisteredKnowledgeSourceReference,
   stringFrontmatterField,
 } from './knowledge/okf.js';
 import {
@@ -501,36 +500,6 @@ export function createKnowledgeOperationImplementations(
       throw new OperationError('workspace_access_denied', 'Knowledge source is unavailable.', 403);
   }
 
-  /** Source selection preserves private origin restrictions; selection itself grants no sharing authority. */
-  function requireSourceReferenceAudience(
-    workspaceId: string,
-    references: readonly string[],
-    context: AdmittedOperationContext
-  ): void {
-    if (!references.some((reference) => reference.startsWith('source:'))) return;
-    const sources = new Map(
-      store.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
-    );
-    for (const reference of references) {
-      if (!reference.startsWith('source:')) continue;
-      const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
-      // The existing save validator retains invalid reference and digest failure semantics.
-      if (!resolution.resolved || !resolution.targetId) continue;
-      requireSourceAudience(workspaceId, resolution.targetId, context);
-      const source = store.getKnowledgeSource(workspaceId, resolution.targetId);
-      if (
-        source.originatingThreadId &&
-        store.getWorkspace(workspaceId).kind !== 'personal' &&
-        store.getThread(workspaceId, source.originatingThreadId).visibility === 'private'
-      )
-        throw new OperationError(
-          'workspace_access_denied',
-          'Knowledge source is unavailable.',
-          403
-        );
-    }
-  }
-
   return {
     'knowledge.ask': ask,
     'knowledge.tell': async (input, context) => {
@@ -618,6 +587,17 @@ export function createKnowledgeOperationImplementations(
           },
           input
         );
+        recordKnowledgeGatewayUsage({
+          authorityActor: context.actorRef,
+          capabilityId: 'knowledge.notebook.update',
+          operation: 'knowledge.notebook.update',
+          requestId: input.requestId,
+          serviceRef: 'knowledge-store',
+          summary: 'Human Notebook update published.',
+          usageSource: 'knowledge-notebook-update',
+          workspaceId: input.workspaceId,
+          ...(coreDb ? { coreDb } : {}),
+        });
         return {
           ...publication,
           changedPageIds: [...publication.changedPageIds],
@@ -1689,6 +1669,17 @@ export function createKnowledgeOperationImplementations(
           request
         );
       });
+      recordKnowledgeGatewayUsage({
+        authorityActor: context.actorRef,
+        capabilityId: 'knowledge.notebook.create',
+        operation: 'knowledge.notebook.create',
+        requestId: input.requestId,
+        serviceRef: 'knowledge-store',
+        summary: 'Human Notebook create published.',
+        usageSource: 'knowledge-notebook-create',
+        workspaceId: input.workspaceId,
+        ...(coreDb ? { coreDb } : {}),
+      });
       return {
         ...publication,
         changedPageIds: [...publication.changedPageIds],
@@ -1725,6 +1716,17 @@ export function createKnowledgeOperationImplementations(
           },
           request
         );
+      });
+      recordKnowledgeGatewayUsage({
+        authorityActor: context.actorRef,
+        capabilityId: 'knowledge.notebook.delete',
+        operation: 'knowledge.notebook.delete',
+        requestId: input.requestId,
+        serviceRef: 'knowledge-store',
+        summary: 'Human Notebook delete published.',
+        usageSource: 'knowledge-notebook-delete',
+        workspaceId: input.workspaceId,
+        ...(coreDb ? { coreDb } : {}),
       });
       return {
         ...publication,

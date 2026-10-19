@@ -9,9 +9,9 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -48,10 +48,8 @@ function fixture() {
     return { status: response.status, body: await response.json() };
   };
   const content = (ownerUserId: string, pageId: string, body: string) =>
-    serializeUserAuthoredKnowledgePage(
+    serializeKnowledgePageFixture(
       {
-        id: pageId,
-        kind: 'preference',
         title: 'Personal preference',
         content: body,
         sourceReferences: [],
@@ -212,7 +210,7 @@ describe('public Item-confirmed self Memory forget', () => {
         ownerScope: { kind: 'user', userId: f.userId },
         baseRevision: saved.body.notebookRevision,
         changedPageIds: [pageId],
-        receiptRef: { operation: 'knowledge.delete', requestId },
+        receiptRef: { operation: 'knowledge.notebook.delete', requestId },
       },
     });
     expect(notebook.publishedRevision()).toBe(removed.body.notebookRevision);

@@ -7563,13 +7563,13 @@
         }
       }
     },
-    "/api/app/operations/knowledge.list": {
+    "/api/app/operations/knowledge.notebook.list": {
       "post": {
-        "operationId": "knowledge.list",
+        "operationId": "knowledge.notebook.list",
         "tags": [
           "knowledge"
         ],
-        "summary": "List retained Workspace Knowledge Entries.",
+        "summary": "Read an authorized fixed Notebook snapshot with complete OKF page bytes.",
         "security": [
           {
             "bearerAuth": []
@@ -7583,18 +7583,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/knowledge.list.input"
+                "$ref": "#/components/schemas/knowledge.notebook.list.input"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "List retained Workspace Knowledge Entries.",
+            "description": "Read an authorized fixed Notebook snapshot with complete OKF page bytes.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/knowledge.list.output"
+                  "$ref": "#/components/schemas/knowledge.notebook.list.output"
                 }
               }
             }
@@ -7612,13 +7612,13 @@
         }
       }
     },
-    "/api/app/operations/knowledge.create": {
+    "/api/app/operations/knowledge.notebook.create": {
       "post": {
-        "operationId": "knowledge.create",
+        "operationId": "knowledge.notebook.create",
         "tags": [
           "knowledge"
         ],
-        "summary": "Create one validated Workspace Knowledge Entry.",
+        "summary": "Create a new full OKF page through the fixed-base Notebook publisher.",
         "security": [
           {
             "bearerAuth": []
@@ -7643,18 +7643,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/knowledge.create.input"
+                "$ref": "#/components/schemas/knowledge.notebook.create.input"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Create one validated Workspace Knowledge Entry.",
+            "description": "Create a new full OKF page through the fixed-base Notebook publisher.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/knowledge.create.output"
+                  "$ref": "#/components/schemas/knowledge.notebook.create.output"
                 }
               }
             }
@@ -7672,13 +7672,13 @@
         }
       }
     },
-    "/api/app/operations/knowledge.update": {
+    "/api/app/operations/knowledge.notebook.delete": {
       "post": {
-        "operationId": "knowledge.update",
+        "operationId": "knowledge.notebook.delete",
         "tags": [
           "knowledge"
         ],
-        "summary": "Update one scoped Workspace Knowledge Entry.",
+        "summary": "Remove exact human-confirmed page bytes while retaining Notebook history.",
         "security": [
           {
             "bearerAuth": []
@@ -7703,78 +7703,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/knowledge.update.input"
+                "$ref": "#/components/schemas/knowledge.notebook.delete.input"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Update one scoped Workspace Knowledge Entry.",
+            "description": "Remove exact human-confirmed page bytes while retaining Notebook history.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/knowledge.update.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.delete": {
-      "post": {
-        "operationId": "knowledge.delete",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Delete one scoped Workspace Knowledge Entry.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.delete.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Delete one scoped Workspace Knowledge Entry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.delete.output"
+                  "$ref": "#/components/schemas/knowledge.notebook.delete.output"
                 }
               }
             }
@@ -36526,44 +36466,23 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "preference",
-                    "project-context",
-                    "task-summary"
-                  ]
-                },
-                "title": {
+                "path": {
                   "type": "string",
                   "minLength": 1
                 },
                 "content": {
                   "type": "string"
                 },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "createdAt": {
+                "contentDigest": {
                   "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
+                  "pattern": "^sha256:[a-f0-9]{64}$"
                 }
               },
               "required": [
                 "id",
-                "kind",
-                "title",
+                "path",
                 "content",
-                "createdAt",
-                "updatedAt"
+                "contentDigest"
               ],
               "additionalProperties": false
             }
@@ -57562,14 +57481,6 @@
                   ],
                   "additionalProperties": false
                 },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "preference",
-                    "project-context",
-                    "task-summary"
-                  ]
-                },
                 "title": {
                   "type": "string",
                   "minLength": 1
@@ -57581,7 +57492,6 @@
               },
               "required": [
                 "reference",
-                "kind",
                 "title",
                 "excerpt"
               ],
@@ -62089,7 +61999,11 @@
             "properties": {
               "operation": {
                 "type": "string",
-                "const": "knowledge.notebook.update"
+                "enum": [
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.create",
+                  "knowledge.notebook.delete"
+                ]
               },
               "requestId": {
                 "type": "string",
@@ -62133,7 +62047,7 @@
         ],
         "additionalProperties": false
       },
-      "knowledge.list.input": {
+      "knowledge.notebook.list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -62147,7 +62061,7 @@
         ],
         "additionalProperties": false
       },
-      "knowledge.list.output": {
+      "knowledge.notebook.list.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -62159,7 +62073,7 @@
             "type": "string",
             "minLength": 1
           },
-          "items": {
+          "pages": {
             "type": "array",
             "items": {
               "type": "object",
@@ -62168,35 +62082,12 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "preference",
-                    "project-context",
-                    "task-summary"
-                  ]
-                },
-                "title": {
+                "path": {
                   "type": "string",
                   "minLength": 1
                 },
                 "content": {
                   "type": "string"
-                },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
                 },
                 "contentDigest": {
                   "type": "string",
@@ -62205,11 +62096,8 @@
               },
               "required": [
                 "id",
-                "kind",
-                "title",
+                "path",
                 "content",
-                "createdAt",
-                "updatedAt",
                 "contentDigest"
               ],
               "additionalProperties": false
@@ -62219,11 +62107,11 @@
         "required": [
           "knowledgeBaseId",
           "notebookRevision",
-          "items"
+          "pages"
         ],
         "additionalProperties": false
       },
-      "knowledge.create.input": {
+      "knowledge.notebook.create.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -62231,32 +62119,16 @@
             "type": "string",
             "minLength": 1
           },
-          "knowledgePageId": {
+          "path": {
             "type": "string",
-            "minLength": 1
-          },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "preference",
-              "project-context",
-              "task-summary"
-            ]
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
+            "maxLength": 243,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
           },
           "content": {
-            "type": "string",
-            "minLength": 1
+            "type": "string"
           },
-          "sourceReferences": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
+          "summary": {
+            "type": "string"
           },
           "workspaceId": {
             "type": "string",
@@ -62265,145 +62137,109 @@
         },
         "required": [
           "baseRevision",
-          "knowledgePageId",
-          "kind",
-          "title",
+          "path",
           "content",
+          "summary",
           "workspaceId"
         ],
         "additionalProperties": false
       },
-      "knowledge.create.output": {
+      "knowledge.notebook.create.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "id": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "workspaceId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
             "type": "string",
             "minLength": 1
           },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "preference",
-              "project-context",
-              "task-summary"
-            ]
-          },
-          "title": {
+          "notebookRevision": {
             "type": "string",
             "minLength": 1
           },
-          "content": {
-            "type": "string"
-          },
-          "sourceReferences": {
+          "changedPageIds": {
+            "maxItems": 256,
             "type": "array",
             "items": {
               "type": "string",
               "minLength": 1
             }
           },
-          "createdAt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "updatedAt": {
-            "type": "string",
-            "minLength": 1
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.create",
+                  "knowledge.notebook.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "id",
-          "kind",
-          "title",
-          "content",
-          "createdAt",
-          "updatedAt"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.update.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "baseRevision": {
-            "type": "string",
-            "minLength": 1
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
-          },
-          "content": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          },
-          "knowledgeEntryId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
+          "outcome",
+          "ownerScope",
           "baseRevision",
-          "workspaceId",
-          "knowledgeEntryId"
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
         ],
         "additionalProperties": false
       },
-      "knowledge.update.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "preference",
-              "project-context",
-              "task-summary"
-            ]
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
-          },
-          "content": {
-            "type": "string"
-          },
-          "sourceReferences": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "createdAt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "updatedAt": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "id",
-          "kind",
-          "title",
-          "content",
-          "createdAt",
-          "updatedAt"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.delete.input": {
+      "knowledge.notebook.delete.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -62411,9 +62247,10 @@
             "type": "string",
             "minLength": 1
           },
-          "workspaceId": {
+          "path": {
             "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            "maxLength": 243,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
           },
           "expectedContentDigest": {
             "type": "string",
@@ -62423,23 +62260,118 @@
             "type": "boolean",
             "const": true
           },
-          "knowledgeEntryId": {
+          "summary": {
+            "type": "string"
+          },
+          "workspaceId": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
           }
         },
         "required": [
           "baseRevision",
-          "workspaceId",
+          "path",
           "expectedContentDigest",
           "confirmRemoval",
-          "knowledgeEntryId"
+          "summary",
+          "workspaceId"
         ],
         "additionalProperties": false
       },
-      "knowledge.delete.output": {
+      "knowledge.notebook.delete.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "null"
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "workspaceId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.create",
+                  "knowledge.notebook.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
+        ],
+        "additionalProperties": false
       },
       "memory.ask.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -64366,10 +64298,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -64494,10 +64426,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -64930,10 +64862,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -65153,10 +65085,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -137958,5 +137890,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:ea4bfe3851fd0a6489fd18623a0aa8cffe0f73072dcdd86137503f6ce57cba4b"
+  "x-openkit-source-digest": "sha256:cdb9b48df7082ee47919a084b31e3aa80d4fbbe9891fd7fbbf7af76ae6040aa9"
 }

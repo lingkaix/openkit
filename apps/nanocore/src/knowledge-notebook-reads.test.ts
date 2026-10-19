@@ -28,8 +28,8 @@ import {
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -102,10 +102,8 @@ function page(title: string, refs: readonly string[] = [], body = 'Exact retaine
 describe('published Workspace notebook reads', () => {
   it('rebuilds indexes from one Git revision and resolves an admitted selection after later publication', async () => {
     const f = fixture();
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'stable/pinned',
-        kind: 'project-context',
         title: 'Pinned source knowledge',
         content: 'Original notebook retrieval bytes.',
         createdAt: '2026-10-16T00:00:00Z',
@@ -354,10 +352,8 @@ describe('published Workspace notebook reads', () => {
     const destination = f.store.createThread(f.workspaceId, 'Shared destination');
     // The public aggregate projects admitted Knowledge entries, including their required timestamps.
     const entryBytes = (id: string, title: string, sourceReferences: string[], content: string) =>
-      serializeUserAuthoredKnowledgePage(
+      serializeKnowledgePageFixture(
         {
-          id,
-          kind: 'project-context',
           title,
           content,
           sourceReferences,

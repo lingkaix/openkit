@@ -15,8 +15,8 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import { type CoreDb, openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -93,10 +93,8 @@ async function fixture(sourceBacked = false) {
     initialization: { requestId: randomUUID(), instructionReference: 'test:memory-forget' },
   });
   const content = (pageId: string, body: string) =>
-    serializeUserAuthoredKnowledgePage(
+    serializeKnowledgePageFixture(
       {
-        id: pageId,
-        kind: 'preference',
         title: 'Personal preference',
         content: body,
         sourceReferences: references,

@@ -40,6 +40,7 @@ import {
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
@@ -1783,27 +1784,36 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       turnExecutor: new SimulatedTurnExecutor(),
     });
     const notebookResponse = await app.request(
-      ...operationRequest('knowledge.list', { workspaceId: workspace.id })
+      ...operationRequest('knowledge.notebook.list', { workspaceId: workspace.id })
     );
     expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
     const { notebookRevision } = await notebookResponse.json();
     const pageResponse = await app.request(
       ...operationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         {
           workspaceId: workspace.id,
           baseRevision: notebookRevision,
-          knowledgePageId: 'deletion-recovery-trace',
           requestId: '00000000-0000-4000-8000-000000000904',
-          kind: 'project-context',
-          title: 'Deletion recovery trace',
-          content: 'Retain this retrieval trace in the verified recovery export.',
+          path: 'deletion-recovery-trace' + '.md',
+          content: serializeKnowledgePageFixture(
+            {
+              title: 'Deletion recovery trace',
+              content: 'Retain this retrieval trace in the verified recovery export.',
+              sourceReferences: [],
+              createdAt: '2026-10-19T00:00:00.000Z',
+              updatedAt: '2026-10-19T00:00:00.000Z',
+            },
+            { kind: 'workspace', workspaceId: workspace.id }
+          ),
+          summary: 'Publish explicit full-page fixture',
         },
         { headers: { 'x-openkit-request-id': '00000000-0000-4000-8000-000000000904' } }
       )
     );
     expect(pageResponse.status, await pageResponse.clone().text()).toBe(200);
-    const page = await pageResponse.json();
+    expect((await pageResponse.json()).changedPageIds).toEqual(['deletion-recovery-trace']);
+    const page = { id: 'deletion-recovery-trace' };
     const traceId = 'krt_00000000-0000-7c9e-a8c7-f3f6e7618033';
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {

@@ -540,6 +540,10 @@ export const operationCatalog = [
         ? { inputSensitivity: definition.inputSensitivity }
         : {}),
       ...(id === 'material.revision-save' ? { inputSensitivity: 'workspace content' } : {}),
+      ...(['knowledge.notebook.create', 'knowledge.notebook.update'].includes(id)
+        ? { inputSensitivity: 'workspace content' }
+        : {}),
+      ...(id === 'knowledge.notebook.list' ? { outputSensitivity: 'workspace content' } : {}),
       ...(id === 'material.revision-read' ? { outputSensitivity: 'workspace content' } : {}),
       id,
       source: 'app-api',

@@ -1,0 +1,10 @@
+{
+  "protocolVersion": "0.6.0",
+  "schema": "knowledge-notebook-page",
+  "data": {
+    "id": "protocol-conformance",
+    "path": "protocol-conformance.md",
+    "content": "---\ntype: KnowledgePage\ntitle: Protocol conformance\n---\nAdapter implementations must round-trip complete canonical Notebook bytes.\n",
+    "contentDigest": "sha256:e6a6e38ea04b419f222ba043b4afe4b28a88c8ad75987474d660bdc7eb07cb90"
+  }
+}

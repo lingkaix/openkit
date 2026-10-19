@@ -8,6 +8,8 @@ import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot,
 } from '../../../tests/support/demo-data.mjs';
+import { parseOkfDocument } from '../dist/knowledge/okf.js';
+import { serializeKnowledgePageFixture } from '../dist/test-support/knowledge-page.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 import { postJson } from './_lib/http.js';
 
@@ -36,7 +38,7 @@ describe('nanocore e2e workspace portability', () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-archive-'));
     try {
       const sourceNotebook = await expectJson(
-        await fetch(`${source.baseUrl}/api/app/operations/knowledge.list`, {
+        await fetch(`${source.baseUrl}/api/app/operations/knowledge.notebook.list`, {
           method: 'POST',
           headers: { authorization: `Bearer ${sourceToken}`, 'content-type': 'application/json' },
           body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
@@ -45,7 +47,7 @@ describe('nanocore e2e workspace portability', () => {
       );
       const content = 'Exact archive round trip: café, 日本語, and trailing newline.\n';
       await expectJson(
-        await fetch(`${source.baseUrl}/api/app/operations/knowledge.create`, {
+        await fetch(`${source.baseUrl}/api/app/operations/knowledge.notebook.create`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${sourceToken}`,
@@ -55,10 +57,17 @@ describe('nanocore e2e workspace portability', () => {
           body: JSON.stringify({
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             baseRevision: sourceNotebook.notebookRevision,
-            knowledgePageId: 'archive-bytes',
-            title: 'Archive bytes',
-            kind: 'project-context',
-            content,
+            path: 'archive-bytes.md',
+            summary: 'Publish exact archive bytes',
+            content: serializeKnowledgePageFixture(
+              {
+                title: 'Archive bytes',
+                content,
+                createdAt: '2026-10-19T00:00:00.000Z',
+                updatedAt: '2026-10-19T00:00:00.000Z',
+              },
+              { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+            ),
           }),
         }),
         {}
@@ -111,14 +120,17 @@ describe('nanocore e2e workspace portability', () => {
       expect(imported).toMatchObject({ mode: 'imported' });
       expect(await readFile(destinationPath)).toEqual(bytes);
       const knowledge = (await expectJson(
-        await fetch(`${target.baseUrl}/api/app/operations/knowledge.list`, {
+        await fetch(`${target.baseUrl}/api/app/operations/knowledge.notebook.list`, {
           method: 'POST',
           headers: { authorization: `Bearer ${targetToken}`, 'content-type': 'application/json' },
           body: JSON.stringify({ workspaceId: imported.importedWorkspaceId }),
         }),
         {}
-      )) as { items: { title: string; content: string }[] };
-      expect(knowledge.items.find((item) => item.title === 'Archive bytes')?.content).toBe(content);
+      )) as { pages: { id: string; path: string; content: string }[] };
+      const page = knowledge.pages.find((page) => page.id === 'archive-bytes')!;
+      expect(parseOkfDocument({ path: page.path, content: page.content }).document?.body).toBe(
+        content
+      );
     } finally {
       await rm(localRoot, { recursive: true, force: true });
     }
@@ -130,20 +142,29 @@ describe('nanocore e2e workspace portability', () => {
 
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const sourceNotebook = await expectJson(
-      await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.list`, { workspaceId }),
+      await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.notebook.list`, {
+        workspaceId,
+      }),
       {}
     );
     await expectJson(
-      await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.create`, {
+      await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.notebook.create`, {
         workspaceId,
         baseRevision: sourceNotebook.notebookRevision,
-        knowledgePageId: 'l3-portability',
-        content: 'L3 workspace portability knowledge survives import.',
-        kind: 'project-context',
+        path: 'l3-portability.md',
+        summary: 'Publish portability evidence',
+        content: serializeKnowledgePageFixture(
+          {
+            title: 'L3 portability knowledge',
+            content: 'L3 workspace portability knowledge survives import.',
+            createdAt: '2026-10-19T00:00:00.000Z',
+            updatedAt: '2026-10-19T00:00:00.000Z',
+          },
+          { kind: 'workspace', workspaceId }
+        ),
         requestId: randomUUID(),
-        title: 'L3 portability knowledge',
       }),
-      { title: 'L3 portability knowledge' }
+      { outcome: 'published', changedPageIds: ['l3-portability'] }
     );
 
     const exported = await expectJson(
@@ -192,11 +213,11 @@ describe('nanocore e2e workspace portability', () => {
     );
     const importedWorkspaceId = String(imported.importedWorkspaceId);
     const knowledge = (await expectJson(
-      await postJson(`${targetHarness.baseUrl}/api/app/operations/knowledge.list`, {
+      await postJson(`${targetHarness.baseUrl}/api/app/operations/knowledge.notebook.list`, {
         workspaceId: importedWorkspaceId,
       }),
       {}
-    )) as { items?: Array<{ title?: string }> };
+    )) as { pages: Array<{ id: string; path: string; content: string }> };
 
     expect(importedWorkspaceId).not.toBe(workspaceId);
     expect(imported.workspace).toMatchObject({
@@ -204,7 +225,10 @@ describe('nanocore e2e workspace portability', () => {
       importedFrom: { sourceWorkspaceId: workspaceId },
     });
     expect(createHash('sha256').update(archive).digest('hex')).toBe(sourceArchiveDigest);
-    expect(knowledge.items?.some((entry) => entry.title === 'L3 portability knowledge')).toBe(true);
+    const page = knowledge.pages.find((page) => page.id === 'l3-portability')!;
+    expect(
+      parseOkfDocument({ path: page.path, content: page.content }).document?.frontmatter.title
+    ).toBe('L3 portability knowledge');
   });
 
   it('fails closed on unsupported export features without creating a partial workspace', async () => {

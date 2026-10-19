@@ -12,7 +12,8 @@ import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -216,10 +217,8 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
   it('narrows the editable snapshot and human diffs to explicitly selected archived pages plus the overview', async () => {
     const f = fixture();
     const page = (id: string) =>
-      serializeUserAuthoredKnowledgePage(
+      serializeKnowledgePageFixture(
         {
-          id,
-          kind: 'project-context',
           title: id,
           content: `${id} exact content.`,
           createdAt: '2026-10-17T00:00:00.000Z',

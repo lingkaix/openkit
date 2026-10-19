@@ -14,8 +14,8 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb, openUserDb } from './storage/db.js';
 import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -50,10 +50,8 @@ function fixture() {
     };
   };
   const content = (body: string, id = 'preferences') =>
-    serializeUserAuthoredKnowledgePage(
+    serializeKnowledgePageFixture(
       {
-        id,
-        kind: 'preference',
         title: 'My preference',
         content: body,
         sourceReferences: [],

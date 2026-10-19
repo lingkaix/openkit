@@ -26,7 +26,8 @@ import {
   retrieveUserMemory,
 } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { attributedNotebookPageBytes } from './notebook-publication.js';
@@ -70,10 +71,8 @@ function fixture(enabled = true) {
     );
     expect(payload.sources[0].content).toBe('I prefer green labels.');
     expect(run.inputs?.sourceRange).toEqual([]);
-    const page = serializeUserAuthoredKnowledgePage(
+    const page = serializeKnowledgePageFixture(
       {
-        id: 'labels',
-        kind: 'preference',
         title: 'Labels',
         content: 'I prefer green labels.',
         sourceReferences: [payload.sources[0].reference],
@@ -220,10 +219,8 @@ function useFakeProvider(f: ReturnType<typeof fixture>) {
     const payload = JSON.parse(
       run.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
     );
-    const page = serializeUserAuthoredKnowledgePage(
+    const page = serializeKnowledgePageFixture(
       {
-        id: 'labels',
-        kind: 'preference',
         title: 'Labels',
         content: 'I prefer green labels.',
         sourceReferences: [payload.sources[0].reference],
@@ -295,10 +292,8 @@ describe('User-private bounded Memory maintenance', () => {
         sourceFingerprints: [],
       });
     }
-    const citing = serializeUserAuthoredKnowledgePage(
+    const citing = serializeKnowledgePageFixture(
       {
-        id: 'citing',
-        kind: 'preference',
         title: 'Citing',
         content: 'Compare saved labels.',
         sourceReferences: [reference],
