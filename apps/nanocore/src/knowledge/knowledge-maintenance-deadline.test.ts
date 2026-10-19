@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { listServerCapabilityCalls } from '../capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   type RuntimeConfigManager,
@@ -13,6 +14,7 @@ import {
   type KnowledgeManagerAgentRun,
   pinKnowledgeManagerExecution,
   runKnowledgeManagerAgent,
+  runServerKnowledgeManagerAgent,
   type ServerKnowledgeManagerAgentRun,
 } from '../internal-agents/knowledge-manager-agent.js';
 import { FsStore } from '../lib/store.js';
@@ -354,4 +356,146 @@ it('returns the owned timeout code in the maintenance summary and retained Turn 
   });
   expect(createResponses).toHaveBeenCalledTimes(1);
   expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+});
+
+it('returns the owned timeout code in the Server maintenance summary without publication or retry', async () => {
+  const f = fixture('server');
+  const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
+  const snapshot = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: f.dataRoot,
+    openKitConfig: { knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] } },
+    providerRegistry: new ProviderRegistry([
+      {
+        id: 'fixture',
+        kind: 'custom',
+        displayName: 'Deferred transport',
+        baseUrl: 'https://provider.invalid/v1',
+        models: ['fixture-model'],
+        modelMetadata: { 'fixture-model': metadata },
+      },
+    ]),
+    gatewayConfig: {
+      schemaVersion: 1,
+      enabled: true,
+      requiredFeatures: [],
+      defaultLogicalModelId: 'km-model',
+      logicalModels: [
+        {
+          id: 'km-model',
+          displayName: 'KM',
+          contextManagement: [{ type: 'compaction', compactThreshold: 32_000 }],
+          routes: [{ id: 'route', providerProfileId: 'fixture', providerModel: 'fixture-model' }],
+        },
+      ],
+    },
+    internalRoleProfiles: {
+      schemaVersion: 1,
+      profiles: [
+        {
+          id: 'explicit-cutoff',
+          roleId: 'knowledge-manager',
+          preferredLogicalModelId: 'km-model',
+          compatibleLogicalModelIds: [],
+          requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
+          limits: { maxModelTurns: 8, maxToolCalls: 24, deadlineMs: 90_000 },
+        },
+      ],
+    },
+  });
+  const dispatched = Promise.withResolvers<void>();
+  const response =
+    Promise.withResolvers<Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>>();
+  let providerSignal: AbortSignal | undefined;
+  let callerSignal: AbortSignal | undefined;
+  const createResponses = vi.fn<LLMGatewayProviderDispatcher['createResponses']>(
+    async (_provider, _request, context) => {
+      const signal = context?.transport?.signal;
+      if (!signal) throw new Error('Provider transport has no cancellation signal.');
+      providerSignal = signal;
+      dispatched.resolve();
+      let abort!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+      });
+      try {
+        return await Promise.race([response.promise, cancelled]);
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    }
+  );
+  const roleDependencies = {
+    store: f.store,
+    runtimeConfig: () => snapshot,
+    dispatcher: { createResponses },
+    resolveGatewayProvider: () => ({
+      id: 'fixture',
+      displayName: 'Deferred transport',
+      adapterId: 'fixture',
+      apiKey: '',
+      baseUrl: null,
+      models: ['fixture-model'],
+      requiresApiKey: false,
+      gatewayCapabilities: { responses: 'native' as const, chatCompletions: 'native' as const },
+      modelMetadata: { 'fixture-model': metadata },
+    }),
+  };
+  f.dependencies.runtimeConfigManager = {
+    current: () => snapshot,
+  } as unknown as RuntimeConfigManager;
+  f.dependencies.pin = (input) => {
+    if (!('owner' in input.turn)) throw new Error('Expected a Server run.');
+    pinKnowledgeManagerExecution(roleDependencies, input);
+  };
+  f.dependencies.run = (input) => {
+    if (!('kind' in input)) throw new Error('Expected a Server run.');
+    callerSignal = input.signal;
+    return runServerKnowledgeManagerAgent(roleDependencies, input);
+  };
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+    const controller = new AbortController();
+    setTimeout(
+      () => controller.abort(new DOMException('Deadline elapsed.', 'TimeoutError')),
+      milliseconds
+    ).unref();
+    return controller.signal;
+  });
+  const pending = f.maintain();
+  await dispatched.promise;
+  expect(providerSignal?.aborted).toBe(false);
+  await vi.advanceTimersByTimeAsync(90_000);
+  const result = await pending;
+  const settledTurn = f.readTurn(result.turnId);
+  const settledCalls = listServerCapabilityCalls(f.dependencies.coreDb);
+  expect(result.outcome).toBe('failed');
+  expect.soft(result.summary).toContain('knowledge_manager_timeout');
+  expect(settledTurn).toMatchObject({
+    owner: { kind: 'server' },
+    status: 'failed',
+    error: { code: 'knowledge_manager_timeout' },
+    internalExecution: { limits: { deadlineMs: 90_000 } },
+  });
+  expect('workspaceId' in settledTurn).toBe(false);
+  expect(
+    settledTurn.items
+      .filter((item) => item.type === 'status' && item.knowledgeMaintenanceResult)
+      .map((item) => item.knowledgeMaintenanceResult)
+  ).toEqual([result]);
+  expect(callerSignal?.aborted).toBe(false);
+  expect(providerSignal?.aborted).toBe(true);
+  expect(settledCalls).toEqual([
+    expect.objectContaining({
+      status: expect.stringMatching(/^(failed|aborted)$/),
+      turnId: result.turnId,
+    }),
+  ]);
+  response.resolve({ id: 'late-response', object: 'response', output: [] });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(createResponses).toHaveBeenCalledTimes(1);
+  expect(f.readTurn(result.turnId)).toEqual(settledTurn);
+  expect(listServerCapabilityCalls(f.dependencies.coreDb)).toEqual(settledCalls);
+  expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+  expect(f.notebook.readRevision(f.baseRevision).files['index.md']).toBe(f.overview);
 });
