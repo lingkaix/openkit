@@ -211,6 +211,7 @@ describe('canonical page commands compose the native Notebook publisher and read
     ]);
     expect(bytes).toContain('Original human body.');
     expect(bytes).not.toContain('openkit_entry_kind');
+    expect(f.store.getWorkspaceResources(f.workspaceId).knowledge).toEqual(read.pages);
   });
 
   it('creates, lists, edits and removes one canonical page with exact conflicts, retained history and truthful replay', async () => {
