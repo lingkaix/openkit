@@ -16,7 +16,7 @@ RUN apt-get update \
     | sh -s -- -y --default-toolchain "${RUST_VERSION}" --profile minimal \
   && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
-COPY apps/retrieval-kernel/ apps/retrieval-kernel/
+COPY packages/retrieval-kernel/ packages/retrieval-kernel/
 COPY scripts/retrieval-dictionary.py scripts/retrieval-notices.py scripts/
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=openkit-retrieval-registry-${TARGETARCH} \
     --mount=type=cache,target=/build/target,id=openkit-retrieval-target-${TARGETARCH} \

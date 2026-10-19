@@ -26,13 +26,13 @@ def command(arguments, cwd=None):
 
 def prepare_expected(destination: Path) -> None:
     """Reuse the source notice collector; never derive expected bytes from the images."""
-    source_gaps = ROOT / 'apps/retrieval-kernel/notices/GAPS.json'
+    source_gaps = ROOT / 'packages/retrieval-kernel/notices/GAPS.json'
     if json.loads(source_gaps.read_bytes()) != []:
         raise ValueError('selected source still has unresolved notice gaps')
     destination.mkdir(parents=True, exist_ok=True)
     command([sys.executable, str(ROOT / 'scripts/retrieval-notices.py'),
-             '--output', str(destination / 'crates')], cwd=ROOT / 'apps/retrieval-kernel')
-    shutil.copyfile(ROOT / 'apps/retrieval-kernel/vendor/IPADIC-COPYING',
+             '--output', str(destination / 'crates')], cwd=ROOT / 'packages/retrieval-kernel')
+    shutil.copyfile(ROOT / 'packages/retrieval-kernel/vendor/IPADIC-COPYING',
                     destination / 'IPADIC-COPYING')
 
 
