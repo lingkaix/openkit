@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import type { ActorRef } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
+import { canDiscloseThreadToAudience } from '../auth/thread-visibility.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
 import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
 import type { FsStore } from '../lib/store.js';
@@ -16,6 +18,7 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission, NotebookUpdate } from './notebook-publication.js';
 import {
+  parseKnowledgePageSourceReference,
   parseOkfDocument,
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
@@ -58,6 +61,11 @@ export function readWorkspaceNotebookAdmission(
     findWorkspaceConfig(input.runtimeConfigManager.current(), workspaceId)?.config.workspace
       .knowledgeMaintenance?.reviewRequiredPageIds ?? [];
 
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: input.coreDb.dataRoot,
+    scope: { kind: 'workspace', workspaceId },
+  });
+  const pageScopeId = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
   const workspaceRoot = join(input.coreDb.dataRoot, 'workspaces', workspaceId);
   for (const path of [
     workspaceRoot,
@@ -82,7 +90,8 @@ export function readWorkspaceNotebookAdmission(
 
   const permitThreadDisclosure = (threadId: string): void => {
     const thread = input.store.getThread(workspaceId, threadId);
-    if (thread.visibility === 'workspace') return;
+    if (thread.visibility === 'workspace' && canDiscloseThreadToAudience(input.store, thread, null))
+      return;
     // The personal Workspace has one fixed private audience under its existing owner-only membership contract.
     if (workspace.kind === 'personal' && thread.privateOwnerUserId === input.actor.id) return;
     throw new OperationError('workspace_access_denied', 'Notebook source disclosure denied.', 403);
@@ -118,10 +127,10 @@ export function readWorkspaceNotebookAdmission(
         )
           throw new NotebookError('recovery_required');
         resolved.add(reference);
-      } else if (reference.startsWith('knowledge:')) {
-        const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
-        if (!match) throw new NotebookError('invalid_request');
-        const sourcePath = `${match[1]}.md`;
+      } else if (reference.startsWith('openkit:')) {
+        const parsedReference = parseKnowledgePageSourceReference(reference, pageScopeId);
+        if (!parsedReference) throw new NotebookError('invalid_request');
+        const sourcePath = `${parsedReference.reference.objectId}.md`;
         const changed = changes.get(sourcePath);
         const sourceContent = changes.has(sourcePath)
           ? changed
@@ -130,8 +139,9 @@ export function readWorkspaceNotebookAdmission(
             : undefined;
         if (
           typeof sourceContent !== 'string' ||
-          (match[2] &&
-            match[2] !== `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`)
+          (parsedReference.contentDigest !== undefined &&
+            parsedReference.contentDigest !==
+              `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`)
         )
           throw new NotebookError('invalid_request');
         const sourceDocument = parseOkfDocument({ path: sourcePath, content: sourceContent });
@@ -163,5 +173,11 @@ export function readWorkspaceNotebookAdmission(
   };
   for (const { path, content } of input.request.changes)
     if (content !== null) checkPage(path, content);
-  return { scopeSchemaText, registeredSources, resolvedReferences, reviewRequiredPageIds };
+  return {
+    pageScopeId,
+    scopeSchemaText,
+    registeredSources,
+    resolvedReferences,
+    reviewRequiredPageIds,
+  };
 }

@@ -32,6 +32,12 @@ export interface RequiredFeatureDefinition {
  * Known required features used by fail-closed readers.
  */
 export const REQUIRED_FEATURE_REGISTRY = {
+  'openkit.workspace-resource-policy.v1': {
+    id: 'openkit.workspace-resource-policy.v1',
+    status: 'active',
+    description:
+      'Workspace configuration carries managed resource boundaries and exact associations and prohibitions across export and import.',
+  },
   'openkit.memory-suppression.v1': {
     id: 'openkit.memory-suppression.v1',
     status: 'active',
@@ -230,11 +236,11 @@ export function isRegisteredRequiredFeature(feature: string): feature is Require
   return Object.hasOwn(REQUIRED_FEATURE_REGISTRY, feature);
 }
 
-/** Declared requirements for authored Server, User, and Workspace config readers, which support no required features yet. */
-export const AuthoredConfigRequiredFeaturesSchema = z
-  .array(z.string().min(1))
-  .superRefine((features, ctx) => {
+/** Builds the existing fail-closed feature declaration for a particular authored config reader. */
+export function authoredConfigRequiredFeaturesSchema(supportedFeatures: readonly string[] = []) {
+  return z.array(z.string().min(1)).superRefine((features, ctx) => {
     for (const [index, feature] of features.entries()) {
+      if (isRegisteredRequiredFeature(feature) && supportedFeatures.includes(feature)) continue;
       ctx.addIssue({
         code: 'custom',
         message: `${isRegisteredRequiredFeature(feature) ? 'Unsupported' : 'Unregistered'} required feature: ${feature}`,
@@ -242,6 +248,10 @@ export const AuthoredConfigRequiredFeaturesSchema = z
       });
     }
   });
+}
+
+/** Server and User authored config readers activate no additional required features. */
+export const AuthoredConfigRequiredFeaturesSchema = authoredConfigRequiredFeaturesSchema();
 
 /**
  * Verifies that writers only emit registered required features.

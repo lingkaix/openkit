@@ -1,7 +1,7 @@
-import { mkdtempSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { verifyOpenKitAccessTokenRecord } from './access-token-store.js';
@@ -12,6 +12,83 @@ import {
 } from './bootstrap-token.js';
 
 describe('server bootstrap token', () => {
+  it('writes a v1 bootstrap setting and preserves descriptive additions through consumption', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-setting-v1-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      const issued = ensureServerBootstrapToken(coreDb, {
+        now: new Date('2026-07-06T00:00:00.000Z'),
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM server_settings WHERE key = ?')
+          .get('auth.bootstrap_token')
+      ).toEqual({ schemaVersion: 1 });
+      const row = coreDb.sqlite
+        .prepare('SELECT value FROM server_settings WHERE key = ?')
+        .get('auth.bootstrap_token') as { value: string };
+      const value = JSON.stringify({ ...JSON.parse(row.value), futureNote: 'retained' });
+      coreDb.sqlite
+        .prepare('UPDATE server_settings SET value = ? WHERE key = ?')
+        .run(value, 'auth.bootstrap_token');
+
+      const secondIssue = ensureServerBootstrapToken(coreDb, {
+        now: new Date('2026-07-06T00:01:00.000Z'),
+      });
+      expect(secondIssue === null).toBe(true);
+      const retained = coreDb.sqlite
+        .prepare('SELECT value FROM server_settings WHERE key = ?')
+        .get('auth.bootstrap_token') as { value: string };
+      expect(retained.value === value).toBe(true);
+      const consumed = await consumeServerBootstrapToken(coreDb, {
+        displayName: 'Owner',
+        email: 'owner@example.com',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        password: 'password123456',
+        token: issued!.token,
+        tokenExpiresAt: '2026-07-07T00:00:00.000Z',
+        now: new Date('2026-07-06T00:02:00.000Z'),
+      });
+      expect(consumed.status).toBe('consumed');
+      const consumedRow = coreDb.sqlite
+        .prepare('SELECT value FROM server_settings WHERE key = ?')
+        .get('auth.bootstrap_token') as { value: string };
+      const consumedSetting = JSON.parse(consumedRow.value);
+      expect(consumedSetting.futureNote).toBe('retained');
+      expect(consumedSetting.consumedAt).toBe('2026-07-06T00:02:00.000Z');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown bootstrap format before malformed payload decoding or replacement', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-setting-version-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      ensureServerBootstrapToken(coreDb, { now: new Date('2026-07-06T00:00:00.000Z') });
+      coreDb.sqlite
+        .prepare('UPDATE server_settings SET schema_version = 2, value = ? WHERE key = ?')
+        .run('{', 'auth.bootstrap_token');
+
+      expect(() =>
+        ensureServerBootstrapToken(coreDb, { now: new Date('2026-07-06T00:01:00.000Z') })
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion, value FROM server_settings WHERE key = ?'
+          )
+          .get('auth.bootstrap_token')
+      ).toEqual({ schemaVersion: 2, value: '{' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('emits once, creates a login-capable owner, and issues the owner server-admin token', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-'));
     const coreDb = openCoreDb(dataRoot);

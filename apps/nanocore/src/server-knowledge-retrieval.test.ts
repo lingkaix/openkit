@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { publishNotebook } from './knowledge/notebook-publication.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './knowledge/okf.js';
@@ -15,6 +16,7 @@ import {
 import { FsStore } from './lib/store.js';
 import {
   canReadServerKnowledge,
+  collectServerKnowledgeInventory,
   readAuthorizedServerNotebookPages,
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
@@ -159,10 +161,13 @@ describe('Server Knowledge through the existing retrieval source', () => {
       sourceScope: 'server' as const,
     };
     const selection = await retrieveWorkspaceKnowledge(input);
+    expect(JSON.parse(collectServerKnowledgeInventory(input).view.scope)).toContain(
+      readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'server' } })
+    );
     expect(selection.queryContext.serverId).not.toBe(f.workspace.importedFrom?.sourceDeploymentId);
     expect(selection.selected).toEqual([
       expect.objectContaining({
-        reference: { scopeId: 'page/server', objectId: 'shared-guide' },
+        reference: { scopeId: serverPageScope(f), objectId: 'shared-guide' },
         revision: published.notebookRevision,
         sourceReferences: [sourceRef],
       }),
@@ -177,6 +182,30 @@ describe('Server Knowledge through the existing retrieval source', () => {
         retrievalTraceRef: selection.retrievalTraceRef!,
       });
     expect(read()?.[0]?.content).toContain('Quasar deployment operations');
+    expect(read()?.[0]?.knowledgeBaseId).toBe(
+      readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'server' } })
+    );
+    const foreignBaseScope = 'page/server/kb_00000000-0000-7000-8000-000000000009';
+    expect(foreignBaseScope).not.toBe(serverPageScope(f));
+    await expect(
+      retrieveWorkspaceKnowledge({
+        ...input,
+        pinnedReferences: [{ scopeId: foreignBaseScope, objectId: 'shared-guide' }],
+      })
+    ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(() =>
+      resolveWorkspaceKnowledgeRetrievalPages({
+        ...input,
+        selection: {
+          ...selection,
+          sourceScope: foreignBaseScope,
+          selected: selection.selected.map((entry) => ({
+            ...entry,
+            reference: { ...entry.reference, scopeId: foreignBaseScope },
+          })),
+        },
+      })
+    ).toThrowError(expect.objectContaining({ code: 'workspace_access_denied', status: 403 }));
     await publishNotebook(
       {
         store: f.store,
@@ -204,7 +233,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
         ...input,
         retrievalTraceRef: selection.retrievalTraceRef!,
       }).sourceScope
-    ).toBe('page/server');
+    ).toBe(serverPageScope(f));
     const denied = {
       ...access,
       requestActor: { kind: 'session' as const, userId: f.actor.userId },
@@ -321,7 +350,10 @@ describe('Server Knowledge through the existing retrieval source', () => {
     expect(later.selected.map(({ reference }) => reference.objectId)).toEqual(['generated']);
     expect(later.excluded).toContainEqual(
       expect.objectContaining({
-        reference: { scopeId: `page/workspace/${f.workspace.id}`, objectId: 'forged' },
+        reference: {
+          scopeId: `page/workspace/${f.workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspace.id } })}`,
+          objectId: 'forged',
+        },
         reason: 'lower_conformance',
       })
     );
@@ -367,9 +399,9 @@ describe('Server Knowledge through the existing retrieval source', () => {
       sourceScope: 'server',
     });
     expect(selection).toMatchObject({
-      sourceScope: 'page/server',
+      sourceScope: serverPageScope(f),
       selected: [
-        expect.objectContaining({ reference: { scopeId: 'page/server', objectId: 'guide' } }),
+        expect.objectContaining({ reference: { scopeId: serverPageScope(f), objectId: 'guide' } }),
       ],
       excluded: [],
     });
@@ -378,3 +410,8 @@ describe('Server Knowledge through the existing retrieval source', () => {
     expect(selection).not.toHaveProperty('retrievalTraceRef');
   });
 });
+
+/** Reads the exact retained Server base used by this fixture's real notebook creator. */
+function serverPageScope(f: ReturnType<typeof fixture>): string {
+  return `page/server/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'server' } })}`;
+}

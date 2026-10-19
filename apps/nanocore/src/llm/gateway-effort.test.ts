@@ -88,6 +88,7 @@ function fixture(
     writeFileSync(
       join(providersRoot, `${id}.provider.jsonc`),
       JSON.stringify({
+        schemaVersion: 1,
         id,
         displayName: id,
         ...(options.customStock

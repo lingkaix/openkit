@@ -23,6 +23,8 @@ const SERVER_WEB_OPERATIONS = {
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.delete', 'R049'],
+  ['workspace.resource-access-request', 'R033'],
+  ['workspace.resource-access-apply', 'R033'],
   ['workspace.archive-download', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
   ['workspace.archive-import-dry-run', 'R008'],
@@ -297,6 +299,10 @@ const WEB_OPERATION_GROUPS = {
     'vault.grant-revoke': { disposition: 'live', surface: 'Vault backend' },
     'vault.secret-revoke': { disposition: 'live', surface: 'Vault backend' },
     'vault.secret-rotate': { disposition: 'live', surface: 'Vault backend' },
+  },
+  'Workspace resource access': {
+    'workspace.resource-access-request': { disposition: 'roadmap', roadmap: 'R033' },
+    'workspace.resource-access-apply': { disposition: 'roadmap', roadmap: 'R033' },
   },
   'Workspace sharing': {
     'workspace.my-invitation-accept': { disposition: 'live', surface: 'Account' },

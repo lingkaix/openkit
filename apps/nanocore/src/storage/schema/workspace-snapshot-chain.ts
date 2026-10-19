@@ -1,3 +1,4 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
 import { blob, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
@@ -5,6 +6,8 @@ import { blob, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizz
 export const workspaceSnapshotCursors = sqliteTable(
   'workspace_snapshot_cursors',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Workspace lineage owner. */
     workspaceId: text('workspace_id').notNull(),
     /** Exact retained storage association. */
@@ -26,6 +29,8 @@ export const workspaceSnapshotCursors = sqliteTable(
 export const workspaceSnapshotCollections = sqliteTable(
   'workspace_snapshot_collections',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Workspace lineage owner. */
     workspaceId: text('workspace_id').notNull(),
     /** Exact retained storage association. */

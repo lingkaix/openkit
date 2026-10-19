@@ -9,6 +9,7 @@ import {
   finishCapabilityCall,
   importWorkspaceCapabilityUsageLedger,
   listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
   readLatestCurrentAgentSessionLlmUsage,
   recordUsage,
   recoverRunningCapabilityCalls,
@@ -17,6 +18,80 @@ import {
 } from './usage-ledger.js';
 
 describe('capability usage ledger', () => {
+  it('rejects an unknown retained capability format before replay or JSON decode', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-format-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyScopedMigrations(workspaceDb);
+      const input = {
+        workspaceDb,
+        workspaceId: workspaceDb.workspaceId,
+        capabilityId: 'llm.responses',
+        family: 'llm' as const,
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+        requestId: '00000000-0000-4000-8000-000000000001',
+      };
+      const call = startCapabilityCall(input);
+      workspaceDb.sqlite
+        .prepare(
+          "UPDATE capability_calls SET schema_version = 2, extensions_json = 'invalid-json' WHERE call_id = ?"
+        )
+        .run(call.id);
+      expect(() => startCapabilityCall(input)).toThrow('Unsupported retained record format.');
+      expect(() => listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' })
+      ).toThrow('Unsupported retained record format.');
+      expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+        schema_version: 2,
+        status: 'running',
+        extensions_json: 'invalid-json',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unknown retained usage format before equivalent replay or JSON decode', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-usage-format-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyScopedMigrations(workspaceDb);
+      const call = startCapabilityCall({
+        workspaceDb,
+        workspaceId: workspaceDb.workspaceId,
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+      });
+      const input = {
+        workspaceDb,
+        call,
+        records: [{ category: 'llm', unit: 'tokens', quantity: 1 }],
+      };
+      const [usageId] = recordUsage(input);
+      workspaceDb.sqlite
+        .prepare('UPDATE usage_records SET schema_version = 2 WHERE usage_id = ?')
+        .run(usageId);
+      expect(() => recordUsage(input)).toThrow('Unsupported retained record format.');
+      workspaceDb.sqlite
+        .prepare("UPDATE usage_records SET source_ids_json = 'invalid-json' WHERE usage_id = ?")
+        .run(usageId);
+      expect(() => listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(usageRows(workspaceDb, call.id)).toHaveLength(1);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('records a capability call before linked usage and terminal status', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -71,6 +146,7 @@ describe('capability usage ledger', () => {
       });
 
       expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+        schema_version: 1,
         call_id: call.id,
         capability_id: 'llm.responses',
         family: 'llm',
@@ -83,6 +159,7 @@ describe('capability usage ledger', () => {
       });
       expect(usageRows(workspaceDb, call.id)).toEqual([
         expect.objectContaining({
+          schema_version: 1,
           capability_call_id: call.id,
           category: 'llm',
           model_id: 'gpt-5',
@@ -99,6 +176,7 @@ describe('capability usage ledger', () => {
         runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
         runtimeOriginRef: `rto_${'a'.repeat(24)}`,
       });
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toHaveLength(1);
       expect(usageRows(workspaceDb, call.id)[0]).not.toHaveProperty('package_snapshot_id');
       expect(auditRows(workspaceDb, call.id)).toEqual([
         expect.objectContaining({
@@ -120,6 +198,7 @@ describe('capability usage ledger', () => {
       expect(auditRows(workspaceDb, call.id)[0]).not.toHaveProperty('runtime_origin_ref');
     } finally {
       workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -1030,7 +1109,9 @@ function auditRows(
   callId: string
 ): Array<Record<string, unknown>> {
   return workspaceDb.sqlite
-    .prepare('SELECT * FROM audit_events WHERE capability_call_id = ? ORDER BY created_at')
+    .prepare(
+      "SELECT * FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish' ORDER BY created_at"
+    )
     .all(callId) as Array<Record<string, unknown>>;
 }
 

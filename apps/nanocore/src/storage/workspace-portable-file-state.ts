@@ -16,14 +16,21 @@ import {
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
   type ProductRetrievalTrace,
-  ProductRetrievalTraceReaderSchema,
 } from '@openkit/app-api-schemas';
-import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import {
+  type RetrievalTraceReference,
+  RetrievalTraceReferenceSchema,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import type { z } from 'zod';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { assertPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { validateRecurringPortableHistory } from './recurring-portable-history.js';
+import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
   appendCanonicalTextFile,
@@ -39,7 +46,7 @@ const ConflictRowSchema = KnowledgeConflictSchema.strict();
 const ObservationReaderSchema = ObservationRowSchema.strip();
 const ClaimReaderSchema = ClaimRowSchema.strip();
 const ConflictReaderSchema = ConflictRowSchema.strip();
-const RetrievalTraceReaderSchema = ProductRetrievalTraceReaderSchema;
+const RetrievalTraceReaderSchema = StoredProductRetrievalTraceV1Schema;
 const retainedLedgerRow = Symbol('retainedKnowledgeLedgerRow');
 
 /** Keeps owned source annotations separate from the normalized Knowledge read model. */
@@ -288,7 +295,24 @@ export function writeWorkspacePortableFileState(
     (row) => row.resolvedAt ?? row.createdAt
   );
   if (state.workspaceConfig !== null) {
-    writeText(root, 'config/workspace.jsonc', state.workspaceConfig, false);
+    const imported = readRetainedV1(parseJsoncObject(state.workspaceConfig), (value) =>
+      WorkspaceConfigSchema.parse(value)
+    );
+    const initializedConfig = readOptionalText(root, 'config/workspace.jsonc');
+    if (initializedConfig !== null) {
+      // Native Notebook initialization fixes the target base before portable config is staged.
+      const initialized = readRetainedV1(parseJsoncObject(initializedConfig), (value) =>
+        WorkspaceConfigSchema.parse(value)
+      );
+      if (
+        !initialized.workspace.defaultKnowledgeBaseId ||
+        initialized.workspace.defaultKnowledgeBaseId !== imported.workspace.defaultKnowledgeBaseId
+      )
+        throw new Error(
+          'Portable configuration contradicts the initialized Knowledge Base binding.'
+        );
+    }
+    writeText(root, 'config/workspace.jsonc', state.workspaceConfig, initializedConfig !== null);
   }
   if (state.workspaceSchema !== null) {
     writeText(root, 'knowledge/schema/scope-schema.yaml', state.workspaceSchema, true);
@@ -535,14 +559,16 @@ export function parseWorkspaceRetrievalTraceFile(
       : `retrieval-trace/thread/${expectedWorkspaceId}/${threadMatch![1]}`,
     objectId: turnMatch ? turnMatch[3] : threadMatch![2],
   });
-  const trace = RetrievalTraceReaderSchema.parse(JSON.parse(text));
+  const trace = readRetainedV1(JSON.parse(text), (value) =>
+    RetrievalTraceReaderSchema.parse(value)
+  );
   assertRetrievalTraceIdentity(reference, trace);
   return { reference, trace };
 }
 
 /** Serializes only normalized trace evidence; ignored additions cannot enter export or import. */
 export function serializeWorkspaceRetrievalTrace(trace: ProductRetrievalTrace): string {
-  return `${JSON.stringify(RetrievalTraceReaderSchema.parse(trace))}\n`;
+  return `${JSON.stringify(writeRetainedV1(RetrievalTraceReaderSchema.parse(trace)))}\n`;
 }
 
 /** Reads every trace file whose path has one canonical Thread or Turn owner. */
@@ -744,7 +770,7 @@ function readWorkerContextPackageFiles(
         throw new Error(`Portable worker Context Package tree is incomplete: ${turnPath}.`);
       }
       files.set(tracePath, readCanonicalTextFile(join(turnDirectory, 'context-package.json')));
-      for (const entry of readTextTree(root, packagePath, true, `${packagePath}/originals/`)) {
+      for (const entry of readTextTree(root, packagePath, true)) {
         files.set(...entry);
       }
     }
@@ -791,8 +817,7 @@ function assertWorkerContextPackageFiles(files: ReadonlyMap<string, string>): vo
 function readTextTree(
   root: string,
   relativeDirectory: string,
-  recursive: boolean,
-  originalPrefix?: string
+  recursive: boolean
 ): ReadonlyMap<string, string> {
   const directory = workspaceDirectory(root, relativeDirectory, false);
   const files = new Map<string, string>();
@@ -813,9 +838,7 @@ function readTextTree(
         assertCanonicalDirectory(path);
         visit(path, relativePath);
       } else if (entry.isFile()) {
-        // Original snapshots are copied and verified as binary files by the export owner.
-        if (!originalPrefix || !relativePath.startsWith(originalPrefix))
-          files.set(relativePath, readCanonicalTextFile(path));
+        files.set(relativePath, readCanonicalTextFile(path));
       } else {
         throw new Error(`Portable workspace tree contains an invalid entry: ${path}.`);
       }

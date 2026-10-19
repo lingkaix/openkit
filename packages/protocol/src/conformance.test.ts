@@ -88,6 +88,44 @@ describe('audit event actor attribution', () => {
     expect(AuditEventSchema.parse(auditEvent)).toMatchObject({ actor: null, subject: null });
   });
 
+  it('retains only non-secret authentication method and credential record identity', () => {
+    const authentication = {
+      credentialKind: 'token',
+      credentialId: 'tok_00000000-0000-7000-8000-000000000001',
+    };
+    expect(AuditEventSchema.parse({ ...auditEvent, authentication })).toMatchObject({
+      authentication,
+    });
+    expect(
+      AuditEventSchema.parse({
+        ...auditEvent,
+        authentication: { credentialKind: 'session', credentialId: null },
+      }).authentication
+    ).toEqual({ credentialKind: 'session', credentialId: null });
+    expect(
+      AuditEventSchema.parse({
+        ...auditEvent,
+        authentication: {
+          credentialKind: 'session',
+          credentialId: 'auth_00000000-0000-7000-8000-000000000001',
+        },
+      }).authentication
+    ).toEqual({
+      credentialKind: 'session',
+      credentialId: 'auth_00000000-0000-7000-8000-000000000001',
+    });
+    for (const invalid of [
+      { ...authentication, token: 'secret-sentinel' },
+      { ...authentication, channel: 'http' },
+      { ...authentication, credentialId: 'sha256:secret-hash' },
+      { ...authentication, credentialKind: 'unrecognized' },
+    ]) {
+      expect(AuditEventSchema.safeParse({ ...auditEvent, authentication: invalid }).success).toBe(
+        false
+      );
+    }
+  });
+
   it('accepts only nullable positive resource revisions', () => {
     expect(AuditEventSchema.parse({ ...auditEvent, resourceRevision: 2 }).resourceRevision).toBe(2);
     expect(AuditEventSchema.parse(auditEvent).resourceRevision).toBeNull();

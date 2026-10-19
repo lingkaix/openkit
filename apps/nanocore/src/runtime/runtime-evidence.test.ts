@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -18,27 +18,14 @@ describe('runtime evidence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-evidence-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const packageSnapshotId = 'aepsnap_runtime_provenance_1';
-    const input = {
-      packageSnapshotId,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
-      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
-      backendType: 'openshell',
-      backendVersion: '0.0.80',
-      placement: 'local' as const,
-      summary:
-        'Worker runtime provenance complete: 3 streams, 12 frames, 3 origins, 0 gateway calls.',
-      evidenceBundleIds: ['evb_runtime_provenance_raw', 'evb_runtime_provenance_index'],
-      contentDigests: ['sha256:raw', 'sha256:index'],
-      outcome: 'succeeded' as const,
-      collectedAt: '2026-07-13T00:00:00.000Z',
-    };
+    const input = runtimeProvenanceInput(packageSnapshotId);
 
     try {
       applyScopedMigrations(workspaceDb);
 
       const first = recordWorkerRuntimeProvenanceEvidence(workspaceDb, input);
+      const retained = workspaceDb.sqlite.prepare('SELECT * FROM runtime_evidence').get();
+      expect(retained).toMatchObject({ schema_version: 1 });
       const replay = recordWorkerRuntimeProvenanceEvidence(workspaceDb, input);
       const expectedId = `rte_${createHash('sha256')
         .update(`worker-runtime-provenance:${packageSnapshotId}`)
@@ -57,6 +44,7 @@ describe('runtime evidence', () => {
         phase: 'transcript-collection',
         summary: input.summary,
         transcriptSummary: input.summary,
+        policyDigest: input.policyDigest,
         outcome: 'succeeded',
         evidenceBundleIds: input.evidenceBundleIds,
         contentDigests: input.contentDigests,
@@ -66,11 +54,13 @@ describe('runtime evidence', () => {
         collectedAt: input.collectedAt,
       });
       expect(replay).toEqual(first);
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM runtime_evidence').get()).toEqual(retained);
       expect(
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([first]);
 
       for (const divergent of [
+        { ...input, policyDigest: `sha256:${'b'.repeat(64)}` },
         { ...input, contentDigests: ['sha256:divergent'] },
         { ...input, summary: 'Divergent worker runtime provenance summary.' },
       ]) {
@@ -83,6 +73,7 @@ describe('runtime evidence', () => {
       ).toEqual([first]);
     } finally {
       workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -140,6 +131,54 @@ describe('runtime evidence', () => {
       ).toEqual([expect.not.objectContaining({ futureOptionalNote: expect.anything() })]);
     } finally {
       workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+});
+
+/** Builds native provenance metadata without reading a Worker or Provider. */
+function runtimeProvenanceInput(packageSnapshotId: string) {
+  return {
+    packageSnapshotId,
+    policyDigest: `sha256:${'a'.repeat(64)}`,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+    agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
+    backendType: 'openshell',
+    backendVersion: '0.0.80',
+    placement: 'local' as const,
+    summary:
+      'Worker runtime provenance complete: 3 streams, 12 frames, 3 origins, 0 gateway calls.',
+    evidenceBundleIds: ['evb_runtime_provenance_raw', 'evb_runtime_provenance_index'],
+    contentDigests: ['sha256:raw', 'sha256:index'],
+    outcome: 'succeeded' as const,
+    collectedAt: '2026-07-13T00:00:00.000Z',
+  };
+}
+
+it('refuses an unknown runtime evidence row version before malformed JSON or retained replay', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-retained-runtime-evidence-'));
+  const input = runtimeProvenanceInput('aepsnap_retained_runtime');
+  const db = openWorkspaceDb(root, input.workspaceId);
+  onTestFinished(() => {
+    db.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  applyScopedMigrations(db);
+  const record = recordWorkerRuntimeProvenanceEvidence(db, input);
+  db.sqlite
+    .prepare("UPDATE runtime_evidence SET schema_version=2, upload_manifest_json='{invalid'")
+    .run();
+  const before = db.sqlite.prepare('SELECT * FROM runtime_evidence').get();
+  expect(() => listWorkspaceRuntimeEvidence(db, input.workspaceId)).toThrow(
+    'Unsupported retained record format'
+  );
+  expect(() => recordWorkerRuntimeProvenanceEvidence(db, input)).toThrow(
+    'Unsupported retained record format'
+  );
+  expect(() => importWorkspaceRuntimeEvidence(db, [record])).toThrow(
+    'Unsupported retained record format'
+  );
+  expect(db.sqlite.prepare('SELECT * FROM runtime_evidence').get()).toEqual(before);
 });

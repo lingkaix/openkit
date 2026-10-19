@@ -6,6 +6,7 @@ import { join, relative } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   pdfSourceRetrievalDocument,
   searchPdfSourceSnapshot,
@@ -19,7 +20,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Synthetic retained text tests transport and search; native extraction has its own real PDF suite. */
+/** Synthetic current text tests transport and search; native extraction has its own real PDF suite. */
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'pdf-source-retrieval-'));
   roots.push(dataRoot);
@@ -29,14 +30,14 @@ function fixture() {
   const turnId = allocateEntityId('tu');
   const artifactId = allocateEntityId('ar');
   const packageRoot = join(workspaceRoot, 'threads', threadId, 'turns', turnId, 'context-package');
-  const representationPath = 'representations/selected.txt';
-  mkdirSync(join(packageRoot, 'representations'), { recursive: true });
+  const representationPath = join(workspaceRoot, 'current-selected.txt');
+  mkdirSync(workspaceRoot, { recursive: true });
   const text = 'first page\n\fsecond needle\n';
   const firstEnd = Buffer.byteLength('first page\n\f');
   const bytes = Buffer.byteLength(text);
   const sha = (value: string | Uint8Array) =>
     `sha256:${createHash('sha256').update(value).digest('hex')}`;
-  writeFileSync(join(packageRoot, representationPath), text);
+  writeFileSync(representationPath, text);
   const source: WorkerContextPackageSourceFile = {
     source: {
       kind: 'artifact',
@@ -46,7 +47,6 @@ function fixture() {
     originalDigest: sha(Buffer.from([0, 255, 2])),
     byteLength: 3,
     mediaType: 'application/pdf',
-    originalSnapshotPath: 'originals/selected.pdf',
     packagePath: 'sources/selected.txt',
     projection: {
       kind: 'excerpt',
@@ -59,7 +59,6 @@ function fixture() {
       byteLength: 10,
       truncated: true,
       availability: 'incomplete',
-      representationSnapshotPath: representationPath,
       pdfTextLayer: {
         processor: {
           id: 'pdfjs-pdf-text-layer-v1',
@@ -111,12 +110,38 @@ function fixture() {
       },
     },
   };
-  return { dataRoot, workspaceRoot, packageRoot, threadId, turnId, source };
+  const currentSource = {
+    ...source,
+    deliveredBytes: Buffer.from('first page'),
+    assertUnchanged() {},
+    open: async function* () {
+      yield Buffer.from([0, 255, 2]);
+    },
+    openRepresentation: async function* () {
+      const { readFile } = await import('node:fs/promises');
+      yield await readFile(representationPath);
+    },
+  };
+  const admission = new FileStorageAdmission(dataRoot, () => 0n);
+  return {
+    dataRoot,
+    workspaceRoot,
+    packageRoot,
+    threadId,
+    turnId,
+    source,
+    currentSource,
+    admission,
+    representationPath,
+  };
 }
 
 it('keeps original identity separate from processor, representation bytes and page coordinates', () => {
   const f = fixture();
-  const document = pdfSourceRetrievalDocument(f.source, relative(f.dataRoot, f.packageRoot))!;
+  const document = pdfSourceRetrievalDocument(
+    f.source,
+    relative(f.dataRoot, f.representationPath)
+  )!;
   expect(document.digest).toBe(f.source.originalDigest.slice(7));
   expect(document.size).toBe(3);
   expect(document.content).toMatchObject({
@@ -134,7 +159,7 @@ it('keeps original identity separate from processor, representation bytes and pa
   expect(pdfSourceRetrievalDocument(f.source, 'unused')).toBeNull();
 });
 
-it('searches retained text with real kernel page provenance and withholds results after revocation', async () => {
+it('searches current exact text with real kernel page provenance and withholds results after revocation', async () => {
   const f = fixture();
   const query = { mode: 'exact' as const, query: 'needle', limit: 20 };
   const result = await searchPdfSourceSnapshot({ ...f, query, assertCurrent() {} });
@@ -170,8 +195,15 @@ it('searches retained text with real kernel page provenance and withholds result
     })
   ).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(checks).toBe(5);
-  unlinkSync(join(f.packageRoot, f.source.projection.representationSnapshotPath!));
+  writeFileSync(
+    f.representationPath,
+    Buffer.alloc(f.source.projection.representationByteLength, 0x78)
+  );
+  const changed = await searchPdfSourceSnapshot({ ...f, query, assertCurrent() {} });
+  expect(changed).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(JSON.stringify(changed)).not.toContain('needle');
+  unlinkSync(f.representationPath);
   const missing = await searchPdfSourceSnapshot({ ...f, query, assertCurrent() {} });
-  expect(missing).toMatchObject({ status: 'ready', result: { hits: [], complete: false } });
+  expect(missing).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(JSON.stringify(missing)).not.toContain('needle');
 }, 30_000);

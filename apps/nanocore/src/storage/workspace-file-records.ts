@@ -25,38 +25,29 @@ import {
   KnowledgeProposalPageIdSchema,
   KnowledgeProposalReviewSchema,
   KnowledgeSourceSchema,
-  MaterializedWorkspaceRootSchema,
   validKnowledgeProposalShape,
 } from '@openkit/app-api-schemas';
 import { parseRecordEnvelope, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   ActorRefSchema,
-  AgentSandboxSummarySchema,
-  AgentSessionSchema,
-  ApprovalDecisionItemSchema,
-  ArtifactFileContentSchema,
-  ArtifactInlineContentSchema,
-  ArtifactOriginSchema,
-  ArtifactSchema,
+  type ArtifactSchema,
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
   deriveEntityId,
   entityIdPattern,
-  GitFailureExplanationReaderSchema,
   ItemSchema,
   isEntityId,
   KnowledgeEntrySchema,
   type KnowledgeOwnerScope,
   KnowledgeOwnerScopeSchema,
+  readRetainedV1,
   SseEventEnvelopeSchema,
   ThreadSchema,
-  TurnSchema,
-  UserActorRefSchema,
-  UserInputResponseItemSchema,
-  UserMessageItemSchema,
+  type TurnSchema,
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
   WorkspaceRecordSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import {
   type CaptureCoverageBinding,
@@ -88,6 +79,20 @@ import {
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { coreDbPath, ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
+import {
+  StoredArtifactSnapshotV1Schema,
+  StoredEventPayloadV1Schema,
+  StoredEventV1Schema,
+  StoredTurnSnapshotV1Schema,
+  StoredWorkspaceSnapshotV1Schema,
+} from './retained-work-events-v1.js';
+import { StoredItemPayloadV1Schema, StoredItemV1Schema } from './retained-work-items-v1.js';
+import {
+  StoredAgentSessionV1Schema,
+  StoredArtifactV1Schema,
+  StoredTurnV1Schema,
+  StoredWorkspaceV1Schema,
+} from './retained-work-metadata-v1.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
@@ -113,82 +118,18 @@ const CanonicalTimestampSchema = z.string().datetime();
 const retainedProposal = Symbol('retainedKnowledgeProposal');
 /** Retained attribution is descriptive; all actor branches and accountability fields remain closed. */
 export const ActorRefReaderSchema = z.union(ActorRefSchema.options.map((schema) => schema.strip()));
-/** Canonical Item reader keeps the fixed approval actor and its grant refinement. */
-const retainedItemSchemas = ItemSchema.options.map((schema) => {
-  if (schema === UserMessageItemSchema)
-    return UserMessageItemSchema.extend({ actor: ActorRefReaderSchema });
-  if (schema === UserInputResponseItemSchema)
-    return UserInputResponseItemSchema.extend({ actor: UserActorRefSchema.strip() });
-  if (schema === ApprovalDecisionItemSchema)
-    return ApprovalDecisionItemSchema.safeExtend({
-      actor: z.union([
-        ApprovalDecisionItemSchema.shape.actor.options[0].strip(),
-        ApprovalDecisionItemSchema.shape.actor.options[1].strip(),
-      ]),
-    });
-  return schema;
-});
-/** The producer's nonempty branch set keeps discriminator dispatch at the retained boundary. */
-const ItemReaderSchema = z.discriminatedUnion('type', [
-  retainedItemSchemas[0]!,
-  ...retainedItemSchemas.slice(1),
-]);
-/** Retained Turn reader normalizes attribution and Items before relationship validation. */
-export const TurnReaderSchema = TurnSchema.safeExtend({
-  triggerActor: ActorRefReaderSchema,
-  items: z.array(ItemReaderSchema),
-  error: TurnSchema.shape.error
-    .unwrap()
-    .extend({ explanation: GitFailureExplanationReaderSchema.optional() })
-    .nullable(),
-});
-/** One metadata validator preserves the writer's admitted feature set on direct canonical reads. */
-const TurnFileMetadataSchema = TurnReaderSchema.safeExtend({
-  captureCoverage: CaptureCoverageBindingSchema.optional(),
-  requiredFeatures: z
-    .array(
-      z.literal('openkit.work-observations.v1', {
-        error: ({ input }) => `Unsupported required Turn feature: ${JSON.stringify(input)}.`,
-      })
-    )
-    .optional(),
-});
-/** Reads descriptive Artifact extensions and historical imported attribution without granting current authority. */
-export const ArtifactReaderSchema = ArtifactSchema.safeExtend({
-  origin: z.discriminatedUnion('kind', [
-    ArtifactOriginSchema.options[0],
-    ArtifactOriginSchema.options[1].extend({ actor: ActorRefReaderSchema }).strip(),
-  ]),
-});
-/** Retained event snapshots use the same historical readers before exact envelope validation. */
-const SseEventReaderSchema = z.preprocess((value) => {
-  if (typeof value !== 'object' || value === null || !('data' in value)) return value;
-  const data = value.data;
-  if (typeof data !== 'object' || data === null) return value;
-  const normalized = { ...data } as Record<string, unknown>;
-  switch (normalized.type) {
-    case 'workspace-updated':
-      normalized.workspace = WorkspaceRecordSchema.strip().parse(normalized.workspace);
-      break;
-    case 'turn-updated':
-    case 'turn-completed':
-      normalized.turn = TurnReaderSchema.parse(normalized.turn);
-      break;
-    case 'item-created':
-    case 'item-completed':
-      normalized.item = ItemReaderSchema.parse(normalized.item);
-      break;
-    case 'artifact-created':
-    case 'artifact-updated':
-      normalized.artifact = ArtifactReaderSchema.parse(normalized.artifact);
-      break;
-  }
-  return { ...value, data: normalized };
-}, SseEventEnvelopeSchema);
-export const WorkspaceSystemRecordSchema = WorkspaceRecordSchema.omit({
-  name: true,
-  counts: true,
-}).strip();
+/** Canonical history projects fixed retained v1 payloads without their native headers. */
+const ItemReaderSchema = StoredItemPayloadV1Schema;
+/** Retained Turn snapshots validate attribution and Item relationships independently of wire schemas. */
+export const TurnReaderSchema = StoredTurnSnapshotV1Schema;
+/** Metadata retains its feature and capture declarations without embedded Item payloads. */
+const TurnFileMetadataSchema = StoredTurnV1Schema.omit({ schemaVersion: true });
+/** Body-bearing retained projections preserve immutable Artifact lineage. */
+export const ArtifactReaderSchema = StoredArtifactSnapshotV1Schema;
+/** Historical event meaning is independent of the live protocol version. */
+const SseEventReaderSchema = StoredEventPayloadV1Schema;
+/** System metadata excludes the editable name and derived counts. */
+export const WorkspaceSystemRecordSchema = StoredWorkspaceV1Schema.omit({ schemaVersion: true });
 const { status: _proposalStatus, ...knowledgeProposalRecordShape } =
   KnowledgeManagerDraftedProposalSchema.shape;
 export const KnowledgeProposalRecordSchema = z
@@ -272,37 +213,8 @@ export const AgentSessionRetainedStorageSchema = z
   })
   .strip();
 
-/** Canonical AgentSession record schema shared with workspace portability. */
-export const AgentSessionRecordSchema = AgentSessionSchema.extend({
-  sandboxSummary: AgentSandboxSummarySchema.extend({
-    workspaceRootRefs: z.array(z.string().min(1)),
-  })
-    .strip()
-    .nullable(),
-  createdAt: CanonicalTimestampSchema,
-  updatedAt: CanonicalTimestampSchema,
-  configVersion: z.number().int().positive().nullable(),
-  environmentPackageSnapshotId: z.string().min(1).nullable(),
-  /** Actual admitted attachment, persisted before native open and immutable for this AgentSession. */
-  retainedStorage: AgentSessionRetainedStorageSchema.nullable().default(null),
-  /**
-   * Resume digest: the native handle digest of the ready proof NanoCore accepted for this
-   * AgentSession's binding. With the record's own id as locator it forms the resume pair a
-   * successor presents; null means no accepted ready proof. The field is an additive extension,
-   * so a record written before it existed reads as having no proof.
-   */
-  nativeHandleDigest: z
-    .string()
-    .regex(/^[0-9a-f]{64}$/)
-    .nullable()
-    .default(null),
-  policySnapshotId: z.string().min(1).nullable(),
-  sessionCompatibilityKey: z.string().min(1).nullable(),
-  stale: z.boolean(),
-  workspaceRoots: z.array(
-    z.union(MaterializedWorkspaceRootSchema.options.map((schema) => schema.strip()))
-  ),
-}).strip();
+/** Fixed canonical AgentSession payload shared with Workspace portability and current projections. */
+export const AgentSessionRecordSchema = StoredAgentSessionV1Schema.omit({ schemaVersion: true });
 
 const TERMINAL_AGENT_SESSION_STATUSES = new Set<AgentSession['status']>([
   'interrupted',
@@ -437,7 +349,7 @@ export function parseCanonicalWorkspaceHistory(input: {
   agentSessions: AgentSession[];
   turnEvents: Array<[string, SseEventEnvelope[]]>;
 } {
-  const workspace = WorkspaceRecordSchema.strip().parse(input.workspace);
+  const workspace = StoredWorkspaceSnapshotV1Schema.parse(input.workspace);
   const threads = input.threads.map((record) => ThreadSchema.parse(record));
   const turns = input.turns.map((record) => TurnReaderSchema.parse(record));
   const itemRevisions = input.itemRevisions.map((record) => ItemReaderSchema.parse(record));
@@ -878,8 +790,9 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
     for (const workspaceId of listDirectoryNames(workspacesRoot)) {
       if (workspaceId === '.staging') continue;
       const workspaceRoot = join(workspacesRoot, workspaceId);
-      const workspaceRecord = WorkspaceSystemRecordSchema.parse(
-        readJson(join(workspaceRoot, 'workspace-record.json'))
+      const workspaceRecord = readRetainedV1(
+        readJson(join(workspaceRoot, 'workspace-record.json')),
+        WorkspaceSystemRecordSchema.parse
       );
       if (workspaceRecord.id !== workspaceId) {
         return { status: 'unreadable' };
@@ -949,7 +862,7 @@ export function readPublishedTurnFileRecords(
   if (!existsSync(turnPath)) {
     return null;
   }
-  const rawTurn = readJson(turnPath) as Record<string, unknown>;
+  const rawTurn = readRetainedV1(readJson(turnPath), (record) => record as Record<string, unknown>);
   if (rawTurn.items !== undefined && (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)) {
     throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
   }
@@ -994,7 +907,7 @@ function readPublishedItemRevisions(
   const items = new Map<string, Item>();
   const revisions: Item[] = [];
   for (const value of readDurableCanonicalJsonLines(path)) {
-    const item = ItemReaderSchema.parse(value);
+    const item = readRetainedV1(value, ItemReaderSchema.parse);
     const previous = items.get(item.id);
     if (item.workspaceId !== workspaceId || item.threadId !== threadId || item.turnId !== turnId) {
       throw new Error(`Item record ${item.id} has invalid lineage.`);
@@ -1033,7 +946,7 @@ export function readPublishedAgentSessionIds(
       if (!existsSync(sessionPath)) {
         return { status: 'unreadable' };
       }
-      const session = AgentSessionRecordSchema.parse(readJson(sessionPath));
+      const session = readRetainedV1(readJson(sessionPath), AgentSessionRecordSchema.parse);
       if (
         session.id !== sessionId ||
         session.workspaceId !== workspaceId ||
@@ -1166,7 +1079,10 @@ export function appendWorkspaceItemRevision(workspaceRoot: string, item: Item): 
   ]) {
     assertCanonicalDirectory(parent);
   }
-  appendCanonicalTextFile(path, `${JSON.stringify(parsed)}\n`);
+  appendCanonicalTextFile(
+    path,
+    `${JSON.stringify(StoredItemV1Schema.parse(writeRetainedV1(parsed)))}\n`
+  );
 }
 
 /**
@@ -1204,7 +1120,10 @@ export function appendWorkspaceTurnEvent(workspaceRoot: string, event: SseEventE
     assertCanonicalDirectory(parent);
   }
   ensureCanonicalDirectory(dirname(path));
-  appendCanonicalTextFile(path, `${JSON.stringify(parsed)}\n`);
+  appendCanonicalTextFile(
+    path,
+    `${JSON.stringify(StoredEventV1Schema.parse(writeRetainedV1(parsed)))}\n`
+  );
 }
 
 /**
@@ -1238,9 +1157,13 @@ function loadWorkspace(
     );
   }
 
-  const workspaceRecord = WorkspaceSystemRecordSchema.parse(readJson(workspacePath));
-  const workspaceConfig = WorkspaceConfigSchema.parse(
-    parseJsoncObject(readCanonicalTextFile(workspaceConfigPath), workspaceConfigPath)
+  const workspaceRecord = readRetainedV1(
+    readJson(workspacePath),
+    WorkspaceSystemRecordSchema.parse
+  );
+  const workspaceConfig = readRetainedV1(
+    parseJsoncObject(readCanonicalTextFile(workspaceConfigPath), workspaceConfigPath),
+    WorkspaceConfigSchema.parse
   );
 
   if (workspaceRecord.id !== workspaceId) {
@@ -1290,7 +1213,10 @@ function loadWorkspace(
         throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
       }
 
-      const rawTurn = readJson(turnPath) as Record<string, unknown>;
+      const rawTurn = readRetainedV1(
+        readJson(turnPath),
+        (record) => record as Record<string, unknown>
+      );
       if (
         rawTurn.items !== undefined &&
         (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)
@@ -1306,7 +1232,7 @@ function loadWorkspace(
         }
         turnCaptureCoverage.set(turnId, parsedCoverage.data);
       }
-      const turnWithoutItems = TurnReaderSchema.parse({ ...rawTurn, items: [] });
+      const turnWithoutItems = TurnFileMetadataSchema.parse({ ...rawTurn, items: [] });
 
       if (
         turnWithoutItems.id !== turnId ||
@@ -1390,7 +1316,7 @@ function loadWorkspace(
 }
 
 /** Writes the system Workspace record and the field-preserving editable Workspace config. */
-function writeWorkspaceMetadata(
+export function writeWorkspaceMetadata(
   workspaceRoot: string,
   workspace: WorkspaceRecord,
   updateWorkspaceConfigName: boolean
@@ -1411,16 +1337,21 @@ function writeWorkspaceMetadata(
   }
 
   if (!configExists) {
-    writeJsonAtomic(workspaceConfigPath, {
-      schemaVersion: 1,
-      workspace: {
-        name: workspace.name,
-        defaultAgentId: null,
-      },
-    });
+    writeJsonAtomic(
+      workspaceConfigPath,
+      writeRetainedV1({
+        workspace: {
+          name: workspace.name,
+          defaultAgentId: null,
+        },
+      })
+    );
   } else if (updateWorkspaceConfigName) {
     const source = readCanonicalTextFile(workspaceConfigPath);
-    const config = WorkspaceConfigSchema.parse(parseJsoncObject(source, workspaceConfigPath));
+    const config = readRetainedV1(
+      parseJsoncObject(source, workspaceConfigPath),
+      WorkspaceConfigSchema.parse
+    );
     if (config.workspace.name !== workspace.name) {
       const updated = applyEdits(
         source,
@@ -1433,10 +1364,10 @@ function writeWorkspaceMetadata(
     }
   }
 
-  writeOwnedDescriptiveJson(
+  writeRetainedDescriptiveJson(
     workspaceRecordPath,
     projectWorkspaceSystemRecord(workspace),
-    WorkspaceSystemRecordSchema
+    StoredWorkspaceV1Schema
   );
 }
 
@@ -1496,7 +1427,7 @@ function loadItemRevisions(
   const revisions: Item[] = [];
 
   for (const value of readCanonicalJsonLines(path, true)) {
-    const item = ItemReaderSchema.parse(value);
+    const item = readRetainedV1(value, ItemReaderSchema.parse);
     const previous = items.get(item.id);
 
     if (item.workspaceId !== workspaceId || item.threadId !== threadId || item.turnId !== turnId) {
@@ -1536,7 +1467,7 @@ function loadTurnEvents(
   itemIds: ReadonlySet<string>
 ): SseEventEnvelope[] {
   const events = readCanonicalJsonLines(path, true).map((value) =>
-    SseEventReaderSchema.parse(value)
+    readRetainedV1(value, SseEventReaderSchema.parse)
   );
 
   for (const [index, event] of events.entries()) {
@@ -2033,8 +1964,11 @@ function loadArtifacts(
       throw new Error(`Canonical artifact directory is missing artifact.json: ${artifactId}.`);
     }
 
-    const metadata = readJson(metadataPath) as Record<string, unknown>;
-    const metadataContent = metadata.content as { body?: unknown; format?: unknown } | undefined;
+    const rawMetadata = readRetainedV1(
+      readJson(metadataPath),
+      (record) => record as Record<string, unknown>
+    );
+    const metadataContent = rawMetadata.content as { body?: unknown; format?: unknown } | undefined;
     const format = metadataContent?.format;
 
     if (metadataContent && Object.hasOwn(metadataContent, 'body')) {
@@ -2045,6 +1979,7 @@ function loadArtifacts(
       throw new Error(`Artifact ${artifactId} has an invalid content format.`);
     }
 
+    const metadata = StoredArtifactV1Schema.parse(rawMetadata);
     // Disposable projections can be absent, but retained paths must still be canonical.
     if (format !== 'file') {
       const filesRoot = join(artifactRoot, 'files');
@@ -2126,7 +2061,10 @@ function loadAgentSessions(
       throw new Error(`Canonical AgentSession directory is missing session.json: ${sessionId}.`);
     }
 
-    const session = AgentSessionRecordSchema.parse(readJson(sessionPath)) as AgentSession;
+    const session = readRetainedV1(
+      readJson(sessionPath),
+      AgentSessionRecordSchema.parse
+    ) as AgentSession;
 
     if (
       session.id !== sessionId ||
@@ -2238,7 +2176,10 @@ function classifyThreadVisibilityCutover(
   }
   const turnsRoot = join(workspaceRoot, 'threads', threadId, 'turns');
   const turns = listDirectoryNames(turnsRoot).map((id) =>
-    TurnReaderSchema.parse({ ...(readJson(join(turnsRoot, id, 'turn.json')) as object), items: [] })
+    TurnReaderSchema.parse({
+      ...readRetainedV1(readJson(join(turnsRoot, id, 'turn.json')), TurnFileMetadataSchema.parse),
+      items: [],
+    })
   );
   const firstTurn = turns.sort(
     (left, right) =>
@@ -2423,7 +2364,7 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
       throw new Error('Turn original input is recovery_required.');
   }
   const previousRaw = existsSync(turnPath)
-    ? (readJson(turnPath) as Record<string, unknown>)
+    ? readRetainedV1(readJson(turnPath), TurnFileMetadataSchema.parse)
     : undefined;
   const previousCoverage =
     previousRaw?.captureCoverage === undefined
@@ -2438,7 +2379,7 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
     throw new Error(`Turn ${turn.id} capture coverage binding is recovery_required.`);
   }
   const captureCoverage = nextCoverage ?? previousCoverage;
-  writeOwnedDescriptiveJson(
+  writeRetainedDescriptiveJson(
     turnPath,
     {
       ...turn,
@@ -2446,14 +2387,16 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
       ...(captureCoverage ? { captureCoverage } : {}),
       ...(previousRaw?.requiredFeatures ? { requiredFeatures: previousRaw.requiredFeatures } : {}),
     },
-    TurnFileMetadataSchema
+    StoredTurnV1Schema
   );
   const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
   const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
   if (!itemLogMetadata) {
     writeFileAtomic(
       itemsPath,
-      revisions.map((item) => JSON.stringify(item)).join('\n') + (revisions.length ? '\n' : '')
+      revisions
+        .map((item) => JSON.stringify(StoredItemV1Schema.parse(writeRetainedV1(item))))
+        .join('\n') + (revisions.length ? '\n' : '')
     );
   } else {
     assertCanonicalRegularFile(itemsPath);
@@ -2463,7 +2406,10 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
   if (!eventLogMetadata) {
     const events = records.streamEvents.find(([turnId]) => turnId === turn.id)?.[1] ?? [];
     if (events.length > 0) {
-      writeFileAtomic(eventsPath, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`);
+      writeFileAtomic(
+        eventsPath,
+        `${events.map((event) => JSON.stringify(StoredEventV1Schema.parse(writeRetainedV1(event)))).join('\n')}\n`
+      );
     }
   } else {
     assertCanonicalRegularFile(eventsPath);
@@ -2549,11 +2495,6 @@ export function publishArtifactFileRecord(input: {
  * @param artifact Artifact record to write.
  */
 function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void {
-  // Both formats preserve additions from the same physical header, which omits inline bodies.
-  const headerReader = z.object({
-    ...ArtifactReaderSchema.shape,
-    content: z.union([ArtifactInlineContentSchema.omit({ body: true }), ArtifactFileContentSchema]),
-  });
   if (artifact.content.format === 'file') {
     ensureCanonicalDirectory(artifactRoot);
     const payload = join(artifactRoot, 'versions', String(artifact.version), 'payload');
@@ -2561,7 +2502,11 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
     if (lstatSync(payload).size !== artifact.content.byteLength) {
       throw new Error('The Artifact file payload length is inconsistent.');
     }
-    writeOwnedDescriptiveJson(join(artifactRoot, 'artifact.json'), artifact, headerReader);
+    writeRetainedDescriptiveJson(
+      join(artifactRoot, 'artifact.json'),
+      artifact,
+      StoredArtifactV1Schema
+    );
     return;
   }
   const filesRoot = join(artifactRoot, 'files');
@@ -2574,13 +2519,13 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
       rmSync(join(filesRoot, staleFileName), { force: true });
     }
   }
-  writeOwnedDescriptiveJson(
+  writeRetainedDescriptiveJson(
     join(artifactRoot, 'artifact.json'),
     {
       ...artifact,
       content: { format: artifact.content.format },
     },
-    headerReader
+    StoredArtifactV1Schema
   );
   writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
 }
@@ -2896,16 +2841,20 @@ function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords
     const sessionRoot = join(root, session.id);
     if (lstatSync(sessionRoot, { throwIfNoEntry: false })) {
       ensureCanonicalDirectory(sessionRoot);
-      writeOwnedDescriptiveJson(
+      writeRetainedDescriptiveJson(
         join(sessionRoot, 'session.json'),
         session,
-        AgentSessionRecordSchema
+        StoredAgentSessionV1Schema
       );
       continue;
     }
     publishNewRecordDirectory(workspaceRoot, sessionRoot, (stage) => {
       ensureCanonicalDirectory(stage);
-      writeOwnedDescriptiveJson(join(stage, 'session.json'), session, AgentSessionRecordSchema);
+      writeRetainedDescriptiveJson(
+        join(stage, 'session.json'),
+        session,
+        StoredAgentSessionV1Schema
+      );
     });
   }
 }
@@ -3252,6 +3201,15 @@ export function preserveDescriptiveRecord(raw: unknown, previous: unknown, next:
       configurable: true,
     });
   return retained;
+}
+
+/** Adds the retained marker and checks existing versions before the ordinary annotation-preserving rewrite. */
+function writeRetainedDescriptiveJson(path: string, next: object, schema: z.ZodType): void {
+  writeOwnedDescriptiveJson(
+    path,
+    writeRetainedV1(next),
+    z.preprocess((record) => readRetainedV1(record, (value) => value), schema)
+  );
 }
 
 /** Validates an existing owned record before preserving annotations on its normal rewrite. */

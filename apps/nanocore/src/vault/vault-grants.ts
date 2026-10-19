@@ -1,4 +1,4 @@
-import { isEntityId } from '@openkit/protocol';
+import { isEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import type {
   VaultGrantLifetime,
@@ -49,6 +49,7 @@ export interface VaultGrantRecord {
 
 /** Raw SQLite row for one vault grant. */
 interface VaultGrantRow {
+  readonly schemaVersion: unknown;
   readonly grant_id: string;
   readonly issuance: 'target' | 'imported-history';
   readonly vault_reference_id: string;
@@ -260,6 +261,7 @@ export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): 
   coreDb.sqlite
     .prepare(
       `INSERT OR IGNORE INTO vault_grants (
+        schema_version,
         grant_id,
         issuance,
         vault_reference_id,
@@ -277,9 +279,10 @@ export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): 
         status,
         created_at,
         expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       input.grantId,
       'target',
       input.vaultReferenceId,
@@ -386,6 +389,7 @@ export function importWorkspaceVaultGrants(
     coreDb.sqlite
       .prepare(
         `INSERT OR IGNORE INTO vault_grants (
+          schema_version,
           grant_id,
           issuance,
           vault_reference_id,
@@ -403,9 +407,10 @@ export function importWorkspaceVaultGrants(
           status,
           created_at,
           expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        writeRetainedV1({}).schemaVersion,
         grant.grantId,
         'imported-history',
         grant.vaultReferenceId,
@@ -509,7 +514,7 @@ function assertAllowedInjectionPaths(allowedInjectionPaths: readonly string[]): 
  * @returns SQL SELECT fragment.
  */
 function vaultGrantSelectSql(): string {
-  return `SELECT
+  return `SELECT schema_version AS schemaVersion,
     grant_id,
     issuance,
     vault_reference_id,
@@ -537,12 +542,13 @@ function vaultGrantSelectSql(): string {
  * @returns Vault grant record.
  */
 function mapVaultGrantRow(row: VaultGrantRow): VaultGrantRecord {
+  readRetainedV1(row, () => undefined);
   if (!isEntityId('grant', row.grant_id) || !isEntityId('vault', row.vault_reference_id))
     throw new Error('Invalid canonical VaultGrant identity.');
   assertIssuance(row.issuance);
   return {
     issuance: row.issuance,
-    allowedInjectionPaths: parseAllowedInjectionPaths(row.allowed_injection_paths),
+    allowedInjectionPaths: parseAllowedInjectionPathsV1(row.allowed_injection_paths),
     approvalId: row.approval_id,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
@@ -562,13 +568,13 @@ function mapVaultGrantRow(row: VaultGrantRow): VaultGrantRecord {
 }
 
 /**
- * Parses the stored injection path class list.
+ * Parses the fixed v1 injection-path payload independently from current request schemas.
  *
  * @param value Stored JSON array.
  * @returns Injection path classes.
  * @throws Error when the stored value is invalid.
  */
-function parseAllowedInjectionPaths(value: string): string[] {
+function parseAllowedInjectionPathsV1(value: string): string[] {
   const parsed = JSON.parse(value) as unknown;
 
   if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string' || !entry)) {

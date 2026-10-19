@@ -1,16 +1,24 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   ArtifactVersionRecordSchema,
+  AuditEventSchema,
+  allocateEntityId,
   deriveEntityId,
   isEntityId,
+  KnowledgeBaseIdSchema,
   PROTOCOL_VERSION,
+  writeRetainedV1,
 } from '@openkit/protocol';
+import { applyEdits, modify } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
+import { parseJsoncObject } from '../config/jsonc.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -55,6 +63,7 @@ import {
 
 const timestamp = '2026-07-05T00:00:00.000Z';
 const localActor = { kind: 'user', id: LOCAL_USER_ID } as const;
+const workspaceKnowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
 
 /** Export fixture input with empty Material owner families supplied by the local writer wrapper. */
 type WorkspaceExportTestInput = Omit<
@@ -89,7 +98,11 @@ function writeWorkspaceExportTree(input: WorkspaceExportTestInput) {
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
         schemaVersion: 1,
-        workspace: { name: input.workspace.name, defaultAgentId: null },
+        workspace: {
+          name: input.workspace.name,
+          defaultAgentId: null,
+          defaultKnowledgeBaseId: workspaceKnowledgeBaseId,
+        },
       }),
       workspaceSchema: null,
     },
@@ -109,6 +122,46 @@ function readImportSnapshot(exportRoot: string, targetWorkspaceId: string) {
     targetWorkspaceId,
     targetServerId: 'server_test_target',
   });
+}
+
+/** Compares independent import candidates while preserving their one deliberately fresh base identity. */
+function expectRepeatedImportSnapshot(
+  exportRoot: string,
+  targetWorkspaceId: string,
+  imported: ReturnType<typeof readImportSnapshot>,
+  sourceConfig: Buffer
+): void {
+  const sourceConfigPath = join(exportRoot, 'workspace-files', 'config', 'workspace.jsonc');
+  const repeated = readImportSnapshot(exportRoot, targetWorkspaceId);
+  expect(KnowledgeBaseIdSchema.safeParse(imported.defaultKnowledgeBaseId).success).toBe(true);
+  expect(KnowledgeBaseIdSchema.safeParse(repeated.defaultKnowledgeBaseId).success).toBe(true);
+  expect(repeated.defaultKnowledgeBaseId).not.toBe(imported.defaultKnowledgeBaseId);
+  const importedConfig = imported.portableFileState.workspaceConfig!;
+  const repeatedConfig = repeated.portableFileState.workspaceConfig!;
+  expect(
+    WorkspaceConfigSchema.parse(parseJsoncObject(importedConfig)).workspace.defaultKnowledgeBaseId
+  ).toBe(imported.defaultKnowledgeBaseId);
+  expect(
+    WorkspaceConfigSchema.parse(parseJsoncObject(repeatedConfig)).workspace.defaultKnowledgeBaseId
+  ).toBe(repeated.defaultKnowledgeBaseId);
+  // Only the request-local reminted base and its exact config member differ; all other bytes stay exact.
+  expect({
+    ...repeated,
+    defaultKnowledgeBaseId: imported.defaultKnowledgeBaseId,
+    portableFileState: {
+      ...repeated.portableFileState,
+      workspaceConfig: applyEdits(
+        repeatedConfig,
+        modify(
+          repeatedConfig,
+          ['workspace', 'defaultKnowledgeBaseId'],
+          imported.defaultKnowledgeBaseId,
+          {}
+        )
+      ),
+    },
+  }).toEqual({ ...imported, finalizeNotebookKnowledge: expect.any(Function) });
+  expect(readFileSync(sourceConfigPath)).toEqual(sourceConfig);
 }
 
 /**
@@ -177,6 +230,59 @@ function writeExportTree(
 }
 
 describe('workspace export verifier', () => {
+  it('carries non-secret authenticated credential identity through verified export and import', () => {
+    const root = freshExportRoot('audit-auth-export-');
+    const workspaceId = testEntityId('ws', 'audit-auth-export');
+    const authentication = {
+      credentialKind: 'session' as const,
+      credentialId: testEntityId('auth', 'source-credential'),
+    };
+    const event = AuditEventSchema.parse({
+      id: testEntityId('aud', 'audit-auth-export'),
+      workspaceId,
+      actor: { kind: 'user', id: testEntityId('usr', 'source-actor') },
+      authentication,
+      action: 'catalog.mcp-create',
+      resource: 'mcp:stub',
+      outcome: 'succeeded',
+      summary: 'MCP created.',
+      createdAt: timestamp,
+      occurredAt: timestamp,
+    });
+    try {
+      writeWorkspaceExportTree({
+        exportRoot: root,
+        exportId: testEntityId('wsexp', 'audit-auth-export'),
+        sourceDeploymentId: testEntityId('dep', 'audit-auth-export'),
+        createdAt: timestamp,
+        workspace: {
+          id: workspaceId,
+          name: 'Audit',
+          kind: 'code',
+          status: 'active',
+          counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        threads: [],
+        turns: [],
+        itemRevisions: [],
+        artifacts: [],
+        artifactReviews: [],
+        agentSessions: [],
+        turnEvents: [],
+        knowledge: [],
+        auditEvents: [event],
+      });
+      const targetWorkspaceId = testEntityId('ws', 'audit-auth-import');
+      const imported = readImportSnapshot(root, targetWorkspaceId);
+      expect(imported.auditEvents).toEqual([{ ...event, workspaceId: targetWorkspaceId }]);
+      expect(imported.auditEvents[0]?.authentication).toEqual(authentication);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('always exports all three empty recurring families with their required feature', () => {
     const root = freshExportRoot('recurring-empty-export-');
     const verified = writeWorkspaceExportTree({
@@ -203,6 +309,9 @@ describe('workspace export verifier', () => {
       knowledge: [],
     });
     expect(verified.manifest.requiredFeatures).toContain('workspace.recurring-triggers.v1');
+    expect(
+      parseJsoncObject(verified.fileContents.get('workspace-files/config/workspace.jsonc')!)
+    ).toMatchObject({ workspace: { defaultKnowledgeBaseId: workspaceKnowledgeBaseId } });
     for (const family of ['schedules', 'occurrences', 'expired-ranges'])
       expect(verified.fileContents.get(`records/recurring-${family}.jsonl`)).toBe('');
     expect(verified.fileContents.has('workspace-files/imports/recurrence-history.json')).toBe(
@@ -777,10 +886,12 @@ describe('workspace export verifier', () => {
     expect
       .soft(exported.checkedFiles)
       .toContain('artifacts/ar_00000000-0000-7e0d-8050-96f36ec9a01f/files/content.md');
-    expect.soft(artifactMetadata).toEqual({
-      ...artifact,
-      content: { format: artifact.content.format },
-    });
+    expect.soft(artifactMetadata).toEqual(
+      writeRetainedV1({
+        ...artifact,
+        content: { format: artifact.content.format },
+      })
+    );
     expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
     expect.soft(readFileSync(artifactBodyPath, 'utf8')).toBe(artifact.content.body);
     expect.soft(verifyWorkspaceExportTree({ exportRoot: root })).toEqual(exported);
@@ -1110,6 +1221,10 @@ describe('workspace export verifier', () => {
       agentSessions: [],
       turnEvents: [],
     });
+    const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: fixture.workspace.id },
+    });
     const turn = store.createTurn(
       fixture.workspace.id,
       fixture.thread.id,
@@ -1148,10 +1263,24 @@ describe('workspace export verifier', () => {
     const responseText = await response.text();
     if (response.status === 200) {
       const body = JSON.parse(responseText) as { exportId: string };
-      const imported = readImportSnapshot(
-        join(dataRoot, 'server', 'exports', 'workspaces', fixture.workspace.id, body.exportId),
-        'ws_00000000-0000-7340-b235-ccdf7acf0cac'
+      const exportRoot = join(
+        dataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        fixture.workspace.id,
+        body.exportId
       );
+      const imported = readImportSnapshot(exportRoot, 'ws_00000000-0000-7340-b235-ccdf7acf0cac');
+      expect(
+        parseJsoncObject(
+          readFileSync(join(exportRoot, 'workspace-files/config/workspace.jsonc'), 'utf8')
+        )
+      ).toMatchObject({ workspace: { defaultKnowledgeBaseId: sourceKnowledgeBaseId } });
+      expect(imported.defaultKnowledgeBaseId).not.toBe(sourceKnowledgeBaseId);
+      expect(parseJsoncObject(imported.portableFileState.workspaceConfig!)).toMatchObject({
+        workspace: { defaultKnowledgeBaseId: imported.defaultKnowledgeBaseId },
+      });
       expect(imported.turnEvents[0]?.[1].map((event) => event.sequence)).toEqual(
         Array.from({ length: 101 }, (_, index) => index + 1)
       );
@@ -1183,6 +1312,10 @@ describe('workspace export verifier', () => {
       artifacts: [],
       agentSessions: [],
       turnEvents: [],
+    });
+    const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: fixture.workspace.id },
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -1329,6 +1462,11 @@ describe('workspace export verifier', () => {
     const { importedWorkspaceId } = JSON.parse(importResponseText) as {
       importedWorkspaceId: string;
     };
+    const importedKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
+    });
+    expect(importedKnowledgeBaseId).not.toBe(sourceKnowledgeBaseId);
     const importedWorkspaceDb = openWorkspaceDb(dataRoot, importedWorkspaceId);
     let firstImportedRevisionIds: string[] = [];
     try {
@@ -1407,6 +1545,12 @@ describe('workspace export verifier', () => {
     );
     expect(secondImportResponse.status).toBe(200);
     const secondTarget = (await secondImportResponse.json()) as { importedWorkspaceId: string };
+    const secondKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: secondTarget.importedWorkspaceId },
+    });
+    expect(secondKnowledgeBaseId).not.toBe(importedKnowledgeBaseId);
+    expect(secondKnowledgeBaseId).not.toBe(sourceKnowledgeBaseId);
     const secondDb = openWorkspaceDb(dataRoot, secondTarget.importedWorkspaceId);
     try {
       const rows = secondDb.sqlite
@@ -1506,6 +1650,7 @@ describe('workspace export verifier', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     } as const;
+    const serverPageScope = `page/server/${allocateEntityId('kb')}`;
     const traceId = 'krt_00000000-0000-77c6-84f7-ac86ac6632b2';
     const requestDigest = `sha256:${'8'.repeat(64)}`;
     const sourcePortableRoot = mkdtempSync(
@@ -1526,7 +1671,7 @@ describe('workspace export verifier', () => {
         },
         threadId: thread.id,
       },
-      sourceScope: 'page/server',
+      sourceScope: serverPageScope,
       notebookRevision: null,
       caller: 'app-api',
       requestDigest,
@@ -1539,7 +1684,7 @@ describe('workspace export verifier', () => {
       },
       selected: [
         {
-          reference: { scopeId: 'page/server', objectId: 'same-path' },
+          reference: { scopeId: serverPageScope, objectId: 'same-path' },
           revision: `sha256:${'9'.repeat(64)}`,
           contentDigest: `sha256:${'9'.repeat(64)}`,
           sourceReferences: [],
@@ -1558,13 +1703,17 @@ describe('workspace export verifier', () => {
       join(sourcePortableRoot, 'config', 'workspace.jsonc'),
       JSON.stringify({
         schemaVersion: 1,
-        workspace: { name: 'Demo workspace', defaultAgentId: null },
+        workspace: {
+          name: 'Demo workspace',
+          defaultAgentId: null,
+          defaultKnowledgeBaseId: workspaceKnowledgeBaseId,
+        },
       })
     );
     mkdirSync(join(sourcePortableRoot, 'threads', thread.id, 'retrieval-traces'), {
       recursive: true,
     });
-    const sourceTraceText = `${JSON.stringify(sourceTrace)}\n`;
+    const sourceTraceText = `${JSON.stringify(writeRetainedV1(sourceTrace))}\n`;
     writeFileSync(join(sourcePortableRoot, sourceTracePath), sourceTraceText);
     // The codec reads the current canonical content owner even for a trace-only Workspace.
     new KnowledgeNotebook({
@@ -1646,10 +1795,10 @@ describe('workspace export verifier', () => {
         workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636',
         threadId: imported.threads[0]?.id,
       },
-      sourceScope: 'page/server',
+      sourceScope: serverPageScope,
       selected: [
         expect.objectContaining({
-          reference: { scopeId: 'page/server', objectId: 'same-path' },
+          reference: { scopeId: serverPageScope, objectId: 'same-path' },
         }),
       ],
     });
@@ -1970,13 +2119,15 @@ describe('workspace export verifier', () => {
       ],
     });
 
+    const sourceConfig = readFileSync(join(root, 'workspace-files', 'config', 'workspace.jsonc'));
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    // Each read creates a request-local completion closure; all retained data stays identical.
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
-      ...imported,
-      finalizeNotebookKnowledge: expect.any(Function),
-    });
+    expectRepeatedImportSnapshot(
+      root,
+      'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+      imported,
+      sourceConfig
+    );
   });
 
   it('normalizes unknown usage ledger fields while reading workspace imports', () => {
@@ -2053,13 +2204,15 @@ describe('workspace export verifier', () => {
       ],
     });
 
+    const sourceConfig = readFileSync(join(root, 'workspace-files', 'config', 'workspace.jsonc'));
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    // Each read creates a request-local completion closure; all retained data stays identical.
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
-      ...imported,
-      finalizeNotebookKnowledge: expect.any(Function),
-    });
+    expectRepeatedImportSnapshot(
+      root,
+      'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+      imported,
+      sourceConfig
+    );
   });
 
   it('preserves ordinary archived Git push fixture text through verified bytes and retained reads', () => {
@@ -2111,6 +2264,7 @@ describe('workspace export verifier', () => {
       ],
     });
 
+    const sourceConfig = readFileSync(join(root, 'workspace-files', 'config', 'workspace.jsonc'));
     const imported = readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8');
     const bytes = readFileSync(join(root, 'records/git-push-records.jsonl'));
     const digest = createHash('sha256').update(bytes).digest('hex');
@@ -2128,11 +2282,12 @@ describe('workspace export verifier', () => {
         .digest('hex')
     ).toBe(digest);
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
-    // Each read creates a request-local completion closure; all retained data stays identical.
-    expect(readImportSnapshot(root, 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8')).toEqual({
-      ...imported,
-      finalizeNotebookKnowledge: expect.any(Function),
-    });
+    expectRepeatedImportSnapshot(
+      root,
+      'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+      imported,
+      sourceConfig
+    );
   });
 
   it('rewrites workspace quarantine records while reading workspace imports', () => {

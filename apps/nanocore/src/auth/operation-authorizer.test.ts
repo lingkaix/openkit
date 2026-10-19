@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,7 +9,7 @@ import {
 } from '@openkit/app-api-schemas';
 import * as policyKernel from '@openkit/policy-kernel';
 import { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import {
@@ -37,14 +37,19 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
+  acceptWorkspaceInvitation,
+  createWorkspaceInvitation,
+  leaveWorkspace,
+} from '../workspace-sharing.js';
+import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
+  rotateOpenKitAccessTokenRecord,
 } from './access-token-store.js';
 import type { Actor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import * as nanoHostOperations from './nanohost-operations.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
-import * as operationAuthorizer from './operation-authorizer.js';
 import {
   currentScheduledTurnWorkspaceAuthority,
   currentSchedulerAdmissionWorkspaceAuthority,
@@ -52,6 +57,8 @@ import {
   currentWorkspaceAuthority,
   isCanonicalUserOperationAuthorized,
   registerOperationAccessGuards,
+  type WorkspaceAuthorityEvaluation,
+  type WorkspaceAuthorityOptions,
 } from './operation-authorizer.js';
 
 // Clone the immutable projection only in this test module so a definition fixture can replace its matching access row.
@@ -705,6 +712,237 @@ describe('central Workspace operation authorizer', () => {
     expect(
       currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true)
     ).toBeNull();
+  });
+
+  it.each([
+    'member',
+    'administrator',
+  ] as const)('propagates unreadable %s authority only when strict dependency failures are requested', (authority) => {
+    const dataRoot = fixture.dataRoot;
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const actor = {
+      kind: 'user' as const,
+      id:
+        authority === 'member'
+          ? 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8'
+          : 'usr_00000000-0000-7000-8000-000000000001',
+    };
+    const token =
+      authority === 'administrator'
+        ? createOpenKitAccessTokenRecord(fixture.coreDb, {
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            ownerUserId: actor.id,
+            scope: 'server-admin',
+            workspaceIds: [],
+          }).record
+        : null;
+    const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'queue_strict_authority',
+      triggerActor: actor,
+      serverAdminTokenId: token?.tokenId ?? null,
+      workspaceId: fixture.workspace.id,
+      threadId: fixture.turn.threadId,
+      turnId: fixture.turn.id,
+      turnInput: 'Check current tool authority',
+      requestedAgentId: 'agent_worker',
+    });
+    recordTestExecutionAttempt(fixture.coreDb, {
+      entry,
+      attemptId: testEntityId('attempt', 'strict_authority'),
+      agentSessionId: testEntityId('as', 'strict_authority'),
+      inputRef: 'snapshot_strict_authority',
+      bindingRef: 'binding_strict_authority',
+      sessionCompatibilityKey: 'sha256:strict-authority',
+      now: () => new Date().toISOString(),
+    });
+    const lineage = {
+      workspaceId: entry.workspaceId,
+      threadId: entry.threadId,
+      turnId: entry.turnId,
+      agentSessionId: testEntityId('as', 'strict_authority'),
+      packageSnapshotId: 'snapshot_strict_authority',
+      triggerActor: actor,
+    };
+    const requestActor = token
+      ? {
+          kind: 'token' as const,
+          tokenId: token.tokenId,
+          tokenScope: 'server-admin' as const,
+          userId: actor.id,
+        }
+      : undefined;
+    const strict = { dependencyFailure: 'throw' as const };
+    const evaluate = (options?: WorkspaceAuthorityOptions) => [
+      () =>
+        currentWorkspaceAuthority(
+          fixture.coreDb,
+          entry.workspaceId,
+          actor,
+          'tool.use',
+          true,
+          requestActor,
+          options
+        ),
+      () =>
+        currentSchedulerAdmissionWorkspaceAuthority(
+          fixture.coreDb,
+          entry,
+          'tool.use',
+          true,
+          options
+        ),
+      () =>
+        currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true, options),
+    ];
+    for (const check of evaluate(strict)) expect(check()).toBe(authority);
+    const capture = vi.fn<(event: WorkspaceAuthorityEvaluation) => void>();
+    const capturedOptions = { ...strict, onEvaluation: capture };
+    const membership = fixture.coreDb.sqlite
+      .prepare('SELECT revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+      .get(entry.workspaceId, actor.id) as { revision: number };
+    const expectedFacts = {
+      workspaceId: entry.workspaceId,
+      operation: 'tool.use',
+      responsibleUserId: actor.id,
+      relation: authority,
+      presentedTokenId: token?.tokenId ?? null,
+      membershipRevision: token ? null : membership.revision,
+      presentedTokenState: token
+        ? {
+            tokenId: token.tokenId,
+            ownerUserId: token.ownerUserId,
+            scope: token.scope,
+            workspaceIds: token.workspaceIds,
+            status: token.status,
+            expiresAt: token.expiresAt,
+            revokedAt: token.revokedAt,
+            predecessorTokenId: token.predecessorTokenId,
+            rotatedGraceExpiresAt: token.rotatedGraceExpiresAt,
+          }
+        : null,
+    };
+    for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
+    expect(capture).toHaveBeenCalledTimes(3);
+    for (const [event] of capture.mock.calls) {
+      expect(event.facts).toEqual(expectedFacts);
+      expect(event.decision.effect).toBe('allow');
+      expect(event.decision.reasons).toBeDefined();
+      expect(event.decision.trace).toBeDefined();
+    }
+    capture.mockClear();
+    if (token) {
+      const rotated = rotateOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId, {
+        graceSeconds: 3600,
+      });
+      if (!rotated) throw new Error('Expected the real Token rotation to succeed.');
+      expectedFacts.presentedTokenState = {
+        ...expectedFacts.presentedTokenState!,
+        status: rotated.rotatedRecord.status,
+        rotatedGraceExpiresAt: rotated.rotatedRecord.rotatedGraceExpiresAt,
+      };
+    } else {
+      const left = fixture.coreDb.sqlite.transaction(() =>
+        leaveWorkspace({
+          coreDb: fixture.coreDb,
+          workspaceId: entry.workspaceId,
+          memberUserId: actor.id,
+          expectedRevision: membership.revision,
+        })
+      )();
+      expect(left.kind).toBe('removed');
+      for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+      expect(capture).not.toHaveBeenCalled();
+      const rejoined = fixture.coreDb.sqlite.transaction(() => {
+        const invited = createWorkspaceInvitation({
+          coreDb: fixture.coreDb,
+          workspaceId: entry.workspaceId,
+          inviterUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          inviteeEmail: 'viewer-member@example.com',
+        });
+        if (invited.kind !== 'created') throw new Error('Expected a real rejoin invitation.');
+        return acceptWorkspaceInvitation({
+          coreDb: fixture.coreDb,
+          workspaceId: entry.workspaceId,
+          invitationId: invited.invitation.invitationId,
+          inviteeUserId: actor.id,
+          expectedRevision: invited.invitation.revision,
+        });
+      })();
+      if (rejoined.kind !== 'accepted') throw new Error('Expected a real membership rejoin.');
+      expect(rejoined.member.revision).toBeGreaterThan(membership.revision);
+      expectedFacts.membershipRevision = rejoined.member.revision;
+    }
+    for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
+    expect(capture).toHaveBeenCalledTimes(3);
+    for (const [event] of capture.mock.calls) expect(event.facts).toEqual(expectedFacts);
+    capture.mockClear();
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const kernel = vi
+      .spyOn(policyKernel, 'evaluateAccess')
+      .mockImplementation((policy, request) =>
+        actualEvaluate({ ...policy, associations: [] }, request)
+      );
+    try {
+      for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+      expect(capture).toHaveBeenCalledTimes(3);
+      for (const [index, [event]] of capture.mock.calls.entries()) {
+        expect(event.facts).toEqual(expectedFacts);
+        expect(event.decision).toEqual(kernel.mock.results[index]?.value);
+        expect(event.decision.effect).toBe('deny');
+      }
+      for (const check of evaluate({
+        ...strict,
+        onEvaluation: (event) => {
+          event.decision.effect = 'allow';
+        },
+      }))
+        expect(check()).toBeNull();
+    } finally {
+      kernel.mockRestore();
+    }
+    const callbackError = new Error('Evaluation capture unavailable');
+    const failedCapture = {
+      onEvaluation: () => {
+        throw callbackError;
+      },
+    };
+    for (const check of evaluate(failedCapture)) expect(check()).toBeNull();
+    for (const check of evaluate({ ...strict, ...failedCapture }))
+      expect(check).toThrow(callbackError);
+    capture.mockClear();
+    const table = token ? 'openkit_access_tokens' : 'workspace_members';
+    const readError = new Error(`Authority read unavailable: ${table}`);
+    const prepare = fixture.coreDb.sqlite.prepare.bind(fixture.coreDb.sqlite);
+    const unavailable = vi.spyOn(fixture.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+      if (sql.includes(table)) throw readError;
+      return prepare(sql);
+    });
+    try {
+      for (const check of evaluate()) expect(check()).toBeNull();
+      for (const check of evaluate(strict)) expect(check).toThrow(readError);
+    } finally {
+      unavailable.mockRestore();
+    }
+    if (token) {
+      revokeOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId);
+    } else {
+      fixture.coreDb.sqlite
+        .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .run(entry.workspaceId, actor.id);
+    }
+    for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
+    expect(
+      currentWorkerLineageWorkspaceAuthority(
+        fixture.coreDb,
+        { ...lineage, packageSnapshotId: 'missing_snapshot' },
+        'tool.use',
+        true,
+        capturedOptions
+      )
+    ).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
   });
 
   it('derives collection candidates from active Core memberships before loading content', async () => {
@@ -1642,6 +1880,7 @@ describe('canonical administration Workspace admission', () => {
     const definition: OperationDefinition = {
       ...OPERATION_DEFINITIONS[id],
       credentials: ['deployment-administrator'],
+      policyOperation: 'workspace.read',
       inputSchema: z.object({ workspaceId: z.string(), turnId: z.string() }).strict(),
       scope:
         strategy === 'body-workspace'
@@ -1663,7 +1902,7 @@ describe('canonical administration Workspace admission', () => {
           scope: 'workspace',
           resolver: strategy,
           authentication: 'deployment-admin',
-          policyOperation: 'api.call',
+          policyOperation: 'workspace.read',
           mutating: false,
         },
       ],
@@ -1684,7 +1923,7 @@ describe('canonical administration Workspace admission', () => {
     vi.spyOn(nanoHostOperations, 'createNanoHostOperationImplementations').mockImplementation(
       (dependencies) => ({ ...factory(dependencies), [id]: execute })
     );
-    const admission = vi.spyOn(operationAuthorizer, 'authorizeWorkspace');
+    const admission = vi.spyOn(policyKernel, 'evaluateAccess');
     try {
       for (const [table, value] of patches)
         Object.defineProperty(table, id, { ...Object.getOwnPropertyDescriptor(table, id), value });

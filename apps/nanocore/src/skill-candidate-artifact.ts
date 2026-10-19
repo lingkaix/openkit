@@ -29,7 +29,7 @@ export interface SkillCandidateArtifactSelection {
   readonly workspaceId: string;
   /** Existing Artifact identity, never a locator or host path. */
   readonly artifactId: string;
-  /** Exact current source version chosen by the caller. */
+  /** Exact retained source version chosen by the caller. */
   readonly version: number;
   /** Expected original-byte digest, independently verified before decoding. */
   readonly contentDigest: string;
@@ -43,9 +43,9 @@ export interface SkillCandidateArtifactInput {
   readonly digest: string;
   /** Original retained Artifact attribution, independent of submission authority. */
   readonly source: SkillCandidateArtifactSelection & { readonly origin: Artifact['origin'] };
-  /** Provable original producer, or null; consumers must not substitute the submitter. */
+  /** Provable selected-version producer, or null; never substitute the submitter. */
   readonly producer: ActorRef | null;
-  /** Actual producing work facts, absent for imported Artifacts. */
+  /** Selected-version publication facts, absent for a direct import. */
   readonly producingTurn: {
     readonly workspaceId: string;
     readonly threadId: string;
@@ -144,7 +144,7 @@ export function readSkillCandidateArtifact(input: {
 }): SkillCandidateArtifactInput {
   const selection = { ...input.selection };
   try {
-    const readCurrent = (): Artifact => {
+    const readSelected = () => {
       if (
         !isWorkspaceOperationAuthorized(input.coreDb, input.actor, selection.workspaceId, {
           mutating: true,
@@ -152,22 +152,26 @@ export function readSkillCandidateArtifact(input: {
         })
       )
         throw new SkillCandidateArtifactError('source_unavailable');
-      const artifact = requireSkillCandidateArtifactAccess({ ...input, selection });
-      if (
-        artifact.version !== selection.version ||
-        artifact.contentDigest !== selection.contentDigest
-      ) {
+      const current = requireSkillCandidateArtifactAccess({ ...input, selection });
+      if (selection.version > current.version) throw new SkillCandidateArtifactError('stale');
+      const retained = input.store.getArtifactVersion(
+        selection.workspaceId,
+        selection.artifactId,
+        selection.version
+      );
+      const { artifact } = retained;
+      if (artifact.contentDigest !== selection.contentDigest)
         throw new SkillCandidateArtifactError('stale');
-      }
       if (
         artifact.content.format !== 'json' &&
         !(artifact.content.format === 'file' && artifact.content.mediaType === 'application/json')
       ) {
         throw new SkillCandidateArtifactError('source_unavailable');
       }
-      return artifact;
+      return retained;
     };
-    const artifact = readCurrent();
+    const selected = readSelected();
+    const { artifact, version } = selected;
     let body: string;
     if (artifact.content.format === 'file') {
       if (artifact.content.byteLength > MAX_SKILL_CANDIDATE_ARTIFACT_BYTES)
@@ -204,11 +208,11 @@ export function readSkillCandidateArtifact(input: {
     }
     let producer: ActorRef | null = null;
     let producingTurn: SkillCandidateArtifactInput['producingTurn'] = null;
-    if (artifact.origin.kind === 'imported') {
-      producer = artifact.origin.actor;
+    if (version.threadId === null || version.turnId === null) {
+      producer = version.actor;
     } else {
       const turn = TurnSchema.parse(
-        input.store.getTurn(selection.workspaceId, artifact.origin.threadId, artifact.origin.turnId)
+        input.store.getTurn(selection.workspaceId, version.threadId, version.turnId)
       );
       producingTurn = {
         workspaceId: turn.workspaceId,
@@ -223,11 +227,14 @@ export function readSkillCandidateArtifact(input: {
           id: turn.agentId,
           responsibleUserId: responsibleUserIdForActor(turn.triggerActor),
         };
+      // Later manual revisions belong to their author, not the original Worker's Turn.
+      else if (version.artifactVersion > 1) producer = version.actor;
     }
-    const current = readCurrent();
+    const confirmed = readSelected();
     if (
-      JSON.stringify(current.content) !== JSON.stringify(artifact.content) ||
-      JSON.stringify(current.origin) !== JSON.stringify(artifact.origin)
+      JSON.stringify(confirmed.artifact.content) !== JSON.stringify(artifact.content) ||
+      JSON.stringify(confirmed.artifact.origin) !== JSON.stringify(artifact.origin) ||
+      JSON.stringify(confirmed.version) !== JSON.stringify(version)
     ) {
       throw new SkillCandidateArtifactError('source_unavailable');
     }

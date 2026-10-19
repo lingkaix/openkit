@@ -1,4 +1,10 @@
-import { ItemIdSchema, ThreadIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  ItemIdSchema,
+  readRetainedV1,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import type { UserDb } from './db.js';
 
 const itemIdsSchema = ItemIdSchema.array();
@@ -22,17 +28,19 @@ export function readThreadReadReceipt(
   ThreadIdSchema.parse(threadId);
   const row = userDb.sqlite
     .prepare(
-      'SELECT item_ids_json FROM thread_read_receipts WHERE workspace_id = ? AND thread_id = ?'
+      'SELECT schema_version AS schemaVersion, item_ids_json FROM thread_read_receipts WHERE workspace_id = ? AND thread_id = ?'
     )
-    .get(workspaceId, threadId) as { item_ids_json: string } | undefined;
+    .get(workspaceId, threadId) as { schemaVersion: unknown; item_ids_json: string } | undefined;
   if (!row) return [];
 
   try {
-    const itemIds = itemIdsSchema.parse(JSON.parse(row.item_ids_json));
-    if (new Set(itemIds).size !== itemIds.length) {
-      throw new Error('Receipt membership must be a set.');
-    }
-    return itemIds.sort();
+    return readRetainedV1(row, () => {
+      const itemIds = itemIdsSchema.parse(JSON.parse(row.item_ids_json));
+      if (new Set(itemIds).size !== itemIds.length) {
+        throw new Error('Receipt membership must be a set.');
+      }
+      return itemIds.sort();
+    });
   } catch (cause) {
     throw new Error('Thread read receipt storage content is invalid.', { cause });
   }
@@ -68,11 +76,11 @@ export function advanceThreadReadReceipt(
       if (union.length !== previous.length) {
         userDb.sqlite
           .prepare(
-            `INSERT INTO thread_read_receipts (workspace_id, thread_id, item_ids_json)
-           VALUES (?, ?, ?)
-           ON CONFLICT (workspace_id, thread_id) DO UPDATE SET item_ids_json = excluded.item_ids_json`
+            `INSERT INTO thread_read_receipts (workspace_id, thread_id, schema_version, item_ids_json)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (workspace_id, thread_id) DO UPDATE SET schema_version = excluded.schema_version, item_ids_json = excluded.item_ids_json`
           )
-          .run(workspaceId, threadId, JSON.stringify(union));
+          .run(workspaceId, threadId, writeRetainedV1({}).schemaVersion, JSON.stringify(union));
       }
       return union;
     })

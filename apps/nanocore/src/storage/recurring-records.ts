@@ -1,13 +1,5 @@
-import {
-  AutomationAttemptCodeSchema,
-  AutomationDefinitionSnapshotSchema,
-  AutomationExpiredRangeSchema,
-  AutomationOccurrenceSchema,
-  type AutomationRecord,
-  AutomationRecordSchema,
-  MaterializedWorkspaceRootSchema,
-} from '@openkit/app-api-schemas';
-import { deriveEntityId, ReasoningEffortSchema } from '@openkit/protocol';
+import { type AutomationRecord, MaterializedWorkspaceRootSchema } from '@openkit/app-api-schemas';
+import { deriveEntityId, ReasoningEffortSchema, readRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
@@ -20,6 +12,13 @@ import {
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
 import type { CoreDb } from './db.js';
+import {
+  StoredRecurringAttemptCodeV1Schema,
+  StoredRecurringDefinitionSnapshotV1Schema,
+  StoredRecurringExpiredRangeV1Schema,
+  StoredRecurringOccurrenceV1Schema,
+  StoredRecurringScheduleV1Schema,
+} from './recurring-retained-v1.js';
 
 /** Fixed admission deadline measured from the original nominal instant. */
 export const RECURRING_DEADLINE_MS = 600_000;
@@ -35,34 +34,27 @@ export const RecurringAdmissionPayloadSchema = z.object({
   reasoningEffort: ReasoningEffortSchema.optional(),
   requiredFeatures: z.array(z.never()).optional(),
 });
-/** Closed trigger outcome codes; summaries never contain dependency exception text. */
-export const RecurringAttemptCodeSchema = AutomationAttemptCodeSchema;
-/** Immutable authored request shared by individual occurrences and expired ranges. */
-export const RecurringDefinitionSnapshotSchema = AutomationDefinitionSnapshotSchema;
-/** Durable admission history for exactly one nominal UTC instant. */
-export const RecurringOccurrenceSchema = AutomationOccurrenceSchema.omit({
-  resolvedSelection: true,
-  schedulerStatus: true,
-  publicationIssue: true,
-}).extend({
-  resolvedPayload: RecurringAdmissionPayloadSchema.nullable(),
-  requiredFeatures: z.array(z.never()).optional(),
-});
-/** Lossless, immutable old-definition coverage for an arbitrary outage interval. */
-export const ExpiredOccurrenceRangeSchema = AutomationExpiredRangeSchema.safeExtend({
-  requiredFeatures: z.array(z.never()).optional(),
-}).superRefine((record, context) => {
-  try {
-    validateRecurringRangeCoverage(record);
-    if (record.snapshot.actor.id !== record.scheduleId)
-      throw new Error('Contradictory expired range actor.');
-  } catch {
-    context.addIssue({
-      code: 'custom',
-      message: 'Expired recurring range contradicts its exact cadence or snapshot.',
-    });
+/** Closed native v1 attempt outcomes, independent of current operation projections. */
+export const RecurringAttemptCodeSchema = StoredRecurringAttemptCodeV1Schema;
+/** Fixed native snapshot shared by occurrence and expired-range history. */
+export const RecurringDefinitionSnapshotSchema = StoredRecurringDefinitionSnapshotV1Schema;
+/** Fixed native occurrence payload before exact identity and attempt-sequence checks. */
+export const RecurringOccurrenceSchema = StoredRecurringOccurrenceV1Schema;
+/** Fixed native range plus its unchanged exact coverage predicates. */
+export const ExpiredOccurrenceRangeSchema = StoredRecurringExpiredRangeV1Schema.superRefine(
+  (record, context) => {
+    try {
+      validateRecurringRangeCoverage(record);
+      if (record.snapshot.actor.id !== record.scheduleId)
+        throw new Error('Contradictory expired range actor.');
+    } catch {
+      context.addIssue({
+        code: 'custom',
+        message: 'Expired recurring range contradicts its exact cadence or snapshot.',
+      });
+    }
   }
-});
+);
 /** Frozen scheduler request, including complete root selection. */
 export type RecurringAdmissionPayload = z.infer<typeof RecurringAdmissionPayloadSchema>;
 /** Individual durable occurrence. */
@@ -132,11 +124,11 @@ export function findAcceptedRecurringOccurrenceForQueue(
   queueEntryId: string
 ): RecurringOccurrence | null {
   const row = coreDb.sqlite
-    .prepare(`SELECT record_json FROM recurring_occurrences
+    .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_occurrences
     WHERE queue_entry_id = ? AND state = 'admission-accepted'`)
-    .get(queueEntryId) as { record_json: string } | undefined;
+    .get(queueEntryId) as { schemaVersion: unknown; record_json: string } | undefined;
   if (!row) return null;
-  const occurrence = readRecurringOccurrence(row.record_json);
+  const occurrence = readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
   if (!occurrence.resolvedPayload)
     throw new Error('Accepted RecurringOccurrence has no exact admission payload.');
   const request = recurringSchedulerAdmissionInput(
@@ -165,7 +157,8 @@ export function readRecurringSchedule(json: string): AutomationRecord {
     (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length)
   )
     throw new Error('RecurringSchedule has unsupported required semantics.');
-  const record = AutomationRecordSchema.parse(value);
+  const { requiredFeatures: _requiredFeatures, ...record } =
+    StoredRecurringScheduleV1Schema.parse(value);
   if (
     record.actor.id !== record.id ||
     record.actor.responsibleUserId !== record.responsibleUserId ||

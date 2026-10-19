@@ -1,11 +1,12 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createOpenKitAccessTokenRecord,
+  listOpenKitAccessTokenRecords,
   listOwnedServerAdminAccessTokens,
   resolveSessionDeploymentAdminTokenId,
   revokeOpenKitAccessTokenRecord,
@@ -62,6 +63,165 @@ function insertTokenOwnerUser(coreDb: ReturnType<typeof openCoreDb>): void {
 }
 
 describe('OpenKit access token store', () => {
+  it('writes v1 workspace bindings and reads them through native verification', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-bindings-v1-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const workspaceIds = ['ws_00000000-0000-7000-8000-000000000001'];
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        scope: 'workspace',
+        workspaceIds,
+        expiresAt: '2026-07-07T00:00:00.000Z',
+        now: new Date('2026-07-06T00:00:00.000Z'),
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion, workspace_ids_json FROM openkit_access_tokens'
+          )
+          .get()
+      ).toEqual({ schemaVersion: 1, workspace_ids_json: JSON.stringify(workspaceIds) });
+      expect(
+        verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+          now: new Date('2026-07-06T00:01:00.000Z'),
+        })?.workspaceIds
+      ).toEqual(workspaceIds);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses unknown binding formats before malformed JSON and token metadata effects', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-bindings-version-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        scope: 'workspace',
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+        expiresAt: '2026-07-07T00:00:00.000Z',
+        now: new Date('2026-07-06T00:00:00.000Z'),
+      });
+      coreDb.sqlite
+        .prepare('UPDATE openkit_access_tokens SET schema_version = 2, workspace_ids_json = ?')
+        .run('{');
+
+      expect(() => listOpenKitAccessTokenRecords(coreDb)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+          now: new Date('2026-07-06T00:01:00.000Z'),
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() => revokeOpenKitAccessTokenRecord(coreDb, issued.tokenId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion, workspace_ids_json, status, last_used_at, revoked_at FROM openkit_access_tokens'
+          )
+          .get()
+      ).toEqual({
+        schemaVersion: 2,
+        workspace_ids_json: '{',
+        status: 'active',
+        last_used_at: null,
+        revoked_at: null,
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('writes and resolves a v1 per-user default setting with descriptive additions', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-default-v1-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const ownerUserId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f';
+      const now = new Date('2026-07-06T00:00:00.000Z');
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2026-07-07T00:00:00.000Z',
+        now,
+      });
+      expect(setDefaultServerAdminTokenId(coreDb, ownerUserId, issued.tokenId, now)).toBe(true);
+      const key = `auth.default_server_admin_token.${ownerUserId}`;
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM server_settings WHERE key = ?')
+          .get(key)
+      ).toEqual({ schemaVersion: 1 });
+      const value = JSON.stringify({ tokenId: issued.tokenId, futureNote: 'retained' });
+      coreDb.sqlite.prepare('UPDATE server_settings SET value = ? WHERE key = ?').run(value, key);
+
+      expect(
+        resolveSessionDeploymentAdminTokenId(coreDb, ownerUserId, now) === issued.tokenId
+      ).toBe(true);
+      const retained = coreDb.sqlite
+        .prepare('SELECT value FROM server_settings WHERE key = ?')
+        .get(key) as {
+        value: string;
+      };
+      expect(retained.value === value).toBe(true);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown default format before malformed JSON or token fallback and replacement', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-default-version-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const ownerUserId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f';
+      const now = new Date('2026-07-06T00:00:00.000Z');
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2026-07-07T00:00:00.000Z',
+        now,
+      });
+      setDefaultServerAdminTokenId(coreDb, ownerUserId, issued.tokenId, now);
+      const key = `auth.default_server_admin_token.${ownerUserId}`;
+      coreDb.sqlite
+        .prepare('UPDATE server_settings SET schema_version = 2, value = ? WHERE key = ?')
+        .run('{', key);
+
+      expect(() => resolveSessionDeploymentAdminTokenId(coreDb, ownerUserId, now)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => setDefaultServerAdminTokenId(coreDb, ownerUserId, issued.tokenId, now)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion, value FROM server_settings WHERE key = ?'
+          )
+          .get(key)
+      ).toEqual({ schemaVersion: 2, value: '{' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('stores only a hashed token secret and verifies active server-admin tokens', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-store-'));
     const coreDb = openCoreDb(dataRoot);

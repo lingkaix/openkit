@@ -1,7 +1,7 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -24,7 +24,12 @@ import {
 
 /** Creates one dispatched lease in an isolated Core database. */
 function createFixture() {
-  const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-backend-session-')));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-backend-session-'));
+  const coreDb = openCoreDb(dataRoot);
+  onTestFinished(() => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
@@ -166,7 +171,7 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('persists the complete package-scoped identity before materialization and accepts exact replay', () => {
+  it('persists v1 package-scoped identity before materialization and accepts exact replay', () => {
     const coreDb = createFixture();
 
     try {
@@ -203,6 +208,56 @@ describe('worker backend sessions', () => {
       });
       expect(replay).toEqual(first);
       expect(getWorkerBackendSession(coreDb, first.attemptId)).toEqual(first);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM worker_backend_sessions')
+          .get()
+      ).toEqual({ schemaVersion: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown backend version before lineage decode, replay or lifecycle updates', () => {
+    const coreDb = createFixture();
+    try {
+      const original = recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      coreDb.sqlite
+        .prepare(`UPDATE worker_backend_sessions SET schema_version = 2,
+        backend_lineage_json = '{' WHERE attempt_id = ?`)
+        .run(original.attemptId);
+      coreDb.sqlite.exec(`CREATE TRIGGER reject_unsupported_backend_update BEFORE UPDATE ON worker_backend_sessions
+        BEGIN SELECT RAISE(FAIL, 'Unsupported backend reached an UPDATE'); END`);
+      expect(() => getWorkerBackendSession(coreDb, original.attemptId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        transitionWorkerBackendSessionState(coreDb, {
+          attemptId: original.attemptId,
+          fromState: 'materializing',
+          toState: 'materialized',
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: original.attemptId })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        markWorkerBackendSessionLaunching(coreDb, { attemptId: original.attemptId })
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion, backend_lineage_json, state,
+        workspace_handoff_state FROM worker_backend_sessions WHERE attempt_id = ?`)
+          .get(original.attemptId)
+      ).toEqual({
+        schemaVersion: 2,
+        backend_lineage_json: '{',
+        state: original.state,
+        workspace_handoff_state: original.workspaceHandoffState,
+      });
     } finally {
       coreDb.sqlite.close();
     }

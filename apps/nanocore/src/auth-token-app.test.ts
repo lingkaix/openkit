@@ -569,6 +569,15 @@ describe('server-mode access-token auth', () => {
       expect(auditEvents.map((event) => event.action)).toEqual(
         expect.arrayContaining(['auth.token.issue', 'auth.token.revoke'])
       );
+      expect(issueEvent).toMatchObject({
+        actor: { kind: 'user', id: admin.record.ownerUserId },
+        authentication: { credentialKind: 'token', credentialId: admin.tokenId },
+        resource: `auth-token:${createdBody.record.tokenId}`,
+      });
+      expect(revokeEvent).toMatchObject({
+        actor: { kind: 'user', id: admin.record.ownerUserId },
+        authentication: { credentialKind: 'token', credentialId: admin.tokenId },
+      });
       expect(issueEvent?.summary).toContain(`using presented admin ${admin.tokenId}`);
       expect(revokeEvent?.summary).toContain(`using presented admin ${admin.tokenId}`);
       expect(JSON.stringify(auditEvents)).not.toContain(admin.secret);

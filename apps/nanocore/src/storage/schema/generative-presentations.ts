@@ -1,9 +1,12 @@
-import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Immutable native Generative UI presentation revisions. */
 export const generativePresentations = sqliteTable(
   'generative_presentations',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Core-assigned presentation identity. */
     presentationId: text('presentation_id').notNull(),
     /** Workspace that owns the presentation. */

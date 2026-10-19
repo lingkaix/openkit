@@ -13,7 +13,11 @@ import {
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
-import { importWorkspaceSkill, removeWorkspaceSkill } from '../catalog/resource-catalog.js';
+import {
+  importWorkspaceSkill,
+  removeWorkspaceSkill,
+  setWorkspaceSkillPin,
+} from '../catalog/resource-catalog.js';
 import { buildWorkerContextPackageWorkspaceInput } from '../context/worker-context-package.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -169,6 +173,7 @@ describe('NanoHost worker governance helpers', () => {
 
   it.each([
     'available',
+    'pinned-audit',
     'removed-during-context-read',
   ] as const)('imports only currently eligible verified Skill files after the canonical AEP: %s', async (selection) => {
     const skillBody =
@@ -201,6 +206,17 @@ describe('NanoHost worker governance helpers', () => {
         ],
         workspaceId: turn.workspaceId,
       });
+      const pinAuditRef = allocateEntityId('aud');
+      if (selection === 'pinned-audit') {
+        setWorkspaceSkillPin({
+          dataRoot,
+          digest: created.version.digest,
+          entryId: 'repo-guidelines',
+          expectedRevision: created.catalog.revision,
+          pinAuditRef,
+          workspaceId: turn.workspaceId,
+        });
+      }
       const environmentPackage = AgentEnvironmentPackageSchema.parse(
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -282,6 +298,15 @@ describe('NanoHost worker governance helpers', () => {
       expect(imports[1]?.contentDigest).toBe(
         created.version.inventory.find((entry) => entry.path === 'SKILL.md')?.sha256
       );
+      if (selection === 'pinned-audit') {
+        const skill = environmentPackage.supply.skills[0];
+        expect(skill?.lineage?.pinAuditRef).toBe(pinAuditRef);
+        if (!skill?.lineage) throw new Error('Expected the pinned Skill lineage.');
+        skill.lineage.baseDigest = `sha256:${'f'.repeat(64)}`;
+        await expect(
+          prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })
+        ).rejects.toThrow('Worker Skill supply does not match its retained catalog version');
+      }
     } finally {
       vi.restoreAllMocks();
       syncBuiltinESMExports();

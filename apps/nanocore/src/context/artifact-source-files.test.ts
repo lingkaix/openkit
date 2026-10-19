@@ -143,9 +143,7 @@ it('prepares a bounded preview and exact streamed original larger than the inlin
   expect(sources).toHaveLength(1);
   const source = sources[0]!;
   expect(source.originalDigest).toBe(expected);
-  expect(source.originalSnapshotPath).toBe(
-    'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload'
-  );
+  expect(source).not.toHaveProperty('originalSnapshotPath');
   expect(source.packagePath).toBe(
     'sources/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1.txt'
   );
@@ -229,7 +227,7 @@ it.each([
     f.workspaceRoot,
     'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
   );
-  expect(readFileSync(join(snapshot, source!.originalSnapshotPath))).toEqual(body);
+  expect(readdirSync(snapshot)).not.toContain('originals');
   expect(readFileSync(join(snapshot, source!.packagePath))).toEqual(source!.deliveredBytes);
 });
 
@@ -357,9 +355,7 @@ it('captures nested metadata before callbacks can mutate caller-owned input', as
   });
   expect(source!.source).toMatchObject({ artifactVersion: 1 });
   expect(source!.byteLength).toBe(f.body.length);
-  expect(source!.originalSnapshotPath).toBe(
-    'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload'
-  );
+  expect(source).not.toHaveProperty('originalSnapshotPath');
   await source!.assertUnchanged();
 });
 
@@ -497,7 +493,7 @@ it('keeps unavailable descriptor bytes fixed when source metadata requires JSON 
   expect(JSON.stringify(f.artifact.origin)).toContain('\\u0001');
   const [source] = await prepareArtifactSourceInputs(f.input);
   expect(source!.source.reference.objectId).toBe(f.artifact.id);
-  expect(source!.originalSnapshotPath).toBe(`originals/artifacts/${f.artifact.id}/1/payload`);
+  expect(source).not.toHaveProperty('originalSnapshotPath');
   expect(Buffer.from(source!.deliveredBytes).toString('utf8')).toBe(
     '{"status":"unavailable","reason":"unsupported"}'
   );
@@ -533,23 +529,24 @@ function selectedPdf(): Buffer {
   return Buffer.from(text);
 }
 
-it('retains a selected PDF original and complete isolated text representation while delivering only its bounded preview', async () => {
+it('verifies a selected PDF and its isolated representation while retaining only its bounded delivered preview', async () => {
   const original = selectedPdf();
   const f = await fixture(original, 'file', 'application/pdf');
   const [source] = await prepareArtifactSourceInputs({ ...f.input, admission: f.admission });
   expect(source!.projection.kind).toBe('excerpt');
   expect(source!.projection.representationId).toMatch(/^pdf-text-layer-v1:sha256:/);
-  expect(source!.projection.representationSnapshotPath).toBe(
-    'representations/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/pdf-text-layer.txt'
-  );
+  expect(source!.projection).not.toHaveProperty('representationSnapshotPath');
   const files = packageFor(f, [source!]);
   await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
   const root = join(
     f.workspaceRoot,
     'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
   );
-  expect(readFileSync(join(root, source!.originalSnapshotPath))).toEqual(original);
-  const complete = readFileSync(join(root, source!.projection.representationSnapshotPath!));
+  expect(readdirSync(root)).not.toContain('originals');
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of source!.openRepresentation!(new AbortController().signal))
+    chunks.push(chunk);
+  const complete = Buffer.concat(chunks);
   const expected = [1, 2]
     .map(
       (page) =>
@@ -581,15 +578,11 @@ it('retains a selected PDF original and complete isolated text representation wh
     processor: { id: 'pdfjs-pdf-text-layer-v1' },
   });
   expect(readFileSync(join(root, 'instructions.md'), 'utf8')).toBe('Inspect selected originals');
-  expect(
-    files.fileInventory.find((file) => file.path === source!.projection.representationSnapshotPath)
-  ).toMatchObject({
-    contentDigest: sha256(complete),
-    byteLength: complete.byteLength,
-  });
+  expect(files.fileInventory.some((file) => file.path.startsWith('representations/'))).toBe(false);
+  expect(readdirSync(root)).not.toContain('representations');
 });
 
-it('retains a selected encrypted PDF original with only an unavailable descriptor and no representation handle', async () => {
+it('retains only an unavailable descriptor and exact original reference for an encrypted PDF', async () => {
   const original = readFileSync(
     new URL('./fixtures/pdf-text-layer/encrypted.pdf', import.meta.url)
   );
@@ -612,6 +605,6 @@ it('retains a selected encrypted PDF original with only an unavailable descripto
     f.workspaceRoot,
     'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
   );
-  expect(readFileSync(join(root, source!.originalSnapshotPath))).toEqual(original);
+  expect(readdirSync(root)).not.toContain('originals');
   expect(files.fileInventory.some((file) => file.path.startsWith('representations/'))).toBe(false);
 });

@@ -6,14 +6,17 @@ import {
 } from '@openkit/config-schema';
 import {
   type ActorRef,
+  type AuditEvent,
   type GatewayRouteLineageEntry,
   REASONING_EFFORT_LEVELS,
   type ReasoningEffort,
   ReasoningEffortSchema,
+  readRetainedV1,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   currentWorkerLineageWorkspaceAuthority,
@@ -25,6 +28,7 @@ import {
   type GatewayCallLedgerBinding,
   hasCapabilityCallRequestId,
   recordUsage,
+  type StartedCapabilityCall,
   startCapabilityCall,
   writeGatewayRouteLineage,
 } from '../capability/usage-ledger.js';
@@ -36,7 +40,10 @@ import {
 import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import type {
+  ProviderCredentialConfigured,
+  ProviderCredentialUseContext,
+} from '../providers/registry.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -162,11 +169,7 @@ interface PublicLlmGatewayLineage {
 }
 
 /** Started durable LLM gateway call with its workspace database handle. */
-interface DurableLlmGatewayCall {
-  /** Workspace-scoped database handle. */
-  workspaceDb: WorkspaceDb;
-  /** Started capability call row. */
-  call: ReturnType<typeof startCapabilityCall>;
+interface DurableLlmGatewayCall extends GatewayCallLedgerBinding {
   /** Whether the capability call and database handle already reached a terminal boundary. */
   finished: boolean;
   /** Value-free raw-source failure retained even when public stream framing changes. */
@@ -186,6 +189,8 @@ interface DurableLlmGatewayCall {
 function startPublicLlmGatewayCall(input: {
   /** Exact authenticated actor that authorized the workspace call. */
   authorityActor: ActorRef;
+  /** Non-secret credential identity from the same authenticated request. */
+  authentication: NonNullable<AuditEvent['authentication']>;
   /** Optional Core database handle for durable workspace storage. */
   coreDb?: CoreDb;
   /** Gateway endpoint family. */
@@ -201,43 +206,55 @@ function startPublicLlmGatewayCall(input: {
 
   const lineage = readPublicLlmGatewayLineage(input.metadata);
 
-  if (!lineage) {
-    return null;
-  }
-
-  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, lineage.workspaceId);
+  const workspaceDb = lineage
+    ? openWorkspaceDb(input.coreDb.dataRoot, lineage.workspaceId)
+    : input.coreDb;
 
   try {
-    applyScopedMigrations(workspaceDb);
+    if (workspaceDb.scope === 'workspace') applyScopedMigrations(workspaceDb);
 
     if (
-      lineage.requestId &&
+      lineage?.requestId &&
+      workspaceDb.scope === 'workspace' &&
       hasCapabilityCallRequestId(workspaceDb, lineage.workspaceId, lineage.requestId)
     ) {
       throw new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
     }
-    const call = startCapabilityCall({
-      agentId: lineage.agentId ?? null,
-      agentSessionId: lineage.agentSessionId ?? null,
+    const callInput = {
+      agentId: lineage?.agentId ?? null,
+      agentSessionId: lineage?.agentSessionId ?? null,
       authorityActor: input.authorityActor,
+      authentication: input.authentication,
       capabilityId: `llm.${input.endpoint}`,
       family: 'llm',
-      itemId: lineage.itemId ?? null,
+      itemId: lineage?.itemId ?? null,
       operation: input.endpoint,
       providerRef: null,
       redactionClass: 'metadata-only',
-      requestId: lineage.requestId ?? randomUUID(),
+      requestId: lineage?.requestId ?? randomUUID(),
       serviceRef: 'llm-gateway',
-      sourceIds: lineage.sourceIds ?? [],
+      sourceIds: lineage?.sourceIds ?? [],
       summary:
-        lineage.threadId && lineage.turnId
+        lineage?.threadId && lineage?.turnId
           ? `Public ${input.endpoint} LLM gateway call.`
           : `Public ${input.endpoint} LLM gateway call. Model capture unavailable: no Turn admission.`,
-      threadId: lineage.threadId ?? null,
-      turnId: lineage.turnId ?? null,
-      workspaceDb,
-      workspaceId: lineage.workspaceId,
-    });
+      threadId: lineage?.threadId ?? null,
+      turnId: lineage?.turnId ?? null,
+    };
+    const call =
+      workspaceDb.scope === 'core'
+        ? startCapabilityCall({
+            ...callInput,
+            family: 'llm',
+            workspaceDb,
+            owner: { kind: 'server' },
+          })
+        : startCapabilityCall({
+            ...callInput,
+            family: 'llm',
+            workspaceDb,
+            workspaceId: workspaceDb.workspaceId,
+          });
     persistLlmCapabilityCallSystemPromptDigest({
       callId: call.id,
       systemPromptDigest: digestLlmSystemPrompt({
@@ -253,7 +270,7 @@ function startPublicLlmGatewayCall(input: {
       workspaceDb,
     };
   } catch (error) {
-    workspaceDb.sqlite.close();
+    if (workspaceDb.scope === 'workspace') workspaceDb.sqlite.close();
     throw error;
   }
 }
@@ -470,7 +487,7 @@ function finishDurableLlmGatewayCall(
     });
   } finally {
     try {
-      durableCall.workspaceDb.sqlite.close();
+      if (durableCall.workspaceDb.scope === 'workspace') durableCall.workspaceDb.sqlite.close();
     } finally {
       durableCall.onFinished?.();
     }
@@ -847,7 +864,7 @@ function startWorkerInferenceCall(input: {
   readonly cacheDegraded: boolean;
   /** Pre-adapter Chat Completions or Responses request. */
   readonly request: unknown;
-}): DurableLlmGatewayCall {
+}): DurableLlmGatewayCall & { workspaceDb: WorkspaceDb; call: StartedCapabilityCall } {
   if (!input.coreDb) {
     throw new WorkerInferenceRouteError(
       'worker_inference_unavailable',
@@ -1772,7 +1789,11 @@ export function registerWorkerInferenceRoutes({
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Resolves a private Provider route selected by the current Gateway config. */
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) => ResolvedLLMProviderConfig;
   /** Returns the current hot-reloadable Gateway configuration snapshot. */
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
@@ -2019,13 +2040,17 @@ export function registerWorkerInferenceRoutes({
           requireWorkerRawOutputAvailable(durableCall.workspaceDb, scope);
           const previous = durableCall.workspaceDb.sqlite
             .prepare(
-              "SELECT call_id, status, error_code FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND service_ref = 'worker-inference-gateway' AND call_id <> ? AND (status IN ('running', 'unknown') OR error_code = 'worker_raw_output_unavailable')"
+              "SELECT schema_version, call_id, status, error_code FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND service_ref = 'worker-inference-gateway' AND call_id <> ? AND (status IN ('running', 'unknown') OR error_code = 'worker_raw_output_unavailable')"
             )
             .all(scope.workspaceId, scope.threadId, scope.turnId, durableCall.call.id) as Array<{
+            schema_version: number;
             call_id: string;
             status: string;
             error_code: string | null;
           }>;
+          for (const call of previous) {
+            readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
+          }
           if (
             previous.some((call) => call.status !== 'running' || !rawGroup.calls.has(call.call_id))
           )
@@ -2102,6 +2127,11 @@ export function registerWorkerInferenceRoutes({
                 endpoint,
                 effectiveEffort
               );
+              const retainedCall = durableCall.workspaceDb.sqlite
+                .prepare('SELECT schema_version FROM capability_calls WHERE call_id = ?')
+                .get(durableCall.call.id) as { schema_version: number } | undefined;
+              if (retainedCall)
+                readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
               durableCall.workspaceDb.sqlite
                 .prepare(
                   'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
@@ -2504,7 +2534,11 @@ export async function dispatchLogicalModel<T>(input: {
   /** Entry-admitted coherent minimums; absent or unknown limits constrain nothing. */
   pinnedLimits?: Pick<NonNullable<ResolvedLogicalModel['contract']>, 'context' | 'output'>;
   clock?: GatewayClock;
-  resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  resolveGatewayProvider: (
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) => ResolvedLLMProviderConfig;
   providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Private diagnostic observer before member resolution, including failures that never reach the producer. */
   onAttemptStart?: (context: { corr: string; attempt: number }) => void;
@@ -2520,6 +2554,15 @@ export async function dispatchLogicalModel<T>(input: {
   }) => Promise<T>;
 }): Promise<T> {
   const corr = randomUUID();
+  const callContext = input.ledger?.call.context;
+  const credentialUseContext: ProviderCredentialUseContext | undefined = callContext?.authorityActor
+    ? {
+        actor: callContext.authorityActor,
+        capabilityCallId: input.ledger!.call.id,
+        ...(callContext.workspaceId ? { consumerWorkspaceId: callContext.workspaceId } : {}),
+        ...(callContext.agentSessionId ? { agentSessionId: callContext.agentSessionId } : {}),
+      }
+    : undefined;
   const providers = new Map<string, ResolvedLLMProviderConfig>();
   const resolutionFailures = new Map<string, unknown>();
   const selections = planLogicalModel(
@@ -2534,7 +2577,11 @@ export async function dispatchLogicalModel<T>(input: {
         return true;
       let provider: ResolvedLLMProviderConfig;
       try {
-        provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+        provider = input.resolveGatewayProvider(
+          route.providerProfileId,
+          route.providerModel,
+          credentialUseContext
+        );
       } catch (error) {
         resolutionFailures.set(route.id, error);
         return true;
@@ -2628,7 +2675,11 @@ export async function dispatchLogicalModel<T>(input: {
         }
         provider =
           providers.get(route.id) ??
-          input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+          input.resolveGatewayProvider(
+            route.providerProfileId,
+            route.providerModel,
+            credentialUseContext
+          );
         providers.set(route.id, provider);
         assertGatewayModelAuthorized(provider, route.providerModel);
         subscriptionModels = await resolveGatewaySubscriptionModels(
@@ -2796,7 +2847,11 @@ export function registerLlmGatewayRoutes({
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
   /**
@@ -2965,6 +3020,7 @@ export function registerLlmGatewayRoutes({
       const durableCall = startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
         authorityActor,
+        authentication: auditAuthenticationFromActor(c.get('actor')),
         endpoint: 'chat_completions',
         metadata: (request as { metadata?: unknown }).metadata,
         request,
@@ -3133,6 +3189,7 @@ export function registerLlmGatewayRoutes({
       const durableCall = startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
         authorityActor,
+        authentication: auditAuthenticationFromActor(c.get('actor')),
         endpoint: 'responses',
         metadata: (request as { metadata?: unknown }).metadata,
         request,

@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { writeRetainedV1 } from '@openkit/protocol';
 
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createWorkerContextPackageFiles } from '../context/worker-context-package.js';
@@ -23,6 +24,8 @@ import {
   writeWorkspacePortableFileState,
 } from './workspace-portable-file-state.js';
 
+/** Exact base owned by the authored directory, Notebook and trace fixture. */
+const PORTABLE_KNOWLEDGE_BASE_ID = 'kb_00000000-0000-7000-8000-000000000001';
 const JUNE = '2026-06-30T23:59:59.000Z';
 const JULY = '2026-07-01T00:00:00.000Z';
 const PORTABLE_TURN = {
@@ -167,7 +170,7 @@ function writePortableFixture(root: string): void {
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
     },
-    sourceScope: `page/workspace/${workspaceId}`,
+    sourceScope: `page/workspace/${workspaceId}/${PORTABLE_KNOWLEDGE_BASE_ID}`,
     notebookRevision: null,
     caller: 'app-api',
     requestDigest: `sha256:${'0'.repeat(64)}`,
@@ -197,7 +200,7 @@ function writePortableFixture(root: string): void {
     `${retrieval.traceId}.json`
   );
   mkdirSync(dirname(retrievalPath), { recursive: true });
-  writeFileSync(retrievalPath, `${JSON.stringify(retrieval)}\n`);
+  writeFileSync(retrievalPath, `${JSON.stringify(writeRetainedV1(retrieval))}\n`);
   const threadRetrieval = {
     ...retrieval,
     traceId: 'krt_00000000-0000-7afe-9d7a-6a1fdf1c3d36',
@@ -214,12 +217,12 @@ function writePortableFixture(root: string): void {
     `${threadRetrieval.traceId}.json`
   );
   mkdirSync(dirname(threadRetrievalPath), { recursive: true });
-  writeFileSync(threadRetrievalPath, `${JSON.stringify(threadRetrieval)}\n`);
+  writeFileSync(threadRetrievalPath, `${JSON.stringify(writeRetainedV1(threadRetrieval))}\n`);
 
   mkdirSync(join(root, 'config'), { recursive: true });
   writeFileSync(
     join(root, 'config', 'workspace.jsonc'),
-    '{\n  // exact comment\n  "schemaVersion": 1\n}\n'
+    `{\n  // exact comment\n  "schemaVersion": 1,\n  "workspace": { "name": "Portable file fixture", "defaultKnowledgeBaseId": "${PORTABLE_KNOWLEDGE_BASE_ID}" }\n}\n`
   );
   mkdirSync(join(root, 'knowledge', 'schema'), { recursive: true });
   writeFileSync(join(root, 'knowledge', 'schema', 'scope-schema.yaml'), 'custom: true\n');
@@ -267,6 +270,10 @@ describe('workspace portable file-state IO', () => {
         ? { scope: 'server', unavailable: true }
         : {
             scope: scope === 'workspace' ? `workspace:${PORTABLE_OWNERS.workspaceId}` : 'server',
+            knowledgeBaseId:
+              scope === 'workspace'
+                ? PORTABLE_KNOWLEDGE_BASE_ID
+                : 'kb_00000000-0000-7000-8000-000000000002',
             path: 'index.md',
             notebookRevision: 'a'.repeat(40),
             contentDigest: `sha256:${'b'.repeat(64)}`,

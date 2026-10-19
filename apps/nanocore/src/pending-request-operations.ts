@@ -172,7 +172,12 @@ export function createPendingRequestOperationImplementations({
                 requestActor: actor,
                 dependencies: admission(),
                 admitExecution: () => {
-                  executionCall = admitCapturedPendingCall(current, workspaceDb, input.requestId);
+                  executionCall = admitCapturedPendingCall(
+                    current,
+                    workspaceDb,
+                    input.requestId,
+                    prepared
+                  );
                 },
                 ...(prepareCapturedCall
                   ? {

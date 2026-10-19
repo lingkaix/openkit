@@ -663,6 +663,9 @@ function recordTerminalCheckpointEvidence(
   recordTerminalCheckpointRuntimeUsage(workspaceDb, checkpoint, authorityActor);
   recordWorkspaceAuditEvent({
     action: 'worker.checkpoint.terminal',
+    actor: authorityActor,
+    agentSessionId: checkpoint.workerSessionId,
+    requestId: checkpoint.requestId,
     category: 'system',
     now: new Date(checkpoint.updatedAt),
     outcome: checkpoint.stage === 'completed' ? 'succeeded' : 'failed',

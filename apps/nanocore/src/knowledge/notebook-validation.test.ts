@@ -6,6 +6,7 @@ const ownerScope = {
   kind: 'workspace',
   workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
 } as const;
+const pageScopeId = `page/workspace/${ownerScope.workspaceId}/kb_00000000-0000-7000-8000-000000000001`;
 const schema =
   'schema_version: openkit-scope-knowledge-schema-v4\nstatus: active\nallowed_types: [KnowledgePage]\nallowed_statuses: [active, archived]\nallowed_review_states: [user-authored]\nallowed_sensitivities: [normal]\nallowed_freshness: [current]\n';
 
@@ -50,6 +51,7 @@ function revision(files: Record<string, string>): NotebookRevision {
 function validate(base: Record<string, string>, candidate: Record<string, string>) {
   return validateNotebookCandidate({
     ownerScope,
+    pageScopeId,
     base: revision(base),
     candidate: revision(candidate),
     scopeSchemaText: schema,
@@ -59,6 +61,37 @@ function validate(base: Record<string, string>, candidate: Record<string, string
 }
 
 describe('Notebook final immutable tree validation', () => {
+  it('accepts canonical page references in the exact local base', () => {
+    const referrer = page('a').replace(
+      'source_refs: []',
+      `source_refs: ["openkit:${pageScopeId}/b"]`
+    );
+    expect(validate({}, { 'a.md': referrer, 'b.md': page('b') }).errors).toEqual([]);
+  });
+
+  it('rejects removal of a page named by an unchanged canonical source reference', () => {
+    const referrer = page('a').replace(
+      'source_refs: []',
+      `source_refs: ["openkit:${pageScopeId}/b"]`
+    );
+    expect(
+      validate({ 'a.md': referrer, 'b.md': page('b') }, { 'a.md': referrer }).errors
+    ).toContainEqual({ pageId: 'a', code: 'notebook.unresolved_page_reference' });
+  });
+
+  it('rejects foreign-base and legacy source references despite a matching local path', () => {
+    for (const reference of [
+      `openkit:page/workspace/${ownerScope.workspaceId}/kb_00000000-0000-7000-8000-000000000002/b`,
+      'knowledge:b',
+    ]) {
+      const referrer = page('a').replace('source_refs: []', `source_refs: ["${reference}"]`);
+      expect(validate({}, { 'a.md': referrer, 'b.md': page('b') }).errors).toContainEqual({
+        pageId: 'a',
+        code: 'notebook.invalid_page',
+      });
+    }
+  });
+
   it('refuses a root-index edit that removes the required OKF version', () => {
     expect(validate({}, { 'index.md': '# Unversioned root\n' }).errors).toContainEqual({
       pageId: 'index',

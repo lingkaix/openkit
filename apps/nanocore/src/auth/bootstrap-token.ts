@@ -1,7 +1,8 @@
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { hashPassword } from 'better-auth/crypto';
+import { z } from 'zod';
 import type { CoreDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import {
@@ -56,12 +57,16 @@ export type ConsumeServerBootstrapTokenResult =
   | ({ status: 'consumed' } & OpenKitAccessTokenIssueResult)
   | { status: 'invalid' | 'unavailable' };
 
-interface BootstrapSetting {
-  consumedAt: string | null;
-  expiresAt: string;
-  issuedAt: string;
-  tokenHash: string;
-}
+/** Fixed v1 bootstrap fields retain inert annotations across consumption; lifetime and hash checks stay native. */
+const BootstrapSettingV1Schema = z
+  .object({
+    consumedAt: z.string().nullable(),
+    expiresAt: z.string(),
+    issuedAt: z.string(),
+    tokenHash: z.string(),
+  })
+  .passthrough();
+type BootstrapSetting = z.infer<typeof BootstrapSettingV1Schema>;
 
 /**
  * Ensures a fresh server-mode deployment has one unconsumed bootstrap token.
@@ -69,6 +74,7 @@ interface BootstrapSetting {
  * @param coreDb Open Core database handles.
  * @param options Optional clock and TTL.
  * @returns One-time plaintext token when newly emitted.
+ * @throws When a retained bootstrap format or its required payload is invalid.
  */
 export function ensureServerBootstrapToken(
   coreDb: CoreDb,
@@ -132,6 +138,7 @@ export function writeServerBootstrapTokenEmission(
  * @param coreDb Open Core database handles.
  * @param input Consume input.
  * @returns Consumption result without echoing the bootstrap token.
+ * @throws When a retained bootstrap format or its required payload is invalid.
  */
 export async function consumeServerBootstrapToken(
   coreDb: CoreDb,
@@ -244,13 +251,16 @@ function countUsers(coreDb: CoreDb): number {
  *
  * @param coreDb Open Core database handles.
  * @returns Stored bootstrap setting when present.
+ * @throws When a retained bootstrap format or its required payload is invalid.
  */
 function readBootstrapSetting(coreDb: CoreDb): BootstrapSetting | null {
   const row = coreDb.sqlite
-    .prepare('SELECT value FROM server_settings WHERE key = ?')
-    .get(BOOTSTRAP_SETTING_KEY) as { value: string } | undefined;
+    .prepare('SELECT schema_version AS schemaVersion, value FROM server_settings WHERE key = ?')
+    .get(BOOTSTRAP_SETTING_KEY) as { schemaVersion: unknown; value: string } | undefined;
 
-  return row ? (JSON.parse(row.value) as BootstrapSetting) : null;
+  return row
+    ? readRetainedV1(row, () => BootstrapSettingV1Schema.parse(JSON.parse(row.value)))
+    : null;
 }
 
 /**
@@ -262,9 +272,14 @@ function readBootstrapSetting(coreDb: CoreDb): BootstrapSetting | null {
 function writeBootstrapSetting(coreDb: CoreDb, setting: BootstrapSetting): void {
   coreDb.sqlite
     .prepare(
-      `INSERT INTO server_settings (key, value, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      `INSERT INTO server_settings (key, value, updated_at, schema_version)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, schema_version = excluded.schema_version`
     )
-    .run(BOOTSTRAP_SETTING_KEY, JSON.stringify(setting), new Date().toISOString());
+    .run(
+      BOOTSTRAP_SETTING_KEY,
+      JSON.stringify(setting),
+      new Date().toISOString(),
+      writeRetainedV1({}).schemaVersion
+    );
 }
