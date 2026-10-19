@@ -20,6 +20,7 @@ import {
   KnowledgeSourceSchema,
   RegisterKnowledgeSourceRequestSchema,
 } from './knowledge-manager.js';
+import { KNOWLEDGE_OPERATION_DEFINITIONS } from './knowledge-operation-definitions.js';
 import * as material from './material.js';
 import {
   NanoHostRuntimeTargetStatusResponseSchema,
