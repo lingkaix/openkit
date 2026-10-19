@@ -246,4 +246,6 @@ Light App reads may include request-local `meaning` rows for their exact admitte
 
 Evaluation sets and judgements use the shared retained-v1 `schemaVersion` marker. Retained readers reject absent or unknown markers before decoding the family; current writers use `writeRetainedV1`.
 
+Claim and reusable Observation/conflict content use the ordinary Notebook operations and canonical OKF metadata. The seven standalone `knowledge.claim.*`, `knowledge.observation.*` and `knowledge.conflict.*` bindings and their separate fact DTOs are retired without aliases. The definition-derived client, CLI and OpenAPI expose the same Notebook lifecycle. WorkObservation and actual decision APIs retain their owners.
+
 `knowledge.notebook.*` owns the single public page lifecycle. List exposes the existing canonical page shape and selected Knowledge Base/commit. Create takes exact new path/full bytes/base; delete requires exact base/digest and human confirmation. Both use the same publication result as update. The retired entry CRUD operations, separate entry DTO and entry-kind metadata have no aliases.

@@ -104,9 +104,6 @@ const RESPONSE_ID_CASES = [
   ['artifact_review', 'arev'],
   ['workspace_invitation', 'inv'],
   ['knowledge_source', 'ks'],
-  ['knowledge_observation', 'ko'],
-  ['knowledge_claim', 'kc'],
-  ['knowledge_conflict', 'kf'],
   ['knowledge_proposal_review', 'kr'],
   ['generative_presentation', 'pres'],
   ['worker_environment', 'wst'],
@@ -173,7 +170,12 @@ describe('kind-named command response pointers', () => {
     }
   });
 
-  it('refuses an unknown Core response kind instead of treating it as an opaque owner', () => {
+  it.each([
+    'future-core-kind',
+    'knowledge_observation',
+    'knowledge_claim',
+    'knowledge_conflict',
+  ])('refuses unsupported Core response kind %s instead of treating it as an opaque owner', (kind) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-unknown-kind-'));
     const store = new FsStore({ dataRoot: root });
     const workspace = store.createWorkspace('Closed receipt kind');
@@ -192,7 +194,7 @@ describe('kind-named command response pointers', () => {
     try {
       const untrusted = {
         ...input.response,
-        kind: 'future-core-kind',
+        kind,
       } as unknown as CommandRequestResponse;
       expect(() => normalizeCommandRequestResponse(input.command, untrusted)).toThrow(
         'kind is unsupported'
@@ -211,7 +213,7 @@ describe('kind-named command response pointers', () => {
       expect(
         db.sqlite
           .prepare('UPDATE idempotency_requests SET response_kind = ? WHERE request_key = ?')
-          .run('future-core-kind', original.key).changes
+          .run(kind, original.key).changes
       ).toBe(1);
       const corrupted = rows();
       expect(() => getCommandRequestRecordFromDb(db, original.key, input.createdAt)).toThrow(

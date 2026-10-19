@@ -316,43 +316,11 @@ const KNOWLEDGE_SOURCE = {
   updatedAt: TIMESTAMP_OLD,
 };
 
-const KNOWLEDGE_OBSERVATION = {
-  id: 'ko_00000000-0000-76d0-bef9-badf8370ba7e',
-  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-  kind: 'user-feedback',
-  summary: 'Customers repeatedly ask for shorter weekly updates.',
-  sourceReferences: [],
-  scope: 'workspace',
-  producer: 'user:test',
-  confidence: 0.8,
-  freshness: 'current',
-  status: 'retained',
-  observedAt: TIMESTAMP_OLD,
-  createdAt: TIMESTAMP_OLD,
-};
-
-const KNOWLEDGE_CLAIM = {
-  id: 'kc_00000000-0000-747f-8d3e-e498342da992',
-  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-  statement: 'Weekly updates should fit on one screen.',
-  sourceReferences: [],
-  scope: 'workspace',
-  producer: 'user:test',
-  confidence: 0.7,
-  freshness: 'current',
-  reviewState: 'needs-review',
-  conflictStatus: 'weak_evidence',
-  createdAt: TIMESTAMP_OLD,
-  updatedAt: TIMESTAMP_OLD,
-};
-
 const KNOWLEDGE_DIGEST = KNOWLEDGE_SOURCE.contentDigest;
 const KNOWLEDGE_PAGE_DIGEST = `sha256:${'b'.repeat(64)}`;
 const RETRIEVAL_REQUEST_DIGEST = `sha256:${'c'.repeat(64)}`;
 const RETRIEVAL_QUERY = 'weekly updates';
 const MANAGER_QUESTION = 'How long should weekly updates be?';
-const CONFLICT_RESOLUTION = 'The one-screen weekly update claim is authoritative.';
-const CONFLICT_SUMMARY = 'Interview notes disagree about update length.';
 
 const REGISTER_SOURCE_INPUT = {
   kind: 'code',
@@ -370,27 +338,6 @@ const WORKSPACE_B_SOURCE_DRAFT = {
 } as const;
 const SOURCE_KIND_OPTION = 'Code';
 const NEXT_SOURCE_KIND_OPTION = 'Document';
-const OBSERVATION_KIND = 'agent';
-const OBSERVATION_KIND_OPTION = 'Agent';
-const NEXT_OBSERVATION_KIND = 'retrieval';
-const NEXT_OBSERVATION_KIND_OPTION = 'Retrieval';
-const NEXT_OBSERVATION = {
-  summary: 'Later retrieval saw a one-page digest request.',
-  producer: 'user:follow-up',
-} as const;
-const NEXT_CLAIM = {
-  statement: 'The digest should stay on one page.',
-  producer: 'user:follow-up',
-} as const;
-const NEXT_CONFLICT_INPUT = {
-  summary: 'Later notes disagree about digest length.',
-  subjectReferences: ['knowledge:mem2', 'claim:kc_00000000-0000-7e60-9480-27c165e5ae71'],
-  producer: 'user:follow-up',
-} as const;
-const NEXT_RESOLUTION = {
-  resolution: 'Keep the later one-page digest as the working rule.',
-  resolvedBy: 'user:follow-up',
-} as const;
 
 const REGISTERED_SOURCE = {
   ...KNOWLEDGE_SOURCE,
@@ -398,17 +345,6 @@ const REGISTERED_SOURCE = {
   kind: REGISTER_SOURCE_INPUT.kind,
   title: REGISTER_SOURCE_INPUT.title,
   updatedAt: TIMESTAMP_NEW,
-};
-const SERVER_OBSERVATION = {
-  ...KNOWLEDGE_OBSERVATION,
-  id: 'ko_00000000-0000-7f12-9f16-0ca914f88814',
-  kind: OBSERVATION_KIND,
-  summary: 'Server-confirmed shorter weekly updates.',
-};
-const SERVER_CLAIM = {
-  ...KNOWLEDGE_CLAIM,
-  id: 'kc_00000000-0000-75a1-97fa-1535b96d4adb',
-  statement: 'Server-confirmed weekly updates fit on one screen.',
 };
 
 const SOURCE_DERIVED_REPRESENTATION = {
@@ -421,42 +357,6 @@ const SOURCE_DERIVED_REPRESENTATION = {
   contentDigest: KNOWLEDGE_DIGEST,
   sourceContentDigest: KNOWLEDGE_DIGEST,
   createdAt: TIMESTAMP_OLD,
-};
-
-const KNOWLEDGE_CONFLICT = {
-  id: 'kf_00000000-0000-752b-b650-d31bcc5e3fb6',
-  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-  subjectReferences: ['knowledge:mem1', 'claim:kc_00000000-0000-747f-8d3e-e498342da992'],
-  sourceReferences: ['source:ks_00000000-0000-7bd1-af16-9b85c4b6b792'],
-  status: 'conflicting',
-  summary: 'Weekly-update length has contradictory evidence.',
-  suggestedActions: [],
-  producer: 'user:test',
-  createdAt: TIMESTAMP_OLD,
-  updatedAt: TIMESTAMP_OLD,
-};
-
-const RESOLVED_KNOWLEDGE_CONFLICT = {
-  ...KNOWLEDGE_CONFLICT,
-  status: 'resolved',
-  resolution: CONFLICT_RESOLUTION,
-  resolvedAt: TIMESTAMP_NEW,
-  resolvedBy: 'user:test',
-  updatedAt: TIMESTAMP_NEW,
-};
-const SERVER_CONFLICT = {
-  ...KNOWLEDGE_CONFLICT,
-  id: 'kf_00000000-0000-758c-9c9d-b759b132333e',
-  summary: 'Server-confirmed contradictory weekly-update evidence.',
-};
-const SECOND_CONFLICT = {
-  ...KNOWLEDGE_CONFLICT,
-  id: 'kf_00000000-0000-7338-b193-4926afe8a5a8',
-  summary: 'A later conflict about citation freshness.',
-};
-const SERVER_RESOLVED_CONFLICT = {
-  ...RESOLVED_KNOWLEDGE_CONFLICT,
-  resolution: 'Server-confirmed one-screen weekly update is authoritative.',
 };
 
 /** Builds one schema-valid KnowledgeIndexes response owned by the named Workspace. */
@@ -852,16 +752,9 @@ function makeClient(
         },
       }),
       'knowledge.source.list': vi.fn().mockResolvedValue({ items: [] }),
-      'knowledge.observation.list': vi.fn().mockResolvedValue({ items: [] }),
-      'knowledge.claim.list': vi.fn().mockResolvedValue({ items: [] }),
-      'knowledge.conflict.list': vi.fn().mockResolvedValue({ items: [] }),
       'knowledge.indexes': vi.fn().mockResolvedValue(EMPTY_KNOWLEDGE_INDEXES),
       'knowledge.source.register': vi.fn(),
       'knowledge.source.read': vi.fn(),
-      'knowledge.observation.record': vi.fn(),
-      'knowledge.claim.record': vi.fn(),
-      'knowledge.conflict.record': vi.fn(),
-      'knowledge.conflict.resolve': vi.fn(),
       'knowledge.retrieval': vi.fn(),
       'knowledge.context.prepare': vi.fn(),
       'knowledge.answer': vi.fn(),
@@ -933,7 +826,7 @@ function makeClient(
 }
 
 /** Returns one labelled Knowledge product panel on the existing /knowledge surface. */
-function knowledgePanel(name: 'Sources' | 'Ledger' | 'Retrieval' | 'Manager') {
+function knowledgePanel(name: 'Sources' | 'Retrieval' | 'Manager') {
   return screen.getByRole('region', { name });
 }
 
@@ -1025,11 +918,6 @@ async function proveScopedRetrySettled(region: HTMLElement, result: string | nul
 const REQUIRED_KNOWLEDGE_OPERATION_HOOKS = [
   'useRegisterKnowledgeSource',
   'useReadKnowledgeSource',
-  'useRecordKnowledgeObservation',
-  'useRecordKnowledgeClaim',
-  'useKnowledgeConflicts',
-  'useRecordKnowledgeConflict',
-  'useResolveKnowledgeConflict',
   'useKnowledgeIndexes',
   'useRetrieveKnowledge',
   'usePrepareKnowledgeContext',
@@ -1045,38 +933,10 @@ const KNOWLEDGE_TYPED_WRITE_SLICES = [
     method: 'knowledge.source.register',
     inputIndex: 1,
   },
-  {
-    typeName: 'RecordKnowledgeObservationCommand',
-    hookName: 'useRecordKnowledgeObservation',
-    method: 'knowledge.observation.record',
-    inputIndex: 1,
-  },
-  {
-    typeName: 'RecordKnowledgeClaimCommand',
-    hookName: 'useRecordKnowledgeClaim',
-    method: 'knowledge.claim.record',
-    inputIndex: 1,
-  },
-  {
-    typeName: 'RecordKnowledgeConflictCommand',
-    hookName: 'useRecordKnowledgeConflict',
-    method: 'knowledge.conflict.record',
-    inputIndex: 1,
-  },
-  {
-    typeName: 'ResolveKnowledgeConflictCommand',
-    hookName: 'useResolveKnowledgeConflict',
-    method: 'knowledge.conflict.resolve',
-    inputIndex: 2,
-  },
 ] as const;
 
 const KNOWLEDGE_DRAFT_WRITES = [
   { panel: 'Sources' as const, action: 'Register source' },
-  { panel: 'Ledger' as const, action: 'Record observation' },
-  { panel: 'Ledger' as const, action: 'Record claim' },
-  { panel: 'Ledger' as const, action: 'Record conflict' },
-  { panel: 'Ledger' as const, action: 'Resolve conflict' },
   { panel: 'Retrieval' as const, action: 'Retrieve' },
   { panel: 'Retrieval' as const, action: 'Prepare context' },
   { panel: 'Manager' as const, action: 'Answer' },
@@ -1113,34 +973,12 @@ function knowledgeAuthorityCatalog(
   mode: KnowledgeAuthorityMode
 ) {
   const later =
-    mode === 'remount'
-      ? {
-          source: 'Source after remount',
-          observation: 'Observation after remount',
-          claim: 'Claim after remount',
-          conflict: 'Conflict after remount',
-        }
-      : {
-          source: 'Source A reread',
-          observation: 'Observation A reread',
-          claim: 'Claim A reread',
-          conflict: 'Conflict A reread',
-        };
+    mode === 'remount' ? { source: 'Source after remount' } : { source: 'Source A reread' };
   const current =
     workspaceId === WORKSPACE_B.id
-      ? {
-          source: 'Source B',
-          observation: 'Observation B',
-          claim: 'Claim B',
-          conflict: 'Conflict B',
-        }
+      ? { source: 'Source B' }
       : generation === 0
-        ? {
-            source: KNOWLEDGE_SOURCE.title,
-            observation: KNOWLEDGE_OBSERVATION.summary,
-            claim: KNOWLEDGE_CLAIM.statement,
-            conflict: KNOWLEDGE_CONFLICT.summary,
-          }
+        ? { source: KNOWLEDGE_SOURCE.title }
         : later;
   return {
     current,
@@ -1151,36 +989,6 @@ function knowledgeAuthorityCatalog(
           workspaceId,
           id: `ks_${workspaceId}_${generation}`,
           title: current.source,
-        },
-      ],
-    },
-    observations: {
-      items: [
-        {
-          ...KNOWLEDGE_OBSERVATION,
-          workspaceId,
-          id: `ko_${workspaceId}_${generation}`,
-          summary: current.observation,
-        },
-      ],
-    },
-    claims: {
-      items: [
-        {
-          ...KNOWLEDGE_CLAIM,
-          workspaceId,
-          id: `kc_${workspaceId}_${generation}`,
-          statement: current.claim,
-        },
-      ],
-    },
-    conflicts: {
-      items: [
-        {
-          ...KNOWLEDGE_CONFLICT,
-          workspaceId,
-          id: `kf_${workspaceId}_${generation}`,
-          summary: current.conflict,
         },
       ],
     },
@@ -1200,21 +1008,6 @@ function knowledgeAuthorityReads(mode: KnowledgeAuthorityMode) {
       .fn()
       .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         Promise.resolve(catalog(workspaceId).sources)
-      ),
-    listKnowledgeObservations: vi
-      .fn()
-      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-        Promise.resolve(catalog(workspaceId).observations)
-      ),
-    listKnowledgeClaims: vi
-      .fn()
-      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-        Promise.resolve(catalog(workspaceId).claims)
-      ),
-    listKnowledgeConflicts: vi
-      .fn()
-      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-        Promise.resolve(catalog(workspaceId).conflicts)
       ),
     readKnowledgeIndexes: vi
       .fn()
@@ -1250,20 +1043,6 @@ async function fillKnowledgeWorkspaceDrafts(user: ReturnType<typeof userEvent.se
     ['Source title', REGISTER_SOURCE_INPUT.title],
     ['Source content', REGISTER_SOURCE_INPUT.content],
   ]);
-  const ledger = knowledgePanel('Ledger');
-  await selectListedOption(user, ledger, 'Observation kind', OBSERVATION_KIND_OPTION);
-  await fillKnowledgeFields(user, ledger, [
-    ['Observation summary', KNOWLEDGE_OBSERVATION.summary],
-    ['Observation producer', KNOWLEDGE_OBSERVATION.producer],
-    ['Claim statement', KNOWLEDGE_CLAIM.statement],
-    ['Claim producer', KNOWLEDGE_CLAIM.producer],
-    ['Conflict summary', CONFLICT_SUMMARY],
-    ['Subject references', KNOWLEDGE_CONFLICT.subjectReferences.join(' ')],
-    ['Conflict producer', KNOWLEDGE_CONFLICT.producer],
-    ['Resolution', CONFLICT_RESOLUTION],
-    ['Resolved by', 'user:test'],
-  ]);
-  await selectListedOption(user, ledger, 'Conflict', KNOWLEDGE_CONFLICT.summary);
   await fillKnowledgeFields(user, knowledgePanel('Retrieval'), [['Query', RETRIEVAL_QUERY]]);
   await fillKnowledgeFields(user, knowledgePanel('Manager'), [['Question', MANAGER_QUESTION]]);
 }
@@ -4333,16 +4112,12 @@ describe('Knowledge (board 14)', () => {
     for (const write of writes) expect(write).toBeDisabled();
   });
 
-  it('reads and renders the bounded live Source, Observation, and Claim projections', async () => {
+  it('reads and renders the bounded live Source projection', async () => {
     const listKnowledgeSources = vi.fn().mockResolvedValue({ items: [KNOWLEDGE_SOURCE] });
-    const listKnowledgeObservations = vi.fn().mockResolvedValue({ items: [KNOWLEDGE_OBSERVATION] });
-    const listKnowledgeClaims = vi.fn().mockResolvedValue({ items: [KNOWLEDGE_CLAIM] });
     renderApp(
       '/knowledge',
       makeClient({
         app: {
-          'knowledge.claim.list': listKnowledgeClaims,
-          'knowledge.observation.list': listKnowledgeObservations,
           'knowledge.source.list': listKnowledgeSources,
         },
       })
@@ -4350,11 +4125,6 @@ describe('Knowledge (board 14)', () => {
 
     expect(await screen.findByText(KNOWLEDGE_SOURCE.title)).toBeInTheDocument();
     expect(screen.getByText('Transcript', { selector: ':not(option)' })).toBeInTheDocument();
-    expect(screen.getByText(KNOWLEDGE_OBSERVATION.summary)).toBeInTheDocument();
-    expect(screen.getByText('Retained')).toBeInTheDocument();
-    expect(screen.getByText(KNOWLEDGE_CLAIM.statement)).toBeInTheDocument();
-    expect(screen.getByText('Needs review')).toHaveClass('bg-notice-bg', 'text-notice-fg');
-    expect(screen.getByText('Weak evidence')).toBeInTheDocument();
     const statusBackgroundClasses = [
       'bg-info-bg',
       'bg-notice-bg',
@@ -4362,22 +4132,12 @@ describe('Knowledge (board 14)', () => {
       'bg-negative-bg',
       'bg-neutral-bg',
     ];
-    for (const label of ['Transcript', 'Retained', 'Weak evidence']) {
-      const metadata = screen.getByText(label, { selector: ':not(option)' });
-      for (const statusClass of statusBackgroundClasses) {
-        expect(metadata).not.toHaveClass(statusClass);
-      }
+    const metadata = screen.getByText('Transcript', { selector: ':not(option)' });
+    for (const statusClass of statusBackgroundClasses) {
+      expect(metadata).not.toHaveClass(statusClass);
     }
-    for (const rawValue of ['transcript', 'retained', 'needs-review', 'weak_evidence']) {
-      expect(document.body).not.toHaveTextContent(rawValue);
-    }
+    expect(document.body).not.toHaveTextContent('transcript');
     expect(listKnowledgeSources).toHaveBeenCalledWith({
-      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-    });
-    expect(listKnowledgeObservations).toHaveBeenCalledWith({
-      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-    });
-    expect(listKnowledgeClaims).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
     });
   });
@@ -4428,16 +4188,12 @@ describe('Knowledge (board 14)', () => {
       .mockRejectedValueOnce(new Error('attention read failed'))
       .mockResolvedValue({ items: [] });
     const listKnowledgeSources = vi.fn().mockResolvedValue({ items: [] });
-    const listKnowledgeObservations = vi.fn().mockResolvedValue({ items: [] });
-    const listKnowledgeClaims = vi.fn().mockResolvedValue({ items: [] });
     const submitKnowledgeProposalDecision = vi.fn();
     renderApp(
       '/knowledge',
       makeClient({
         operations: { 'attention.list': listHumanAttention },
         app: {
-          'knowledge.claim.list': listKnowledgeClaims,
-          'knowledge.observation.list': listKnowledgeObservations,
           'knowledge.source.list': listKnowledgeSources,
           'knowledge.proposal.decide': submitKnowledgeProposalDecision,
         },
@@ -4448,8 +4204,6 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listHumanAttention).toHaveBeenCalledTimes(2));
     expect(listKnowledgeSources).toHaveBeenCalledTimes(1);
-    expect(listKnowledgeObservations).toHaveBeenCalledTimes(1);
-    expect(listKnowledgeClaims).toHaveBeenCalledTimes(1);
     expect(submitKnowledgeProposalDecision).not.toHaveBeenCalled();
   });
 
@@ -4784,176 +4538,6 @@ describe('Knowledge (board 14)', () => {
     expect(within(sources).getByText('Text')).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(SOURCE_DERIVED_REPRESENTATION.path);
     expect(readKnowledgeSource).toHaveBeenCalledTimes(1);
-  });
-
-  it('records ledger rows from the Ledger panel, lists conflicts, and resolves through an accessible control', async ({
-    signal,
-  }) => {
-    const user = setupKnowledgeUser(signal);
-    const listKnowledgeObservations = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [] })
-      .mockResolvedValue({ items: [SERVER_OBSERVATION] });
-    const listKnowledgeClaims = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [] })
-      .mockResolvedValue({ items: [SERVER_CLAIM] });
-    const listKnowledgeConflicts = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_CONFLICT] })
-      .mockResolvedValueOnce({ items: [KNOWLEDGE_CONFLICT, SERVER_CONFLICT] })
-      .mockResolvedValue({ items: [SERVER_RESOLVED_CONFLICT] });
-    const recordKnowledgeObservation = vi.fn().mockResolvedValue({
-      observation: {
-        ...SERVER_OBSERVATION,
-        summary: 'Mutation observation must not become visible',
-      },
-    });
-    const recordKnowledgeClaim = vi.fn().mockResolvedValue({
-      claim: { ...SERVER_CLAIM, statement: 'Mutation claim must not become visible' },
-    });
-    const recordKnowledgeConflict = vi.fn().mockResolvedValue({
-      conflict: { ...SERVER_CONFLICT, summary: 'Mutation conflict must not become visible' },
-    });
-    const resolveKnowledgeConflict = vi.fn().mockResolvedValue({
-      conflict: {
-        ...SERVER_RESOLVED_CONFLICT,
-        resolution: 'Mutation resolution is not authority',
-      },
-    });
-    renderApp(
-      '/knowledge',
-      makeClient({
-        app: {
-          'knowledge.claim.list': listKnowledgeClaims,
-          'knowledge.conflict.list': listKnowledgeConflicts,
-          'knowledge.observation.list': listKnowledgeObservations,
-          'knowledge.claim.record': recordKnowledgeClaim,
-          'knowledge.conflict.record': recordKnowledgeConflict,
-          'knowledge.observation.record': recordKnowledgeObservation,
-          'knowledge.conflict.resolve': resolveKnowledgeConflict,
-        },
-      })
-    );
-
-    expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
-    const ledger = knowledgePanel('Ledger');
-    expect(
-      await within(ledger).findByText(KNOWLEDGE_CONFLICT.summary, {
-        selector: ':not(option)',
-      })
-    ).toBeInTheDocument();
-    expect(listKnowledgeConflicts.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-    ]);
-
-    await selectListedOption(user, ledger, 'Observation kind', OBSERVATION_KIND_OPTION);
-    await fillKnowledgeFields(user, ledger, [
-      ['Observation summary', KNOWLEDGE_OBSERVATION.summary],
-      ['Observation producer', KNOWLEDGE_OBSERVATION.producer],
-    ]);
-    await user.click(within(ledger).getByRole('button', { name: 'Record observation' }));
-    await waitFor(() =>
-      expect(recordKnowledgeObservation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          requestId: expect.any(String),
-          kind: OBSERVATION_KIND,
-          summary: KNOWLEDGE_OBSERVATION.summary,
-          producer: KNOWLEDGE_OBSERVATION.producer,
-        })
-      )
-    );
-    await waitFor(() => expect(listKnowledgeObservations).toHaveBeenCalledTimes(2));
-    expect(listKnowledgeObservations.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-    ]);
-    expect(await within(ledger).findByText(SERVER_OBSERVATION.summary)).toBeInTheDocument();
-    expect(
-      screen.queryByText('Mutation observation must not become visible')
-    ).not.toBeInTheDocument();
-
-    await fillKnowledgeFields(user, ledger, [
-      ['Claim statement', KNOWLEDGE_CLAIM.statement],
-      ['Claim producer', KNOWLEDGE_CLAIM.producer],
-    ]);
-    await user.click(within(ledger).getByRole('button', { name: 'Record claim' }));
-    await waitFor(() =>
-      expect(recordKnowledgeClaim).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          requestId: expect.any(String),
-          statement: KNOWLEDGE_CLAIM.statement,
-          producer: KNOWLEDGE_CLAIM.producer,
-        })
-      )
-    );
-    await waitFor(() => expect(listKnowledgeClaims).toHaveBeenCalledTimes(2));
-    expect(listKnowledgeClaims.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-    ]);
-    expect(await within(ledger).findByText(SERVER_CLAIM.statement)).toBeInTheDocument();
-    expect(screen.queryByText('Mutation claim must not become visible')).not.toBeInTheDocument();
-
-    await fillKnowledgeFields(user, ledger, [
-      ['Conflict summary', CONFLICT_SUMMARY],
-      ['Subject references', KNOWLEDGE_CONFLICT.subjectReferences.join(' ')],
-      ['Conflict producer', KNOWLEDGE_CONFLICT.producer],
-    ]);
-    await user.click(within(ledger).getByRole('button', { name: 'Record conflict' }));
-    await waitFor(() =>
-      expect(recordKnowledgeConflict).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          requestId: expect.any(String),
-          summary: CONFLICT_SUMMARY,
-          subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
-          producer: KNOWLEDGE_CONFLICT.producer,
-        })
-      )
-    );
-    await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(2));
-    expect(listKnowledgeConflicts.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-    ]);
-    expect(
-      await within(ledger).findByText(SERVER_CONFLICT.summary, {
-        selector: ':not(option)',
-      })
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Mutation conflict must not become visible')).not.toBeInTheDocument();
-
-    await selectListedOption(user, ledger, 'Conflict', KNOWLEDGE_CONFLICT.summary);
-    await fillKnowledgeFields(user, ledger, [
-      ['Resolution', CONFLICT_RESOLUTION],
-      ['Resolved by', 'user:test'],
-    ]);
-    await user.click(within(ledger).getByRole('button', { name: 'Resolve conflict' }));
-    await waitFor(() =>
-      expect(resolveKnowledgeConflict).toHaveBeenCalledWith({
-        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-        conflictId: KNOWLEDGE_CONFLICT.id,
-        ...{
-          requestId: expect.any(String),
-          resolution: CONFLICT_RESOLUTION,
-          resolvedBy: 'user:test',
-        },
-      })
-    );
-    await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(3));
-    expect(listKnowledgeConflicts.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-      [{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }],
-    ]);
-    expect(screen.queryByText('Mutation resolution is not authority')).not.toBeInTheDocument();
-    expect(
-      await within(ledger).findByText(SERVER_RESOLVED_CONFLICT.resolution)
-    ).toBeInTheDocument();
-    expect(resolveKnowledgeConflict).toHaveBeenCalledTimes(1);
   });
 
   it('reads indexes then retrieves and prepares context from the Retrieval panel', async () => {
@@ -5497,234 +5081,6 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'knowledge.observation.record',
-      panel: 'Ledger' as const,
-      kind: 'failed',
-      privateText: 'Observation rejected.',
-      error: operationFailed('Observation rejected.'),
-      message: /couldn't record/i,
-      action: 'Record observation',
-      selects: [{ name: 'Observation kind', option: OBSERVATION_KIND_OPTION }],
-      fields: [
-        ['Observation summary', KNOWLEDGE_OBSERVATION.summary],
-        ['Observation producer', KNOWLEDGE_OBSERVATION.producer],
-      ] as const,
-      success: {
-        observation: {
-          ...SERVER_OBSERVATION,
-          summary: 'Mutation observation must not become visible',
-        },
-      },
-      owner: {
-        method: 'knowledge.observation.list' as const,
-        initial: { items: [] },
-        after: { items: [SERVER_OBSERVATION] },
-      },
-      result: SERVER_OBSERVATION.summary,
-      echo: 'Mutation observation must not become visible',
-      expected: [
-        [
-          expect.objectContaining({
-            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-            kind: OBSERVATION_KIND,
-            summary: KNOWLEDGE_OBSERVATION.summary,
-            producer: KNOWLEDGE_OBSERVATION.producer,
-          }),
-        ],
-      ],
-    },
-    {
-      method: 'knowledge.claim.record',
-      panel: 'Ledger' as const,
-      kind: 'denied',
-      privateText: 'Claim record denied.',
-      error: accessDenied('Claim record denied.'),
-      message: /couldn't record|access denied/i,
-      action: 'Record claim',
-      fields: [
-        ['Claim statement', KNOWLEDGE_CLAIM.statement],
-        ['Claim producer', KNOWLEDGE_CLAIM.producer],
-      ] as const,
-      success: {
-        claim: { ...SERVER_CLAIM, statement: 'Mutation claim must not become visible' },
-      },
-      owner: {
-        method: 'knowledge.claim.list' as const,
-        initial: { items: [] },
-        after: { items: [SERVER_CLAIM] },
-      },
-      result: SERVER_CLAIM.statement,
-      echo: 'Mutation claim must not become visible',
-      expected: [
-        [
-          expect.objectContaining({
-            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-            statement: KNOWLEDGE_CLAIM.statement,
-            producer: KNOWLEDGE_CLAIM.producer,
-          }),
-        ],
-      ],
-    },
-    {
-      method: 'knowledge.claim.record',
-      panel: 'Ledger' as const,
-      kind: 'failed',
-      privateText: 'Claim record failed.',
-      error: operationFailed('Claim record failed.'),
-      message: /couldn't record/i,
-      action: 'Record claim',
-      fields: [
-        ['Claim statement', KNOWLEDGE_CLAIM.statement],
-        ['Claim producer', KNOWLEDGE_CLAIM.producer],
-      ] as const,
-      success: {
-        claim: { ...SERVER_CLAIM, statement: 'Mutation claim must not become visible' },
-      },
-      owner: {
-        method: 'knowledge.claim.list' as const,
-        initial: { items: [] },
-        after: { items: [SERVER_CLAIM] },
-      },
-      result: SERVER_CLAIM.statement,
-      echo: 'Mutation claim must not become visible',
-      expected: [
-        [
-          expect.objectContaining({
-            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-            statement: KNOWLEDGE_CLAIM.statement,
-            producer: KNOWLEDGE_CLAIM.producer,
-          }),
-        ],
-      ],
-    },
-    {
-      method: 'knowledge.conflict.list',
-      panel: 'Ledger' as const,
-      kind: 'denied',
-      privateText: 'Conflict list denied.',
-      error: accessDenied('Conflict list denied.'),
-      message: /couldn't load|access denied/i,
-      success: { items: [KNOWLEDGE_CONFLICT] },
-      result: KNOWLEDGE_CONFLICT.summary,
-      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }]],
-    },
-    {
-      method: 'knowledge.conflict.list',
-      panel: 'Ledger' as const,
-      kind: 'failed',
-      privateText: 'Conflict list failed.',
-      error: operationFailed('Conflict list failed.'),
-      message: /couldn't load/i,
-      success: { items: [KNOWLEDGE_CONFLICT] },
-      result: KNOWLEDGE_CONFLICT.summary,
-      expected: [[{ workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' }]],
-    },
-    {
-      method: 'knowledge.conflict.record',
-      panel: 'Ledger' as const,
-      kind: 'denied',
-      privateText: 'Conflict record denied.',
-      error: accessDenied('Conflict record denied.'),
-      message: /couldn't record|access denied/i,
-      action: 'Record conflict',
-      fields: [
-        ['Conflict summary', CONFLICT_SUMMARY],
-        ['Subject references', KNOWLEDGE_CONFLICT.subjectReferences.join(' ')],
-        ['Conflict producer', KNOWLEDGE_CONFLICT.producer],
-      ] as const,
-      success: {
-        conflict: { ...SERVER_CONFLICT, summary: 'Mutation conflict must not become visible' },
-      },
-      owner: {
-        method: 'knowledge.conflict.list' as const,
-        initial: { items: [KNOWLEDGE_CONFLICT] },
-        after: { items: [KNOWLEDGE_CONFLICT, SERVER_CONFLICT] },
-      },
-      result: SERVER_CONFLICT.summary,
-      echo: 'Mutation conflict must not become visible',
-      expected: [
-        [
-          expect.objectContaining({
-            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-            summary: CONFLICT_SUMMARY,
-            subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
-            producer: KNOWLEDGE_CONFLICT.producer,
-          }),
-        ],
-      ],
-    },
-    {
-      method: 'knowledge.conflict.record',
-      panel: 'Ledger' as const,
-      kind: 'failed',
-      privateText: 'Conflict record failed.',
-      error: operationFailed('Conflict record failed.'),
-      message: /couldn't record/i,
-      action: 'Record conflict',
-      fields: [
-        ['Conflict summary', CONFLICT_SUMMARY],
-        ['Subject references', KNOWLEDGE_CONFLICT.subjectReferences.join(' ')],
-        ['Conflict producer', KNOWLEDGE_CONFLICT.producer],
-      ] as const,
-      success: {
-        conflict: { ...SERVER_CONFLICT, summary: 'Mutation conflict must not become visible' },
-      },
-      owner: {
-        method: 'knowledge.conflict.list' as const,
-        initial: { items: [KNOWLEDGE_CONFLICT] },
-        after: { items: [KNOWLEDGE_CONFLICT, SERVER_CONFLICT] },
-      },
-      result: SERVER_CONFLICT.summary,
-      echo: 'Mutation conflict must not become visible',
-      expected: [
-        [
-          expect.objectContaining({
-            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-            summary: CONFLICT_SUMMARY,
-            subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
-            producer: KNOWLEDGE_CONFLICT.producer,
-          }),
-        ],
-      ],
-    },
-    {
-      method: 'knowledge.conflict.resolve',
-      panel: 'Ledger' as const,
-      kind: 'failed',
-      privateText: 'Conflict resolve rejected.',
-      error: new ApiCallError(409, 'Conflict resolve rejected.', { code: 'conflict' }),
-      message: /couldn't resolve/i,
-      action: 'Resolve conflict',
-      selects: [{ name: 'Conflict', option: KNOWLEDGE_CONFLICT.summary }],
-      fields: [
-        ['Resolution', CONFLICT_RESOLUTION],
-        ['Resolved by', 'user:test'],
-      ] as const,
-      success: {
-        conflict: {
-          ...SERVER_RESOLVED_CONFLICT,
-          resolution: 'Mutation resolution is not authority',
-        },
-      },
-      owner: {
-        method: 'knowledge.conflict.list' as const,
-        initial: { items: [KNOWLEDGE_CONFLICT] },
-        after: { items: [SERVER_RESOLVED_CONFLICT] },
-      },
-      result: SERVER_RESOLVED_CONFLICT.resolution,
-      echo: 'Mutation resolution is not authority',
-      expected: [
-        [
-          expect.objectContaining({
-            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-            conflictId: KNOWLEDGE_CONFLICT.id,
-            resolution: CONFLICT_RESOLUTION,
-            resolvedBy: 'user:test',
-          }),
-        ],
-      ],
-    },
-    {
       method: 'knowledge.indexes',
       panel: 'Retrieval' as const,
       kind: 'denied',
@@ -5883,13 +5239,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() => expect(method).toHaveBeenCalledTimes(2));
     expect(method.mock.calls[0]).toEqual(testCase.expected[0]);
     expect(method.mock.calls[1]).toEqual(method.mock.calls[0]);
-    if (
-      testCase.method === 'knowledge.source.register' ||
-      testCase.method === 'knowledge.observation.record' ||
-      testCase.method === 'knowledge.claim.record' ||
-      testCase.method === 'knowledge.conflict.record' ||
-      testCase.method === 'knowledge.conflict.resolve'
-    ) {
+    if (testCase.method === 'knowledge.source.register') {
       expect(typeof firstRequestId).toBe('string');
       expect(requestIdFromCall(method.mock.calls[1])).toBe(firstRequestId);
     }
@@ -5908,7 +5258,7 @@ describe('Knowledge (board 14)', () => {
     );
   });
 
-  it('represents the 13 required Knowledge user operations and omits unpublished proposal draft/reverse', () => {
+  it('represents the 7 required Knowledge user operations and omits unpublished proposal draft/reverse', () => {
     for (const hook of REQUIRED_KNOWLEDGE_OPERATION_HOOKS) {
       expect(knowledgeScreenSource).toContain(hook);
     }
@@ -5945,10 +5295,6 @@ describe('Knowledge (board 14)', () => {
   }) => {
     const user = setupKnowledgeUser(signal);
     const registerKnowledgeSource = vi.fn();
-    const recordKnowledgeObservation = vi.fn();
-    const recordKnowledgeClaim = vi.fn();
-    const recordKnowledgeConflict = vi.fn();
-    const resolveKnowledgeConflict = vi.fn();
     const retrieveKnowledge = vi.fn();
     const prepareKnowledgeContext = vi.fn();
     const answerKnowledgeManager = vi.fn();
@@ -5957,20 +5303,9 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {},
         app: {
-          'knowledge.conflict.list': vi
-            .fn()
-            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-              Promise.resolve({
-                items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_CONFLICT] : [],
-              })
-            ),
           'knowledge.answer': answerKnowledgeManager,
           'knowledge.context.prepare': prepareKnowledgeContext,
-          'knowledge.claim.record': recordKnowledgeClaim,
-          'knowledge.conflict.record': recordKnowledgeConflict,
-          'knowledge.observation.record': recordKnowledgeObservation,
           'knowledge.source.register': registerKnowledgeSource,
-          'knowledge.conflict.resolve': resolveKnowledgeConflict,
           'knowledge.retrieval': retrieveKnowledge,
         },
 
@@ -6007,10 +5342,6 @@ describe('Knowledge (board 14)', () => {
       await user.click(button);
     }
     expect(registerKnowledgeSource).not.toHaveBeenCalled();
-    expect(recordKnowledgeObservation).not.toHaveBeenCalled();
-    expect(recordKnowledgeClaim).not.toHaveBeenCalled();
-    expect(recordKnowledgeConflict).not.toHaveBeenCalled();
-    expect(resolveKnowledgeConflict).not.toHaveBeenCalled();
     expect(retrieveKnowledge).not.toHaveBeenCalled();
     expect(prepareKnowledgeContext).not.toHaveBeenCalled();
     expect(answerKnowledgeManager).not.toHaveBeenCalled();
@@ -6383,24 +5714,15 @@ describe('Knowledge (board 14)', () => {
   it.each([
     { name: 'after A→B→A', mode: 'switch' as const },
     { name: 'after leave-and-return', mode: 'remount' as const },
-  ])('rereads Sources, Observations, Claims, Conflicts, and Indexes $name', async ({ mode }) => {
+  ])('rereads Sources and Indexes $name', async ({ mode }) => {
     const user = userEvent.setup();
     const reads = knowledgeAuthorityReads(mode);
-    const {
-      listKnowledgeSources,
-      listKnowledgeObservations,
-      listKnowledgeClaims,
-      listKnowledgeConflicts,
-      readKnowledgeIndexes,
-    } = reads;
+    const { listKnowledgeSources, readKnowledgeIndexes } = reads;
     renderApp(
       '/knowledge',
       makeClient({
         core: {},
         app: {
-          'knowledge.claim.list': listKnowledgeClaims,
-          'knowledge.conflict.list': listKnowledgeConflicts,
-          'knowledge.observation.list': listKnowledgeObservations,
           'knowledge.source.list': listKnowledgeSources,
           'knowledge.indexes': readKnowledgeIndexes,
         },
@@ -6425,13 +5747,7 @@ describe('Knowledge (board 14)', () => {
 
     const first = reads.catalog(WORKSPACE_A.id).current;
     expect(await screen.findByText(first.source)).toBeInTheDocument();
-    expect(screen.getByText(first.observation)).toBeInTheDocument();
-    expect(screen.getByText(first.claim)).toBeInTheDocument();
-    expect(screen.getByText(first.conflict, { selector: ':not(option)' })).toBeInTheDocument();
     expect(callsOn(listKnowledgeSources, WORKSPACE_A.id)).toHaveLength(1);
-    expect(callsOn(listKnowledgeObservations, WORKSPACE_A.id)).toHaveLength(1);
-    expect(callsOn(listKnowledgeClaims, WORKSPACE_A.id)).toHaveLength(1);
-    expect(callsOn(listKnowledgeConflicts, WORKSPACE_A.id)).toHaveLength(1);
     expect(callsOn(readKnowledgeIndexes, WORKSPACE_A.id)).toHaveLength(1);
 
     reads.generation.current = 1;
@@ -6439,11 +5755,6 @@ describe('Knowledge (board 14)', () => {
       act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
       const workspaceB = reads.catalog(WORKSPACE_B.id).current;
       expect(await screen.findByText(workspaceB.source)).toBeInTheDocument();
-      expect(screen.getByText(workspaceB.observation)).toBeInTheDocument();
-      expect(screen.getByText(workspaceB.claim)).toBeInTheDocument();
-      expect(
-        screen.getByText(workspaceB.conflict, { selector: ':not(option)' })
-      ).toBeInTheDocument();
       act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A.id }));
     } else {
       await user.click(screen.getByRole('button', { name: 'Agents' }));
@@ -6453,16 +5764,10 @@ describe('Knowledge (board 14)', () => {
 
     await waitFor(() => {
       expect(callsOn(listKnowledgeSources, WORKSPACE_A.id)).toHaveLength(2);
-      expect(callsOn(listKnowledgeObservations, WORKSPACE_A.id)).toHaveLength(2);
-      expect(callsOn(listKnowledgeClaims, WORKSPACE_A.id)).toHaveLength(2);
-      expect(callsOn(listKnowledgeConflicts, WORKSPACE_A.id)).toHaveLength(2);
       expect(callsOn(readKnowledgeIndexes, WORKSPACE_A.id)).toHaveLength(2);
     });
     const second = reads.catalog(WORKSPACE_A.id).current;
     expect(await screen.findByText(second.source)).toBeInTheDocument();
-    expect(screen.getByText(second.observation)).toBeInTheDocument();
-    expect(screen.getByText(second.claim)).toBeInTheDocument();
-    expect(screen.getByText(second.conflict, { selector: ':not(option)' })).toBeInTheDocument();
   });
 
   it.each([
@@ -6503,168 +5808,6 @@ describe('Knowledge (board 14)', () => {
           kind: NEXT_REGISTER_SOURCE_INPUT.kind,
           title: NEXT_REGISTER_SOURCE_INPUT.title,
           content: NEXT_REGISTER_SOURCE_INPUT.content,
-        }),
-      ],
-    },
-    {
-      method: 'knowledge.observation.record',
-      panel: 'Ledger' as const,
-      action: 'Record observation',
-      message: /couldn't load observations/i,
-      selects: [{ name: 'Observation kind', option: OBSERVATION_KIND_OPTION }],
-      fields: [
-        ['Observation summary', KNOWLEDGE_OBSERVATION.summary],
-        ['Observation producer', KNOWLEDGE_OBSERVATION.producer],
-      ] as const,
-      success: {
-        observation: {
-          ...SERVER_OBSERVATION,
-          summary: 'Mutation observation must not become visible',
-        },
-      },
-      owner: {
-        method: 'knowledge.observation.list' as const,
-        initial: { items: [] },
-        after: { items: [SERVER_OBSERVATION] },
-      },
-      result: SERVER_OBSERVATION.summary,
-      echo: 'Mutation observation must not become visible',
-      clearedSelects: [{ name: 'Observation kind' }],
-      clearedFields: [
-        ['Observation summary', ''],
-        ['Observation producer', ''],
-      ] as const,
-      nextSelects: [{ name: 'Observation kind', option: NEXT_OBSERVATION_KIND_OPTION }],
-      nextFields: [
-        ['Observation summary', NEXT_OBSERVATION.summary],
-        ['Observation producer', NEXT_OBSERVATION.producer],
-      ] as const,
-      nextExpected: [
-        expect.objectContaining({
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          kind: NEXT_OBSERVATION_KIND,
-          summary: NEXT_OBSERVATION.summary,
-          producer: NEXT_OBSERVATION.producer,
-        }),
-      ],
-    },
-    {
-      method: 'knowledge.claim.record',
-      panel: 'Ledger' as const,
-      action: 'Record claim',
-      message: /couldn't load claims/i,
-      fields: [
-        ['Claim statement', KNOWLEDGE_CLAIM.statement],
-        ['Claim producer', KNOWLEDGE_CLAIM.producer],
-      ] as const,
-      success: {
-        claim: { ...SERVER_CLAIM, statement: 'Mutation claim must not become visible' },
-      },
-      owner: {
-        method: 'knowledge.claim.list' as const,
-        initial: { items: [] },
-        after: { items: [SERVER_CLAIM] },
-      },
-      result: SERVER_CLAIM.statement,
-      echo: 'Mutation claim must not become visible',
-      clearedSelects: [] as const,
-      clearedFields: [
-        ['Claim statement', ''],
-        ['Claim producer', ''],
-      ] as const,
-      nextSelects: [] as const,
-      nextFields: [
-        ['Claim statement', NEXT_CLAIM.statement],
-        ['Claim producer', NEXT_CLAIM.producer],
-      ] as const,
-      nextExpected: [
-        expect.objectContaining({
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          statement: NEXT_CLAIM.statement,
-          producer: NEXT_CLAIM.producer,
-        }),
-      ],
-    },
-    {
-      method: 'knowledge.conflict.record',
-      panel: 'Ledger' as const,
-      action: 'Record conflict',
-      message: /couldn't load conflicts/i,
-      fields: [
-        ['Conflict summary', CONFLICT_SUMMARY],
-        ['Subject references', KNOWLEDGE_CONFLICT.subjectReferences.join(' ')],
-        ['Conflict producer', KNOWLEDGE_CONFLICT.producer],
-      ] as const,
-      success: {
-        conflict: { ...SERVER_CONFLICT, summary: 'Mutation conflict must not become visible' },
-      },
-      owner: {
-        method: 'knowledge.conflict.list' as const,
-        initial: { items: [KNOWLEDGE_CONFLICT] },
-        after: { items: [KNOWLEDGE_CONFLICT, SERVER_CONFLICT] },
-      },
-      result: SERVER_CONFLICT.summary,
-      echo: 'Mutation conflict must not become visible',
-      clearedSelects: [] as const,
-      clearedFields: [
-        ['Conflict summary', ''],
-        ['Subject references', ''],
-        ['Conflict producer', ''],
-      ] as const,
-      nextSelects: [] as const,
-      nextFields: [
-        ['Conflict summary', NEXT_CONFLICT_INPUT.summary],
-        ['Subject references', NEXT_CONFLICT_INPUT.subjectReferences.join(' ')],
-        ['Conflict producer', NEXT_CONFLICT_INPUT.producer],
-      ] as const,
-      nextExpected: [
-        expect.objectContaining({
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          summary: NEXT_CONFLICT_INPUT.summary,
-          subjectReferences: NEXT_CONFLICT_INPUT.subjectReferences,
-          producer: NEXT_CONFLICT_INPUT.producer,
-        }),
-      ],
-    },
-    {
-      method: 'knowledge.conflict.resolve',
-      panel: 'Ledger' as const,
-      action: 'Resolve conflict',
-      message: /couldn't load conflicts/i,
-      selects: [{ name: 'Conflict', option: KNOWLEDGE_CONFLICT.summary }],
-      fields: [
-        ['Resolution', CONFLICT_RESOLUTION],
-        ['Resolved by', 'user:test'],
-      ] as const,
-      success: {
-        conflict: {
-          ...SERVER_RESOLVED_CONFLICT,
-          resolution: 'Mutation resolution is not authority',
-        },
-      },
-      owner: {
-        method: 'knowledge.conflict.list' as const,
-        initial: { items: [KNOWLEDGE_CONFLICT] },
-        after: { items: [SERVER_RESOLVED_CONFLICT, SECOND_CONFLICT] },
-      },
-      result: SERVER_RESOLVED_CONFLICT.resolution,
-      echo: 'Mutation resolution is not authority',
-      clearedSelects: [{ name: 'Conflict' }],
-      clearedFields: [
-        ['Resolution', ''],
-        ['Resolved by', ''],
-      ] as const,
-      nextSelects: [{ name: 'Conflict', option: SECOND_CONFLICT.summary }],
-      nextFields: [
-        ['Resolution', NEXT_RESOLUTION.resolution],
-        ['Resolved by', NEXT_RESOLUTION.resolvedBy],
-      ] as const,
-      nextExpected: [
-        expect.objectContaining({
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          conflictId: SECOND_CONFLICT.id,
-          resolution: NEXT_RESOLUTION.resolution,
-          resolvedBy: NEXT_RESOLUTION.resolvedBy,
         }),
       ],
     },
@@ -6740,24 +5883,6 @@ describe('Knowledge (board 14)', () => {
       panel: 'Sources' as const,
       message: /couldn't load/i,
       privateText: 'source list failed.',
-    },
-    {
-      method: 'knowledge.observation.list',
-      panel: 'Ledger' as const,
-      message: /couldn't load observations/i,
-      privateText: 'observation list failed.',
-    },
-    {
-      method: 'knowledge.claim.list',
-      panel: 'Ledger' as const,
-      message: /couldn't load claims/i,
-      privateText: 'claim list failed.',
-    },
-    {
-      method: 'knowledge.conflict.list',
-      panel: 'Ledger' as const,
-      message: /couldn't load conflicts/i,
-      privateText: 'conflict list failed.',
     },
     {
       method: 'knowledge.indexes',

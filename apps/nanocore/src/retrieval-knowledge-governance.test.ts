@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { admitKnowledgeRetrieval } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
@@ -64,6 +65,88 @@ describe('canonical local retrieval identity', () => {
 });
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
+  it.each([
+    'Claim',
+    'Observation',
+  ] as const)('excludes unresolved %s pages from active query and pinned selection until resolved', async (type) => {
+    const fixture = createFixture(`conflict-${type.toLowerCase()}`);
+    const page = await createEntry(fixture, 'Conflict evidence', 'conflict-selection-marker');
+    const reference = pageReference(fixture, page.id);
+    await publishPages(fixture, [
+      {
+        path: `${page.id}.md`,
+        content: updateOkfFrontmatter({
+          path: `${page.id}.md`,
+          content: readPage(fixture, page.id),
+          updates: {
+            type,
+            ...(type === 'Claim'
+              ? { confidence: 0 }
+              : { subject_refs: [formatReferenceUri(reference)] }),
+          },
+        }),
+      },
+    ]);
+    // No recorded assessment remains eligible; it does not fabricate a resolution.
+    const unassessed = await retrieveWorkspaceKnowledge(
+      retrievalInput(fixture, 'conflict-selection-marker')
+    );
+    expect(unassessed.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+    expect(readPage(fixture, page.id)).not.toContain('conflict_status:');
+
+    for (const conflict_status of ['unresolved', 'resolved'] as const) {
+      await publishPages(fixture, [
+        {
+          path: `${page.id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${page.id}.md`,
+            content: readPage(fixture, page.id),
+            updates: { conflict_status },
+          }),
+        },
+      ]);
+      for (const pinnedReferences of [[], [reference]]) {
+        const trace = await retrieveWorkspaceKnowledge({
+          ...retrievalInput(
+            fixture,
+            pinnedReferences.length ? 'unmatched-conflict-lookup' : 'conflict-selection-marker'
+          ),
+          pinnedReferences,
+        });
+        if (conflict_status === 'unresolved') {
+          expect(trace.selected).toEqual([]);
+          expect(exclusionReasons(trace)).toEqual({ [page.id]: 'lower_conformance' });
+        } else {
+          expect(trace.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+          expect(trace.excluded).toEqual([]);
+        }
+      }
+    }
+    if (type === 'Claim') {
+      // Current authorized inspection of non-active facts remains available.
+      await publishPages(fixture, [
+        {
+          path: `${page.id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${page.id}.md`,
+            content: readPage(fixture, page.id),
+            updates: {
+              openkit_status: 'archived',
+              status: 'deprecated',
+              conflict_status: 'unresolved',
+            },
+          }),
+        },
+      ]);
+      const inspected = await retrieveWorkspaceKnowledge({
+        ...retrievalInput(fixture, 'conflict-selection-marker'),
+        states: ['archived'],
+      });
+      expect(inspected.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+      expect(inspected.excluded).toEqual([]);
+    }
+  });
+
   it('enumerates lexical matches before sensitivity, conflict, freshness, and budget dispositions', async () => {
     const fixture = createFixture('enumeration');
     const selected = await createEntry(
@@ -93,21 +176,27 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       freshness: 'stale',
       sensitivity: 'confidential',
     });
-    fixture.store.recordKnowledgeConflict({
-      id: 'kf_00000000-0000-7c2b-96dc-273a402e04ac',
-      workspaceId: fixture.workspaceId,
-      subjectReferences: [
-        formatReferenceUri(pageReference(fixture, conflicted.id)),
-        formatReferenceUri(pageReference(fixture, sensitive.id)),
-      ],
-      sourceReferences: [],
-      status: 'conflicting',
-      summary: 'The test owns an unresolved conflict.',
-      suggestedActions: ['Resolve the test conflict.'],
-      producer: 'test-author',
-      createdAt: NOW,
-      updatedAt: NOW,
-    });
+    const analysisId = 'assessments/enumeration-conflict';
+    await publishPages(fixture, [
+      {
+        path: `${analysisId}.md`,
+        content: updateOkfFrontmatter({
+          path: `${analysisId}.md`,
+          content: readPage(fixture, conflicted.id),
+          updates: {
+            openkit_entry_id: analysisId,
+            type: 'Observation',
+            openkit_status: 'draft',
+            status: 'draft',
+            subject_refs: [
+              formatReferenceUri(pageReference(fixture, conflicted.id)),
+              formatReferenceUri(pageReference(fixture, sensitive.id)),
+            ],
+            conflict_status: 'unresolved',
+          },
+        }),
+      },
+    ]);
 
     const trace = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'selection-marker'),

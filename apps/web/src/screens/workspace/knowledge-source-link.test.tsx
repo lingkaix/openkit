@@ -157,9 +157,6 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
           };
           break;
         }
-        case operationHttpPath('knowledge.observation.list'):
-        case operationHttpPath('knowledge.claim.list'):
-        case operationHttpPath('knowledge.conflict.list'):
         case operationHttpPath('attention.list'):
           body = { items: [] };
           break;
