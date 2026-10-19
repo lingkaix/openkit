@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-30
+updated: 2026-10-19
 ---
 # Runtime Model
 
@@ -221,6 +221,14 @@ The substrate lifecycle has these responsibilities:
 A pending approval or user-input request never pauses the Turn that raised it and never closes its AgentSession. A worker's outcome is delivered on a later Turn of the same Thread, which the current AgentSession executes, or a successor that resumes the native conversation when that binding has ended. Outcomes for the internal Assistant or for a person are delivered by their own owners without an AgentSession. The current implementation leaves Goal worker execution unavailable until the Goal implementation replaces it. A Goal-dispatched Task is an ordinary worker Turn, and this runtime adds no separate Goal execution path.
 
 An execution substrate can fail while a Turn remains inspectable or eligible for a separately authorized retry, and after a Turn completes, is cancelled, or fails, its AgentSession remains reusable only when the owning runtime can prove that continuity and reuse are safe. Failure of one shared epoch may interrupt multiple AgentSessions, but it MUST NOT merge their identities, lineages, evidence, or terminal outcomes.
+
+### Safe Points And Danger Windows
+
+[Fault Tolerance](fault-tolerance.md) defines safe points and danger windows. A durable admission, preparation intent, dispatch intent, accepted observation or terminal result establishes only its recorded facts. It does not prove that dependent runtime effects have settled. Recovery MUST follow the owning lifecycle above and obtain its required proof before adopting execution or releasing resources.
+
+[Permissions](permissions.md) owns checks at each governed effect boundary. Decisions permitting an effect MUST be recorded before that effect's danger window opens; a separately governed effect within a larger operation retains its own checks. An extension MUST NOT change an already committed decision or the immutable inputs of an effect that may have occurred.
+
+The resolved Agent setup and declared execution-environment inputs MUST remain fixed for the prepared Turn; later Agent, Skill or image changes apply to later Turns. This does not freeze mutable working data. Each further governed effect MUST satisfy current authorization at its enforcement point.
 
 ## Runtime Setup
 

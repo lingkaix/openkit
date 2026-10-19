@@ -601,6 +601,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       'artifact.version-file-commit',
       'bootstrap.consume',
       'channel.discord.pair',
+      'knowledge.package.export',
+      'knowledge.package.import',
       'token.create',
       'token.rotate',
       'workspace.archive-download',
@@ -639,6 +641,8 @@ test('one catalog covers the checked App API and public Core projection', async 
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
     'app-api:channel.discord.pair',
+    'app-api:knowledge.package.export',
+    'app-api:knowledge.package.import',
     'core-projection:meta',
     'core-projection:subscribeTurnEvents',
   ]);

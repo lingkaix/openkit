@@ -38,6 +38,7 @@ export * from './knowledge-agent.js';
 export * from './knowledge-manager.js';
 export * from './knowledge-notebook.js';
 export * from './knowledge-notebook-history.js';
+export * from './knowledge-package-operations.js';
 export * from './knowledge-proposal-preview.js';
 export * from './light-app-definitions.js';
 export * from './light-apps.js';

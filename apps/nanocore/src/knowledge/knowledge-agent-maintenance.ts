@@ -27,7 +27,7 @@ import {
 import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { KnowledgeNotebook, NotebookError } from './notebook.js';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
@@ -391,6 +391,7 @@ export function prepareKnowledgeMaintenance(
             source = { ...captured.source, workspaceId: input.workspaceId };
           }
           sources.set(source.id, source);
+          return source;
         };
         const processed = new Set(
           maintenance
@@ -437,13 +438,17 @@ export function prepareKnowledgeMaintenance(
             lastItemId: items.at(-1)!.id,
           });
         }
-        if (input.tellContent)
-          await capture(
-            input.tellContent,
-            input.askingThreadId ?? thread.id,
-            input.askingTurnId ?? turn.id,
-            'Supplied knowledge information'
-          );
+        const suppliedSource = input.tellContent
+          ? await capture(
+              input.tellContent,
+              input.askingThreadId ?? thread.id,
+              input.askingTurnId ?? turn.id,
+              'Supplied knowledge information'
+            )
+          : undefined;
+        const instructions = suppliedSource
+          ? `${input.instructions} This knowledge.tell request supplies information in source:${suppliedSource.id}@${suppliedSource.contentDigest}. Integrate that Source, preserving evidence, conflicts and unknowns. The overview and prior human notebook edits are separate context; equality between them does not mean the supplied information is already integrated. If the information is already represented, a native no-change outcome is valid. Otherwise edit the admitted notebook snapshot, keep its overview current, then submit those edits under the existing publication and Review rules. Source capture alone is not notebook page integration.`
+          : input.instructions;
         // Native Source capture adds a Git commit. Pin the editor and model only after capture.
         baseRevision = notebook.publishedRevision();
         target.notebookRevision = baseRevision;
@@ -638,11 +643,11 @@ export function prepareKnowledgeMaintenance(
         const tool = (
           name: string,
           key: string,
+          description: string,
           execute: (value: Record<string, string>) => Promise<unknown>
         ): AgentTool => ({
           name,
-          description:
-            'Use only the admitted notebook snapshot and Sources. Notebook limits: 32 MiB total, 2 MiB per file, four maintenance changes, 64 KiB script/output. Publication needs current authority.',
+          description: `${description} Use only the admitted notebook snapshot and Sources. Notebook limits: 32 MiB total, 2 MiB per file, four maintenance changes, 64 KiB script/output. Publication needs current authority.`,
           inputSchema: {
             type: 'object',
             properties: { [key]: { type: 'string' } },
@@ -684,15 +689,23 @@ export function prepareKnowledgeMaintenance(
         });
         const tools: AgentTool[] = [
           history.tool,
-          tool('knowledge.notebook-workspace.update', 'script', (value) =>
-            editor.workspaceUpdate({ script: value.script! })
+          tool(
+            'knowledge.notebook-workspace.update',
+            'script',
+            'Run an edit script against the admitted virtual Knowledge snapshot. This edits pages but does not publish them; submit the prior edits with knowledge.notebook.update.',
+            (value) => editor.workspaceUpdate({ script: value.script! })
           ),
-          tool('knowledge.notebook.update', 'summary', async (value) => {
-            const result = await editor.notebookUpdate({ summary: value.summary! });
-            if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
-            recordOutcome();
-            return result;
-          }),
+          tool(
+            'knowledge.notebook.update',
+            'summary',
+            'Submit prior knowledge.notebook-workspace.update edits for Knowledge page publication or required Review. The summary describes the edits and is not page content. Literal Source capture is not Knowledge page integration. A native no_change outcome means the editor has no page changes.',
+            async (value) => {
+              const result = await editor.notebookUpdate({ summary: value.summary! });
+              if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
+              recordOutcome();
+              return result;
+            }
+          ),
         ];
         const previous = maintenance.filter((prior) => prior.status === 'completed').at(-1)
           ?.internalExecution?.knowledge?.baseRevision;
@@ -723,11 +736,17 @@ export function prepareKnowledgeMaintenance(
                 historyReads.push({ notebookRevision, path, content });
                 return content;
               };
-              humanChanges.push({
-                path,
-                before: read(parent?.revision, Boolean(parent?.entries[path])),
-                after: read(revision.revision, Boolean(revision.entries[path])),
-              });
+              const before = read(parent?.revision, Boolean(parent?.entries[path]));
+              const after = read(revision.revision, Boolean(revision.entries[path]));
+              // Creation records its human caller even when navigation is the unchanged native seed.
+              if (
+                !parent &&
+                Object.keys(revision.entries).length === 1 &&
+                path === 'index.md' &&
+                after === DEFAULT_NOTEBOOK_INDEX
+              )
+                continue;
+              humanChanges.push({ path, before, after });
               if (humanChanges.length > 256) throw new NotebookError('invalid_request');
             }
           cursor = revision.parentRevision;
@@ -753,7 +772,7 @@ export function prepareKnowledgeMaintenance(
             ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
             baseRevision,
             trigger: input.trigger,
-            instructions: input.instructions,
+            instructions,
             sourceRange: ranges,
             ...(input.askingThreadId ? { askingThreadId: input.askingThreadId } : {}),
             ...(input.askingTurnId ? { askingTurnId: input.askingTurnId } : {}),
@@ -767,7 +786,7 @@ export function prepareKnowledgeMaintenance(
                 {
                   type: 'text',
                   text: JSON.stringify({
-                    instructions: input.instructions,
+                    instructions,
                     notebookRevision: baseRevision,
                     files: Object.keys(files),
                     selectedPageIds: input.pageIds ?? [],

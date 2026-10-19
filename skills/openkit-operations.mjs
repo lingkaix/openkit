@@ -441,6 +441,20 @@ const archiveBindings = {
 export const operationExclusions = [
   {
     source: 'app-api',
+    name: 'knowledge.package.export',
+    reason:
+      'Knowledge package streams have a native HTTP binding; the CLI has no package file sink.',
+    owner: 'docs/specs/20261018-file_storage_and_knowledge_packages.md',
+  },
+  {
+    source: 'app-api',
+    name: 'knowledge.package.import',
+    reason:
+      'Knowledge package streams have a native HTTP binding; the CLI has no package file input.',
+    owner: 'docs/specs/20261018-file_storage_and_knowledge_packages.md',
+  },
+  {
+    source: 'app-api',
     name: 'channel.discord.pair',
     reason:
       'A pairing challenge is delivered only in the authenticated Web account flow; it is not an access token or a CLI output.',

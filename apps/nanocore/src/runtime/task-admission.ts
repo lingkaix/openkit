@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import type { PolicyDecision } from '@openkit/policy-kernel';
 import { deriveEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import { authorizeWorkspace } from '../auth/operation-authorizer.js';
+import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
@@ -11,6 +12,7 @@ import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { createTaskKnowledgePreparation } from '../knowledge-operations.js';
 import type { FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
+import type { GoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { goalActor, readGoalView } from './goal-owner.js';
@@ -64,6 +66,8 @@ export function createCoordinatorTaskTool(options: {
   readonly startWorker: TaskWorkerStarter;
   readonly goalId: string;
   readonly coordinatorTurnId: string;
+  /** Native Policy composition; missing Goal authority never falls back to the Plan alone. */
+  readonly goalTaskPolicy?: (db: WorkspaceDb, responsibleUserId: string) => GoalTaskPolicyService;
 }): AgentTool {
   const { $schema: _schema, ...inputSchema } = z.toJSONSchema(CoordinatorTaskInputSchema) as Record<
     string,
@@ -98,6 +102,42 @@ export function createCoordinatorTaskTool(options: {
           })
         )
           throw new Error('Current Task write authority is unavailable.');
+        const assertGoalTaskAdmission = () => {
+          const current: { kernel?: PolicyDecision } = {};
+          const human = currentWorkspaceAuthority(
+            options.coreDb!,
+            goal.workspaceId,
+            { kind: 'user', id: actor.userId },
+            'turn.run',
+            true,
+            actor,
+            {
+              dependencyFailure: 'throw',
+              onEvaluation: ({ decision }) => {
+                current.kernel = decision;
+              },
+            }
+          );
+          if (!human || !current.kernel || !options.goalTaskPolicy)
+            throw new Error('Current Goal Task Policy admission is unavailable.');
+          const admission = options.goalTaskPolicy(db, goal.responsibleUserId).evaluateAdmission({
+            workspaceDb: db,
+            goalId: goal.goalId,
+            planVersionId: input.planVersionId,
+            agentId: input.agentId,
+            responsibleHumanId: goal.responsibleUserId,
+            resources: input.request.resources.flatMap((value) =>
+              value.kind === 'policy' ? [value.resource] : []
+            ),
+            humanKernel: current.kernel,
+          });
+          if (admission.kernel.effect !== 'allow')
+            throw new Error(
+              'The selected Task Worker or resources are outside the current Goal domain.'
+            );
+        };
+        // Refuse before creating a Task; asynchronous preparation must not preserve stale bounds.
+        assertGoalTaskAdmission();
         const requestId = randomUUID();
         const threadId = deriveEntityId('th', ['task', requestId]);
         receivingThreadId = threadId;
@@ -166,6 +206,7 @@ export function createCoordinatorTaskTool(options: {
               },
               reservedTurnId: turnId,
               reserveTurn: () => {
+                assertGoalTaskAdmission();
                 reserveGoalTask(
                   options.store,
                   workerDb,
@@ -175,6 +216,7 @@ export function createCoordinatorTaskTool(options: {
                 return { turnId };
               },
               startWorker: async ({ onAdmitted }) => {
+                assertGoalTaskAdmission();
                 const ended = await options.startWorker({
                   store: options.store,
                   triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
