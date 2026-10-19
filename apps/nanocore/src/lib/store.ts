@@ -1555,14 +1555,33 @@ export class FsStore {
       return;
     }
 
-    const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
-    this.writeWorkspaceFileRecordsToRoot(
-      workspaceId,
-      workspaceRoot,
-      updateWorkspaceConfigName,
-      turnFilePayloads,
-      initialArtifact
-    );
+    const startedAt = performance.now();
+    try {
+      const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
+      this.writeWorkspaceFileRecordsToRoot(
+        workspaceId,
+        workspaceRoot,
+        updateWorkspaceConfigName,
+        turnFilePayloads,
+        initialArtifact
+      );
+    } finally {
+      try {
+        const durationMs = performance.now() - startedAt;
+        if (durationMs >= 100) {
+          console.error(
+            JSON.stringify({
+              stage: 'workspace-persist',
+              durationMs: Math.round(durationMs),
+              timestamp: new Date().toISOString(),
+              workspaceId,
+            })
+          );
+        }
+      } catch {
+        // Diagnostics must not change the owning operation.
+      }
+    }
   }
 
   /**

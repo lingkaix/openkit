@@ -36,6 +36,46 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
+  it('logs only fixed slow-stage fields at the 100 ms boundary', () => {
+    const coreDb = openOpeningBindingDb('openkit-harness-slow-stage-');
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const clock = vi.spyOn(performance, 'now').mockReturnValueOnce(10).mockReturnValueOnce(110);
+    const input = {
+      body: sessionOpenBody(),
+      harnessInstanceId: 'harness-1',
+      operation: 'session.open' as const,
+      timestamp: now,
+      diagnosticCanary: 'private-content /private/path token-canary',
+    };
+    try {
+      expect(queueNanoHostHarnessOperation(coreDb, input)).toBe(0);
+      expect(log).toHaveBeenCalledExactlyOnceWith(expect.any(String));
+      const record = JSON.parse(log.mock.calls[0]![0] as string);
+      expect(record).toEqual({
+        stage: 'harness-enqueue',
+        durationMs: 100,
+        timestamp: expect.any(String),
+        harnessInstanceId: 'harness-1',
+      });
+      expect(Number.isFinite(Date.parse(record.timestamp))).toBe(true);
+
+      log.mockClear();
+      clock.mockReturnValueOnce(0).mockReturnValueOnce(99.999);
+      expect(() => queueNanoHostHarnessOperation(coreDb, input)).toThrow('unsettled operation');
+      expect(log).not.toHaveBeenCalled();
+
+      clock.mockReturnValueOnce(0).mockReturnValueOnce(100);
+      log.mockImplementation(() => {
+        throw new Error('diagnostic-sink-canary');
+      });
+      expect(() => queueNanoHostHarnessOperation(coreDb, input)).toThrow('unsettled operation');
+    } finally {
+      clock.mockRestore();
+      log.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('refuses an unknown Harness format before decoding or replacing its command', () => {
     const coreDb = openOpeningBindingDb('openkit-harness-format-');
     try {
