@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -22,8 +23,10 @@ import {
   openBootVerifiedWorkspaceDb,
   openCoreDb,
   openCoreDbWithIntegrityCheck,
+  openExistingCoreDbWithIntegrityCheck,
   openUserDb,
   openWorkspaceDb,
+  openWorkspaceDbAtRoot,
   verifyAndMigrateExistingScopedDatabases,
 } from './db.js';
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from './fs-layout.js';
@@ -43,6 +46,110 @@ function createDataRoot(): string {
 }
 
 describe('scoped storage databases', () => {
+  it.each([
+    'server',
+    'workspace',
+    'user',
+  ] as const)('establishes incremental vacuum and secure deletion on fresh and reopened %s authority', (scope) => {
+    const dataRoot = createDataRoot();
+    const open = () =>
+      scope === 'server'
+        ? openCoreDb(dataRoot)
+        : scope === 'workspace'
+          ? openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201')
+          : openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    const connections = [
+      { phase: 'fresh', open },
+      { phase: 'reopen', open },
+    ];
+    if (scope === 'server')
+      connections.push(
+        { phase: 'boot-verified', open: () => openCoreDbWithIntegrityCheck(dataRoot) },
+        { phase: 'existing-only', open: () => openExistingCoreDbWithIntegrityCheck(dataRoot) }
+      );
+    if (scope === 'workspace')
+      connections.push(
+        {
+          phase: 'boot-verified',
+          open: () =>
+            openBootVerifiedWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
+        },
+        {
+          phase: 'resolved-root',
+          open: () =>
+            openWorkspaceDbAtRoot({
+              dataRoot,
+              workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+              workspaceRoot: join(
+                dataRoot,
+                'workspaces',
+                'ws_00000000-0000-73c3-900f-8d310e4ba201'
+              ),
+            }),
+        }
+      );
+    for (const { phase, open: openConnection } of connections) {
+      const db = openConnection();
+      try {
+        // Observe owner policy without setting either pragma on its behalf.
+        const policy = {
+          autoVacuum: db.sqlite.pragma('auto_vacuum', { simple: true }),
+          secureDelete: db.sqlite.pragma('secure_delete', { simple: true }),
+        };
+        console.info('deletion-policy', { scope, phase, ...policy });
+        expect.soft(policy.autoVacuum, `${scope} ${phase}`).toBe(2);
+        expect.soft(policy.secureDelete, `${scope} ${phase}`).toBe(1);
+        if (db.scope === 'core') applyMigrations(db);
+        else applyScopedMigrations(db);
+        expect.soft(db.sqlite.pragma('auto_vacuum', { simple: true })).toBe(2);
+        expect.soft(db.sqlite.pragma('secure_delete', { simple: true })).toBe(1);
+      } finally {
+        db.sqlite.close();
+      }
+    }
+  });
+
+  it('does not change an opaque MCP database while opening OpenKit-owned authorities', () => {
+    const dataRoot = createDataRoot();
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const opaquePath = join(
+      dataRoot,
+      'workspaces',
+      workspaceId,
+      'mcp-data',
+      'fixture-binding',
+      'business.sqlite'
+    );
+    mkdirSync(dirname(opaquePath), { recursive: true });
+    const opaque = new Database(opaquePath);
+    opaque.pragma('auto_vacuum = NONE');
+    opaque.pragma('secure_delete = OFF');
+    opaque.exec(
+      "CREATE TABLE business (value TEXT); INSERT INTO business VALUES ('binding-owned');"
+    );
+    const before = readFileSync(opaquePath);
+    try {
+      for (const open of [
+        () => openCoreDb(dataRoot),
+        () => openWorkspaceDb(dataRoot, workspaceId),
+        () => openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'),
+      ]) {
+        const db = open();
+        try {
+          if (db.scope === 'core') applyMigrations(db);
+          else applyScopedMigrations(db);
+        } finally {
+          db.sqlite.close();
+        }
+      }
+      expect(readFileSync(opaquePath)).toEqual(before);
+      expect(opaque.pragma('auto_vacuum', { simple: true })).toBe(0);
+      expect(opaque.pragma('secure_delete', { simple: true })).toBe(0);
+      expect(opaque.prepare('SELECT value FROM business').pluck().all()).toEqual(['binding-owned']);
+    } finally {
+      opaque.close();
+    }
+  });
   it('opens and migrates a user-scoped SQLite database with User command and Audit authority', () => {
     const dataRoot = createDataRoot();
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
