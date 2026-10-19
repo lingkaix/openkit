@@ -8,6 +8,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
+import * as threadVisibility from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
@@ -1126,6 +1127,31 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   expect(afterDenied).toEqual(stagingBaseline);
   expect(afterDenied.some((name) => name.startsWith('vision-view-'))).toBe(false);
 }, 45_000);
+
+it.each([
+  'source visibility',
+  'destination audience',
+] as const)('refuses %s before reading the retained Artifact original', async (guard) => {
+  const f = await sourceToolFixture(Buffer.from('Private original bytes.\n'), 'text/plain');
+  const denied = vi
+    .spyOn(
+      threadVisibility,
+      guard === 'source visibility' ? 'isArtifactVisible' : 'canDiscloseThreadToAudience'
+    )
+    .mockReturnValue(false);
+  const readVersion = vi.spyOn(f.store, 'getArtifactVersion');
+  onTestFinished(() => {
+    denied.mockRestore();
+    readVersion.mockRestore();
+  });
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: f.packagePath,
+    mode: 'read',
+  });
+  expect(result.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(denied).toHaveBeenCalled();
+  expect(readVersion).not.toHaveBeenCalled();
+});
 
 it('reads current exact original bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
   const fixture = await sourceToolFixture(Buffer.from('Finished report\n'), 'text/plain');

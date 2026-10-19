@@ -14,6 +14,7 @@ import {
 import {
   type ArtifactVersionRecord,
   deriveEntityId,
+  type ItemSchema,
   KnowledgeEntrySchema,
   readRetainedV1,
   ThreadSchema,
@@ -29,9 +30,8 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { retainPermissionDecision } from '../policy/retained-records-v1.js';
-
 import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
+import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
