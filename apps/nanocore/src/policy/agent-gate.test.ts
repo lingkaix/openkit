@@ -15,7 +15,11 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { preparePolicyConfiguration, readAdmittedPolicyDocument } from './configuration.js';
 import { PolicyInterception } from './interception.js';
-import { listExportableWorkspacePermissionDecisions } from './permission-decisions.js';
+import {
+  listExportableWorkspacePermissionDecisions,
+  policyStatementUsedByDecision,
+  readPolicyStatementUseCount,
+} from './permission-decisions.js';
 import { type PolicyProposal, policyDigest, preparePolicyDocument } from './statements.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -271,6 +275,64 @@ function configurationFixture() {
 }
 
 describe('agent gate at native I16', () => {
+  it('ends an exhausted agent gate on later calls while checking the final-use attempt before release', async () => {
+    const input = fixture(agentDocument(otherHumanId));
+    const binding = admittedBinding(input.document);
+    binding.lifetime.uses = 1;
+    const reference = { id: binding.id, digest: policyDigest(binding) };
+    let humanCurrent = true;
+    const invoke = vi.fn(async () => assessment('allow'));
+    const finalKernel = vi.fn(() => kernel());
+    const pipeline = new PolicyInterception(undefined, {
+      id: agentId,
+      version: binding.participant.version,
+      invoke,
+    });
+    const evaluation = {
+      ...input,
+      authorCurrent: (id: string) => id !== otherHumanId || humanCurrent,
+      finalKernel,
+    };
+    const first = await pipeline.decide(evaluation);
+    expect(first.result).toBe('allow');
+    expect(readPolicyStatementUseCount(input.workspaceDb, reference)).toBe(1);
+    expect(policyStatementUsedByDecision(input.workspaceDb, reference, first)).toBe(true);
+    expect((await pipeline.decide(evaluation)).result).toBe('allow');
+    humanCurrent = false;
+    expect.soft((await pipeline.decide(evaluation)).result).toBe('allow');
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(finalKernel).toHaveBeenCalledTimes(3);
+    expect(readPolicyStatementUseCount(input.workspaceDb, reference)).toBe(1);
+
+    const lastUse = fixture(agentDocument(otherHumanId));
+    const lastBinding = admittedBinding(lastUse.document);
+    lastBinding.lifetime.uses = 1;
+    let lastHumanCurrent = true;
+    const lastKernel = vi.fn(() => kernel());
+    const lastInvoke = vi.fn(async () => {
+      lastHumanCurrent = false;
+      return assessment('allow');
+    });
+    const last = await new PolicyInterception(undefined, {
+      id: agentId,
+      version: lastBinding.participant.version,
+      invoke: lastInvoke,
+    }).decide({
+      ...lastUse,
+      authorCurrent: (id) => id !== otherHumanId || lastHumanCurrent,
+      finalKernel: lastKernel,
+    });
+    expect(last.result).toBe('error');
+    expect(lastInvoke).toHaveBeenCalledTimes(1);
+    expect(lastKernel).toHaveBeenCalledTimes(1);
+    expect(
+      readPolicyStatementUseCount(lastUse.workspaceDb, {
+        id: lastBinding.id,
+        digest: policyDigest(lastBinding),
+      })
+    ).toBe(0);
+  });
+
   it('refuses direct active configuration preparation without prior exact completed shadow evidence', () => {
     const f = configurationFixture();
     const original = readFileSync(f.serverPath, 'utf8');
