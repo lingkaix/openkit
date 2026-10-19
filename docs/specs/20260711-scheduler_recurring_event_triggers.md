@@ -6,6 +6,12 @@ updated: 2026-10-17
 ---
 # Scheduler Recurring Triggers
 
+## Timer And Admission Replacement
+
+The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) replaces the separate recurring scan/restart publication path and server-scoped Workspace admission joins with the Draft [durable engine](20261019-durable_execution_and_control_store.md#minimal-engine). Existing schedule, occurrence, expired-range and event-admission families move with their Workspace; due timers and occurrence acceptance use its local transaction and normal reconciler. The scanner and cross-store mechanisms below are the pre-cutover baseline, not an additional target loop.
+
+Cadence, trigger identity, overlap, missed occurrences, bounded admission-only retry, current authority and the prohibition on replaying accepted execution remain unchanged. The exclusion of a general workflow engine rejects a competing lifecycle; the approved engine replaces storage/recovery machinery and introduces no new recurring operation or Goal design.
+
 ## Owns
 
 - Durable fixed-interval and bounded monthly UTC schedule definitions and occurrence history for requesting the existing worker Turn admission operation.

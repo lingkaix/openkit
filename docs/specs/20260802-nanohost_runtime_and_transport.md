@@ -7,6 +7,20 @@ updated: "2026-10-15"
 ---
 # NanoHost Runtime And Transport
 
+## Durable Execution Boundary
+
+The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) replaces separate Core attempt/backend/restart progression with one scope-owned execution engine. The Draft [replacement mechanism](20261019-durable_execution_and_control_store.md) owns intent/outcome transactions, global reservation commit gaps and propagated deadlines. Existing physical placement, Epoch, attachment, identity, command receipt, current authority and cleanup proofs below remain binding; only individually proved ablations may remove them. The engine is inside NanoCore, not a new NanoHost journal, Worker inbox or recovery service.
+
+Optional trace headers remain diagnostic. The engine journal is the sole permitted durable trace/span correlation owner under the new decision; no trace field enters a NanoHost body or another canonical record. Deadline propagation is distinct control metadata: its authenticated transport header must match or narrow the stored operation allowance, and omission or invalid extension refuses operations that require it. JSON and file bodies keep their exact identity/fingerprint grammar. This admits no Sandbox SDK, OTLP exporter or new egress. The separately owned 2026-10-19 Worker phase-marker amendment permits only allowlisted enum/timestamp observations through existing worker control; the [journal boundary](20261019-durable_execution_and_control_store.md#step-journal-and-span-model) validates and retains them as unverified events, never control decisions.
+
+## Core-Outage Restart Backoff
+
+NanoHost service restarts MUST use a bounded delay policy rather than repeat every five seconds throughout a Core outage. Prefer stock systemd 254 or later. Proposed implementation defaults are `RestartSec=5s`, `RestartSteps=5`, and `RestartMaxDelaySec=5min`; stock systemd grows the delay geometrically to that cap. For older systemd, omit unsupported directives and use `RestartSec=5min`. Installation must select a supported profile, not silently accept ignored directives. These are defaults, not wire or retained-format constants.
+
+Preserve `RestartPreventExitStatus=78`: credential unavailability and admission HTTP 401 remain non-restartable until corrected. Preserve service-cgroup stop ordering, whole-Epoch fencing and the current stop bound. A delayed restart proves neither cleanup nor a Turn outcome. No custom retry controller, timer file or durable backoff counter is added. Automatic recoverable failures continue at the cap; the policy limits frequency rather than claiming bounded outage duration.
+
+Stock systemd owns counter reset semantics. Do not reset counters on mere socket reachability or invent a healthy-run reset option absent from those directives. A deliberate operator reset requires restored Core connectivity and an authenticated ready Host. The current unit still uses fixed `RestartSec=5s` with no rate limit; this documentation states the required correction and proposed defaults, not an implemented service change. Qualify both version profiles and prevented-exit behavior through the existing service/installer checks.
+
 ## Cold Gateway Startup
 
 Gateway connection and health during cold supervisor preparation MUST use the remaining existing absolute startup readiness budget, including any shorter rebuild deadline. Cold image pull, extraction and initialization MUST NOT be cut off by a separate ten-second Gateway health wait. This does not extend the overall startup bound, grant readiness before verified health and Core acknowledgement, or weaken partial-start invalidation and fencing.
