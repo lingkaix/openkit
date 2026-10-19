@@ -891,7 +891,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     nextTurn.turn.id
   );
   const trace = parseWorkerContextPackageTrace(
-    JSON.parse(await readFile(join(turnRoot, 'context-package.json'), 'utf8'))
+    JSON.parse(await readFile(join(turnRoot, 'context-package.json'), 'utf8')),
+    await readFile(join(turnRoot, 'context-package/package.json'))
   );
   expect(trace).toMatchObject({
     workspaceId: nextTurn.receivingWorkspaceId,
@@ -917,10 +918,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     originalDigest: proposals[0]!.contentDigest,
     byteLength: Buffer.byteLength(proposalTexts[0]!, 'utf8'),
   });
+  // Originals stay at their source: the selected version downloads with the traced digest.
+  expect(await proposalOriginal(proposals[0]!)).toBe(proposalTexts[0]!);
   const packageRoot = join(turnRoot, 'context-package');
-  expect(await readFile(join(packageRoot, selectedSource!.originalSnapshotPath))).toEqual(
-    Buffer.from(proposalTexts[0]!, 'utf8')
-  );
   for (const file of trace.fileInventory) {
     const bytes = await readFile(join(packageRoot, file.path));
     expect(bytes.byteLength).toBe(file.byteLength);
