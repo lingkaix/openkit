@@ -90,6 +90,7 @@ import {
   importWorkspacePermissionDecisions,
   listExportableWorkspacePermissionDecisions,
 } from '../policy/permission-decisions.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import {
   importAgentEnvironmentPackageSnapshots,
   listExportableAgentEnvironmentPackageSnapshots,
@@ -1376,8 +1377,8 @@ export function createVerifiedWorkspaceExport({
   const authoredPolicy = retainedPortableState.workspaceConfig
     ? (WorkspaceConfigSchema.parse(
         parseJsoncObject(retainedPortableState.workspaceConfig, 'config/workspace.jsonc')
-      ).workspace.policy?.resourceAccess ?? [])
-    : [];
+      ).workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT)
+    : EMPTY_POLICY_DOCUMENT;
   if (!isDeepStrictEqual(authoredPolicy, store.getWorkspaceResourceAccess(workspaceId)))
     throw new Error('Workspace export requires matching saved and effective resource Policy.');
   if (
