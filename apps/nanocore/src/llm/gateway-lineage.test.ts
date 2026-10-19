@@ -357,6 +357,11 @@ describe('public durable logical Gateway lineage', () => {
             id: 'usr_00000000-0000-7000-8000-000000000001',
           }),
         }),
+        {
+          action: 'permission.decision',
+          actor_json: null,
+          authentication_json: null,
+        },
         expect.objectContaining({
           action: 'capability.finish',
           authentication_json: JSON.stringify({ credentialKind: 'local', credentialId: null }),
