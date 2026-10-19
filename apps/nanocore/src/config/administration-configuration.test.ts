@@ -438,7 +438,7 @@ describe('administration catalog configuration', () => {
         reload: 'applied',
       });
       f.coreDb.sqlite.transaction(() =>
-        disableCanonicalUser(f.coreDb, f.actor.userId, new Date().toISOString())
+        disableCanonicalUser(f.coreDb, f.actor.userId, new Date())
       )();
       expect(
         policyConfiguration.readStorageLeaseAccess({
