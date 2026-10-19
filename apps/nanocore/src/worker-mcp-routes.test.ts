@@ -1169,13 +1169,13 @@ describe('worker MCP routes', () => {
                     resources: [
                       {
                         kind: 'mcp-tool',
-                        workspaceId: turn.workspaceId,
+                        workspaceId: workspaceIdForOwner(turn.owner),
                         serverId: 'openkit-work',
                         toolName: operationToolName('knowledge.ask'),
                       },
                       {
                         kind: 'mcp-tool',
-                        workspaceId: turn.workspaceId,
+                        workspaceId: workspaceIdForOwner(turn.owner),
                         serverId: 'openkit-generative',
                         toolName: 'kernel_apps_list',
                       },
@@ -1183,9 +1183,9 @@ describe('worker MCP routes', () => {
                   },
                   lifetime: {
                     anchor: {
-                      owner: { kind: 'workspace', workspaceId: turn.workspaceId },
+                      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
                       kind: 'workspace',
-                      id: turn.workspaceId,
+                      id: workspaceIdForOwner(turn.owner),
                     },
                   },
                 },
@@ -1327,7 +1327,7 @@ describe('worker MCP routes', () => {
       } finally {
         knowledgeDb.sqlite.close();
       }
-      const conditionDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      const conditionDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
       try {
         const pendingBefore = conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all();
         const selectedCalls = () =>
@@ -1381,7 +1381,10 @@ describe('worker MCP routes', () => {
           pendingBefore
         );
         publishBuiltinCondition(null);
-        const ledgerBeforeHeldAsk = listWorkspaceCapabilityCalls(conditionDb, turn.workspaceId);
+        const ledgerBeforeHeldAsk = listWorkspaceCapabilityCalls(
+          conditionDb,
+          workspaceIdForOwner(turn.owner)
+        );
         const previousCallIds = new Set(ledgerBeforeHeldAsk.map((call) => call.id));
         const withheldAnswer = 'BUILTIN_POST_AWAIT_WITHHELD_ANSWER';
         let releaseAsk!: () => void;
@@ -1408,7 +1411,10 @@ describe('worker MCP routes', () => {
           releaseAsk();
           await withheld;
           expect(askKnowledge).toHaveBeenCalledTimes(2);
-          const ledgerAfterHeldAsk = listWorkspaceCapabilityCalls(conditionDb, turn.workspaceId);
+          const ledgerAfterHeldAsk = listWorkspaceCapabilityCalls(
+            conditionDb,
+            workspaceIdForOwner(turn.owner)
+          );
           expect(ledgerAfterHeldAsk.filter((call) => previousCallIds.has(call.id))).toEqual(
             ledgerBeforeHeldAsk
           );
@@ -1420,7 +1426,7 @@ describe('worker MCP routes', () => {
           });
           expect(heldCalls[0]!.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
           expect(
-            JSON.stringify(store.listThreadItems(turn.workspaceId, turn.threadId))
+            JSON.stringify(store.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId))
           ).not.toContain(withheldAnswer);
           expect(conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toEqual(
             pendingBefore
@@ -2918,7 +2924,7 @@ describe('worker MCP routes', () => {
       ...snapshot.openKitConfig.policy,
       mediation: admitTestMcpApproval({
         coreDb,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         serverId: 'echo',
         toolName: 'echo',
         userId: 'usr_00000000-0000-7000-8000-000000000001',
