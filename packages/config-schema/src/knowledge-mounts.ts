@@ -36,20 +36,21 @@ export function validateKnowledgeMountBinding(
     defaultKnowledgeBaseId?: string | undefined;
     knowledgeMounts?: z.infer<typeof KnowledgeMountsSchema> | undefined;
   },
-  context: z.RefinementCtx
+  context: z.RefinementCtx,
+  prefix: PropertyKey[] = []
 ): void {
   if (value.knowledgeMounts === undefined) return;
   if (!value.defaultKnowledgeBaseId)
     context.addIssue({
       code: 'custom',
-      path: ['knowledgeMounts'],
+      path: [...prefix, 'knowledgeMounts'],
       message: 'Knowledge mounts require the fixed scope Knowledge Base.',
     });
   value.knowledgeMounts.forEach((mount, index) => {
     if (mount.knowledgeBaseId !== value.defaultKnowledgeBaseId)
       context.addIssue({
         code: 'custom',
-        path: ['knowledgeMounts', index, 'knowledgeBaseId'],
+        path: [...prefix, 'knowledgeMounts', index, 'knowledgeBaseId'],
         message: 'Knowledge mount does not belong to the fixed scope Knowledge Base.',
       });
   });

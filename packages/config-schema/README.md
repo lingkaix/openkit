@@ -132,3 +132,5 @@ AEP Skill lineage optionally carries `pinAuditRef`, validated by the Protocol Au
 
 
 `workspace-resource-policy` is the browser-safe entry for exact resource families, User and Agent subjects, allocations, prohibitions and retained managed boundaries. The Workspace schema accepts `workspace.policy.resourceAccess` only with the supported required feature when boundaries are present. An empty grants array keeps the boundary. Structural validation supplies no current membership, resource ownership or execution authority; NanoCore checks those owners before applying a change or importing records.
+
+`knowledgeMounts` is the shared scope-owned declaration array beside the fixed `defaultKnowledgeBaseId` (inside `workspace` for Workspace settings). Parsing preserves declarations, requires one default and unique names, and binds every mount to that exact base. Unsupported backend declarations remain descriptive until an owning adapter can activate them; parsing creates neither storage nor access. Native fresh Knowledge Base initialization records the managed local `raw` declaration.

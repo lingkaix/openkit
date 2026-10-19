@@ -4,6 +4,7 @@ export * from './catalog.js';
 export * from './gateway.js';
 export * from './internal-role.js';
 export * from './knowledge-maintenance.js';
+export * from './knowledge-mounts.js';
 export * from './mcp-catalog.js';
 export * from './model-catalog.js';
 export * from './policy.js';

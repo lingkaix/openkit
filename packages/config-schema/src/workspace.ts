@@ -13,6 +13,7 @@ import {
   AuthoredAgentSkillEntrySchema,
 } from './agent.js';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
+import { KnowledgeMountsSchema, validateKnowledgeMountBinding } from './knowledge-mounts.js';
 import { authoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 import {
   WORKSPACE_RESOURCE_POLICY_FEATURE,
@@ -105,6 +106,7 @@ export const WorkspaceConfigWorkspaceSchema = z
     name: z.string().trim().min(1),
     /** Fixed scope binding after Knowledge Base creation; parsing never allocates an ID. */
     defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
+    knowledgeMounts: KnowledgeMountsSchema.optional(),
 
     policy: z.object({ resourceAccess: WorkspaceResourceAccessSchema }).strict().optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
@@ -165,6 +167,7 @@ export const WorkspaceConfigSchema = z
   })
   .strip()
   .superRefine((value, ctx) => {
+    validateKnowledgeMountBinding(value.workspace, ctx, ['workspace']);
     if (
       value.workspace.policy?.resourceAccess.length &&
       !value.requiredFeatures?.includes(WORKSPACE_RESOURCE_POLICY_FEATURE)

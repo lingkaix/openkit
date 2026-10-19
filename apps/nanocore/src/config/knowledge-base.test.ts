@@ -105,7 +105,7 @@ describe('retained default Knowledge Base identity', () => {
       readRuntimeConfigStatus: () => manager.status(),
     });
     const expectedRevision = service.readFile(id).file.revision;
-    const replacement = retained.replace(retainedId, 'kb_0190f4c8-0000-7000-8000-0000000000ff');
+    const replacement = retained.replaceAll(retainedId, 'kb_0190f4c8-0000-7000-8000-0000000000ff');
     for (const draft of [replacement, content]) {
       expect(() => service.updateFile({ id, kind, content: draft, expectedRevision })).toThrow(
         'Default Knowledge Base identity is assigned at creation and cannot be edited.'
