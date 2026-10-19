@@ -1561,7 +1561,7 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
+          reference: `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@${sha256Digest('Registered capture evidence.')}`,
           kind: 'registered-source',
           targetId: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
           resolved: true,
