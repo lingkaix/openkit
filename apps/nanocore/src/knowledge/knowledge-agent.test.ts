@@ -53,6 +53,7 @@ import {
 } from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
+import { publishCapturedSource } from './source-publication.js';
 
 type TransportRequest = Parameters<LLMGatewayProviderDispatcher['createResponses']>[1];
 type Transport = Parameters<LLMGatewayProviderDispatcher['createResponses']>[2];
@@ -87,29 +88,60 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
   );
   const captured = 'The heliotrope launch uses the cobalt gate. No launch date is documented.';
   const now = new Date().toISOString();
-  const source = store.createKnowledgeSource(
-    {
-      id: allocateEntityId('ks'),
-      workspaceId: workspace.id,
-      kind: 'document',
-      title: 'Launch evidence',
-      uri: null,
-      contentDigest: `sha256:${createHash('sha256').update(captured).digest('hex')}`,
-      originatingThreadId: sourceThread.id,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    },
-    captured
-  );
-  const sourceReference = `source:${source.id}@${source.contentDigest}`;
+  const sourceInput = {
+    id: allocateEntityId('ks'),
+    workspaceId: workspace.id,
+    kind: 'document' as const,
+    title: 'Launch evidence',
+    uri: null,
+    contentDigest: `sha256:${createHash('sha256').update(captured).digest('hex')}`,
+    originatingThreadId: sourceThread.id,
+    originatingTurnId: null,
+    originatingFileId: null,
+    capturedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
   });
   const publicationConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const sourceRequestId = randomUUID();
+  await publishCapturedSource(
+    {
+      owner: { dataRoot, ownerScope: { kind: 'workspace', workspaceId: workspace.id } },
+      database: { kind: 'workspace', workspaceDb },
+      access: { store, coreDb, actor, requestActor: { kind: 'local', userId } },
+      producer: actor,
+      requestId: sourceRequestId,
+      commandInput: sourceInput,
+      captureChannel: 'knowledge.source.register',
+      revalidatePublication: () => {
+        readWorkspaceNotebookAdmission({
+          store,
+          coreDb,
+          workspaceDb,
+          notebook,
+          request: {
+            workspaceId: workspace.id,
+            requestId: sourceRequestId,
+            baseRevision: notebook.publishedRevision(),
+            changes: [],
+            summary: 'Capture the explicit launch evidence.',
+          },
+          requestActor: { kind: 'local', userId },
+          actor,
+          runtimeConfigManager: { current: () => publicationConfig },
+          workspaceMutationAdmission,
+        });
+      },
+    },
+    sourceInput,
+    Buffer.from(captured)
+  );
+  const source = store.getKnowledgeSource(workspace.id, sourceInput.id);
+  const sourceReference = `source:${source.id}@${source.contentDigest}`;
   await publishWorkspaceNotebookEntry(
     {
       store,
@@ -1047,7 +1079,7 @@ async function memoryFixture() {
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot: f.dataRoot }),
     inflightCommands: new WeakMap(),
   };
-  const baseRevision = initializeScopedNotebook({
+  initializeScopedNotebook({
     ...writer,
     target: { kind: 'user' },
     initialization: { requestId: randomUUID(), instructionReference: 'test:private-km' },
@@ -1058,6 +1090,9 @@ async function memoryFixture() {
     title: 'Private User preference',
     content: 'I prefer the meridian violet tea. USER_PRIVATE_SOURCE',
   });
+  const baseRevision = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'users', f.userId, 'memory', 'notebook.git'),
+  }).publishedRevision();
   const pageId = 'preferences';
   const publication = await saveMemoryPage(writer, {
     requestId: randomUUID(),
@@ -1237,7 +1272,7 @@ it('rechecks Memory page suppression before delivering a synthesized answer', as
   });
   await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
   expect(readPage).toContain('USER_PRIVATE_PAGE');
-  expect(readUserKnowledgeSource(f.writer, f.source.id, 'model')).toBeNull();
+  expect(await readUserKnowledgeSource(f.writer, f.source.id, 'model')).toBeNull();
 });
 
 it('rechecks current User authority after Memory page reads before answer delivery', async () => {
