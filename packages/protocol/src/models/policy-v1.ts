@@ -5,6 +5,7 @@ import {
   AuditEventIdSchema,
   AutomationIdSchema,
   CapabilityCallIdSchema,
+  KnowledgeBaseIdSchema,
   PermissionDecisionIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -162,8 +163,32 @@ export const PolicyBindingV1Schema = z
         message: 'Decisive modes cannot continue after failure.',
       });
   });
-/** Ordinary permissions select targets only through their statement scope. */
-export const PolicyGrantV1Schema = z.object({ kind: z.literal('ordinary') }).strict();
+/** Storage adds byte bounds; subject and expiry remain in the owning statement. */
+export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('ordinary') }).strict(),
+  z
+    .object({
+      kind: z.literal('storage-lease'),
+      knowledgeBaseId: KnowledgeBaseIdSchema,
+      mount: z.string().min(1),
+      pathPrefix: z
+        .string()
+        .max(4096)
+        .describe(
+          'Normalized relative path; empty means mount root. Canonical Zod validation rejects traversal and invalid separators.'
+        )
+        .refine(
+          (path) =>
+            path === '' ||
+            (!path.includes('\\') &&
+              !path.includes('\0') &&
+              path.split('/').every((part) => part !== '' && part !== '.' && part !== '..')),
+          'Storage prefix must be a normalized relative path.'
+        ),
+      mode: z.enum(['read-only', 'staged-write']),
+    })
+    .strict(),
+]);
 /** Permission conditions include the existing approval-required Tool rule. */
 export const PolicyPermissionV1Schema = z
   .object({
@@ -173,7 +198,18 @@ export const PolicyPermissionV1Schema = z
     effect: z.enum(['allow', 'prohibit', 'require_approval']),
     grant: PolicyGrantV1Schema,
   })
-  .strict();
+  .strict()
+  .superRefine((statement, context) => {
+    if (statement.grant.kind === 'storage-lease' && !statement.lifetime.notAfter)
+      context.addIssue({
+        code: 'custom',
+        path: ['lifetime', 'notAfter'],
+        message: 'Storage leases require their statement expiry.',
+      });
+  })
+  .describe(
+    'Storage-lease permissions require lifetime.notAfter; validate this cross-field rule with the canonical Zod schema.'
+  );
 /** Exact Goal delegation approved with its Plan in one existing Pending Request. */
 export const PolicyDelegationV1Schema = z
   .object({
