@@ -26,6 +26,7 @@ import {
   readAuditEventRowV1,
   readPermissionDecisionRowV1,
 } from './retained-records-v1.js';
+import { policyDigest } from './statements.js';
 
 /** Supported storage owner scopes for the first permission decision recorder. */
 export type PermissionDecisionOwnerScope = 'server' | 'workspace' | 'user';
@@ -57,8 +58,8 @@ export interface RecordPermissionDecisionInput {
   action: string;
   /** Redacted resource summary. */
   resourceSummary: unknown;
-  /** Redacted context summary. */
-  contextSummary: unknown;
+  /** Redacted context fields extended with the actual Kernel match IDs. */
+  contextSummary: Readonly<Record<string, unknown>>;
   /** Enforcement point that produced this row. */
   enforcementPoint: string;
   /** Approval kind required when applicable. */
@@ -422,7 +423,13 @@ export function recordPermissionDecision(input: RecordPermissionDecisionInput): 
     subjectSummary: input.subjectSummary,
     action: input.action,
     resourceSummary: input.resourceSummary,
-    contextSummary: input.contextSummary,
+    contextSummary: {
+      ...input.contextSummary,
+      kernelTrace: {
+        matchedAssociations: input.policyDecision.trace.matchedAssociations,
+        matchedProhibitions: input.policyDecision.trace.matchedProhibitions,
+      },
+    },
     result: mapPolicyEffect(input.policyDecision.effect),
     reasonCode: input.policyDecision.reasons[0]?.code ?? 'unknown',
     enforcementPoint: input.enforcementPoint,
@@ -1043,6 +1050,7 @@ function permissionDecisionDb(input: RecordProductPermissionDecisionInput): Core
 export function recordBootPolicySelfCheckDecisions(
   input: RecordBootPolicySelfCheckDecisionsInput
 ): void {
+  const policySnapshotId = policyDigest(input.kernel.policy);
   const requests = [
     { operation: 'api.call', target: 'object:nanocore', resourceKind: 'core-api' },
     {
@@ -1120,7 +1128,7 @@ export function recordBootPolicySelfCheckDecisions(
           row.decision_id.split('_')[1]?.[14] !== '7' ||
           row.workspace_id !== null ||
           row.policy_engine_version !== 'policy-kernel:v1' ||
-          row.policy_snapshot_id !== 'policy_snapshot_boot_baseline' ||
+          row.policy_snapshot_id !== policySnapshotId ||
           row.result !== mapPolicyEffect(policyDecision.effect) ||
           row.reason_code !== (policyDecision.reasons[0]?.code ?? 'unknown') ||
           row.required_approval_kind !== null ||
@@ -1144,7 +1152,7 @@ export function recordBootPolicySelfCheckDecisions(
         ownerScope: 'server',
         policyDecision,
         policyEngineVersion: 'policy-kernel:v1',
-        policySnapshotId: 'policy_snapshot_boot_baseline',
+        policySnapshotId,
         subjectSummary: { id: process, kind: 'process' },
         action: request.operation,
         resourceSummary: { id: request.target, kind: request.resourceKind },

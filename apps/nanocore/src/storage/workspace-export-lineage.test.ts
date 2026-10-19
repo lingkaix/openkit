@@ -384,10 +384,7 @@ function createLineageExportInput(
       updatedAt: timestamp,
     },
     portableFileState: {
-      claims: new Map(),
-      conflicts: new Map(),
       nativeKnowledgePages: new Map(),
-      observations: new Map(),
       retrievalTraceFiles: new Map(),
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
@@ -1401,13 +1398,10 @@ function createWorkResourceLineageExportInput(
     },
   ];
   input.portableFileState = {
-    claims: new Map(),
-    conflicts: new Map(),
     notebookRevision,
     nativeKnowledgePages: new Map(
       Object.entries(notebookFiles).map(([path, content]) => [`knowledge/pages/${path}`, content])
     ),
-    observations: new Map(),
     retrievalTraceFiles: new Map([
       [
         `threads/${source.threadId}/turns/${source.turnId}/retrieval-traces/${retrievalTraceId}.json`,

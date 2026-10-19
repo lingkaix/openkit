@@ -140,9 +140,11 @@ Load this reference for knowledge sources, observations, claims, conflicts, retr
 
 ## Read before writing
 
-Identify the workspace and thread context, then search the operation catalog with the user's intent, such as `knowledge source`, `retrieve`, `claim`, `conflict`, `context prepare`, `proposal`, `repair`, or `health`. Describe the selected operation before invoking it.
+Identify the workspace and thread context, then search the operation catalog with the user's intent, such as `knowledge source`, `knowledge notebook`, `retrieve`, `context prepare`, `proposal`, `repair`, or `health`. Describe the selected operation before invoking it.
 
 Read current knowledge state before recording a new observation, claim, decision, or proposal. Preserve the source, scope, provenance, and revision information required by the described schema; do not infer missing provenance or present a projection as its durable owner.
+
+Reusable Claims and Observations are ordinary Notebook pages. Use the Notebook editor or `knowledge.notebook.update`, then read the exact published page. A Claim keeps numeric `confidence` from 0 through 1. An actual Observation conflict uses `conflict_status: unresolved` or `resolved` and canonical `subject_refs` for affected current pages; supporting `source_refs` are separate evidence. An exact subject pin applies only to that version. There is no separate claim, observation or conflict ledger operation. Do not use operational WorkObservation or Audit as a replacement Notebook.
 
 ## Apply governed changes
 

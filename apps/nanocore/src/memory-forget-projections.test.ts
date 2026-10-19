@@ -154,7 +154,8 @@ describe('public Item-confirmed self Memory forget', () => {
     });
     const turn = f.store.getTurnById(prepared.body.turnId);
     expect(turn).toMatchObject({
-      ...context,
+      threadId: context.threadId,
+      owner: { kind: 'workspace', workspaceId: context.workspaceId },
       triggerActor: { kind: 'user', id: f.userId },
     });
     expect(f.store.getTurnExecutor(turn.id)).toBe('person');

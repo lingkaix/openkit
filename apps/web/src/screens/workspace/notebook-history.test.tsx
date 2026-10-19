@@ -88,9 +88,6 @@ function renderNotebook({
           },
         });
       case operationHttpPath('knowledge.source.list'):
-      case operationHttpPath('knowledge.observation.list'):
-      case operationHttpPath('knowledge.claim.list'):
-      case operationHttpPath('knowledge.conflict.list'):
       case operationHttpPath('attention.list'):
         return Response.json({ items: [] });
       case operationHttpPath('knowledge.notebook.history'):

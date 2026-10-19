@@ -35,7 +35,7 @@ export function readPortableWorkspaceNotebookPages(workspaceRoot: string): {
   };
 }
 
-/** Remints only owned scope and source fields; authored Markdown and other metadata remain intact. */
+/** Remints owned scope, evidence and assessment subjects; authored Markdown remains intact. */
 export function remintPortableWorkspaceNotebookPage(input: {
   readonly path: string;
   readonly content: string;
@@ -56,11 +56,19 @@ export function remintPortableWorkspaceNotebookPage(input: {
   )
     throw new NotebookError('invalid_request');
   const rewritten = input.rewriteReferences(sourceReferences);
+  const subjects =
+    parsed.document.frontmatter.type === 'Observation'
+      ? stringListFrontmatterField(parsed.document, 'subject_refs')
+      : null;
+  const rewrittenSubjects = subjects === null ? null : input.rewriteReferences(subjects);
   const scopeChanged = input.sourceWorkspaceId !== input.targetWorkspaceId;
   const sourcesChanged = rewritten.some(
     (reference, index) => reference !== sourceReferences[index]
   );
-  if (!scopeChanged && !sourcesChanged) return input.content;
+  const subjectsChanged = subjects?.some(
+    (reference, index) => reference !== rewrittenSubjects?.[index]
+  );
+  if (!scopeChanged && !sourcesChanged && !subjectsChanged) return input.content;
   return updateOkfFrontmatter({
     path: input.path,
     content: input.content,
@@ -69,6 +77,7 @@ export function remintPortableWorkspaceNotebookPage(input: {
         ? { scope: { kind: 'workspace', workspaceId: input.targetWorkspaceId } }
         : {}),
       ...(sourcesChanged ? { source_refs: [...rewritten] } : {}),
+      ...(subjectsChanged ? { subject_refs: rewrittenSubjects } : {}),
     },
   });
 }

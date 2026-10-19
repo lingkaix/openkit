@@ -468,7 +468,7 @@ describe('worker checkpoint storage', () => {
         listWorkspaceCapabilityCalls(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toMatchObject([
         {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: 'tu_00000000-0000-784a-b5cd-eb5f8f622c05',
           agentSessionId: testEntityId('as', 'session_demo'),

@@ -357,7 +357,7 @@ The Chat stale-refetch regression queries and asserts completed Markdown content
 
 Chat starter Recent stays in loading treatment while Workspace/identity discovery or conversation navigation is unresolved and shows its empty block only after a successful empty navigation read. Failed reads retry their own query; unavailable Workspaces and disconnected reads use error treatment. Its regression defers discovery and navigation separately and checks that neither pending stage shows the empty block. Overview ongoing-work tests query card headings so the required sidebar conversation labels do not collide with card titles.
 
-Knowledge unit journeys paste complete draft values through user-event into focused fields, retaining accessible selection, submission, retry and authoritative-refetch assertions without replaying unrelated keystrokes. The long ledger and cross-Workspace draft cases check Vitest's abort signal at user-event waits; the cross-Workspace case also checks it before changing the shared Workspace store, so timed-out input cannot continue into a following case.
+Knowledge unit journeys paste complete draft values through user-event into focused fields, retaining accessible selection, submission, retry and authoritative-refetch assertions without replaying unrelated keystrokes. The cross-Workspace draft cases check Vitest's abort signal at user-event waits and before changing the shared Workspace store, so timed-out input cannot continue into a following case.
 
 Material proposal review loads file-backed text through the authorized exact-version Artifact download, whose original digest header Core exposes to allowed browser origins, verifies complete UTF-8 and the digest within the 16,777,216-byte Material bound, and hides prior text while a different identity loads or a read fails.
 
@@ -401,7 +401,7 @@ Failed Turns retain their recorded dashboard errors in conversation history afte
 
 ### Knowledge retrieval
 
-Every production Knowledge caller in `screens/workspace/data.ts` uses the definition-derived `client.operations` map with one Workspace-bound argument. The existing entry, Source, ledger, retrieval, manager and proposal-decision hooks retain their retry, request identity and Workspace-cache ownership.
+Every production Knowledge caller in `screens/workspace/data.ts` uses the definition-derived `client.operations` map with one Workspace-bound argument. The existing notebook entry, Source, retrieval, manager and proposal-decision hooks retain their retry, request identity and Workspace-cache ownership.
 
 The Retrieval panel uses the derived-index read only for availability and failure state. It does not expose a separate tokenizer-term inventory; ranked retrieval belongs to the Retrieval Kernel.
 

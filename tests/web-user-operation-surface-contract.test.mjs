@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 339;
+const EXPECTED_CATALOG_SIZE = 332;
 const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 253;
+const EXPECTED_INCLUDED_SIZE = 246;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -215,18 +215,11 @@ const WEB_OPERATION_GROUPS = {
     'knowledge.proposal.read': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.health.check': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.proposal.draft': { disposition: 'roadmap', roadmap: 'R070' },
-    'knowledge.claim.list': { disposition: 'live', surface: 'Knowledge' },
-    'knowledge.conflict.list': { disposition: 'live', surface: 'Knowledge' },
-    'knowledge.observation.list': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.source.list': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.context.prepare': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.indexes': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.source.read': { disposition: 'live', surface: 'Knowledge' },
-    'knowledge.claim.record': { disposition: 'live', surface: 'Knowledge' },
-    'knowledge.conflict.record': { disposition: 'live', surface: 'Knowledge' },
-    'knowledge.observation.record': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.source.register': { disposition: 'live', surface: 'Knowledge' },
-    'knowledge.conflict.resolve': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.retrieval': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.repair.suggest': { disposition: 'live', surface: 'Knowledge' },
   },

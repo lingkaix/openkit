@@ -1,5 +1,7 @@
 # Storage
 
+Knowledge retrieval records exact metadata selector mismatches as `selector_mismatch` in the existing response and retained trace. Current authorization or Source-policy refusals retain `policy_excluded`; selectors do not widen admission.
+
 This directory owns NanoCore's physical data-root layout, ownership-scoped SQLite databases, canonical workspace file records, migrations, integrity validation, derived indexes, backup, export, and import mechanics.
 
 ## Source Of Truth
@@ -59,7 +61,7 @@ Timeline coverage remains partial when a collection gap follows observed runtime
 - Bounded filesystem faults verify prior readable authority before publication, explicit failure after rename, and exact replay. These checks do not simulate a physical power loss or prove hardware cache behavior.
 - Append item and event revisions to JSONL; readers select the latest item revision by id and preserve event sequence.
 - Fail closed on malformed canonical records, invalid lineage, unsupported required features, path escapes, and legacy authority files.
-- Descriptive history readers normalize root and nested annotations before returning known fields. Normal canonical rewrites preserve owned annotations, immutable Knowledge Proposal bytes and append-only Item/Review history; Knowledge ledger source annotations remain non-enumerable beside their normalized read model. Observation ingress persists its parsed payload, and unchanged receipt rewrites retain the original metadata JSON. Shared producer and instruction assertions remain exact.
+- Descriptive history readers normalize root and nested annotations before returning known fields. Normal canonical rewrites preserve owned annotations, immutable Knowledge Proposal bytes and append-only Item/Review history. Observation ingress persists its parsed payload, and unchanged receipt rewrites retain the original metadata JSON. Shared producer and instruction assertions remain exact.
 - Export V3 preserves complete canonical history and exact portable file bytes; predecessor formats are rejected.
 - Portable evidence keeps admitted restricted originals as verified binary bytes under their EvidenceBundle, separate from canonical UTF-8 records. Import remints owner references, preserves body digests and retention, and stages bytes before publishing the Workspace. Unpublished observation chunks and expired body bytes stay excluded.
 - Current Goal portability retains intent history, card revisions, exact immutable Plan bytes and pointers, Task admission citations and Task terminal facts in `records/goal-state.json`. Import remints Workspace, Thread and Turn owners, keeps immutable Plan identities and bytes, binds responsibility to the importing actor and imports no grants. Retired Goal-owned rows are absent; shared historical Goal ids remain opaque lineage.
@@ -195,3 +197,5 @@ Artifact creation stages its admitted immutable v1 descriptor and exact original
 Exact-version Artifact choices use the existing Review judgement JSON column. Portable Review records carry that single history, remint both the select target and choice, and derive the public choice view after import. The first-writer decision and its apply or follow-up lineage remain separate effect authority.
 
 Thread, Turn and Item use one owner-qualified retained payload family for Workspace and Server history. `retained-work-items-v1.ts` owns the single retained Item variant list; `retained-server-work-v1.ts` keeps only the Server transcript envelope. Workspace readers require the exact directory Workspace owner; Server readers require Server ownership. The rc.10 reset recreates the new records without an alternate old-shape reader or converter. CapabilityCall uses the same explicit owner union, with database scope selecting its existing Workspace or Core home. SQL nullability alone establishes no owner authority.
+
+Claim and reusable Observation/conflict analysis now use the existing Git Notebook publisher and reader. `conflicts.ts` interprets current draft/active unresolved subject references for Proposal acceptance and active retrieval; supporting Sources are not subjects, and an exact pin applies only to its observed version. Ordinary writes validate local targets and exact pins. Portable Notebook remint updates subject identities and digests together. The standalone fact DTO operations and monthly JSONL families are retired; verified import refuses their archive paths before publication. Operational WorkObservation, Audit, actual decisions and User suppression are unchanged.
