@@ -241,15 +241,13 @@ describe('worker MCP routes', () => {
       vaultReferenceId: referenceId,
       workspaceId,
     });
-    const catalog = {
+    const catalog = parseWorkspaceMcpServerCatalog({
       schemaVersion: 1 as const,
       servers: [
         {
           id: 'echo',
           enabled: true,
           allowedTools: ['echo'],
-          deniedTools: [],
-          approvalRequiredTools: [] as string[],
           credentialBindings: [
             {
               presentation: 'bearer' as const,
@@ -264,11 +262,10 @@ describe('worker MCP routes', () => {
           transport: { kind: 'http' as const, endpoint: 'https://i16.invalid/mcp' },
         },
       ],
-    };
+    });
     catalog.servers.push({
       ...catalog.servers[0]!,
       id: 'echo-approval',
-      approvalRequiredTools: ['echo'],
     });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
@@ -339,6 +336,7 @@ describe('worker MCP routes', () => {
       })),
     };
     let document = EMPTY_POLICY_DOCUMENT;
+    let conditions: typeof document.statements = [];
     const admit = (version = participantVersion, failure?: 'error') => {
       const prepared = preparePolicyDocument({
         current: document,
@@ -347,6 +345,7 @@ describe('worker MCP routes', () => {
         proposed: PolicyDocumentV1Schema.parse({
           schemaVersion: 1,
           statements: [
+            ...conditions,
             {
               id: 'i16-gate',
               kind: 'binding',
@@ -401,6 +400,33 @@ describe('worker MCP routes', () => {
       });
       document = prepared.document;
       expect(readAdmittedPolicyDocument(coreDb, document)).toEqual(document);
+    };
+    const condition = (effect: 'prohibit' | 'require_approval', serverId = 'echo') => {
+      conditions = [
+        {
+          id: 'human-mcp-condition',
+          kind: 'permission',
+          effect,
+          grant: { kind: 'ordinary' },
+          author: principal,
+          authority: { kind: 'human', userId },
+          authoredAt: new Date().toISOString(),
+          state: 'active',
+          scope: {
+            subjects: [principal],
+            actions: ['tool.use'],
+            resources: [{ kind: 'mcp-tool', workspaceId, serverId, toolName: 'echo' }],
+          },
+          lifetime: {
+            anchor: {
+              owner: { kind: 'workspace', workspaceId },
+              kind: 'workspace',
+              id: workspaceId,
+            },
+          },
+        },
+      ];
+      admit();
     };
     admit();
     const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
@@ -560,6 +586,19 @@ describe('worker MCP routes', () => {
       assertRecords(0, 'allow', 'completed');
       expect(gateway.callTool).toHaveBeenCalledTimes(1);
       expect(credentialRead).toHaveBeenCalled();
+      // Baseline supply stays usable without an explicit allow statement.
+      condition('prohibit');
+      expect((await client.listTools()).tools).toEqual([]);
+      const prohibitedBoundary = boundaryCounts();
+      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+      expect(boundaryCounts()).toEqual(prohibitedBoundary);
+      expect(decisions().findLast((row) => row.mediation?.role === 'final')).toMatchObject({
+        result: 'deny',
+        mediation: { kernel: { effect: 'deny' } },
+      });
+      conditions = [];
+      admit();
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['echo']);
       const allowedBoundary = boundaryCounts();
       gate = 'deny';
       let start = decisions().length;
@@ -615,6 +654,7 @@ describe('worker MCP routes', () => {
       expect(invoke).toHaveBeenCalledTimes(invokedBeforeEvidenceFailure + 1);
       expect(decisions()).toHaveLength(start);
       expect(boundaryCounts()).toEqual(allowedBoundary);
+      condition('require_approval', 'echo-approval');
       gate = 'deny';
       start = decisions().length;
       await expect(approvalCall()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
@@ -629,22 +669,22 @@ describe('worker MCP routes', () => {
         isError: true,
         structuredContent: { status: 'pending-approval' },
       });
-      const catalogApproval = assertRecords(start, 'require_approval', 'completed', {
+      const policyApproval = assertRecords(start, 'require_approval', 'completed', {
         serverId: 'echo-approval',
         gateResult: 'allow',
       });
-      expect(catalogApproval.requiredApprovalKind).toBe('permission');
-      const afterCatalogApproval = listThreadPendingRequests(
+      expect(policyApproval.requiredApprovalKind).toBe('permission');
+      const afterPolicyApproval = listThreadPendingRequests(
         workspaceDb.sqlite,
         workspaceId,
         turn.threadId
       );
-      expect(afterCatalogApproval).toHaveLength(2);
+      expect(afterPolicyApproval).toHaveLength(2);
       expect(
-        afterCatalogApproval.find((request) => request.serverId === 'echo-approval')
+        afterPolicyApproval.find((request) => request.serverId === 'echo-approval')
       ).toMatchObject({
         state: 'pending',
-        policyDecisionId: catalogApproval.decisionId,
+        policyDecisionId: policyApproval.decisionId,
         schemaSnapshotId: approvalSchema.schema_snapshot_id,
         packageDigest: environmentPackage.snapshotId,
       });
