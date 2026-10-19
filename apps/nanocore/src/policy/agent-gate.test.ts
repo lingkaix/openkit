@@ -1,12 +1,19 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
-import { type PolicyDocumentV1, PolicyDocumentV1Schema } from '@openkit/protocol';
+import { allocateEntityId, type PolicyDocumentV1, PolicyDocumentV1Schema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { createAdministrationConfiguration } from '../config/administration-configuration.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
+import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { preparePolicyConfiguration, readAdmittedPolicyDocument } from './configuration.js';
 import { PolicyInterception } from './interception.js';
 import { listExportableWorkspacePermissionDecisions } from './permission-decisions.js';
 import { type PolicyProposal, policyDigest, preparePolicyDocument } from './statements.js';
@@ -197,7 +204,157 @@ function fixture(document: PolicyDocumentV1) {
   };
 }
 
+/** Real human candidate, confirmation, CAS, reload and private Artifact owners. */
+function configurationFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-activation-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot });
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  cleanup.push(() => {
+    workspaceDb.sqlite.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const actor = { kind: 'local' as const, userId };
+  const personalWorkspaceId = quickChatWorkspaceIdForUser(userId);
+  const thread = store.createThread(
+    personalWorkspaceId,
+    'Review agent Policy',
+    allocateEntityId('th'),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: userId }
+  );
+  const turn = store.createTurn(
+    personalWorkspaceId,
+    thread.id,
+    'Review this agent gate.',
+    { kind: 'user', id: userId },
+    null
+  );
+  mkdirSync(join(dataRoot, 'config'), { recursive: true });
+  const serverPath = join(dataRoot, 'config/server.jsonc');
+  writeFileSync(serverPath, JSON.stringify({ schemaVersion: 1 }));
+  const manager = createRuntimeConfigManager({ dataRoot });
+  const files = new RuntimeConfigFileService({
+    dataRoot,
+    userId,
+    workspaceIds: [workspaceId, personalWorkspaceId],
+    runtimeConfigManager: manager,
+    readRuntimeConfigStatus: () => manager.status(),
+  });
+  const options = {
+    actor,
+    coreDb,
+    store,
+    files,
+    runtimeConfig: () => manager.current(),
+    reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+    repositoryWorkspaceDb: () => workspaceDb,
+    inflightCommands: new WeakMap(),
+  };
+  const service = createAdministrationConfiguration(options);
+  const request = (document: PolicyDocumentV1) => ({
+    targetFamily: 'policy' as const,
+    targetId: 'server' as const,
+    expectedRevision: files.readFile('server.jsonc').file.revision!,
+    changes: { proposed: document, rationale: 'Explicit human review of this exact agent gate.' },
+  });
+  const propose = (document: PolicyDocumentV1) =>
+    service.propose(request(document), {
+      threadId: thread.id,
+      turnId: turn.id,
+      requestId: randomUUID(),
+    });
+  return { ...options, service, manager, workspaceDb, serverPath, request, propose };
+}
+
 describe('agent gate at native I16', () => {
+  it('refuses direct active configuration preparation without prior exact completed shadow evidence', () => {
+    const f = configurationFixture();
+    const original = readFileSync(f.serverPath, 'utf8');
+    expect(() =>
+      preparePolicyConfiguration({
+        ...f,
+        request: f.request(agentDocument()),
+        loadedPolicy: undefined,
+      })
+    ).toThrow(/shadow/i);
+    expect(readFileSync(f.serverPath, 'utf8')).toBe(original);
+  });
+
+  it('activates only the exact completed shadow gate through a separate human-confirmed candidate', async () => {
+    const f = configurationFixture();
+    const shadow = agentDocument();
+    admittedBinding(shadow).state = 'shadow';
+    const original = readFileSync(f.serverPath, 'utf8');
+    const proposedShadow = f.propose(shadow);
+    expect(readFileSync(f.serverPath, 'utf8')).toBe(original);
+    await expect(
+      f.service.apply({
+        requestId: randomUUID(),
+        candidate: proposedShadow.candidate,
+        confirmation: { ...proposedShadow.confirmation, contentDigest: `sha256:${'0'.repeat(64)}` },
+      })
+    ).rejects.toThrow();
+    expect(readFileSync(f.serverPath, 'utf8')).toBe(original);
+    expect(
+      await f.service.apply({
+        requestId: randomUUID(),
+        candidate: proposedShadow.candidate,
+        confirmation: proposedShadow.confirmation,
+      })
+    ).toMatchObject({ persisted: true, reload: 'applied' });
+    const loadedShadow = readAdmittedPolicyDocument(
+      f.coreDb,
+      f.manager.current().openKitConfig.policy?.mediation
+    );
+    const active = structuredClone(loadedShadow);
+    admittedBinding(active).state = 'active';
+    expect(() => f.propose(active)).toThrow(/shadow/i);
+    const binding = admittedBinding(loadedShadow);
+    const evaluated = await new PolicyInterception(undefined, {
+      id: agentId,
+      version: binding.participant.version,
+      invoke: async () => assessment('deny'),
+    }).decide({
+      workspaceDb: f.workspaceDb,
+      document: loadedShadow,
+      proposal,
+      authorizationRevision: policyDigest({ member: userId }),
+      authorCurrent: () => true,
+      anchorCurrent: () => true,
+      participantAuthorized: () => true,
+      stillCurrent: () => true,
+      finalKernel: () => kernel(),
+    });
+    expect(evaluated.result).toBe('allow');
+    const different = structuredClone(active);
+    admittedBinding(different).timeoutMs += 1;
+    expect(() => f.propose(different)).toThrow(/shadow/i);
+    const beforeActivation = readFileSync(f.serverPath, 'utf8');
+    const activation = f.propose(active);
+    expect(readFileSync(f.serverPath, 'utf8')).toBe(beforeActivation);
+    expect(activation.preview.policyProposal).toMatchObject({
+      proposer: human,
+      validation: 'valid',
+    });
+    expect(
+      await f.service.apply({
+        requestId: randomUUID(),
+        candidate: activation.candidate,
+        confirmation: activation.confirmation,
+      })
+    ).toMatchObject({ persisted: true, reload: 'applied' });
+    const loadedActive = readAdmittedPolicyDocument(
+      f.coreDb,
+      f.manager.current().openKitConfig.policy?.mediation
+    );
+    expect(admittedBinding(loadedActive).state).toBe('active');
+    expect(admittedBinding(loadedActive).participant.version).toBe(binding.participant.version);
+  });
+
   it('admits the human-authored declaration and preserves its creator when the author changes', () => {
     const proposed = {
       ...agentDeclaration(agentId),
