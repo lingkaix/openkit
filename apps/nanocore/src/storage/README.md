@@ -191,3 +191,5 @@ Mediated PermissionDecision rows retain the single Policy revision in policy_sna
 
 
 Artifact creation stages its admitted immutable v1 descriptor and exact original in the first Artifact directory publication. Current-head rewrites use the same physical header reader for inline and file content, so a later binary version can replace an inline head that stores no body. The acknowledged artifact.json pointer selects retained version content; files/content.* remains an optional disposable projection with canonical path validation. Workspace import validates all staged versions and exact publication Items before the Workspace rename, then fills the existing version cache after successful publication. Export/import retains every original and raw descriptor, remaps known identities and preserves unknown descriptive additions.
+
+Exact-version Artifact choices use the existing Review judgement JSON column. Portable Review records carry that single history, remint both the select target and choice, and derive the public choice view after import. The first-writer decision and its apply or follow-up lineage remain separate effect authority.
