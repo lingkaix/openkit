@@ -9,6 +9,8 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { parseOkfDocument, validateOpenKitKnowledgeProfile } from './okf.js';
 import {
@@ -133,8 +135,15 @@ describe('Server literal Source owner', () => {
     ).rejects.toThrow();
     const workspace = f.store.createWorkspace('Separate Workspace Source owner');
     const workspaceSourceId = 'ks_00000000-0000-7000-8000-000000000001';
-    f.store.createKnowledgeSource(
-      {
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: f.actor.userId,
+    });
+    await captureWorkspaceSourceFixture({
+      ...f,
+      userId: f.actor.userId,
+      source: {
         id: workspaceSourceId,
         workspaceId: workspace.id,
         kind: 'document',
@@ -148,8 +157,8 @@ describe('Server literal Source owner', () => {
         originatingTurnId: null,
         originatingFileId: null,
       },
-      request.content
-    );
+      content: request.content,
+    });
     expect(f.store.getKnowledgeSource(workspace.id, workspaceSourceId).id).toBe(workspaceSourceId);
     expect(await readServerKnowledgeSource(f, workspaceSourceId)).toBeNull();
     expect(

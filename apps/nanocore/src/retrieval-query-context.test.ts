@@ -512,7 +512,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     const material = 'revocation source private bytes';
     const source = await captureWorkspaceSourceFixture({
       ...fixture,
-      coreDb: fixture.access.coreDb!,
+      coreDb: fixture.coreDb,
       userId: ACTOR.id,
       source: {
         id: 'ks_00000000-0000-7bb4-9e84-6db11783ad59',
@@ -758,7 +758,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     const material = 'stale source reference private material';
     const source = await captureWorkspaceSourceFixture({
       ...fixture,
-      coreDb: fixture.access.coreDb!,
+      coreDb: fixture.coreDb,
       userId: ACTOR.id,
       source: {
         id: 'ks_00000000-0000-7359-ac61-fab2907627df',
@@ -1038,6 +1038,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
 });
 
 interface Fixture {
+  coreDb: CoreDb;
   dataRoot: string;
   workspaceId: string;
   workspaceRoot: string;
@@ -1094,12 +1095,12 @@ function createFixture(
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: ACTOR.id });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const access: KnowledgeRetrievalAccess = {
-    coreDb,
     store,
     actor: ACTOR,
     requestActor: REQUEST_ACTOR,
   };
   return {
+    coreDb,
     dataRoot,
     workspaceId: workspace.id,
     workspaceRoot,

@@ -11,7 +11,6 @@ import {
 } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
-import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import { FsStore } from './lib/store.js';
 import {
   collectKnowledgeInventory,
@@ -34,6 +33,10 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import {
+  captureWorkspaceSourceFixture,
+  readWorkspaceSourceFixture,
+} from './test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const roots: string[] = [];
@@ -206,7 +209,7 @@ describe('published Workspace notebook reads', () => {
     );
   });
 
-  it('rechecks source audience at return when it changes during selected source material verification', async () => {
+  it('rechecks source audience at return when it changes during selected Source pointer verification', async () => {
     const f = fixture();
     const sourceThread = f.store.createThread(
       f.workspaceId,
@@ -222,18 +225,18 @@ describe('published Workspace notebook reads', () => {
       ]),
       'public.md': page('Public page'),
     });
-    const read = f.store.readKnowledgeSourceMaterial.bind(f.store);
-    vi.spyOn(f.store, 'readKnowledgeSourceMaterial').mockImplementation((workspaceId, sourceId) => {
-      const bytes = read(workspaceId, sourceId);
+    const read = f.store.getKnowledgeSource.bind(f.store);
+    vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => {
+      const source = read(workspaceId, sourceId);
       Object.assign(sourceThread, { privateOwnerUserId: randomUUID() });
-      return bytes;
+      return source;
     });
     expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
       'public',
     ]);
   });
 
-  it('rechecks source audience immediately after a direct selected material read', async () => {
+  it('rechecks source audience immediately after a direct selected Source pointer read', async () => {
     const f = fixture();
     const thread = f.store.createThread(
       f.workspaceId,
@@ -248,11 +251,11 @@ describe('published Workspace notebook reads', () => {
     const source = await registerSource(f, thread.id);
     const content = page('Direct page read', [`source:${source.id}@${source.contentDigest}`]);
     const revision = publish(f, { 'selected.md': content });
-    const read = f.store.readKnowledgeSourceMaterial.bind(f.store);
-    vi.spyOn(f.store, 'readKnowledgeSourceMaterial').mockImplementation((workspaceId, sourceId) => {
-      const bytes = read(workspaceId, sourceId);
+    const read = f.store.getKnowledgeSource.bind(f.store);
+    vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => {
+      const source = read(workspaceId, sourceId);
       Object.assign(thread, { privateOwnerUserId: randomUUID() });
-      return bytes;
+      return source;
     });
     expect(knowledgePageReadable({ ...f, notebookRevision: revision }, 'selected', content)).toBe(
       false
@@ -318,9 +321,9 @@ describe('published Workspace notebook reads', () => {
       ),
     ]);
     const revision = publish(f, { 'selected.md': content, 'nested/origin.md': origin });
-    const read = f.store.readKnowledgeSourceMaterial.bind(f.store);
+    const read = f.store.getKnowledgeSource.bind(f.store);
     let next: string | undefined;
-    vi.spyOn(f.store, 'readKnowledgeSourceMaterial').mockImplementation((workspaceId, sourceId) => {
+    vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => {
       if (!next)
         next = publish(f, { 'nested/origin.md': page('Later nested source', [], 'LATER-BYTES\n') });
       return read(workspaceId, sourceId);
@@ -503,7 +506,6 @@ describe('published Workspace notebook reads', () => {
 
   it.each([
     'pin',
-    'captured-bytes',
     'turn-chain',
     'nested-digest',
   ] as const)('excludes an exact %s contradiction without a source identity leak', async (condition) => {
@@ -528,24 +530,50 @@ describe('published Workspace notebook reads', () => {
       ? f.store.createTurn(f.workspaceId, other.id, 'Other Turn', f.access.actor)
       : null;
     publish(f, { 'selected.md': page('Denied source page', refs), 'origin.md': origin });
-    if (condition === 'captured-bytes')
-      writeFileSync(
-        join(
-          f.dataRoot,
-          'workspaces',
-          f.workspaceId,
-          'sources',
-          'materials',
-          source.id,
-          'content.txt'
-        ),
-        'CHANGED-SOURCE-BYTES'
-      );
     if (condition === 'turn-chain') {
-      Object.assign(source, { originatingTurnId: contradictoryTurn!.id });
+      const read = f.store.getKnowledgeSource.bind(f.store);
+      vi.spyOn(f.store, 'getKnowledgeSource').mockImplementation((workspaceId, sourceId) => ({
+        ...read(workspaceId, sourceId),
+        originatingTurnId: contradictoryTurn!.id,
+      }));
     }
     expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
       'origin',
+    ]);
+  });
+
+  it('keeps exact saved page bytes when its independent captured original changes', async () => {
+    const f = fixture();
+    const source = await registerSource(f);
+    const content = page('Saved evidence', [`source:${source.id}@${source.contentDigest}`]);
+    const revision = publish(f, { 'selected.md': content });
+    writeFileSync(
+      join(
+        f.dataRoot,
+        'workspaces',
+        f.workspaceId,
+        'knowledge',
+        'raw',
+        'sources',
+        source.id,
+        'original'
+      ),
+      'CHANGED-SOURCE-BYTES'
+    );
+    const original = await readWorkspaceSourceFixture({
+      ...f,
+      userId: LOCAL_USER_ID,
+      sourceId: source.id,
+    });
+    expect(original.status).not.toBe('ok');
+    expect(
+      readAuthorizedWorkspaceNotebookPages({
+        ...f,
+        notebookRevision: revision,
+        pageIds: ['selected'],
+      }).pages
+    ).toEqual([
+      expect.objectContaining({ id: 'selected', content, contentDigest: digest(content) }),
     ]);
   });
 
@@ -622,28 +650,29 @@ async function registerSource(
   f: ReturnType<typeof fixture>,
   originatingThreadId: string | null = null
 ) {
-  const operations = createKnowledgeOperationImplementations({
+  const content = 'Exact independent source material.\n';
+  const now = new Date().toISOString();
+  return captureWorkspaceSourceFixture({
+    dataRoot: f.dataRoot,
     store: f.store,
     coreDb: f.coreDb,
-    inflightCommands: new WeakMap(),
-  });
-  const result = await operations['knowledge.source.register'](
-    {
+    userId: LOCAL_USER_ID,
+    source: {
+      id: allocateEntityId('ks'),
       workspaceId: f.workspaceId,
-      requestId: randomUUID(),
       kind: 'document',
       title: 'Source',
-      content: 'Exact independent source material.\n',
-      ...(originatingThreadId ? { originatingThreadId } : {}),
+      uri: null,
+      contentDigest: digest(content),
+      originatingThreadId,
+      originatingTurnId: null,
+      originatingFileId: null,
+      capturedAt: now,
+      createdAt: now,
+      updatedAt: now,
     },
-    {
-      kind: 'public',
-      actor: f.access.requestActor!,
-      actorRef: f.access.actor,
-      scope: { kind: 'workspace', workspaceId: f.workspaceId },
-    }
-  );
-  return f.store.getKnowledgeSource(f.workspaceId, result.source.id);
+    content,
+  });
 }
 
 /** Adds a real currently active member without granting the private Source Thread audience. */

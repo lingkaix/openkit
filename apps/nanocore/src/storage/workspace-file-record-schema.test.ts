@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-import { describe, expect, it } from 'vitest';
-
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { parseOkfDocument, updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
 
 const TIMESTAMP = '2026-07-12T00:00:00.000Z';
 const PROPOSAL_REQUEST_ID = '00000000-0000-4000-8000-000000000117';
@@ -168,31 +172,79 @@ describe('workspace canonical record schemas', () => {
   it.each([
     'invalid kind',
     'missing capturedAt',
-  ])('rejects a knowledge source with %s', (violation) => {
+    'null original digest',
+    'foreign scope',
+  ])('rejects a knowledge source with %s', async (violation) => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
-    const source = store.createKnowledgeSource({
-      id: 'ks_00000000-0000-7f61-8145-5542ffc8eec0',
-      workspaceId: workspace.id,
-      kind: 'upload',
-      title: 'Invalid source schema',
-      uri: null,
-      contentDigest: 'sha256:invalid-source-schema',
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: TIMESTAMP,
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+    const content = 'Original schema fixture evidence.';
+    const source = await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId,
+      content,
+      source: {
+        id: 'ks_00000000-0000-7f61-8145-5542ffc8eec0',
+        workspaceId: workspace.id,
+        kind: 'upload',
+        title: 'Invalid source schema',
+        uri: null,
+        contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: TIMESTAMP,
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      },
     });
-    const path = join(workspaceRoot, 'sources', 'registry', `${source.id}.json`);
-    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-
-    if (violation === 'invalid kind') {
-      record.kind = 'not-a-source-kind';
-    } else {
-      delete record.capturedAt;
-    }
-    writeFileSync(path, `${JSON.stringify(record)}\n`);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+    });
+    const baseRevision = notebook.publishedRevision();
+    const pointer = notebook.readSourcePointers(baseRevision)[source.id]!;
+    const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointer });
+    if (!parsed.ok) throw new Error('Healthy Source fixture must have valid frontmatter.');
+    const invalid =
+      violation === 'invalid kind'
+        ? updateOkfFrontmatter({
+            path: `sources/${source.id}.md`,
+            content: pointer,
+            updates: { sourceKind: 'not-a-source-kind' },
+          })
+        : violation === 'missing capturedAt'
+          ? pointer.replace(/^capturedAt:.*\n/m, '')
+          : updateOkfFrontmatter({
+              path: `sources/${source.id}.md`,
+              content: pointer,
+              updates:
+                violation === 'foreign scope'
+                  ? {
+                      scope: {
+                        kind: 'workspace',
+                        workspaceId: testEntityId('ws', 'foreign-source-owner'),
+                      },
+                    }
+                  : {
+                      contentRef: {
+                        ...(parsed.document.frontmatter.contentRef as Record<string, unknown>),
+                        contentDigest: null,
+                      },
+                    },
+            });
+    expect(invalid).not.toBe(pointer);
+    // Explicit test-owned retained-field corruption, not a governed Source edit.
+    const candidateRevision = notebook.prepareSourcePointers({
+      baseRevision,
+      changes: { [source.id]: invalid },
+      metadata: notebook.inspectRevision(baseRevision).metadata,
+    });
+    notebook.publish({ baseRevision, candidateRevision });
 
     expect(() => new FsStore({ dataRoot })).toThrow();
   });

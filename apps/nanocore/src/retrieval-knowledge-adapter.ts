@@ -734,9 +734,8 @@ function pinnedSourcesReadable(
 ): boolean {
   admitKnowledgeRetrieval(input);
   const { store } = input.access;
-  const sources = new Map(
-    store.listKnowledgeSources(input.workspaceId).map((source) => [source.id, source.contentDigest])
-  );
+  // Source-free pages do not depend on the Source metadata backend.
+  let sources: Map<string, string | null> | undefined;
   const workspaceDb =
     input.access.coreDb &&
     refs.some((reference) => /^(?:turn|item|context-package):/.test(reference))
@@ -753,6 +752,11 @@ function pinnedSourcesReadable(
     });
     for (const reference of refs) {
       if (reference.startsWith('source:')) {
+        sources ??= new Map(
+          store
+            .listKnowledgeSources(input.workspaceId)
+            .map((source) => [source.id, source.contentDigest])
+        );
         const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
         if (!resolution.resolved || !resolution.targetId) return false;
         if (!knowledgeSourceAudienceReadable(input, resolution.targetId)) return false;

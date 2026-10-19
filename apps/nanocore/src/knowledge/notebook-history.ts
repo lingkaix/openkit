@@ -13,6 +13,7 @@ import {
 import { OperationError } from '../operation-error.js';
 import {
   type KnowledgeRetrievalAccess,
+  knowledgeSourceAudienceReadable,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
@@ -165,6 +166,26 @@ export class AuthorizedHistory {
           ).sort();
           this.read(revision.revision, changedPaths);
         }
+        const sources = this.notebook.readSourcePointers(revision.revision);
+        const previousSources = revision.parentRevision
+          ? this.notebook.readSourcePointers(revision.parentRevision)
+          : {};
+        for (const id of new Set([...Object.keys(sources), ...Object.keys(previousSources)])) {
+          if (sources[id] === previousSources[id]) continue;
+          if (
+            !knowledgeSourceAudienceReadable(
+              { workspaceId: this.workspaceId, access: this.access },
+              id
+            )
+          )
+            throw new OperationError(
+              'workspace_access_denied',
+              'Notebook Source history is unavailable.',
+              403
+            );
+          changedPaths.push(`sources/${id}.md`);
+        }
+        changedPaths.sort();
         return {
           ...identity,
           availability: 'available' as const,

@@ -22,6 +22,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createLightApp, createRecord, getLightApp, getRecord } from './commands.js';
@@ -268,8 +269,9 @@ describe('native Light App meaning discovery', () => {
       { visibility: 'workspace' }
     );
     const material = 'Private domain evidence.';
-    const source = f.store.createKnowledgeSource(
-      {
+    const source = await captureWorkspaceSourceFixture({
+      ...f,
+      source: {
         id: allocateEntityId('ks'),
         workspaceId: f.workspace.id,
         kind: 'document',
@@ -283,8 +285,8 @@ describe('native Light App meaning discovery', () => {
         createdAt: NOW,
         updatedAt: NOW,
       },
-      material
-    );
+      content: material,
+    });
     const content = page(f, [`source:${source.id}@${digest(material)}`]);
     const reference = publish(f, content);
     const app = await createApp(f, [reference]);
@@ -371,8 +373,9 @@ describe('native Light App meaning discovery', () => {
       },
     };
     const material = 'Domain evidence protected from this Agent.';
-    const source = f.store.createKnowledgeSource(
-      {
+    const source = await captureWorkspaceSourceFixture({
+      ...f,
+      source: {
         id: allocateEntityId('ks'),
         workspaceId: f.workspace.id,
         kind: 'document',
@@ -386,8 +389,8 @@ describe('native Light App meaning discovery', () => {
         createdAt: NOW,
         updatedAt: NOW,
       },
-      material
-    );
+      content: material,
+    });
     const content = page(f, [`source:${source.id}@${digest(material)}`]);
     const reference = publish(f, content);
     const app = await createApp(f, [reference]);

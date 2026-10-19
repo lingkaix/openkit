@@ -1,4 +1,4 @@
-import { constants, copyFileSync, mkdirSync } from 'node:fs';
+import { constants, copyFileSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { KnowledgeMountsSchema } from '@openkit/config-schema';
@@ -84,12 +84,18 @@ export function exportWorkspaceSources(input: {
     const originalTarget = join(input.exportRoot, rawPrefix, ref.locator.path);
     mkdirSync(dirname(originalTarget), { recursive: true });
     const reservation = reserveCanonicalFileWrite(pointer.fields.byteLength);
+    let release = false;
     try {
       copyFileSync(source, originalTarget, constants.COPYFILE_EXCL);
       reservation?.recordWritten(pointer.fields.byteLength);
       assertOriginal(originalTarget, pointer);
+      release = true;
+    } catch (error) {
+      rmSync(originalTarget, { force: true });
+      release = true;
+      throw error;
     } finally {
-      reservation?.release();
+      if (release) reservation?.release();
     }
   }
 }

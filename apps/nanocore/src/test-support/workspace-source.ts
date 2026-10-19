@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { publishCapturedSource } from '../knowledge/source-publication.js';
+import { readManagedSourceText } from '../knowledge/source-reading.js';
 import type { FsStore, KnowledgeSourceRecord } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
 import { openWorkspaceDb } from '../storage/db.js';
@@ -67,4 +69,31 @@ export async function captureWorkspaceSourceFixture(input: {
   } finally {
     workspaceDb.sqlite.close();
   }
+}
+
+/** Reads the current canonical pointer through the real asynchronous Storage and authority boundary. */
+export async function readWorkspaceSourceFixture(input: {
+  readonly dataRoot: string;
+  readonly store: FsStore;
+  readonly coreDb: CoreDb;
+  readonly userId: string;
+  readonly workspaceId: string;
+  readonly sourceId: string;
+}) {
+  const owner = {
+    dataRoot: input.dataRoot,
+    ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
+  };
+  const pointer = readSourcePointers(owner).get(input.sourceId);
+  if (!pointer) throw new Error('Fixture Source pointer is unavailable.');
+  return readManagedSourceText({
+    owner,
+    pointer,
+    access: {
+      store: input.store,
+      coreDb: input.coreDb,
+      actor: { kind: 'user', id: input.userId },
+      requestActor: { kind: 'local', userId: input.userId },
+    },
+  });
 }
