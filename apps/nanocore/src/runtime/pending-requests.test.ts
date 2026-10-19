@@ -1571,11 +1571,18 @@ describe('pending requests', () => {
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       expect(outcomeTurnId).toBeDefined();
-      expect(logged.mock.calls.some((call) => String(call[0]).includes(outcomeTurnId!))).toBe(true);
+      // Slow-stage observations share stderr; this oracle owns delivery messages, not other owners.
+      const deliveryLogs = logged.mock.calls.filter(
+        ([message]) =>
+          typeof message === 'string' &&
+          (message.startsWith('Outcome delivery for Turn ') ||
+            message.startsWith('Recording the outcome delivery result failed for Turn '))
+      );
+      expect(deliveryLogs.some((call) => String(call[0]).includes(outcomeTurnId!))).toBe(true);
       if (fault === 'initial-lookup') {
         expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe('frozen');
         expect(store.getTurnById(outcomeTurnId!).status).toBe('pending');
-        expect(logged.mock.calls[0]?.[0]).toBe(
+        expect(deliveryLogs[0]?.[0]).toBe(
           `Outcome delivery for Turn ${outcomeTurnId} failed before submission; leaving it for boot resume.`
         );
       } else if (recovers) {
@@ -1587,7 +1594,7 @@ describe('pending requests', () => {
           status: 'failed',
           error: { code: refused ? 'agent_not_found' : 'delivery_unknown' },
         });
-        expect(logged.mock.calls[0]?.[0]).toBe(
+        expect(deliveryLogs[0]?.[0]).toBe(
           `Recording the outcome delivery result failed for Turn ${outcomeTurnId}.`
         );
       } else {

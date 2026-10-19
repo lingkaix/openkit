@@ -28,6 +28,8 @@ NanoCore derives private AEP and Context input paths from the admitted AgentSess
 
 AEP transcript projection uses `/openkit/threads/<threadId>/<harness>/capture/<turnId>/`, with the stable adapter id as `<harness>` and collector-relative `runtime/` paths beneath that root. This is writer separation, not cross-Thread confidentiality. The #204 integration remains incomplete until NanoCore admission, retained image mounts and capture-only export consume the same layout and authored capacity; the package projection alone is not end-to-end concurrency qualification.
 
+The [runtime guide](src/runtime/README.md) describes the five fixed slow synchronous-stage diagnostics used to attribute launch and poll delays. They use the existing App stderr sink without recording content, paths, credentials or exception text.
+
 Harness result timeouts identify the fixed operation and whether it was never dispatched or dispatched while awaiting a result. These diagnostics use the existing Turn failure projection without runtime identities or command content; they do not prove whether a dispatched effect executed or authorize automatic retry.
 
 After a NanoCore-only restart, current package compatibility and the ready physical Epoch can restore an exact healthy idle Sandbox/Harness and its attached storage before later-Turn reuse classification. Empty process-local caches alone do not authorize replacement; native-session proof and current admission remain required.

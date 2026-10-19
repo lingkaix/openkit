@@ -4038,12 +4038,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
           workspaceRoots: [],
         }
       );
+      // Other fixed diagnostic owners may also write stderr during the same Turn.
+      const failureRecords = log.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((record) => record.event === 'worker.turn.failed');
       if (kind === 'completed') {
-        expect(log).not.toHaveBeenCalled();
+        expect(failureRecords).toHaveLength(0);
       } else {
-        expect(log).toHaveBeenCalledTimes(1);
-        const line = log.mock.calls[0]![0] as string;
-        const record = JSON.parse(line);
+        expect(failureRecords).toHaveLength(1);
+        const record = failureRecords[0];
         expect(record).toMatchObject({
           event: 'worker.turn.failed',
           turnId: turn.id,
