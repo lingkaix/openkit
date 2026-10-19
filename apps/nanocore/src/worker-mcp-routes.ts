@@ -1443,15 +1443,21 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           'Goal Task authority changed before Coordinator escalation.',
           409
         );
-      finishCapabilityCall({
-        callId: call.id,
-        errorCode: 'policy_requires_escalation',
-        status: 'denied',
-        workspaceDb: input.workspaceDb,
-      });
+      const escalation = policyDecision.escalation;
+      // Commit the Goal-scoped gap and its wake marker together before notifying the owner.
+      input.workspaceDb.sqlite
+        .transaction(() => {
+          finishCapabilityCall({
+            callId: call.id,
+            errorCode: 'policy_requires_escalation',
+            status: 'denied',
+            workspaceDb: input.workspaceDb,
+          });
+          advanceGoalRevision(input.workspaceDb, escalation.goalId);
+        })
+        .immediate();
       terminalCommitted = true;
       status = 'declined';
-      advanceGoalRevision(input.workspaceDb, policyDecision.escalation.goalId);
       input.input.goalWake?.(
         policyDecision.escalation.workspaceId,
         policyDecision.escalation.goalId
