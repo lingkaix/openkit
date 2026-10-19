@@ -86,7 +86,7 @@ describe('C03 definition admission', () => {
     'not-a-reference',
     skill.replace(`@${digest}`, ''),
     formatReferenceUri(page),
-  ])('refuses an invalid exact target at writer admission: %s', (reference) => {
+  ])('refuses an invalid exact target at writer admission (case %#)', (reference) => {
     expect(() => admitLightAppDefinition({ ...definition, references: [reference] })).toThrow(
       KernelCommandError
     );
