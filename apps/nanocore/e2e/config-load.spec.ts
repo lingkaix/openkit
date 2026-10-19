@@ -27,6 +27,7 @@ describe('nanocore e2e config loading', () => {
     writeFileSync(
       join(providerRoot, 'e2e.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: 1,
         id: 'provider_e2e',
         displayName: 'E2E Provider',
         kind: 'local',
