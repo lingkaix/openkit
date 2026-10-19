@@ -1205,6 +1205,7 @@ describe('Worker Harness loop', () => {
   });
 
   it('emits the entry marker only after the Integration listener exists', async () => {
+    let pollBody: unknown;
     const controller = new AbortController();
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
       expect(Buffer.from(chunk).toString('ascii')).toBe('OPENKIT_WORKER_SHIM_ENTRY_V1\n');
@@ -1217,7 +1218,7 @@ describe('Worker Harness loop', () => {
       },
       harnessControlFetch: async (path: string, init: { body: string }) => {
         expect(path).toBe('/worker-control/harness/poll');
-        expect(JSON.parse(init.body)).toEqual({ schemaVersion: 2 });
+        pollBody = JSON.parse(init.body);
         loopFixture.events.push('poll');
         controller.abort(new Error('fixture-complete'));
         return { ok: true, status: 204, text: async () => '' };
@@ -1229,6 +1230,7 @@ describe('Worker Harness loop', () => {
       'fixture-complete'
     );
     expect(loopFixture.events).toEqual(['listener', 'marker', 'poll', 'close']);
+    expect(pollBody).toEqual({ schemaVersion: 2, harnesses: [] });
   });
 
   it('keeps empty private Harness polls between 250 and 1000 milliseconds', async () => {
@@ -1332,7 +1334,8 @@ describe('Worker Harness loop', () => {
   it.each([
     'collected',
     'text',
-  ] as const)('retries an abandoned %s command without parsing or handling it', async (phase) => {
+  ] as const)('refuses an abandoned %s command without parsing or handling it', async (phase) => {
+    const clock = controlSchedulingTime();
     const controller = new AbortController();
     const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
     let requestSignal: AbortSignal;
@@ -1365,13 +1368,22 @@ describe('Worker Harness loop', () => {
         return { ok: true, status: 200, text };
       },
     } as SandboxIntegrationClient;
-    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow();
+    const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+    try {
+      await clock.advance(phase === 'text' ? 300_000 : 1_000);
+      await clock.advance(250);
+      expect(await run).toBeInstanceOf(Error);
+    } finally {
+      controller.abort(new Error('fixture-complete'));
+      await run;
+      clock.restore();
+    }
     expect(handle).not.toHaveBeenCalled();
-    expect(requests).toHaveLength(2);
-    expect(requests[1]).toEqual(requests[0]);
+    expect(requests).toHaveLength(phase === 'text' ? 1 : 2);
+    if (phase === 'collected') expect(requests[1]).toEqual(requests[0]);
     expect(requests[0]).toEqual({
       path: '/worker-control/harness/poll',
-      body: '{"schemaVersion":2}',
+      body: '{"schemaVersion":2,"harnesses":[]}',
       method: 'POST',
       headers: { 'content-type': 'application/json' },
     });
@@ -1421,6 +1433,151 @@ describe('Worker Harness loop', () => {
       body: { state: 'draining' },
       sequence: 0,
     });
+  });
+
+  it.each([
+    'poll',
+    'result',
+  ] as const)('collects a slow %s body beyond one second when headers arrive in time', async (phase) => {
+    const clock = controlSchedulingTime();
+    const controller = new AbortController();
+    const bodyEntered = observation();
+    const releaseBody = observation();
+    const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
+    const selected = {
+      ...command(
+        'turn.start',
+        0,
+        harnessFixture().startBody(fixtureId('as', 'slow-body'), fixtureId('tu', 'slow-body'))
+      ),
+      harnessInstanceId: 'harness-one',
+      // A descriptive envelope extension increases DATA size without changing the command.
+      note: 'x'.repeat(128 * 1024),
+    };
+    const wire = JSON.stringify(selected);
+    let pollCount = 0;
+    let resultCount = 0;
+    let bodySignal: AbortSignal | undefined;
+    loopFixture.client = {
+      ready: Promise.resolve(),
+      close: async () => undefined,
+      harnessControlFetch: async (path, init) => {
+        const isPoll = path.endsWith('/poll');
+        if (isPoll && ++pollCount > 1) return { ok: false, status: 404, text: async () => '' };
+        if (!isPoll) resultCount += 1;
+        const slow = phase === (isPoll ? 'poll' : 'result');
+        return {
+          ok: true,
+          status: isPoll ? 200 : 204,
+          text: async () => {
+            if (slow) {
+              bodySignal = init.signal;
+              bodyEntered.resolve();
+              await releaseBody.promise;
+            }
+            return isPoll ? wire : '';
+          },
+        };
+      },
+    } as SandboxIntegrationClient;
+    const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+    try {
+      await bodyEntered.promise;
+      await clock.advance(1_250);
+      expect(bodySignal?.aborted, 'timely headers must release the one-second header bound').toBe(
+        false
+      );
+      releaseBody.resolve();
+      expect(await run).toBeInstanceOf(Error);
+      expect(handle).toHaveBeenCalledTimes(1);
+      expect(resultCount).toBe(1);
+      expect(pollCount).toBe(2);
+    } finally {
+      controller.abort(new Error('fixture-complete'));
+      releaseBody.resolve();
+      await run;
+      clock.restore();
+    }
+  });
+
+  it('reports live nextSequence only after result acknowledgement and never polls during execution or result retry', async () => {
+    const clock = controlSchedulingTime();
+    const controller = new AbortController();
+    const executionEntered = observation();
+    const releaseExecution = observation();
+    const resultEntered = observation();
+    const resultRetried = observation();
+    const releaseResult = observation();
+    const finalPoll = observation();
+    const originalHandle = WorkerHarness.prototype.handle;
+    const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockImplementation(async function (
+      this: WorkerHarness,
+      selected
+    ) {
+      const settled = await originalHandle.call(this, selected);
+      executionEntered.resolve();
+      await releaseExecution.promise;
+      return settled;
+    });
+    const polls: unknown[] = [];
+    const results: string[] = [];
+    loopFixture.client = {
+      ready: Promise.resolve(),
+      close: async () => undefined,
+      harnessControlFetch: async (path, init) => {
+        if (path.endsWith('/poll')) {
+          polls.push(JSON.parse(init.body));
+          if (polls.length === 1)
+            return {
+              ok: true,
+              status: 200,
+              text: async () =>
+                JSON.stringify({
+                  ...command('harness.drain', 0, {}),
+                  harnessInstanceId: 'harness-one',
+                }),
+            };
+          finalPoll.resolve();
+          return { ok: false, status: 404, text: async () => '' };
+        }
+        results.push(init.body);
+        if (results.length === 1) {
+          resultEntered.resolve();
+          return { ok: false, status: 503, text: async () => '' };
+        }
+        resultRetried.resolve();
+        await releaseResult.promise;
+        return { ok: true, status: 204, text: async () => '' };
+      },
+    } as SandboxIntegrationClient;
+    const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+    try {
+      await executionEntered.promise;
+      await clock.advance(1_250);
+      expect(polls).toHaveLength(1);
+      expect(results).toHaveLength(0);
+      releaseExecution.resolve();
+      await resultEntered.promise;
+      await clock.advance(250);
+      await resultRetried.promise;
+      expect(polls).toHaveLength(1);
+      expect(handle).toHaveBeenCalledTimes(1);
+      expect(results).toHaveLength(2);
+      expect(results[1] === results[0]).toBe(true);
+      releaseResult.resolve();
+      await finalPoll.promise;
+      expect(await run).toBeInstanceOf(Error);
+      expect(polls).toEqual([
+        { schemaVersion: 2, harnesses: [] },
+        { schemaVersion: 2, harnesses: [{ harnessInstanceId: 'harness-one', nextSequence: 1 }] },
+      ]);
+    } finally {
+      controller.abort(new Error('fixture-complete'));
+      releaseExecution.resolve();
+      releaseResult.resolve();
+      await run;
+      clock.restore();
+    }
   });
 
   it('ends on a nonretryable status and when the monotonic outage budget is spent', async () => {
