@@ -230,7 +230,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     const archived = updateOkfFrontmatter({
       path: 'archive.md',
       content: page('archive'),
-      updates: { openkit_status: 'archived' },
+      updates: { openkit_status: 'archived', status: 'deprecated' },
     });
     const changes = { 'archive.md': archived, 'omitted.md': page('omitted') };
     const candidateRevision = f.notebook.prepare({

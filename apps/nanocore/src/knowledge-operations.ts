@@ -475,6 +475,25 @@ export function createKnowledgeOperationImplementations(
       workspaceDb.sqlite.close();
     }
   };
+  /** Existing receipt/in-flight identity precedes path or digest conflicts for page intents. */
+  function assertNotebookPageCommandIdentity(
+    name: 'knowledge.notebook.create' | 'knowledge.notebook.delete',
+    input: { readonly workspaceId: string; readonly requestId: string },
+    owner: NotebookPublicationDependencies
+  ): void {
+    const scope = { workspaceId: input.workspaceId, actorId: owner.producer.id };
+    const receipt = store.getCommandRequest(name, input.requestId, scope, owner.workspaceDb);
+    const inflight = inflightCommands
+      .get(store)
+      ?.get(commandRequestKey(name, input.requestId, scope));
+    const inputHash = commandInputHash(input);
+    if (
+      (receipt && receipt.inputHash !== inputHash) ||
+      (inflight && inflight.inputHash !== inputHash)
+    )
+      throw new IdempotencyKeyConflictError();
+  }
+
   /** Trusted current caller and query audience for the existing Source reader. */
   function sourceReadInput(workspaceId: string, context: AdmittedOperationContext) {
     return {
@@ -1658,6 +1677,7 @@ export function createKnowledgeOperationImplementations(
         summary: input.summary,
       };
       const publication = await withGovernedNotebook(request, context, (owner) => {
+        assertNotebookPageCommandIdentity('knowledge.notebook.create', input, owner);
         if (owner.notebook.inspectRevision(input.baseRevision).entries[input.path])
           throw new OperationError(
             'conflict',
@@ -1695,6 +1715,7 @@ export function createKnowledgeOperationImplementations(
         summary: input.summary,
       };
       const publication = await withGovernedNotebook(request, context, (owner) => {
+        assertNotebookPageCommandIdentity('knowledge.notebook.delete', input, owner);
         const content = owner.notebook.readRevision(input.baseRevision, [input.path]).files[
           input.path
         ];
