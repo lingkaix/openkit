@@ -2997,7 +2997,7 @@ describe('quick chat app API', () => {
     try {
       const pending = fixture.submit('Explain a short concept.');
       await admitted.promise;
-      await vi.advanceTimersByTimeAsync(120_001);
+      await vi.advanceTimersByTimeAsync(600_001);
       const response = await pending;
       expect(response.status).toBe(504);
       const body = await response.json();
