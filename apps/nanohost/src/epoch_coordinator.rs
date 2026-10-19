@@ -1812,6 +1812,33 @@ async fn await_gateway_health(
         .unwrap_or(Err(EpochFault::PartialStart))
 }
 
+/// Existing lifecycle state with optional delete-only, host-observed diagnostics.
+pub struct LifecycleEffectOutput {
+    /// Unchanged lifecycle result state.
+    pub state: String,
+    /// Available exact-container observations, never lifecycle authority.
+    pub resource_summary: Option<serde_json::Value>,
+}
+
+/// Starts deletion first and never waits for diagnostics after deletion completes.
+///
+/// Both futures remain in this scope: completion or cancellation drops the collector
+/// and its kill-on-drop child. This local ownership does not provide C1 parent expiry.
+async fn sandbox_delete_with_observation(
+    deletion: impl std::future::Future<Output = Result<LifecycleEffectResult, EpochFault>>,
+    observation: impl std::future::Future<Output = Option<serde_json::Value>>,
+) -> (
+    Result<LifecycleEffectResult, EpochFault>,
+    Option<serde_json::Value>,
+) {
+    tokio::pin!(deletion, observation);
+    tokio::select! {
+        biased;
+        result = &mut deletion => (result, None),
+        summary = &mut observation => (deletion.await, summary),
+    }
+}
+
 impl EpochCoordinator {
     /// Creates restrictive fresh directories and starts every member in order.
     ///
@@ -2383,7 +2410,7 @@ impl EpochCoordinator {
         create_policy: Option<SandboxPolicy>,
         storage_mounts: Vec<StorageMount>,
         worker_bootstrap: Option<WorkerBootstrapRequest>,
-    ) -> Result<String, EpochFault> {
+    ) -> Result<LifecycleEffectOutput, EpochFault> {
         // For OpenBridge the client composes the fixed Harness bootstrap before
         // `open_sandbox_bridge`, then proves the exact private-poll readiness latch.
         if request.kind() == LifecycleEffectKind::OpenBridge
@@ -2410,7 +2437,10 @@ impl EpochCoordinator {
                     .detach(request.sandbox_id())
                     .map_err(|_| EpochFault::IdentityMismatch)?;
             }
-            return Ok(result.to_string());
+            return Ok(LifecycleEffectOutput {
+                state: result.to_string(),
+                resource_summary: None,
+            });
         }
         // OpenBridge orders fixed Start before `open_sandbox_bridge` and retains
         // the live Harness monitor.
@@ -2438,15 +2468,39 @@ impl EpochCoordinator {
             worker_bootstrap
         };
         let lifecycle_timeout = Duration::from_secs(120);
-        let result = tokio::task::block_in_place(|| {
-            self.runtime.block_on(self.client.execute_lifecycle_effect(
-                request,
-                create,
-                bridge,
-                worker_bootstrap,
-                route_projection,
-                lifecycle_timeout,
-            ))
+        let (result, resource_summary) = tokio::task::block_in_place(|| {
+            self.runtime.block_on(async {
+                let deletion = self.client.execute_lifecycle_effect(
+                    request,
+                    create,
+                    bridge,
+                    worker_bootstrap,
+                    route_projection,
+                    lifecycle_timeout,
+                );
+                if request.kind() == LifecycleEffectKind::DeleteSandbox {
+                    let sandbox = self
+                        .current_sandbox
+                        .as_ref()
+                        .ok_or(EpochFault::IdentityMismatch);
+                    match sandbox {
+                        Ok(sandbox) => {
+                            sandbox_delete_with_observation(
+                                deletion,
+                                crate::resource_summary::observe_before_delete(
+                                    self.image_backend.docker_socket(),
+                                    &sandbox.id,
+                                    &sandbox.name,
+                                ),
+                            )
+                            .await
+                        }
+                        Err(fault) => (Err(fault), None),
+                    }
+                } else {
+                    (deletion.await, None)
+                }
+            })
         });
         let result = match result {
             Err(fault) if request.kind() == LifecycleEffectKind::OpenBridge => {
@@ -2478,7 +2532,7 @@ impl EpochCoordinator {
                 return Err(fault);
             }
         };
-        match result {
+        let state = match result {
             LifecycleEffectResult::SandboxCreated(sandbox) => {
                 if self.current_sandbox.replace(sandbox.clone()).is_some() {
                     return self.settle(Err(EpochFault::IdentityMismatch));
@@ -2522,7 +2576,11 @@ impl EpochCoordinator {
                 Ok("open".to_string())
             }
             LifecycleEffectResult::BridgeClosed => Ok("closed".to_string()),
-        }
+        }?;
+        Ok(LifecycleEffectOutput {
+            state,
+            resource_summary,
+        })
     }
 
     /// Verifies and imports one retained digest or exact fixed-registry image.
@@ -5806,6 +5864,83 @@ mod tests {
             .and_then(|source| source.split("fn wait_for_socket").next())
             .expect("member Command projection");
         assert!(spawn_member.contains(".envs(member.env().iter().cloned())"));
+    }
+
+    #[tokio::test]
+    async fn resource_summary_race_starts_deletion_first_and_preserves_its_outcome() {
+        let started = std::cell::Cell::new(false);
+        let (release, released) = tokio::sync::oneshot::channel();
+        let deletion = async {
+            started.set(true);
+            released.await.unwrap();
+            Err(super::EpochFault::DeleteOutcomeUncertain)
+        };
+        let observation = async {
+            assert!(started.get(), "diagnostics must not precede deletion");
+            release.send(()).unwrap();
+            Some(serde_json::json!({"pidsPeak": 2}))
+        };
+        let (result, summary) = super::sandbox_delete_with_observation(deletion, observation).await;
+        assert!(matches!(
+            result,
+            Err(super::EpochFault::DeleteOutcomeUncertain)
+        ));
+        assert_eq!(summary, Some(serde_json::json!({"pidsPeak": 2})));
+        let (result, summary) = super::sandbox_delete_with_observation(
+            async { Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted) },
+            async { panic!("completed deletion must not start collection") },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
+        ));
+        assert!(summary.is_none());
+    }
+
+    #[tokio::test]
+    async fn resource_summary_delete_completion_kills_a_started_stalled_collector() {
+        let fixture = crate::resource_summary::collector_tests::Fixture::new();
+        fixture.script(&format!(
+            "echo $$ > '{}/child.pid'\nexec sleep 20\n",
+            fixture.root.display()
+        ));
+        let deletion = async {
+            fixture.child_pid().await;
+            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
+        };
+        let (result, summary) = tokio::time::timeout(
+            Duration::from_millis(750),
+            super::sandbox_delete_with_observation(deletion, fixture.observe()),
+        )
+        .await
+        .expect("deletion must not wait for the one-second collector cap");
+        assert!(matches!(
+            result,
+            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
+        ));
+        assert!(summary.is_none());
+        let pid = fixture.child_pid().await;
+        fixture.assert_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn resource_summary_enclosing_future_cancellation_kills_private_io() {
+        let fixture = crate::resource_summary::collector_tests::Fixture::new();
+        fixture.script(&format!(
+            "echo $$ > '{}/child.pid'\nexec sleep 20\n",
+            fixture.root.display()
+        ));
+        let mut deletion = Box::pin(super::sandbox_delete_with_observation(
+            std::future::pending(),
+            fixture.observe(),
+        ));
+        let pid = tokio::select! {
+            pid = fixture.child_pid() => pid,
+            _ = &mut deletion => panic!("pending deletion cannot complete"),
+        };
+        drop(deletion);
+        fixture.assert_reaped(pid).await;
     }
 
     #[test]
