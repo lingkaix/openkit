@@ -25,7 +25,10 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { importWorkspaceSkill, skillSnapshotPath } from '../catalog/resource-catalog.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -51,6 +54,7 @@ import {
 } from '../test-support/native-environment.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -925,7 +929,10 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     sandboxBindingRef: `lease-binding:${label}`,
     serverAdminTokenId: tokenId,
   });
-  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot });
+  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: coreDb.dataRoot,
+    workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
+  });
   const runtime = createConfiguredWorkerLifecycleRuntime({
     readRuntimeConfig: () => currentConfiguration,
     coreDb,
@@ -967,16 +974,18 @@ function observeExecutionAttempts(
     : [];
 }
 
-/** Supplies the explicit current Policy input required by real retained-storage admission. */
+/** Reads current authored Policy after each fixture creates its owned Workspace. */
 function createConfiguredWorkerLifecycleRuntime(
   options: Parameters<typeof createWorkerLifecycleOwner>[0] = {}
 ) {
-  const current = createInMemoryRuntimeConfigSnapshot({
-    dataRoot: options.coreDb?.dataRoot ?? null,
-  });
   return createWorkerLifecycleOwner({
     ...options,
-    readRuntimeConfig: options.readRuntimeConfig ?? (() => current),
+    readRuntimeConfig:
+      options.readRuntimeConfig ??
+      (() =>
+        options.coreDb
+          ? loadRuntimeConfig(options.coreDb.dataRoot)
+          : createInMemoryRuntimeConfigSnapshot({ dataRoot: null })),
   });
 }
 
@@ -2210,8 +2219,9 @@ describe('createConfiguredTurnExecutor', () => {
         : {
             readRuntimeConfig: () =>
               createInMemoryRuntimeConfigSnapshot({
-                dataRoot: null,
+                dataRoot: coreDb.dataRoot,
                 openKitConfig: { nanohost: { maxActiveTurnsPerSandbox: options.capacity! } },
+                workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
               }),
           }),
       env: {},
@@ -4432,6 +4442,146 @@ describe('createConfiguredTurnExecutor', () => {
       expect(effects.map((effect) => effect.kind)).not.toContain('image.build');
     } finally {
       admitted.coreDb.sqlite.close();
+    }
+  });
+
+  it('does not recreate a deleted resident Workspace during independent preparation', async () => {
+    const admitted = await admitIdleSupplyResident('missing_skill_admission', {
+      capacity: 20,
+      exactBinding: true,
+      configurePackage: (environmentPackage, coreDb) => {
+        const configRoot = join(
+          coreDb.dataRoot,
+          'workspaces',
+          environmentPackage.scope.workspaceId,
+          'config'
+        );
+        mkdirSync(configRoot, { recursive: true });
+        writeFileSync(
+          join(configRoot, 'workspace.jsonc'),
+          JSON.stringify(
+            WorkspaceConfigSchema.parse({
+              schemaVersion: 1,
+              workspace: { name: 'Admission recovery fixture' },
+            })
+          )
+        );
+      },
+    });
+    const { coreDb, environmentPackage, effects, runtime } = admitted;
+    try {
+      const independent = completeNanoHostPackage({
+        scope: {
+          ...environmentPackage.scope,
+          agentSessionId: testEntityId('as', 'missing_skill_independent'),
+          threadId: testEntityId('th', 'missing_skill_independent'),
+          turnId: testEntityId('tu', 'missing_skill_independent'),
+          workspaceId: testEntityId('ws', 'missing_skill_independent'),
+        },
+        snapshotId: 'snapshot_missing_skill_independent',
+      });
+      authorizeNanoHostPackage(coreDb, independent);
+      const configRoot = join(
+        coreDb.dataRoot,
+        'workspaces',
+        independent.scope.workspaceId,
+        'config'
+      );
+      mkdirSync(configRoot, { recursive: true });
+      writeFileSync(
+        join(configRoot, 'workspace.jsonc'),
+        JSON.stringify(
+          WorkspaceConfigSchema.parse({
+            schemaVersion: 1,
+            workspace: { name: 'Independent admission fixture' },
+          })
+        )
+      );
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      const turn = store.createTurn(
+        independent.scope.workspaceId,
+        independent.scope.threadId,
+        'Prepare an independent Worker.',
+        independent.scope.triggerActor,
+        undefined,
+        {
+          turnId: independent.scope.turnId,
+          status: 'pending',
+          agentId: independent.agent.agentId,
+          executorKind: 'worker',
+        }
+      );
+      const input = {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: independent.scope.agentSessionId,
+        requestId: 'request_missing_skill_independent',
+        turn,
+        turnInput: 'Prepare an independent Worker.',
+        workspaceCwd: null,
+        workspaceRoots: [],
+      } satisfies PrepareAgentSessionForTurnInput;
+      const executor = runtime.turnExecutor as WorkerGovernanceTurnExecutor;
+      const expected = {
+        agentSessionId: independent.scope.agentSessionId,
+        currentAgentSession: null,
+        replacementRequired: false,
+      };
+      await expect(executor.prepareAgentSessionForTurn(store, input)).resolves.toMatchObject(
+        expected
+      );
+      const beforeEffects = [...effects];
+      const beforeBindings = coreDb.sqlite
+        .prepare('SELECT * FROM agent_session_runtime_bindings')
+        .all();
+      const beforeBackends = coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all();
+      await expect(
+        executor.prepareAgentSessionForTurn(store, {
+          ...input,
+          agentSetup: createTestAgentSetup({ skillIds: ['missing-admission-skill'] }),
+        })
+      ).rejects.toThrow('Worker supply catalog entry not found: skill:missing-admission-skill');
+      expect(effects).toEqual(beforeEffects);
+      expect(coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()).toEqual(
+        beforeBindings
+      );
+      expect(coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all()).toEqual(
+        beforeBackends
+      );
+      await expect(executor.prepareAgentSessionForTurn(store, input)).resolves.toMatchObject(
+        expected
+      );
+      expect(effects).toEqual(beforeEffects);
+
+      // Reproduce the retained Core facts after completed canonical Workspace deletion.
+      // These disposable fixture bytes are gone; runtime retirement still belongs to the backend.
+      const deletedRoot = join(coreDb.dataRoot, 'workspaces', environmentPackage.scope.workspaceId);
+      const deletedDb = join(deletedRoot, 'db', 'workspace.sqlite');
+      coreDb.sqlite
+        .prepare(
+          "UPDATE workspace_registry SET status = 'deleted', revision = revision + 2 WHERE workspace_id = ?"
+        )
+        .run(environmentPackage.scope.workspaceId);
+      rmSync(deletedRoot, { recursive: true });
+      expect(() => readFileSync(deletedDb)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+      const preparation = await executor
+        .prepareAgentSessionForTurn(store, input)
+        .then((value) => ({ value, error: null }))
+        .catch((error: unknown) => ({ value: null, error }));
+      expect(preparation.error).toMatchObject({
+        code: 'recovery_required',
+        status: 409,
+        message: expect.stringContaining(
+          'The worker backend materialization capacity cannot be safely inspected.'
+        ),
+      });
+      expect(JSON.stringify(preparation.error)).not.toContain(coreDb.dataRoot);
+      expect((preparation.error as Error).message).toContain(
+        'package-binding-lineage/workspace-deleted'
+      );
+      expect(() => readFileSync(deletedDb)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+      expect(effects).toEqual(beforeEffects);
+    } finally {
+      coreDb.sqlite.close();
     }
   });
 
@@ -15002,37 +15152,24 @@ describe('createConfiguredTurnExecutor', () => {
       workspace: {
         name: 'Managed retained storage',
         policy: {
-          resourceAccess: [
-            {
-              resource: { family: 'thread', id: fixture.environmentPackage.scope.threadId },
-              grants: [
-                {
-                  subject: {
-                    kind: 'agent',
-                    userId: fixture.adminUserId,
-                    agentId: fixture.environmentPackage.agent.agentId,
-                  },
-                  operations: ['thread.read'],
-                },
-              ],
-              prohibitions: [],
-            },
-          ],
+          mediation: managedThreadPolicy({
+            workspaceId: fixture.workspaceId,
+            threadId: fixture.environmentPackage.scope.threadId,
+            userId: fixture.adminUserId,
+            agentId: fixture.environmentPackage.agent.agentId,
+            operations: ['thread.read'],
+          }),
         },
       },
     });
-    fixture.currentConfiguration.workspaceConfigs.push({
-      workspaceId: fixture.workspaceId,
-      path: join(
-        fixture.coreDb.dataRoot,
-        'workspaces',
-        fixture.workspaceId,
-        'config/workspace.jsonc'
-      ),
-      config: boundary,
-    });
+    fixture.currentConfiguration.workspaceConfigs.find(
+      (entry) => entry.workspaceId === fixture.workspaceId
+    )!.config = boundary;
     fixture.hooks.onInspect = () => {
-      boundary.workspace.policy!.resourceAccess[0]!.grants = [];
+      const policy = boundary.workspace.policy!.mediation;
+      policy.statements = policy.statements.filter(
+        (statement) => statement.kind === 'managed-boundary'
+      );
     };
     try {
       await expect(

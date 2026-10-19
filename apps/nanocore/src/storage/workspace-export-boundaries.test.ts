@@ -1,3 +1,4 @@
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 // openkit-test-platform: posix
 
 import { execFileSync } from 'node:child_process';
@@ -1674,16 +1675,17 @@ describe('Workspace resource Policy portability', () => {
         allocateEntityId('wsexp')
       );
       input.threads = [thread];
-      const boundary = {
-        resource: { family: 'thread', id: thread.id },
-        grants: [],
-        prohibitions: [],
-      };
+      const userId = allocateEntityId('usr');
+      const boundary = managedThreadPolicy({
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        userId,
+      });
       const sourceConfig = JSON.parse(input.portableFileState!.workspaceConfig!);
       input.portableFileState!.workspaceConfig = JSON.stringify({
         ...sourceConfig,
         requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
-        workspace: { ...sourceConfig.workspace, policy: { resourceAccess: [boundary] } },
+        workspace: { ...sourceConfig.workspace, policy: { mediation: boundary } },
       });
       const verified = writeWorkspaceExportTree(input);
       expect(verified.manifest.requiredFeatures).toContain(WORKSPACE_RESOURCE_POLICY_FEATURE);
@@ -1692,24 +1694,44 @@ describe('Workspace resource Policy portability', () => {
         targetWorkspaceId: allocateEntityId('ws'),
       });
       const imported = parseJsonc(snapshot.portableFileState.workspaceConfig!);
-      expect(imported.workspace.policy.resourceAccess).toEqual([
-        { ...boundary, resource: { family: 'thread', id: snapshot.threads[0]!.id } },
-      ]);
-      expect(snapshot.threads[0]!.id).not.toBe(thread.id);
-      const restricted = {
-        ...boundary,
-        grants: [
-          {
-            subject: { kind: 'user', userId: allocateEntityId('usr') },
-            operations: ['thread.read'],
+      expect(imported.workspace.policy.mediation).toEqual({
+        schemaVersion: 1,
+        statements: boundary.statements.map((statement) => ({
+          ...statement,
+          lifetime: {
+            anchor: {
+              owner: { kind: 'workspace', workspaceId: snapshot.workspace.id },
+              kind: 'workspace',
+              id: snapshot.workspace.id,
+            },
           },
-        ],
-      };
+          scope: {
+            ...statement.scope,
+            resources: [
+              {
+                kind: 'container',
+                container: {
+                  owner: { kind: 'workspace', workspaceId: snapshot.workspace.id },
+                  kind: 'thread',
+                  id: snapshot.threads[0]!.id,
+                },
+              },
+            ],
+          },
+        })),
+      });
+      expect(snapshot.threads[0]!.id).not.toBe(thread.id);
+      const restricted = managedThreadPolicy({
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        userId,
+        operations: ['thread.read'],
+      });
       input.exportRoot = join(root, 'principal-export');
       input.portableFileState!.workspaceConfig = JSON.stringify({
         ...sourceConfig,
         requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
-        workspace: { ...sourceConfig.workspace, policy: { resourceAccess: [restricted] } },
+        workspace: { ...sourceConfig.workspace, policy: { mediation: restricted } },
       });
       const withPrincipal = writeWorkspaceExportTree(input);
       expect(() =>

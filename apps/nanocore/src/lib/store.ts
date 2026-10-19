@@ -31,10 +31,11 @@ import {
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema, type WorkspaceResourceAccessEntry } from '@openkit/config-schema';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import type {
   ActorRef,
   KnowledgeEntrySchema,
+  PolicyDocumentV1,
   WorkspaceRecordSchema,
   WorkspaceResourcesSchema,
 } from '@openkit/protocol';
@@ -97,6 +98,7 @@ import {
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
 import { OperationError } from '../operation-error.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
@@ -1283,7 +1285,7 @@ export class FsStore {
   private workspaces = new Map<string, WorkspaceRecord>();
   private workspaceResources = new Map<string, WorkspaceResources>();
   private workspaceResourcePolicyProjection:
-    | ((workspaceId: string) => readonly WorkspaceResourceAccessEntry[] | null)
+    | ((workspaceId: string) => PolicyDocumentV1 | null)
     | null = null;
   private workspaceAgentCatalogProjection: (() => RuntimeAgent[]) | null = null;
   private serverThreads = new Map<string, ServerThread>();
@@ -2737,23 +2739,23 @@ export class FsStore {
 
   /** Binds current loaded Workspace Policy without copying its durable authority into the store. */
   public setWorkspaceResourcePolicyProjection(
-    projection: (workspaceId: string) => readonly WorkspaceResourceAccessEntry[] | null
+    projection: (workspaceId: string) => PolicyDocumentV1 | null
   ): void {
     this.workspaceResourcePolicyProjection = projection;
   }
 
   /** Reads current effective restrictions; an unpublished configuration cannot activate or remove them. */
-  public getWorkspaceResourceAccess(workspaceId: string): readonly WorkspaceResourceAccessEntry[] {
+  public getWorkspaceResourceAccess(workspaceId: string): PolicyDocumentV1 {
     const effective = this.workspaceResourcePolicyProjection?.(workspaceId);
     if (effective !== undefined && effective !== null) return effective;
-    if (!this.dataRoot) return [];
+    if (!this.dataRoot) return EMPTY_POLICY_DOCUMENT;
     const path = join(this.dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
-    if (!existsSync(path)) return [];
+    if (!existsSync(path)) return EMPTY_POLICY_DOCUMENT;
     const authored =
       WorkspaceConfigSchema.parse(parseJsonc(readFileSync(path, 'utf8'))).workspace.policy
-        ?.resourceAccess ?? [];
+        ?.mediation ?? EMPTY_POLICY_DOCUMENT;
     // New imports stay closed until their validated configuration joins the runtime snapshot.
-    if (this.workspaceResourcePolicyProjection && authored.length)
+    if (this.workspaceResourcePolicyProjection && authored.statements.length)
       throw new Error('Workspace resource Policy is not loaded.');
     return authored;
   }

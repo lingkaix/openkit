@@ -1,10 +1,8 @@
-import {
-  WorkspacePolicyResourceSchema,
-  WorkspaceResourceAccessEntrySchema,
-} from '@openkit/config-schema/workspace-resource-policy';
+import { WorkspacePolicyResourceSchema } from '@openkit/config-schema/workspace-resource-policy';
 import {
   ApprovalRequestIdSchema,
   ApprovalRequestSchema,
+  PolicyDocumentV1Schema,
   RequestIdSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
@@ -17,19 +15,31 @@ import { RuntimeConfigReloadResponseSchema } from './runtime-config.js';
 export const WorkspaceResourcePolicyTermsSchema = z
   .object({
     resource: WorkspacePolicyResourceSchema,
-    replacement: WorkspaceResourceAccessEntrySchema.nullable(),
+    replacement: PolicyDocumentV1Schema.nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (
       value.replacement &&
-      (value.resource.family !== value.replacement.resource.family ||
-        value.resource.id !== value.replacement.resource.id)
+      (!value.replacement.statements.some(
+        (statement) => statement.kind === 'managed-boundary' && statement.state === 'active'
+      ) ||
+        value.replacement.statements.some(
+          (statement) =>
+            !['permission', 'managed-boundary'].includes(statement.kind) ||
+            statement.scope.resources.length !== 1 ||
+            statement.scope.resources.some(
+              (resource) =>
+                resource.kind !== 'container' ||
+                resource.container.kind !== 'thread' ||
+                resource.container.id !== value.resource.id
+            )
+        ))
     )
       ctx.addIssue({
         code: 'custom',
-        path: ['replacement', 'resource'],
-        message: 'The replacement must identify the captured resource.',
+        path: ['replacement'],
+        message: 'The replacement must retain the captured Thread boundary and exact target.',
       });
   });
 

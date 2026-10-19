@@ -94,21 +94,7 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
   },
   {
     kind: 'server',
-    path: '$.policy',
-    owner: 'server',
-    merge: 'replace',
-    workspaceOverride: 'forbidden',
-    userOverride: 'forbidden',
-    requestOverride: 'forbidden',
-    reloadClass: 'restart-required',
-    secretPolicy: 'no-secret',
-    summary:
-      'Workspace action approval modes are deployment-owned, restart-required, and never request-overridable.',
-  },
-
-  {
-    kind: 'server',
-    path: '$.policy.workerGitReadMaintenance',
+    path: '$.policy.mediation',
     owner: 'server',
     merge: 'replace',
     workspaceOverride: 'forbidden',
@@ -117,7 +103,7 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
     reloadClass: 'hot-swappable',
     secretPolicy: 'no-secret',
     summary:
-      'Finite Server Worker Git-read maintenance authority changes only after successful reload.',
+      'Scope-owned Policy statements change after successful reload; current native authority is checked before each effect.',
   },
   {
     kind: 'provider',
