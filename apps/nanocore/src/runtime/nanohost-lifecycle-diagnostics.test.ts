@@ -108,6 +108,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
     'stream-reset',
     'cancel-command',
     'cancel-ended-command',
+    'cancel-finished-command',
     'timed-cancel-ended-command',
     'result-before-reset',
     'withhold-result',
@@ -118,7 +119,9 @@ describe('Harness delivery localization through real Core and shim owners', () =
     const shape =
       scenario === 'timed-cancel-ended-command' || scenario === 'result-before-reset'
         ? 'cancel-ended-command'
-        : scenario;
+        : scenario === 'cancel-finished-command'
+          ? 'cancel-command'
+          : scenario;
     const sampledDelay = scenario.startsWith('sampled-event-loop-');
     let coreClock = 100;
     const clock =
@@ -283,7 +286,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
       }
       if (request.url === '/worker-control/harness/poll' && holdCommand) {
         holdCommand = false;
-        if (shape === 'cancel-command') {
+        if (shape === 'cancel-command' && scenario !== 'cancel-finished-command') {
           // Hold actual native response completion after the dispatch transaction commits.
           response.end = (() => response) as typeof response.end;
         }
@@ -311,7 +314,9 @@ describe('Harness delivery localization through real Core and shim owners', () =
         throw new Error('Missing diagnostic test listener.');
       // A zero receive window leaves real end() pending after headers, exercising finish-on-reset.
       client = connect(`http://127.0.0.1:${address.port}`, {
-        settings: { initialWindowSize: shape === 'cancel-ended-command' ? 0 : 65_535 },
+        settings: {
+          initialWindowSize: shape === 'cancel-ended-command' ? 0 : 65_535,
+        },
       });
       /** Uses real H2 and cancels the physical exchange when the shim cancels its request. */
       const post = async (path: string, body: string, signal?: AbortSignal) => {
@@ -728,6 +733,12 @@ describe('Harness delivery localization through real Core and shim owners', () =
       else await run;
       expect(dispatchCount).toBe(1);
       expect(handle).toHaveBeenCalledTimes(shape === 'withhold-result' ? 1 : 0);
+      if (shape === 'cancel-ended-command' || scenario === 'cancel-finished-command') {
+        // Establish the real peer reset and native write state before the deciding Core-state assertion.
+        expect(failedResponse?.writableEnded).toBe(true);
+        expect(failedResponse?.writableFinished).toBe(scenario === 'cancel-finished-command');
+        expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
+      }
       const row = coreDb.sqlite
         .prepare('SELECT operation_state FROM harness_instance_records')
         .get();
@@ -759,9 +770,6 @@ describe('Harness delivery localization through real Core and shim owners', () =
           ]);
           expect(row).toEqual({ operation_state: 'unknown' });
         }
-        expect(failedResponse?.writableEnded).toBe(true);
-        expect(failedResponse?.writableFinished).toBe(false);
-        expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
         expect(lines.filter((line) => line.event === 'worker.harness.response')).toEqual([
           expect.objectContaining({
             outcome: expect.stringMatching(/reset|aborted/),

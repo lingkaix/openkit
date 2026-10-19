@@ -785,7 +785,14 @@ export async function runWorkerHarness(
       const response = await requestWithOutageBudget(
         integration,
         HARNESS_POLL_PATH,
-        JSON.stringify({ schemaVersion: 2 }),
+        // This is one serial loop: a poll cannot overlap command execution or result acknowledgement.
+        JSON.stringify({
+          schemaVersion: 2,
+          harnesses: [...harnesses].map(([harnessInstanceId, owner]) => ({
+            harnessInstanceId,
+            nextSequence: owner.nextSequence,
+          })),
+        }),
         options.signal
       );
       if (response.status === 204) {
@@ -849,20 +856,38 @@ async function requestWithOutageBudget(
     const remaining = deadline.remainingMs(LIFECYCLE_DEFAULTS.harnessRequestMs);
     if (remaining <= 0) throw failure;
     const timeout = new AbortController();
-    const timer = setTimeout(
-      () => timeout.abort(new Error('Harness request timed out.')),
+    let timer = setTimeout(
+      () => timeout.abort(new Error('Harness response headers timed out.')),
       remaining
     );
+    /** Body collection shares the original outage deadline instead of the header ceiling. */
+    const headersReceived = () => {
+      clearTimeout(timer);
+      const bodyRemaining = deadline.remainingMs();
+      if (bodyRemaining <= 0) {
+        timeout.abort(failure);
+        return;
+      }
+      timer = setTimeout(
+        () => timeout.abort(new Error('Harness response body timed out.')),
+        bodyRemaining
+      );
+    };
     const requestSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     try {
-      const response = await integration.harnessControlFetch(path, {
-        body,
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-        signal: requestSignal,
-      });
-      // Collection may resolve despite a post-header abort. Do not inspect an abandoned body.
+      const response = await integration.harnessControlFetch(
+        path,
+        {
+          body,
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+          signal: requestSignal,
+        },
+        headersReceived
+      );
+      // Collection may resolve despite an abort. Do not inspect an abandoned body.
       requestSignal.throwIfAborted();
+      headersReceived();
       const text = await response.text();
       requestSignal.throwIfAborted();
       if (!isRetryableHttpStatus(response.status)) {
