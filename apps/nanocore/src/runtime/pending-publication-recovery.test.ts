@@ -20,8 +20,114 @@ function probe(mode: string, phase = 'first', root?: string) {
     .split('\n')
     .filter((line) => line.startsWith('{'))
     .map((line) => JSON.parse(line));
-  return { result, value: lines.at(-1), root: lines[0]?.dataRoot as string };
+  return { result, value: lines.at(-1), initial: lines[0], root: lines[0]?.dataRoot as string };
 }
+
+describe('public command publication commit', () => {
+  it('leaves no product without its receipt after process loss at the receipt write', () => {
+    const crashed = probe('command-commit', 'before-receipt');
+    expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    expect(crashed.value.checkpoint).toBe('before-receipt');
+    const cold = probe('command-commit', 'inspect', crashed.root);
+    expect(cold.result.status, cold.result.stderr).toBe(0);
+    expect(cold.value.state).toEqual(crashed.initial.before);
+  }, 90_000);
+
+  it('does not publish product caches or durable product state after a receipt write failure', () => {
+    const failed = probe('command-commit', 'receipt-failure');
+    expect(failed.result.status, failed.result.stderr).toBe(0);
+    expect(failed.value.checkpoint).toBe(true);
+    expect(failed.value.commandFailed).toBe(true);
+    expect(failed.value.live).toEqual(failed.initial.before);
+    expect(failed.value.cold).toEqual(failed.initial.before);
+  }, 90_000);
+
+  it('resolves a lost committed response by exact replay and rejects changed input without another product', () => {
+    const crashed = probe('command-commit', 'after-commit');
+    expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    expect(crashed.value.checkpoint).toBe('response-ready');
+    expect(crashed.value.responseStatus).toBe(200);
+    const cold = probe('command-commit', 'inspect', crashed.root);
+    expect(cold.result.status, cold.result.stderr).toBe(0);
+    expect(cold.value.state.threads).toHaveLength(crashed.initial.before.threads.length + 1);
+    expect(cold.value.state.receipts).toEqual([
+      expect.objectContaining({
+        response_kind: 'thread',
+        response_id: crashed.value.responseBody.id,
+      }),
+    ]);
+    const replay = probe('command-commit', 'replay', crashed.root);
+    expect(replay.result.status, replay.result.stderr).toBe(0);
+    expect(replay.value.responseStatus).toBe(200);
+    expect(replay.value.responseBody).toEqual(crashed.value.responseBody);
+    expect(replay.value.cold).toEqual(cold.value.state);
+    const conflict = probe('command-commit', 'conflict', crashed.root);
+    expect(conflict.result.status, conflict.result.stderr).toBe(0);
+    expect(conflict.value.responseStatus).toBe(409);
+    expect(conflict.value.cold).toEqual(cold.value.state);
+  }, 90_000);
+});
+
+describe('local Pending Request commit', () => {
+  it('leaves no decision, publication, Item, event or receipt after process loss before the command receipt', () => {
+    const crashed = probe('local-outcome', 'before-receipt');
+    expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    expect(crashed.value.checkpoint).toBe('before-receipt');
+    const cold = probe('local-outcome', 'inspect', crashed.root);
+    expect(cold.result.status, cold.result.stderr).toBe(0);
+    expect(cold.value.state).toEqual(crashed.initial.before);
+  }, 90_000);
+
+  it('keeps failed outcome candidates out of live reads, cold reads and existing listeners', () => {
+    const failed = probe('local-outcome', 'receipt-failure');
+    expect(failed.result.status, failed.result.stderr).toBe(0);
+    expect(failed.value.checkpoint).toBe(true);
+    expect(failed.value.responseStatus).toBeGreaterThanOrEqual(400);
+    expect.soft(failed.value.notifications).toEqual([]);
+    expect.soft(failed.value.live).toEqual(failed.initial.before);
+    expect.soft(failed.value.cold).toEqual(failed.initial.before);
+  }, 90_000);
+
+  it('reopens the whole committed outcome and resolves a lost response without another Turn or Item', () => {
+    const crashed = probe('local-outcome', 'after-commit');
+    expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    expect(crashed.value.checkpoint).toBe('response-ready');
+    expect(crashed.value.responseStatus).toBe(200);
+    const cold = probe('local-outcome', 'inspect', crashed.root);
+    expect(cold.result.status, cold.result.stderr).toBe(0);
+    const state = cold.value.state;
+    expect(state.requests[0]).toMatchObject({ resolution: 'granted', delivery: 'delivered' });
+    expect(state.turns).toHaveLength(crashed.initial.before.turns.length + 1);
+    expect(state.turns).toContainEqual(
+      expect.objectContaining({ id: state.requests[0].publicationTurnId, status: 'completed' })
+    );
+    expect(state.items).toHaveLength(crashed.initial.before.items.length + 1);
+    expect(
+      state.items.filter(
+        (item: { causationId?: string }) => item.causationId === state.requests[0].requestItemId
+      )
+    ).toEqual([
+      expect.objectContaining({
+        type: 'approval-decision',
+        turnId: state.requests[0].publicationTurnId,
+      }),
+    ]);
+    expect(
+      state.receipts.filter(
+        (receipt: { command_name: string }) => receipt.command_name === 'approval.respond'
+      )
+    ).toEqual([expect.objectContaining({ response_kind: 'approval', response_id: 'ap_crash_0' })]);
+    const replay = probe('local-outcome', 'replay', crashed.root);
+    expect(replay.result.status, replay.result.stderr).toBe(0);
+    expect(replay.value.responseStatus).toBe(200);
+    expect(replay.value.responseBody).toEqual(crashed.value.responseBody);
+    expect(replay.value.cold).toEqual(state);
+    const conflict = probe('local-outcome', 'conflict', crashed.root);
+    expect(conflict.result.status, conflict.result.stderr).toBe(0);
+    expect(conflict.value.responseStatus).toBe(409);
+    expect(conflict.value.cold).toEqual(state);
+  }, 90_000);
+});
 
 describe('public pending publication recovery', () => {
   it.each([

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type Database from 'better-sqlite3';
 import { createApp } from '../app.js';
 import { FsStore } from '../lib/store.js';
 import {
@@ -29,7 +30,19 @@ ensureLocalUser(coreDb);
 const store = retainedRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
 const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 applyScopedMigrations(db);
+if (mode === 'command-commit') {
+  await probeCommandCommit();
+  db.sqlite.close();
+  coreDb.sqlite.close();
+  process.exit(0);
+}
 if (retainedRoot) {
+  if (mode === 'local-outcome') {
+    await probePendingOutcome(readPendingRequest(db.sqlite, 'ap_crash_0')!.raisingTurnId);
+    db.sqlite.close();
+    coreDb.sqlite.close();
+    process.exit(0);
+  }
   if (phase === 'before-association' || phase === 'missing-turn') {
     if (phase === 'missing-turn') {
       db.sqlite
@@ -146,13 +159,19 @@ if (retainedRoot) {
   if (mode !== 'invalidation') store.setTurnAdmissionHooks(null);
   if (!(mode === 'delivery' && phase === 'between'))
     store.updateTurn(turn.id, { status: 'completed', completedAt: now });
-  if (mode === 'delivery' || mode === 'throw') {
+  if (mode === 'delivery' || mode === 'throw' || mode === 'local-outcome') {
     // Restore the ordinary owner hook before the deciding response command.
     const { installPendingRequestAdmission } = await import('../runtime/pending-request-flow.js');
     installPendingRequestAdmission(store, {
       coreDb,
       openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     });
+  }
+  if (mode === 'local-outcome') {
+    await probePendingOutcome(turn.id, app);
+    db.sqlite.close();
+    coreDb.sqlite.close();
+    process.exit(0);
   }
   if (phase === 'before-association') {
     const originalCreateTurn = store.createTurn.bind(store);
@@ -238,3 +257,195 @@ const records = [0, 1]
 console.log(JSON.stringify({ dataRoot, records }));
 db.sqlite.close();
 coreDb.sqlite.close();
+
+/** Crosses the real product/receipt seam; cold inspection never calls a recovery owner. */
+async function probeCommandCommit(): Promise<void> {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const requestId = '10000000-0000-4000-8000-000000000101';
+  const snapshot = (reader: FsStore) => ({
+    threads: reader
+      .listThreads(workspaceId)
+      .map(({ id, name }) => ({ id, name }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    receipts: db.sqlite
+      .prepare(
+        'SELECT request_id, response_kind, response_id FROM idempotency_requests WHERE request_id = ?'
+      )
+      .all(requestId),
+  });
+  if (phase === 'inspect') {
+    console.log(JSON.stringify({ dataRoot, state: snapshot(store) }));
+    return;
+  }
+  if (!retainedRoot) {
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId,
+    });
+  }
+  const app = createApp({ coreDb, store, dataRoot });
+  console.log(JSON.stringify({ dataRoot, before: snapshot(store) }));
+  let checkpoint = false;
+  const restore = interceptReceiptWrite(requestId, () => {
+    if (phase !== 'before-receipt' && phase !== 'receipt-failure') return;
+    checkpoint = true;
+    if (phase === 'before-receipt') {
+      console.log(JSON.stringify({ dataRoot, checkpoint: 'before-receipt' }));
+      process.exit(23);
+    }
+    throw new Error('Injected local receipt write failure.');
+  });
+  let response: Response;
+  try {
+    response = await app.request(
+      ...operationRequest(
+        'thread.create',
+        { workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            requestId,
+            name:
+              phase === 'conflict'
+                ? 'Different input under the same request'
+                : 'One committed Thread',
+          }),
+        }
+      )
+    );
+  } finally {
+    restore();
+  }
+  const responseBody: unknown = response.ok ? await response.json() : await response.text();
+  if (phase === 'after-commit') {
+    console.log(
+      JSON.stringify({
+        dataRoot,
+        checkpoint: 'response-ready',
+        responseStatus: response.status,
+        responseBody,
+      })
+    );
+    process.exit(23);
+  }
+  console.log(
+    JSON.stringify({
+      dataRoot,
+      checkpoint,
+      responseStatus: response.status,
+      responseBody,
+      commandFailed: !response.ok,
+      live: snapshot(store),
+      cold: snapshot(new FsStore({ dataRoot })),
+    })
+  );
+}
+
+/** Observes the native receipt statement on real connections without replacing either owner. */
+function interceptReceiptWrite(requestId: string, crossing: () => void): () => void {
+  const prototype = Object.getPrototypeOf(db.sqlite.prepare('SELECT 1')) as Database.Statement;
+  const run = prototype.run;
+  prototype.run = function (...parameters) {
+    if (
+      /^\s*INSERT\b/i.test(this.source) &&
+      this.source.includes('idempotency_requests') &&
+      parameters.includes(requestId)
+    )
+      crossing();
+    return run.apply(this, parameters);
+  };
+  return () => {
+    prototype.run = run;
+  };
+}
+
+/** Keeps decision, delivery, Items, Turn events and receipts under one independently observed cut. */
+async function probePendingOutcome(
+  raisingTurnId: string,
+  existingApp?: ReturnType<typeof createApp>
+): Promise<void> {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
+  const requestId = '10000000-0000-4000-8000-000000000102';
+  const snapshot = (reader: FsStore) => {
+    const turns = reader.listThreadTurns(workspaceId, threadId);
+    return {
+      turns,
+      items: reader.listThreadItems(workspaceId, threadId),
+      events: turns.flatMap((turn) => reader.getTurnEvents(turn.id)),
+      requests: [0, 1].map((index) => readPendingRequest(db.sqlite, `ap_crash_${index}`)),
+      receipts: db.sqlite
+        .prepare(
+          'SELECT request_id, command_name, response_kind, response_id FROM idempotency_requests ORDER BY request_key'
+        )
+        .all(),
+    };
+  };
+  if (phase === 'inspect') {
+    console.log(JSON.stringify({ dataRoot, state: snapshot(store) }));
+    return;
+  }
+  const app = existingApp ?? createApp({ coreDb, store, dataRoot });
+  console.log(JSON.stringify({ dataRoot, before: snapshot(store) }));
+  const notifications: unknown[] = [];
+  const unsubscribe = store.addTurnListener(raisingTurnId, (event) => notifications.push(event));
+  let checkpoint = false;
+  const restore = interceptReceiptWrite(requestId, () => {
+    if (phase !== 'before-receipt' && phase !== 'receipt-failure') return;
+    checkpoint = true;
+    if (phase === 'before-receipt') {
+      console.log(JSON.stringify({ dataRoot, checkpoint: 'before-receipt' }));
+      process.exit(23);
+    }
+    throw new Error('Injected Pending Request receipt write failure.');
+  });
+  let response: Response;
+  try {
+    response = await app.request(
+      ...operationRequest(
+        'approval.respond',
+        { approvalRequestId: 'ap_crash_0' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            threadId,
+            turnId: raisingTurnId,
+            requestId,
+            decision: phase === 'conflict' ? 'denied' : 'granted',
+          }),
+        }
+      )
+    );
+  } finally {
+    restore();
+    unsubscribe();
+  }
+  const responseBody: unknown = response.ok ? await response.json() : await response.text();
+  if (phase === 'after-commit') {
+    console.log(
+      JSON.stringify({
+        dataRoot,
+        checkpoint: 'response-ready',
+        responseStatus: response.status,
+        responseBody,
+      })
+    );
+    process.exit(23);
+  }
+  console.log(
+    JSON.stringify({
+      dataRoot,
+      checkpoint,
+      responseStatus: response.status,
+      responseBody,
+      notifications,
+      live: snapshot(store),
+      cold: snapshot(new FsStore({ dataRoot })),
+    })
+  );
+}
