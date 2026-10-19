@@ -662,9 +662,13 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
         pageId: `openkit:${f.workspaceScope}/launch-evidence`,
       });
     }
-    expect(toolOutput(request, 'knowledge.page.read')).toContain(
-      'The Tool failed without a safe result.'
-    );
+    const refused = toolOutput(request, 'knowledge.page.read');
+    expect(refused).toContain('This pageId is not an admitted candidate.');
+    expect(refused).toContain('Copy its exact pageId');
+    expect(refused).not.toContain('launch-evidence');
+    expect(refused).not.toContain('cobalt gate');
+    expect(refused).not.toContain(f.sourceReference);
+    expect(refused).not.toContain(f.userId);
     return message(
       'No evidence is available to this shared Task.',
       [],
@@ -727,7 +731,8 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
     expect.objectContaining({
       type: 'tool-call',
       tool: 'knowledge.page.read',
-      result: expect.stringContaining('The Tool failed without a safe result.'),
+      status: 'failed',
+      result: expect.stringContaining('This pageId is not an admitted candidate.'),
     })
   );
   const traces = readTurnRetrievalTraces(
