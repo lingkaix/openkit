@@ -6,9 +6,12 @@ import {
   MemoryPublicationSchema,
   type OperationInput,
 } from '@openkit/app-api-schemas';
+import { UserConfigSchema } from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import { authorizeWorkspace } from './auth/operation-authorizer.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
+import { parseJsoncObject } from './config/jsonc.js';
 import { initializeDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { applyMemoryForget, prepareMemoryForgetCommand } from './knowledge/memory-forget.js';
@@ -41,6 +44,7 @@ import {
 } from './knowledge/scoped-knowledge-sources.js';
 import {
   initializeScopedNotebook,
+  pinScopedNotebook,
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
 } from './knowledge/scoped-notebook-owner.js';
@@ -64,6 +68,7 @@ import { openUserDb } from './storage/db.js';
 import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { readCanonicalTextFile } from './storage/workspace-file-records.js';
 
 /** First explicit save retains its default KB before Notebook publication; existing or lost notebooks are never initialized again. */
 function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {
@@ -195,14 +200,27 @@ export function createMemoryOperationImplementations(
     const target = { kind: 'user' } as const;
     try {
       const owner = resolveScopedNotebookOwner({ coreDb, actor, target });
-      // First use may create a UserDb only when neither retained personal record family exists.
-      if (
-        !existsSync(userDbPath(coreDb.dataRoot, actor.userId)) &&
-        (!initialize ||
+      // A retained KB binding also proves established storage when both data families are lost.
+      if (!existsSync(userDbPath(coreDb.dataRoot, actor.userId))) {
+        if (
+          !initialize ||
           lstatSync(owner.notebookRoot, { throwIfNoEntry: false }) ||
-          lstatSync(join(dirname(owner.notebookRoot), 'sources'), { throwIfNoEntry: false }))
-      )
-        throw new OperationError('recovery_required', 'Memory storage is unavailable.', 503);
+          lstatSync(join(dirname(owner.notebookRoot), 'sources'), { throwIfNoEntry: false })
+        )
+          throw new OperationError('recovery_required', 'Memory storage is unavailable.', 503);
+        const configPath = join(dirname(owner.notebookRoot), 'config', 'user.jsonc');
+        if (lstatSync(configPath, { throwIfNoEntry: false })) {
+          try {
+            const config = readRetainedV1(
+              parseJsoncObject(readCanonicalTextFile(configPath)),
+              (value) => UserConfigSchema.parse(value)
+            );
+            if (config.defaultKnowledgeBaseId) throw new NotebookError('recovery_required');
+          } catch {
+            throw new NotebookError('recovery_required');
+          }
+        }
+      }
     } catch (error) {
       return memoryFailure(error);
     }
@@ -231,6 +249,8 @@ export function createMemoryOperationImplementations(
             },
           });
         }
+        // Detect incomplete established storage before the KM query owner wraps its errors.
+        pinScopedNotebook({ coreDb, actor, target: { kind: 'user' } }).read([]);
       }
       return await run(writer);
     } catch (error) {
