@@ -817,10 +817,12 @@ describe('unchanged canonical Thread publication', () => {
     expect(readFileSync(path, 'utf8')).toBe(bytes);
   });
 
-  it('retries a failed Thread parent commit before acknowledging an unchanged-byte persistence', () => {
+  it('refuses the affected Workspace until ordinary reopen after a failed Thread parent commit', () => {
     const f = threadPublicationFixture();
     const path = f.paths[1];
     const threadRoot = dirname(path);
+    const other = f.store.createWorkspace('Unaffected Workspace');
+    trace.events.length = 0;
     trace.fail = (candidate, directory) =>
       directory &&
       candidate === threadRoot &&
@@ -831,19 +833,29 @@ describe('unchanged canonical Thread publication', () => {
     const visibleBytes = readFileSync(path);
     expect(JSON.parse(visibleBytes.toString('utf8')).name).toBe('Visible pending commit');
     trace.events.length = 0;
-    trace.fail = (candidate, directory) => directory && candidate === threadRoot;
+    trace.fail = undefined;
+    for (const read of [
+      () => f.store.getWorkspace(f.workspace.id),
+      () => f.store.getThread(f.workspace.id, f.threads[1].id),
+      () => f.store.listThreads(f.workspace.id),
+      () => f.store.listWorkspaces(),
+      () => f.store.listAllItems(),
+    ]) {
+      expect(read).toThrow('FsStore: directory synchronization failed after rename');
+    }
     expect(() =>
       f.store.updateWorkspace(f.workspace.id, { name: 'Retry unchanged Thread commit' })
-    ).toThrow('Injected tree synchronization failure');
-    expect(
-      trace.events.some(
-        (event) => event.op === 'sync' && event.directory && event.path === threadRoot
-      )
-    ).toBe(true);
-    expect(threadReplacements()).toEqual([]);
+    ).toThrow('Ordinary Store reopen is required');
+    expect(trace.events).toEqual([]);
+    expect(readFileSync(path)).toEqual(visibleBytes);
+    f.store.updateWorkspace(other.id, { name: 'Still available' });
+    expect(f.store.getWorkspace(other.id).name).toBe('Still available');
+    expect(() => f.store.getThread(f.workspace.id, f.threads[1].id)).toThrow(
+      'Ordinary Store reopen is required'
+    );
     trace.events.length = 0;
-    trace.fail = undefined;
-    f.store.updateWorkspace(f.workspace.id, { name: 'Accepted unchanged Thread commit' });
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    reopened.updateWorkspace(f.workspace.id, { name: 'Accepted unchanged Thread commit' });
     expect(threadReplacements()).toEqual([]);
     expect(
       trace.events.some(

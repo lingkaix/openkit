@@ -255,7 +255,7 @@ describe('Workspace JSON transfer cutover', () => {
     );
     const rename = nodeFs.renameSync;
     let faults = 0;
-    // Refuse the real file replacement after updateTurn has advanced the derivative cache.
+    // Refuse the real replacement, then separately seed a divergent projection for the export oracle.
     nodeFs.renameSync = ((from, to) => {
       if (String(to) === turnPath) {
         faults++;
@@ -277,6 +277,13 @@ describe('Workspace JSON transfer cutover', () => {
       syncBuiltinESMExports();
     }
     expect(faults).toBe(1);
+    expect(store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)).toEqual(turn);
+    (store as unknown as { turns: Map<string, typeof turn> }).turns.set(turn.id, {
+      ...turn,
+      status: 'running',
+      agentId: 'failed-cache-agent',
+      agentSessionId: testEntityId('as', 'as_failed_cache'),
+    });
     expect(store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)).toMatchObject({
       status: 'running',
       agentId: 'failed-cache-agent',

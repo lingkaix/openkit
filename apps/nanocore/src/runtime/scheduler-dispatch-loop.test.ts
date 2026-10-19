@@ -659,6 +659,7 @@ describe('scheduler dispatch loop', () => {
       const originalBytes = ['turn.json', 'items.jsonl'].map((file) =>
         readFileSync(join(turnRoot, file))
       );
+      const originalTurn = store.getTurnById(entry.turnId);
       const fault = vi
         .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
         .mockImplementationOnce(() => {
@@ -671,6 +672,12 @@ describe('scheduler dispatch loop', () => {
       } finally {
         fault.mockRestore();
       }
+      expect(store.getTurnById(entry.turnId)).toEqual(originalTurn);
+      // The guard must still refuse a divergent projection, independently of the fixed write failure.
+      (store as unknown as { turns: Map<string, typeof originalTurn> }).turns.set(entry.turnId, {
+        ...originalTurn,
+        agentId: 'other-worker',
+      });
       expect(store.getTurnById(entry.turnId)).toMatchObject({
         agentId: 'other-worker',
         status: 'pending',
@@ -836,6 +843,7 @@ describe('scheduler dispatch loop', () => {
       readFileSync(join(turnRoot, file))
     );
     if (fault === 'stale-cache') {
+      const originalTurn = store.getTurnById(entry.turnId);
       const persist = vi
         .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
         .mockImplementationOnce(() => {
@@ -848,6 +856,12 @@ describe('scheduler dispatch loop', () => {
       } finally {
         persist.mockRestore();
       }
+      expect(store.getTurnById(entry.turnId)).toEqual(originalTurn);
+      // Explicitly retain the stale-cache threat after verifying the real mutation did not leak.
+      (store as unknown as { turns: Map<string, typeof originalTurn> }).turns.set(entry.turnId, {
+        ...originalTurn,
+        agentId: 'other-worker',
+      });
       expect(store.getTurnById(entry.turnId).agentId).toBe('other-worker');
     }
     if (fault === 'missing')
