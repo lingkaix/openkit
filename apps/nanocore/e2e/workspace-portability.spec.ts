@@ -62,7 +62,8 @@ describe('nanocore e2e workspace portability', () => {
             content: serializeKnowledgePageFixture(
               {
                 title: 'Archive bytes',
-                content,
+                // The fixture serializer supplies the final newline asserted after import.
+                content: content.slice(0, -1),
                 createdAt: '2026-10-19T00:00:00.000Z',
                 updatedAt: '2026-10-19T00:00:00.000Z',
               },
