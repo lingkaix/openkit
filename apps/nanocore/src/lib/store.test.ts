@@ -794,7 +794,7 @@ describe('FsStore persistence', () => {
       'Persist this work',
       LOCAL_ACTOR
     );
-    const knowledgeEntry = store.getKnowledgeEntry(
+    const knowledgePage = store.getKnowledgePage(
       'ws_00000000-0000-7000-8000-000000000001',
       'mem_project'
     );
@@ -873,7 +873,7 @@ describe('FsStore persistence', () => {
       workspaceRoot,
       'knowledge',
       'pages',
-      `${knowledgeEntry.id}.md`
+      `${knowledgePage.id}.md`
     );
     const knowledgeSourceProjectionPath = join(
       workspaceRoot,
@@ -909,8 +909,8 @@ describe('FsStore persistence', () => {
       repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
     });
     expect(
-      notebook.readRevision(notebook.publishedRevision()).files[`${knowledgeEntry.id}.md`]
-    ).toContain(knowledgeEntry.content);
+      notebook.readRevision(notebook.publishedRevision()).files[`${knowledgePage.id}.md`]
+    ).toBe(knowledgePage.content);
     expect(JSON.parse(readFileSync(knowledgeSourceProjectionPath, 'utf8'))).toEqual(
       knowledgeSource
     );
@@ -925,8 +925,8 @@ describe('FsStore persistence', () => {
       restarted.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id).id
     ).toBe(turn.id);
     expect(
-      restarted.getKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', knowledgeEntry.id)
-    ).toEqual(knowledgeEntry);
+      restarted.getKnowledgePage('ws_00000000-0000-7000-8000-000000000001', knowledgePage.id)
+    ).toEqual(knowledgePage);
     expect(
       restarted.getKnowledgeSource('ws_00000000-0000-7000-8000-000000000001', knowledgeSource.id)
     ).toEqual(knowledgeSource);

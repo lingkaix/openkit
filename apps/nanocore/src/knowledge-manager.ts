@@ -5,17 +5,15 @@ import type {
   KnowledgeManagerPrepareContextResponse,
   KnowledgeManagerSuggestRepairResponse,
 } from '@openkit/app-api-schemas';
-import type { KnowledgeEntrySchema, RetrievalTraceReference } from '@openkit/protocol';
+import type { KnowledgeNotebookPageSchema, RetrievalTraceReference } from '@openkit/protocol';
 import { allocateEntityId } from '@openkit/protocol';
 import type { z } from 'zod';
+import { parseOkfDocument, stringFrontmatterField } from './knowledge/okf.js';
 import type { KnowledgeProposalRecord } from './lib/store.js';
 import {
   type KnowledgeRetrievalAccess,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
-
-/** Workspace Knowledge Page projection consumed by request-scoped Knowledge operations. */
-export type WorkspaceKnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
 
 /** Input for one deterministic Knowledge Manager context-material operation. */
 export interface PrepareKnowledgeContextInput {
@@ -77,8 +75,8 @@ export interface SuggestKnowledgeRepairsInput {
   workspaceId: string;
   /** Caller that requested repair suggestions. */
   caller: z.infer<typeof KnowledgeManagerCallerSchema>;
-  /** Candidate knowledge entries from the workspace store. */
-  entries: readonly WorkspaceKnowledgeEntry[];
+  /** Canonical Notebook pages from the Workspace store. */
+  entries: readonly z.infer<typeof KnowledgeNotebookPageSchema>[];
   /** Maximum number of suggestions to return. */
   limit: number;
 }
@@ -91,8 +89,8 @@ export interface CheckKnowledgeHealthInput {
   workspaceId: string;
   /** Caller that requested the health check. */
   caller: z.infer<typeof KnowledgeManagerCallerSchema>;
-  /** Candidate knowledge entries from the workspace store. */
-  entries: readonly WorkspaceKnowledgeEntry[];
+  /** Canonical Notebook pages from the Workspace store. */
+  entries: readonly z.infer<typeof KnowledgeNotebookPageSchema>[];
   /** Maximum number of repair suggestions to include. */
   limit: number;
 }
@@ -189,10 +187,10 @@ export function draftKnowledgeProposal(
 export function suggestKnowledgeRepairs(
   input: SuggestKnowledgeRepairsInput
 ): KnowledgeManagerSuggestRepairResponse {
-  const byTitle = new Map<string, WorkspaceKnowledgeEntry[]>();
+  const byTitle = new Map<string, z.infer<typeof KnowledgeNotebookPageSchema>[]>();
 
   for (const entry of input.entries) {
-    const key = normalizeTitle(entry.title);
+    const key = normalizeTitle(knowledgePageTitle(entry));
     const group = byTitle.get(key) ?? [];
     group.push(entry);
     byTitle.set(key, group);
@@ -204,7 +202,7 @@ export function suggestKnowledgeRepairs(
     .map(([titleKey, entries]) => ({
       id: `repair_duplicate_title_${repairIdPart(titleKey)}`,
       kind: 'duplicate-title' as const,
-      title: `Duplicate title: ${displayTitle(entries[0]?.title ?? titleKey)}`,
+      title: `Duplicate title: ${displayTitle(entries[0] ? knowledgePageTitle(entries[0]) : titleKey)}`,
       detail: `${entries.length} knowledge entries share the same normalized title.`,
       affectedKnowledgeEntryIds: entries.map((entry) => entry.id),
       autoApplicable: false as const,
@@ -263,6 +261,14 @@ export function checkKnowledgeHealth(
     ],
     repairSuggestions: repairReport.suggestions,
   };
+}
+
+/** Reads the current OKF title only where duplicate-title inspection needs it. */
+function knowledgePageTitle(page: z.infer<typeof KnowledgeNotebookPageSchema>): string {
+  const parsed = parseOkfDocument({ path: page.path, content: page.content });
+  const title = parsed.document ? stringFrontmatterField(parsed.document, 'title') : null;
+  if (!parsed.ok || !title) throw new Error(`Knowledge page ${page.path} has no valid OKF title.`);
+  return title;
 }
 
 /**

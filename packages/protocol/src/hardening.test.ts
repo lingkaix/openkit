@@ -134,7 +134,9 @@ describe('protocol hardening boundary', () => {
       })
     ).toThrow();
 
-    expect(() => protocol.DeleteKnowledgeEntryRequestSchema.parse({})).toThrow();
+    expect(protocol).not.toHaveProperty('DeleteKnowledgeEntryRequestSchema');
+    expect(protocol).not.toHaveProperty('KnowledgeEntrySchema');
+    expect(protocol.KnowledgeNotebookPageSchema.safeParse({}).success).toBe(false);
   });
 
   it('accepts turn assignment and trigger source without runtime-native payloads', () => {

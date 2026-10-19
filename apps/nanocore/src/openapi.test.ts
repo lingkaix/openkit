@@ -4,7 +4,7 @@ import {
   CapabilityUsageResponseSchema,
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
-  KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+  KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
   OPERATION_DEFINITIONS,
   operationHttpPath,
@@ -2263,9 +2263,9 @@ describe('Knowledge OpenAPI derivation', () => {
     const document = createAppOpenApiDocument();
     const definitions = {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
-      ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+      ...KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(31);
+    expect(Object.keys(definitions)).toHaveLength(30);
     expect(Object.keys(definitions)).toEqual(
       expect.arrayContaining([
         'knowledge.ask',
@@ -2276,6 +2276,9 @@ describe('Knowledge OpenAPI derivation', () => {
         'knowledge.notebook.diff',
         'knowledge.notebook.restore',
         'knowledge.notebook.update',
+        'knowledge.notebook.list',
+        'knowledge.notebook.create',
+        'knowledge.notebook.delete',
       ])
     );
     for (const [id, definition] of Object.entries(definitions)) {

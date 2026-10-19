@@ -1,11 +1,6 @@
 import {
-  CreateKnowledgeEntryRequestSchema,
-  DeleteKnowledgeEntryRequestSchema,
   KnowledgeConflictIdSchema,
-  KnowledgeEntrySchema,
   KnowledgeSourceIdSchema,
-  ListKnowledgeEntriesResponseSchema,
-  UpdateKnowledgeEntryRequestSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -53,6 +48,9 @@ import {
   RetrieveKnowledgeRequestSchema,
 } from './knowledge-manager.js';
 import {
+  CreateKnowledgeNotebookPageRequestSchema,
+  DeleteKnowledgeNotebookPageRequestSchema,
+  ListKnowledgeNotebookResponseSchema,
   UpdateKnowledgeNotebookRequestSchema,
   UpdateKnowledgeNotebookResponseSchema,
 } from './knowledge-notebook.js';
@@ -403,8 +401,8 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
   },
 } as const satisfies Record<string, OperationDefinition>;
 
-/** Sole public contracts for the retained minimal Knowledge Entry family; records stay with the protocol owner. */
-export const KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS = {
+/** One public Notebook page lifecycle; all mutations use the existing publisher. */
+export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
   'knowledge.notebook.history': {
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -460,60 +458,39 @@ export const KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS = {
     policyOperation: 'knowledge.write',
     mutating: true,
   },
-  'knowledge.list': {
+  'knowledge.notebook.list': {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'List retained Workspace Knowledge Entries.',
+    description: 'Read an authorized fixed Notebook snapshot with complete OKF page bytes.',
     inputSchema: z.object({ ...workspaceSelector }).strict(),
-    outputSchema: ListKnowledgeEntriesResponseSchema,
+    outputSchema: ListKnowledgeNotebookResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
     policyOperation: 'knowledge.read',
     mutating: false,
   },
-  'knowledge.create': {
+  'knowledge.notebook.create': {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Create one validated Workspace Knowledge Entry.',
-    inputSchema: CreateKnowledgeEntryRequestSchema.extend({ ...workspaceSelector }).strict(),
-    outputSchema: KnowledgeEntrySchema,
+    description: 'Create a new full OKF page through the fixed-base Notebook publisher.',
+    inputSchema: CreateKnowledgeNotebookPageRequestSchema.extend({ ...workspaceSelector }).strict(),
+    outputSchema: UpdateKnowledgeNotebookResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
     policyOperation: 'knowledge.write',
     mutating: true,
   },
-  'knowledge.update': {
+  'knowledge.notebook.delete': {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Update one scoped Workspace Knowledge Entry.',
-    inputSchema: UpdateKnowledgeEntryRequestSchema.extend({
-      ...workspaceSelector,
-      knowledgeEntryId: z.string().min(1),
-    }).strict(),
-    outputSchema: KnowledgeEntrySchema,
-    credentials: publicCredentials,
-    scope: { kind: 'body-workspace', field: 'workspaceId' },
-    target: { kind: 'workspace' },
-    policyOperation: 'knowledge.write',
-    mutating: true,
-  },
-  'knowledge.delete': {
-    binding: 'json',
-    returnsOneTimeSecret: false,
-    successStatus: 200,
-    description: 'Delete one scoped Workspace Knowledge Entry.',
-    inputSchema: DeleteKnowledgeEntryRequestSchema.extend({
-      ...workspaceSelector,
-      expectedContentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-      confirmRemoval: z.literal(true),
-      knowledgeEntryId: z.string().min(1),
-    }).strict(),
-    outputSchema: z.null(),
+    description: 'Remove exact human-confirmed page bytes while retaining Notebook history.',
+    inputSchema: DeleteKnowledgeNotebookPageRequestSchema.extend({ ...workspaceSelector }).strict(),
+    outputSchema: UpdateKnowledgeNotebookResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },

@@ -477,15 +477,28 @@ function agent() {
   };
 }
 
-/** Returns one valid knowledge entry. */
-function knowledgeEntry() {
+/** Returns one canonical Notebook page projection. */
+function knowledgePage() {
   return {
     id: 'mem_demo',
-    kind: 'project-context',
-    title: 'Demo knowledge',
-    content: 'Shared context',
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    path: 'mem_demo.md',
+    content: '---\ntype: KnowledgePage\ntitle: Demo knowledge\n---\nShared context\n',
+    contentDigest: `sha256:${'a'.repeat(64)}`,
+  };
+}
+
+/** Returns the existing Notebook publication result for each public page intent. */
+function notebookPublication(
+  operation: 'knowledge.notebook.create' | 'knowledge.notebook.update' | 'knowledge.notebook.delete'
+) {
+  const ownerScope = { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
+  return {
+    outcome: 'published',
+    ownerScope,
+    baseRevision: notebookBaseRevision,
+    notebookRevision: notebookCandidateRevision,
+    changedPageIds: ['mem_demo'],
+    receiptRef: { operation, requestId, ownerScope },
   };
 }
 
@@ -1718,7 +1731,7 @@ describe('createCoreClient', () => {
   });
 
   it('routes remaining product operations through validated definition-derived paths', async () => {
-    const knowledge = knowledgeEntry();
+    const knowledge = knowledgePage();
     const item = userMessageItem();
     const { client, requests } = createFakeClient({
       'GET /api/meta': {
@@ -1737,16 +1750,22 @@ describe('createCoreClient', () => {
         },
       },
       'POST /api/app/operations/workspace.update': { body: workspace() },
-      'POST /api/app/operations/knowledge.list': {
+      'POST /api/app/operations/knowledge.notebook.list': {
         body: {
           knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
           notebookRevision: notebookBaseRevision,
-          items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
+          pages: [knowledge],
         },
       },
-      'POST /api/app/operations/knowledge.create': { body: knowledge },
-      'POST /api/app/operations/knowledge.update': { body: knowledge },
-      'POST /api/app/operations/knowledge.delete': { body: null },
+      'POST /api/app/operations/knowledge.notebook.create': {
+        body: notebookPublication('knowledge.notebook.create'),
+      },
+      'POST /api/app/operations/knowledge.notebook.update': {
+        body: notebookPublication('knowledge.notebook.update'),
+      },
+      'POST /api/app/operations/knowledge.notebook.delete': {
+        body: notebookPublication('knowledge.notebook.delete'),
+      },
       'POST /api/app/operations/thread.list': { body: { items: [thread()] } },
       'POST /api/app/operations/thread.read': { body: thread() },
       'POST /api/app/operations/thread.update': { body: thread() },
@@ -2024,41 +2043,43 @@ describe('createCoreClient', () => {
       })
     ).resolves.toEqual(workspace());
     await expect(
-      client.operations['knowledge.list']({
+      client.operations['knowledge.notebook.list']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).resolves.toEqual({
       knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
       notebookRevision: notebookBaseRevision,
-      items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
+      pages: [knowledge],
     });
     await expect(
-      client.operations['knowledge.create']({
+      client.operations['knowledge.notebook.create']({
         baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        knowledgePageId: knowledge.id,
-        kind: knowledge.kind,
-        title: knowledge.title,
+        path: knowledge.path,
         content: knowledge.content,
+        summary: 'Create shared page',
       })
-    ).resolves.toEqual(knowledge);
+    ).resolves.toEqual(notebookPublication('knowledge.notebook.create'));
     await expect(
-      client.operations['knowledge.update']({
+      client.operations['knowledge.notebook.update']({
         baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        knowledgeEntryId: 'mem_demo',
-        ...{ title: 'Updated' },
+        changes: [
+          { path: knowledge.path, content: knowledge.content.replace('Demo knowledge', 'Updated') },
+        ],
+        summary: 'Update shared page',
       })
-    ).resolves.toEqual(knowledge);
+    ).resolves.toEqual(notebookPublication('knowledge.notebook.update'));
     await expect(
-      client.operations['knowledge.delete']({
+      client.operations['knowledge.notebook.delete']({
         baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        knowledgeEntryId: 'mem_demo',
+        path: knowledge.path,
+        summary: 'Remove shared page',
         expectedContentDigest: `sha256:${'a'.repeat(64)}`,
         confirmRemoval: true,
       })
-    ).resolves.toBeNull();
+    ).resolves.toEqual(notebookPublication('knowledge.notebook.delete'));
     await expect(
       client.operations['thread.list']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
     ).resolves.toEqual({
@@ -2242,10 +2263,10 @@ describe('createCoreClient', () => {
       'GET /api/meta',
       'POST /api/app/operations/workspace.read',
       'POST /api/app/operations/workspace.update',
-      'POST /api/app/operations/knowledge.list',
-      'POST /api/app/operations/knowledge.create',
-      'POST /api/app/operations/knowledge.update',
-      'POST /api/app/operations/knowledge.delete',
+      'POST /api/app/operations/knowledge.notebook.list',
+      'POST /api/app/operations/knowledge.notebook.create',
+      'POST /api/app/operations/knowledge.notebook.update',
+      'POST /api/app/operations/knowledge.notebook.delete',
       'POST /api/app/operations/thread.list',
       'POST /api/app/operations/thread.read',
       'POST /api/app/operations/thread.update',
@@ -2276,7 +2297,8 @@ describe('createCoreClient', () => {
     expect(requests[2]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
     expect(requests[6]?.body).toEqual({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      knowledgeEntryId: 'mem_demo',
+      path: knowledge.path,
+      summary: 'Remove shared page',
       baseRevision: notebookBaseRevision,
       expectedContentDigest: `sha256:${'a'.repeat(64)}`,
       confirmRemoval: true,
@@ -2959,7 +2981,6 @@ describe('createCoreClient', () => {
       'freshness: "current"',
       `created_at: ${JSON.stringify(timestamp)}`,
       `updated_at: ${JSON.stringify(timestamp)}`,
-      'openkit_entry_kind: "project-context"',
       'openkit_entry_id: "lessons/release-review"',
       '---',
       'Release reviews happen every Friday.',

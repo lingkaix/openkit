@@ -24,14 +24,12 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import {
-  serializeUserAuthoredKnowledgePage,
-  turnFilePayloadPath,
-} from '../storage/workspace-file-records.js';
+import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
@@ -932,10 +930,8 @@ async function sourceToolFixture(
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
   });
-  const knowledgeContent = serializeUserAuthoredKnowledgePage(
+  const knowledgeContent = serializeKnowledgePageFixture(
     {
-      id: 'selected',
-      kind: 'project-context',
       title: 'Pinned source',
       content: 'Exact selected Notebook body.\n'.repeat(5000),
       sourceReferences: [],

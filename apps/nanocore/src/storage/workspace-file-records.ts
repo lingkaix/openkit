@@ -36,9 +36,7 @@ import {
   deriveEntityId,
   entityIdPattern,
   ItemSchema,
-  KnowledgeEntrySchema,
-  type KnowledgeOwnerScope,
-  KnowledgeOwnerScopeSchema,
+  KnowledgeNotebookPageSchema,
   readRetainedV1,
   SseEventEnvelopeSchema,
   ThreadSchema,
@@ -58,12 +56,10 @@ import { z } from 'zod';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
-  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   parseOkfDocument,
-  REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   stringFrontmatterField,
   stringListFrontmatterField,
-  updateOkfFrontmatter,
+  validateOpenKitKnowledgeProfile,
 } from '../knowledge/okf.js';
 import type {
   AgentSession,
@@ -94,7 +90,7 @@ import {
 } from './retained-work-metadata-v1.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
-type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
+type KnowledgeNotebookPage = import('zod').infer<typeof KnowledgeNotebookPageSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
@@ -741,8 +737,8 @@ export interface WorkspaceFileRecords {
   readonly turnFilePayloads?: ReadonlyMap<string, readonly string[]>;
   /** Workspace metadata. */
   readonly workspace: WorkspaceRecord;
-  /** Protocol knowledge entries represented by owned OKF pages. */
-  readonly knowledge: readonly KnowledgeEntry[];
+  /** Exact canonical Notebook pages from the published Git revision. */
+  readonly knowledge: readonly KnowledgeNotebookPage[];
   /** Workspace threads. */
   readonly threads: readonly Thread[];
   /** Workspace turns with reconstructed current items. */
@@ -1251,7 +1247,7 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
   const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
-  const knowledge = readWorkspaceKnowledgeEntries(workspaceRoot);
+  const knowledge = readWorkspaceKnowledgePages(workspaceRoot);
   const knowledgeProposals = loadKnowledgeProposals(workspaceRoot, workspaceId);
   const knowledgeProposalReviews = loadKnowledgeProposalReviews(
     workspaceRoot,
@@ -1564,66 +1560,46 @@ export function assertTurnEventPayloadLineage(
 }
 
 /**
- * Parses one owned Knowledge Page into its protocol projection.
+ * Reads one owned Knowledge Page without projecting or changing its canonical Markdown.
  *
- * @param path Canonical page path used for validation diagnostics.
+ * @param path Bundle-relative page path used for validation diagnostics.
  * @param knowledgePageId Expected bundle-relative page id.
  * @param content Exact page bytes.
- * @returns Parsed Knowledge entry projection.
+ * @returns Canonical page identity, bytes and exact-byte digest.
  * @throws Error when the file is not a valid owned page for the expected id.
  */
-export function parseOwnedKnowledgeEntry(
+export function parseOwnedKnowledgePage(
   path: string,
   knowledgePageId: string,
   content: string
-): KnowledgeEntry {
+): KnowledgeNotebookPage {
   const parsed = parseOkfDocument({ path, content });
-  const id = parsed.document ? stringFrontmatterField(parsed.document, 'openkit_entry_id') : null;
+  const id = parsed.document?.frontmatter.openkit_entry_id;
 
   if (
     !parsed.ok ||
-    (id !== null && id !== knowledgePageId) ||
+    !KnowledgeProposalPageIdSchema.safeParse(knowledgePageId).success ||
+    path !== `${knowledgePageId}.md` ||
+    (id !== undefined && id !== knowledgePageId) ||
     parsed.document.conceptId !== knowledgePageId
   ) {
     throw new Error(`Knowledge page ${knowledgePageId} is not a valid owned record.`);
   }
 
+  const profile = validateOpenKitKnowledgeProfile(parsed.document);
+  if (profile.conformance !== 'OpenKit-profile-valid' || profile.errors.length > 0) {
+    throw new Error(`Knowledge page ${knowledgePageId} violates the OpenKit Knowledge Profile.`);
+  }
   const sourceReferences = stringListFrontmatterField(parsed.document, 'source_refs');
-  if (parsed.document.frontmatter.source_refs !== undefined && sourceReferences === null) {
+  if (!sourceReferences || sourceReferences.some((reference) => reference.length === 0)) {
     throw new Error(`Knowledge page ${knowledgePageId} has invalid source_refs.`);
   }
-  return KnowledgeEntrySchema.parse({
+  return KnowledgeNotebookPageSchema.parse({
     id: knowledgePageId,
-    // General OKF pages project into the existing Workspace entry view without adding managed metadata to their bytes.
-    kind: stringFrontmatterField(parsed.document, 'openkit_entry_kind') ?? 'project-context',
-    title: requiredFrontmatterString(parsed.document, 'title', path),
-    content: trimCanonicalMarkdownBody(parsed.document.body),
-    ...(sourceReferences && sourceReferences.length > 0 ? { sourceReferences } : {}),
-    createdAt: requiredFrontmatterString(parsed.document, 'created_at', path),
-    updatedAt: requiredFrontmatterString(parsed.document, 'updated_at', path),
+    path,
+    content,
+    contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
   });
-}
-
-/**
- * Compares two canonical KnowledgeEntry projections while normalizing absent empty sources.
- *
- * @param left First KnowledgeEntry projection.
- * @param right Second KnowledgeEntry projection.
- * @returns True when every authoritative protocol field is equal.
- */
-export function knowledgeEntriesEqual(left: KnowledgeEntry, right: KnowledgeEntry): boolean {
-  const leftReferences = left.sourceReferences ?? [];
-  const rightReferences = right.sourceReferences ?? [];
-  return (
-    left.id === right.id &&
-    left.kind === right.kind &&
-    left.title === right.title &&
-    left.content === right.content &&
-    left.createdAt === right.createdAt &&
-    left.updatedAt === right.updatedAt &&
-    leftReferences.length === rightReferences.length &&
-    leftReferences.every((reference, index) => reference === rightReferences[index])
-  );
 }
 
 /**
@@ -1651,19 +1627,19 @@ export function listKnowledgePageIds(pagesRoot: string, prefix = ''): string[] {
 }
 
 /**
- * Projects the current immutable notebook into the existing protocol entry view.
+ * Reads the exact pages from one current immutable Notebook revision.
  *
  * @param workspaceRoot Published workspace root.
- * @returns Knowledge entries in file-name order.
+ * @returns Canonical pages in file-name order.
  */
-export function readWorkspaceKnowledgeEntries(workspaceRoot: string): KnowledgeEntry[] {
+export function readWorkspaceKnowledgePages(workspaceRoot: string): KnowledgeNotebookPage[] {
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
   });
   const revision = notebook.publishedRevision();
   return Object.entries(notebook.readRevision(revision).files)
     .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
-    .map(([path, content]) => parseOwnedKnowledgeEntry(path, path.slice(0, -3), content));
+    .map(([path, content]) => parseOwnedKnowledgePage(path, path.slice(0, -3), content));
 }
 
 /**
@@ -2508,66 +2484,6 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     );
     if (!previousBytes?.equals(nextBytes)) writeFileAtomic(threadPath, nextBytes);
   }
-}
-
-/**
- * Serializes one direct user-authored Knowledge Page into its canonical bytes.
- *
- * @param entry Knowledge entry projection to serialize.
- * @param ownerScope Exact trusted owner of the new page, independent of its bytes.
- * @returns Exact canonical Markdown bytes written to the Knowledge Store.
- */
-export function serializeUserAuthoredKnowledgePage(
-  entry: KnowledgeEntry,
-  ownerScope: KnowledgeOwnerScope
-): string {
-  const scope = KnowledgeOwnerScopeSchema.parse(ownerScope);
-  return [
-    '---',
-    'type: "KnowledgePage"',
-    `title: ${JSON.stringify(entry.title)}`,
-    `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
-    'openkit_status: "active"',
-    'status: "stable"',
-    `scope: ${JSON.stringify(scope)}`,
-    `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
-    `source_refs: ${JSON.stringify(entry.sourceReferences ?? [])}`,
-    'review_state: "user-authored"',
-    'sensitivity: "normal"',
-    'freshness: "current"',
-    `openkit_entry_kind: ${JSON.stringify(entry.kind)}`,
-    `created_at: ${JSON.stringify(entry.createdAt)}`,
-    `updated_at: ${JSON.stringify(entry.updatedAt)}`,
-    `openkit_entry_id: ${JSON.stringify(entry.id)}`,
-    '---',
-    entry.content,
-    '',
-  ].join('\n');
-}
-
-/**
- * Produces final direct-edit bytes while retaining metadata outside the managed edit fields.
- *
- * @param path Canonical page path used for YAML diagnostics.
- * @param content Current exact Knowledge Page bytes.
- * @param entry Updated protocol projection.
- * @returns One final candidate byte sequence for validation and persistence.
- */
-export function updateUserAuthoredKnowledgePage(
-  path: string,
-  content: string,
-  entry: KnowledgeEntry
-): string {
-  return updateOkfFrontmatter({
-    path,
-    content,
-    updates: {
-      title: entry.title,
-      review_state: 'user-authored',
-      updated_at: entry.updatedAt,
-    },
-    body: `${entry.content}\n`,
-  });
 }
 
 /**
@@ -3439,14 +3355,4 @@ function requiredFrontmatterString(
   }
 
   return value;
-}
-
-/**
- * Removes the single formatting newline added after a canonical Markdown body.
- *
- * @param body Parsed Markdown body.
- * @returns Original record body.
- */
-function trimCanonicalMarkdownBody(body: string): string {
-  return body.endsWith('\n') ? body.slice(0, -1) : body;
 }

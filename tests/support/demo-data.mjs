@@ -112,7 +112,6 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
     { recordWorkspaceOwnerMembership },
     { initializeWorkspaceNotebook },
     { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT },
-    { serializeUserAuthoredKnowledgePage },
     { createDemoWorkspaceForUser },
     { readDefaultKnowledgeBaseId },
   ] = await Promise.all([
@@ -122,7 +121,6 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
     import('../../apps/nanocore/dist/workspace-membership.js'),
     import('../../apps/nanocore/dist/knowledge/notebook-initialization.js'),
     import('../../apps/nanocore/dist/knowledge/okf.js'),
-    import('../../apps/nanocore/dist/storage/workspace-file-records.js'),
     import('../../apps/nanocore/dist/test-support/demo-store.js'),
     import('../../apps/nanocore/dist/config/knowledge-base.js'),
   ]);
@@ -164,12 +162,7 @@ export async function seedDemoWorkspaceAuthority(dataRoot) {
           },
           ...(workspaceId === demo.workspace.id
             ? {
-                files: Object.fromEntries(
-                  demo.knowledge.map((entry) => [
-                    `${entry.id}.md`,
-                    serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId }),
-                  ])
-                ),
+                files: Object.fromEntries(demo.knowledge.map((page) => [page.path, page.content])),
               }
             : {}),
           revalidate: () => ({

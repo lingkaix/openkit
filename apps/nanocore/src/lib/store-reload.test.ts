@@ -15,7 +15,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   ItemSchema,
-  KnowledgeEntrySchema,
   PROTOCOL_VERSION,
   ThreadSchema,
   TurnSchema,
@@ -26,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { FsStore } from './store.js';
 
@@ -95,14 +95,16 @@ function workspaceImportPayload(
     completedAt: timestamp,
   });
   const knowledge = [
-    KnowledgeEntrySchema.parse({
-      id: `kn_${workspaceId}`,
-      kind: 'project-context',
-      title: 'Imported context',
-      content: 'This entry belongs to the imported workspace.',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }),
+    knowledgePageFixture(
+      {
+        id: `kn_${workspaceId}`,
+        title: 'Imported context',
+        content: 'This page belongs to the imported workspace.',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId }
+    ),
   ];
 
   return {
@@ -323,11 +325,19 @@ describe('FsStore canonical reload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-reload-'));
     const fixtureStore = new FsStore();
     const workspace = fixtureStore.createWorkspace('Reload Workspace');
-    const knowledge = fixtureStore.createKnowledgeEntry(workspace.id, {
-      kind: 'project-context',
-      title: 'Reload context',
-      content: 'Snapshot reload should preserve this knowledge entry.',
-    });
+    const knowledge = fixtureStore.createKnowledgePage(
+      workspace.id,
+      knowledgePageFixture(
+        {
+          id: 'reload-context',
+          title: 'Reload context',
+          content: 'Snapshot reload should preserve this canonical page.',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: workspace.id }
+      )
+    );
     const store = new FsStore({ dataRoot });
     store.importWorkspaceSnapshot({
       workspace,
@@ -585,19 +595,25 @@ describe('FsStore canonical reload', () => {
     const retained = notebook.readRevision(revision);
     const refusal = 'File-backed Knowledge changes require the notebook publisher.';
 
-    expect(() =>
-      store.createKnowledgeEntry(workspace.id, {
-        kind: 'project-context',
+    const candidate = knowledgePageFixture(
+      {
+        id: 'bypass',
         title: 'Bypass',
         content: 'Must not publish.',
-      })
-    ).toThrow(refusal);
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: workspace.id }
+    );
+    expect(() => store.createKnowledgePage(workspace.id, candidate)).toThrow(refusal);
     expect(() =>
-      store.updateKnowledgeEntry(workspace.id, knowledge.id, {
-        content: 'Must not replace the published page.',
+      store.createKnowledgePage(workspace.id, {
+        path: knowledge.path,
+        content: candidate.content,
       })
     ).toThrow(refusal);
-    expect(() => store.deleteKnowledgeEntry(workspace.id, knowledge.id)).toThrow(refusal);
+    expect(store).not.toHaveProperty('updateKnowledgeEntry');
+    expect(store).not.toHaveProperty('deleteKnowledgeEntry');
     expect(notebook.publishedRevision()).toBe(revision);
     expect(notebook.readRevision(revision)).toEqual(retained);
     expect(new FsStore({ dataRoot }).getWorkspaceResources(workspace.id).knowledge).toEqual(

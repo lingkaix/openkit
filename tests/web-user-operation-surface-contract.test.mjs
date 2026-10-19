@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 340;
+const EXPECTED_CATALOG_SIZE = 339;
 const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 254;
+const EXPECTED_INCLUDED_SIZE = 253;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -357,17 +357,10 @@ const WEB_OPERATION_GROUPS = {
       surface: 'Artifact review',
     },
   },
-  'Core Knowledge CRUD': {
-    'knowledge.delete': {
-      disposition: 'live',
-      surface: 'Knowledge',
-    },
-    'knowledge.list': { disposition: 'live', surface: 'Knowledge' },
-    'knowledge.update': {
-      disposition: 'live',
-      surface: 'Knowledge',
-    },
-    'knowledge.create': { disposition: 'live', surface: 'Knowledge' },
+  'Core Knowledge Notebook pages': {
+    'knowledge.notebook.list': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.create': { disposition: 'live', surface: 'Knowledge' },
+    'knowledge.notebook.delete': { disposition: 'live', surface: 'Knowledge' },
   },
   'Core thread reads': {
     'thread.list': { disposition: 'live', surface: 'Chat' },

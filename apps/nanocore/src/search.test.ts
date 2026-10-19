@@ -17,6 +17,7 @@ import { createAppWithWorkspaceAuthority as createApp } from './test-support/app
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -55,21 +56,29 @@ async function createKnowledgeFixture(
   });
   const response = await app.request(
     ...knowledgeOperationRequest(
-      'knowledge.create',
+      'knowledge.notebook.create',
       { workspaceId },
       {
         body: JSON.stringify({
-          ...input,
-          kind: 'project-context',
+          path: `${input.knowledgePageId}.md`,
+          content: serializeKnowledgePageFixture(
+            {
+              ...input,
+              createdAt: '2026-10-19T00:00:00.000Z',
+              updatedAt: '2026-10-19T00:00:00.000Z',
+            },
+            { kind: 'workspace', workspaceId }
+          ),
+          summary: 'Publish search fixture',
           requestId: randomUUID(),
           baseRevision: notebook.publishedRevision(),
-          sourceReferences: [],
         }),
       }
     )
   );
   expect(response.status, await response.clone().text()).toBe(200);
-  return (await response.json()) as { id: string };
+  expect((await response.json()).changedPageIds).toContain(input.knowledgePageId);
+  return { id: input.knowledgePageId };
 }
 
 describe('search app API', () => {

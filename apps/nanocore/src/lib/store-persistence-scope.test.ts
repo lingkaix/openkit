@@ -27,6 +27,7 @@ import {
 import { applyMigrations, listAppliedNativeMigrationIds } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -299,31 +300,41 @@ describe('FsStore workspace persistence scope', () => {
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
     });
-    const created = await app.request('/api/app/operations/knowledge.create', {
+    const timestamp = new Date().toISOString();
+    const knowledge = knowledgePageFixture(
+      {
+        id: 'delete-me',
+        title: 'Delete this knowledge',
+        content: 'This page must not return after restart.',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: workspace.id }
+    );
+    const created = await app.request('/api/app/operations/knowledge.notebook.create', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
       body: JSON.stringify({
         workspaceId: workspace.id,
         baseRevision: notebook.publishedRevision(),
-        knowledgePageId: 'delete-me',
-        kind: 'project-context',
-        title: 'Delete this knowledge',
-        content: 'This record must not return after restart.',
+        path: knowledge.path,
+        content: knowledge.content,
+        summary: 'Create the page for the deletion persistence test.',
       }),
     });
     expect(created.status, await created.clone().text()).toBe(200);
-    const knowledge = (await created.json()) as { id: string };
     const revision = notebook.publishedRevision();
     const content = notebook.readRevision(revision).files[`${knowledge.id}.md`]!;
-    const deleted = await app.request('/api/app/operations/knowledge.delete', {
+    const deleted = await app.request('/api/app/operations/knowledge.notebook.delete', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
       body: JSON.stringify({
         workspaceId: workspace.id,
         baseRevision: revision,
-        knowledgeEntryId: knowledge.id,
+        path: knowledge.path,
         expectedContentDigest: artifactDigest(content),
         confirmRemoval: true,
+        summary: 'Delete the page before the unrelated projection failure.',
       }),
     });
     expect(deleted.status, await deleted.clone().text()).toBe(200);
@@ -346,8 +357,8 @@ describe('FsStore workspace persistence scope', () => {
     writeFileSync(threadRecordPath, threadRecord);
 
     const restarted = new FsStore({ dataRoot });
-    expect(() => restarted.getKnowledgeEntry(workspace.id, knowledge.id)).toThrow(
-      `Knowledge entry not found: ${knowledge.id}`
+    expect(() => restarted.getKnowledgePage(workspace.id, knowledge.id)).toThrow(
+      `Knowledge page not found: ${knowledge.id}`
     );
   });
 });

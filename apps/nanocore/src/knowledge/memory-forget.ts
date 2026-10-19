@@ -499,7 +499,7 @@ function publicationResult(value: unknown, intent: ForgetIntent): Publication {
       notebookRevision: z.string(),
       changedPageIds: z.array(z.string()),
       receiptRef: z.object({
-        operation: z.literal('knowledge.delete'),
+        operation: z.literal('knowledge.notebook.delete'),
         requestId: z.literal(intent.requestId),
         ownerScope: z.object({
           kind: z.literal('user'),
@@ -542,7 +542,7 @@ export async function applyMemoryForget(
         ...writer,
         target: { kind: 'user' },
         command: {
-          name: 'knowledge.delete',
+          name: 'knowledge.notebook.delete',
           input: {
             ...input,
             pageId: intent.pageId,

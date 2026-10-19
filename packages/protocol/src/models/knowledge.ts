@@ -1,19 +1,11 @@
 import { z } from 'zod';
 
-import { KnowledgeEntryIdSchema } from '../common/ids.js';
-import { TimestampSchema } from '../common/timestamps.js';
-
-/**
- * A user-visible knowledge record scoped to a workspace.
- */
-export const KnowledgeEntrySchema = z.object({
-  id: KnowledgeEntryIdSchema,
-  kind: z.enum(['preference', 'project-context', 'task-summary']),
-  title: z.string().min(1),
+/** Exact canonical Notebook page bytes projected at one separately identified revision. */
+export const KnowledgeNotebookPageSchema = z.object({
+  id: z.string().min(1),
+  path: z.string().min(1),
   content: z.string(),
-  sourceReferences: z.array(z.string().min(1)).optional(),
-  createdAt: TimestampSchema,
-  updatedAt: TimestampSchema,
+  contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 });
 
 /**

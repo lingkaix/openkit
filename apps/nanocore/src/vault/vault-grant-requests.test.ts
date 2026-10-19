@@ -47,6 +47,7 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-us
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
 import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
@@ -545,18 +546,14 @@ it('refuses issuance after the human requester loses only request-Thread write r
     expect(response.status).toBe(200);
     const request = await response.json();
     expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
-    f.store.setWorkspaceResourcePolicyProjection(() => [
-      {
-        resource: { family: 'thread', id: source.threadId },
-        grants: [
-          {
-            subject: { kind: 'user', userId: FIXTURE_LOCAL_USER_ID },
-            operations: WORKSPACE_MEMBER_OPERATIONS.filter((right) => right !== 'workspace.write'),
-          },
-        ],
-        prohibitions: [],
-      },
-    ]);
+    f.store.setWorkspaceResourcePolicyProjection(() =>
+      managedThreadPolicy({
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        userId: FIXTURE_LOCAL_USER_ID,
+        operations: WORKSPACE_MEMBER_OPERATIONS.filter((right) => right !== 'workspace.write'),
+      })
+    );
     expect(
       isThreadIdVisible(f.store, source.workspaceId, source.threadId, FIXTURE_LOCAL_USER_ID)
     ).toBe(true);
@@ -945,26 +942,20 @@ it.each([
         agentId: pkg.agent.agentId,
         processId: sessionId,
       };
-      f.store.setWorkspaceResourcePolicyProjection(() => [
-        {
-          resource: { family: 'thread', id: source.threadId },
-          grants: [
-            {
-              subject: { kind: 'user', userId: FIXTURE_LOCAL_USER_ID },
-              operations: WORKSPACE_MEMBER_OPERATIONS,
-            },
-            {
-              subject: {
-                kind: 'agent',
-                userId: requestingAgent.userId,
-                agentId: requestingAgent.agentId,
-              },
-              operations: ['thread.read'],
-            },
-          ],
-          prohibitions: [],
-        },
-      ]);
+      const policy = managedThreadPolicy({
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        userId: FIXTURE_LOCAL_USER_ID,
+        operations: WORKSPACE_MEMBER_OPERATIONS,
+      });
+      const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
+      policy.statements.push({
+        ...permission,
+        id: `${permission.id}-agent`,
+        scope: { ...permission.scope, actions: ['thread.read'] },
+        grant: { kind: 'agent-process', agentId: requestingAgent.agentId },
+      });
+      f.store.setWorkspaceResourcePolicyProjection(() => policy);
       expect(
         isThreadIdVisible(f.store, source.workspaceId, source.threadId, FIXTURE_LOCAL_USER_ID)
       ).toBe(true);

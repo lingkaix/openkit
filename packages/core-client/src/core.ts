@@ -1,18 +1,12 @@
 import type { OperationOutput } from '@openkit/app-api-schemas';
 import {
-  type CreateKnowledgeEntryRequestSchema,
-  type DeleteKnowledgeEntryRequestSchema,
-  type KnowledgeEntrySchema,
-  type ListKnowledgeEntriesResponseSchema,
   MetaResponseSchema,
   type ProductTurnSchema,
   type ThreadSchema,
-  type UpdateKnowledgeEntryRequestSchema,
   type WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import { type SseEventEnvelope, subscribeTurnEvents } from './events.js';
-import type { OptionalRequestId } from './request-id.js';
 import type { EventSourceConstructor } from './sse.js';
 import type { ClientTransport } from './transport.js';
 
@@ -20,22 +14,6 @@ import type { ClientTransport } from './transport.js';
 export type MetaResponse = z.infer<typeof MetaResponseSchema>;
 /** Workspace record returned by the definition-derived read. */
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
-/** Knowledge list response. */
-export type ListKnowledgeEntriesResponse = z.infer<typeof ListKnowledgeEntriesResponseSchema>;
-/** Knowledge entry record. */
-export type KnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
-/** Knowledge create input. */
-export type CreateKnowledgeInput = OptionalRequestId<
-  z.infer<typeof CreateKnowledgeEntryRequestSchema>
->;
-/** Knowledge update input. */
-export type UpdateKnowledgeInput = OptionalRequestId<
-  z.infer<typeof UpdateKnowledgeEntryRequestSchema>
->;
-/** Knowledge delete input. */
-export type DeleteKnowledgeInput = OptionalRequestId<
-  z.infer<typeof DeleteKnowledgeEntryRequestSchema>
->;
 /** Thread record. */
 export type Thread = z.infer<typeof ThreadSchema>;
 /** Turn record. */

@@ -22,10 +22,10 @@ import {
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { type createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -143,10 +143,8 @@ function createKnowledgeProposalFixture(
     `sha256:${createHash('sha256').update(sourceBytes, 'utf8').digest('hex')}`
   );
   const knowledgePageId = `action-center/${label}`;
-  const canonicalPageBytes = serializeUserAuthoredKnowledgePage(
+  const canonicalPageBytes = serializeKnowledgePageFixture(
     {
-      id: knowledgePageId,
-      kind: 'project-context',
       title: `Review ${label}`,
       content: rationale,
       sourceReferences: [sourceReference],

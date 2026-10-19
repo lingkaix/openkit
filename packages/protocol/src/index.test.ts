@@ -10,9 +10,7 @@ import {
   ArtifactSchema,
   allocateEntityId,
   CancelTurnRequestSchema,
-  CreateKnowledgeEntryRequestSchema,
   CreateThreadRequestSchema,
-  DeleteKnowledgeEntryRequestSchema,
   ForwardCompatibleSseEventEnvelopeSchema,
   GetArtifactResponseSchema,
   GetThreadResponseSchema,
@@ -20,8 +18,8 @@ import {
   ItemDeltaKindSchema,
   ItemSchema,
   ItemStatusSchema,
+  KnowledgeNotebookPageSchema,
   ListArtifactsResponseSchema,
-  ListKnowledgeEntriesResponseSchema,
   ListThreadItemsResponseSchema,
   ListThreadsResponseSchema,
   MetaResponseSchema,
@@ -272,55 +270,18 @@ describe('protocol schemas', () => {
     expect(parsed.workspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
   });
 
-  it('requires request correlation and a fixed notebook base for knowledge deletion', () => {
-    const parsed = DeleteKnowledgeEntryRequestSchema.parse({
-      requestId: '0190f4c8-0000-7000-8000-000000000206',
-      baseRevision: 'opaque-notebook-base',
-    });
-
-    expect(parsed.requestId).toBe('0190f4c8-0000-7000-8000-000000000206');
-    expect(() => DeleteKnowledgeEntryRequestSchema.parse({})).toThrow();
-  });
-
-  it('accepts source references when creating knowledge entries', () => {
-    const parsed = CreateKnowledgeEntryRequestSchema.parse({
-      requestId: '0190f4c8-0000-7000-8000-000000000207',
-      baseRevision: 'opaque-notebook-base',
-      knowledgePageId: 'plans/release',
-      kind: 'project-context',
-      title: 'Release plan',
-      content: 'Release cadence is weekly.',
-      sourceReferences: ['source:ks_00000000-0000-7b52-90c5-8003864b63f9'],
-    });
-
-    expect(parsed.sourceReferences).toEqual(['source:ks_00000000-0000-7b52-90c5-8003864b63f9']);
-    expect(parsed.knowledgePageId).toBe('plans/release');
-    expect(() =>
-      CreateKnowledgeEntryRequestSchema.parse({ ...parsed, baseRevision: undefined })
-    ).toThrow();
-    expect(() =>
-      CreateKnowledgeEntryRequestSchema.parse({ ...parsed, knowledgePageId: undefined })
-    ).toThrow();
-  });
-
-  it('accepts knowledge list responses from the protocol package', () => {
-    const parsed = ListKnowledgeEntriesResponseSchema.parse({
-      knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
-      notebookRevision: 'opaque-retained-notebook-revision',
-      items: [
-        {
-          contentDigest: `sha256:${'a'.repeat(64)}`,
-          id: 'kn_demo',
-          kind: 'preference',
-          title: 'Preference',
-          content: 'Use concise implementation notes.',
-          createdAt: '2026-04-15T00:00:00Z',
-          updatedAt: '2026-04-15T00:00:00Z',
-        },
-      ],
-    });
-
-    expect(parsed.items).toHaveLength(1);
+  it('projects one canonical Notebook page with its exact full Markdown and digest', () => {
+    const page = {
+      id: 'plans/release',
+      path: 'plans/release.md',
+      content: '---\ntype: KnowledgePage\ntitle: Release plan\n---\nRelease cadence is weekly.\n',
+      contentDigest: `sha256:${'a'.repeat(64)}`,
+    };
+    expect(KnowledgeNotebookPageSchema.parse(page)).toEqual(page);
+    expect(KnowledgeNotebookPageSchema.safeParse({ ...page, path: undefined }).success).toBe(false);
+    expect(
+      KnowledgeNotebookPageSchema.safeParse({ ...page, contentDigest: 'invalid' }).success
+    ).toBe(false);
   });
 
   it('accepts durable thread item replay responses from the protocol package', () => {

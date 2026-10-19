@@ -25,6 +25,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -440,14 +441,16 @@ describe('workspace export verifier', () => {
         },
       ],
       knowledge: [
-        {
-          id: 'kn_demo',
-          kind: 'project-context',
-          title: 'Release cadence',
-          content: 'Review releases every Friday.',
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
+        knowledgePageFixture(
+          {
+            id: 'release-cadence',
+            title: 'Release cadence',
+            content: 'Review releases every Friday.',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+        ),
       ],
       turns: [],
       itemRevisions: [],

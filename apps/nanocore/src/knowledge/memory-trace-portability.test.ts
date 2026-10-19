@@ -23,13 +23,13 @@ import {
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
 import { verifyWorkspaceExportTree } from '../storage/workspace-export.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from '../storage/workspace-import.js';
 import {
   createVerifiedWorkspaceExport,
   existingWorkspaceExportRoot,
   importVerifiedWorkspace,
 } from '../storage/workspace-transfer-routes.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readMemoryPage, saveMemoryPage } from './memory-lifecycle.js';
@@ -90,10 +90,8 @@ function deployment() {
       requestId: randomUUID(),
       baseRevision,
       pageId: 'preferences',
-      content: serializeUserAuthoredKnowledgePage(
+      content: serializeKnowledgePageFixture(
         {
-          id: 'preferences',
-          kind: 'preference',
           title: 'PRIVATE_MEMORY_TITLE_ONLY',
           content: `${query} PRIVATE_MEMORY_BODY_ONLY`,
           sourceReferences,

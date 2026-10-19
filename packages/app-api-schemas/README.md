@@ -247,3 +247,5 @@ Light App reads may include request-local `meaning` rows for their exact admitte
 Evaluation sets and judgements use the shared retained-v1 `schemaVersion` marker. Retained readers reject absent or unknown markers before decoding the family; current writers use `writeRetainedV1`.
 
 Thread, Turn, Item and CapabilityCall outputs reuse Protocol's explicit Workspace-or-Server owner family. Server Thread list/read responses validate Server ownership through the same canonical record schemas. Workspace-scoped operation input selectors remain addressing fields.
+
+`knowledge.notebook.*` owns the single public page lifecycle. List exposes the existing canonical page shape and selected Knowledge Base/commit. Create takes exact new path/full bytes/base; delete requires exact base/digest and human confirmation. Both use the same publication result as update. The retired entry CRUD operations, separate entry DTO and entry-kind metadata have no aliases.

@@ -47,7 +47,7 @@ import {
   readRetrievalTrace,
   retrievalTraceRelativePath,
 } from './storage/retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -152,10 +152,8 @@ function fixture(imported = false) {
       query: marker,
     });
     const save = (base: string, pageId: string, body: string, sourceReferences: string[] = []) => {
-      const content = serializeUserAuthoredKnowledgePage(
+      const content = serializeKnowledgePageFixture(
         {
-          id: pageId,
-          kind: 'preference',
           title: 'Personal preference',
           content: body,
           sourceReferences,

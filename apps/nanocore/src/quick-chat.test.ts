@@ -31,6 +31,7 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { type CreateAppOptions, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference } from './vault/vault-references.js';
@@ -1657,25 +1658,33 @@ describe('quick chat app API', () => {
 
     const createRes = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-00000000c001',
-            knowledgePageId: 'launch-cadence',
             baseRevision: fixtureNotebook(dataRoot).publishedRevision(),
-            sourceReferences: [],
-            kind: 'project-context',
-            title: 'Launch cadence',
-            content: 'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
+            path: 'launch-cadence' + '.md',
+            content: serializeKnowledgePageFixture(
+              {
+                title: 'Launch cadence',
+                content: 'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
+                sourceReferences: [],
+                createdAt: '2026-10-19T00:00:00.000Z',
+                updatedAt: '2026-10-19T00:00:00.000Z',
+              },
+              { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+            ),
+            summary: 'Publish explicit full-page fixture',
           }),
           headers: { 'content-type': 'application/json' },
         }
       )
     );
     expect(createRes.status, await createRes.clone().text()).toBe(200);
-    const knowledge = (await createRes.json()) as { id: string };
+    expect((await createRes.json()).changedPageIds).toEqual(['launch-cadence']);
+    const knowledge = { id: 'launch-cadence' };
 
     const res = await app.request(
       ...operationRequest(
@@ -1817,18 +1826,25 @@ describe('quick chat app API', () => {
 
     const createRes = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-00000000c002',
-            kind: 'project-context',
-            title: 'Workspace maintenance notes',
-            knowledgePageId: 'maintenance-notes',
             baseRevision: fixtureNotebook(dataRoot).publishedRevision(),
-            sourceReferences: [],
-            content: 'This page is not about the selected Assistant model.',
+            path: 'maintenance-notes' + '.md',
+            content: serializeKnowledgePageFixture(
+              {
+                title: 'Workspace maintenance notes',
+                content: 'This page is not about the selected Assistant model.',
+                sourceReferences: [],
+                createdAt: '2026-10-19T00:00:00.000Z',
+                updatedAt: '2026-10-19T00:00:00.000Z',
+              },
+              { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+            ),
+            summary: 'Publish explicit full-page fixture',
           }),
           headers: { 'content-type': 'application/json' },
         }
@@ -1928,19 +1944,26 @@ describe('quick chat app API', () => {
       });
       const knowledge = await app.request(
         ...knowledgeOperationRequest(
-          'knowledge.create',
+          'knowledge.notebook.create',
           { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-00000000c002',
-              kind: 'project-context',
-              title: 'Maintenance report acceptance',
-              knowledgePageId: 'maintenance-report',
               baseRevision: fixtureNotebook(dataRoot).publishedRevision(),
-              sourceReferences: [],
-              content: 'Maintenance report acceptance: unrelated-knowledge-marker.',
+              path: 'maintenance-report' + '.md',
+              content: serializeKnowledgePageFixture(
+                {
+                  title: 'Maintenance report acceptance',
+                  content: 'Maintenance report acceptance: unrelated-knowledge-marker.',
+                  sourceReferences: [],
+                  createdAt: '2026-10-19T00:00:00.000Z',
+                  updatedAt: '2026-10-19T00:00:00.000Z',
+                },
+                { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+              ),
+              summary: 'Publish explicit full-page fixture',
             }),
           }
         )

@@ -17,6 +17,7 @@ import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-l
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
+  loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import {
@@ -5460,7 +5461,7 @@ describe('minimal scheduler reconnect contract', () => {
       const initialRuntime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         store,
-        readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
+        readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
         workerControlGateway: new WorkerControlGateway(),
@@ -5569,7 +5570,7 @@ describe('minimal scheduler reconnect contract', () => {
       const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         store,
-        readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
+        readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
         workerControlGateway: new WorkerControlGateway(),
