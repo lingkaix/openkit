@@ -212,7 +212,10 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     });
     const result = await maintainKnowledgeAgent(f.dependencies, f.input);
     expect(result.outcome).toBe('no-change');
-    expect(f.notebook.publishedRevision()).toBe(f.humanRevision);
+    expect(f.notebook.publishedRevision()).toBe(f.run.mock.calls[0]![0].inputs!.baseRevision);
+    expect(f.notebook.readRevision(result.notebookRevision).files).toEqual(
+      f.notebook.readRevision(f.humanRevision).files
+    );
   });
   it('narrows the editable snapshot and human diffs to explicitly selected archived pages plus the overview', async () => {
     const f = fixture();
@@ -284,7 +287,10 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
       pageIds: ['archive'],
     });
     expect(result.outcome).toBe('no-change');
-    expect(f.notebook.publishedRevision()).toBe(candidateRevision);
+    expect(f.notebook.publishedRevision()).toBe(f.run.mock.calls[0]![0].inputs!.baseRevision);
+    expect(f.notebook.readRevision(result.notebookRevision).files).toEqual(
+      f.notebook.readRevision(candidateRevision).files
+    );
   });
   it('publishes through the existing owner with exact human edits and selected ordinary expressions as inputs', async () => {
     const f = fixture();
@@ -327,7 +333,11 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     });
     expect(result.outcome).toBe('published');
     const current = f.notebook.readRevision(result.notebookRevision);
-    expect(current.parentRevision).toBe(f.humanRevision);
+    const capturedBase = f.run.mock.calls[0]![0].inputs!.baseRevision;
+    expect(current.parentRevision).toBe(capturedBase);
+    expect(f.notebook.readRevision(capturedBase).files).toEqual(
+      f.notebook.readRevision(f.humanRevision).files
+    );
     expect(current.files['index.md']).toContain('# Human correction');
     expect(current.files['labels.md']).toContain('review_state: delegated');
     expect(current.metadata.producer).toEqual({
@@ -440,15 +450,18 @@ An obsolete human lesson.
     const f = fixture(false);
     const result = await maintainKnowledgeAgent(f.dependencies, f.input);
     expect(result.outcome).toBe('review-required');
-    expect(f.notebook.publishedRevision()).toBe(f.humanRevision);
     const proposal = f.store.projectKnowledgeProposalDraft(f.workspace.id, result.proposalId!);
+    expect(f.notebook.publishedRevision()).toBe(proposal.baseRevision);
+    expect(f.notebook.readRevision(proposal.baseRevision).files).toEqual(
+      f.notebook.readRevision(f.humanRevision).files
+    );
     expect(proposal.candidateRevision).toBe(result.candidateRevision);
     expect(proposal.changes?.map((change) => change.path)).toEqual(['index.md', 'labels.md']);
     expect(f.notebook.readRevision(result.candidateRevision!).files['labels.md']).toContain(
       'review_state: delegated'
     );
   });
-  it('pins scheduled work before provider execution, skips another writer and records failed work without processing its range', async () => {
+  it('retains scheduled work before capture, pins before provider execution and does not process a failed range', async () => {
     const f = fixture();
     const prepared = prepareKnowledgeMaintenance(f.dependencies, {
       ...f.input,
@@ -456,11 +469,11 @@ An obsolete human lesson.
     });
     expect(f.run).not.toHaveBeenCalled();
     const retained = f.store.getTurnById(prepared.turnId);
-    expect(retained.internalExecution?.knowledge).toMatchObject({
-      purpose: 'maintenance',
-      trigger: 'schedule',
-      baseRevision: f.humanRevision,
+    expect(retained.triggerSource).toEqual({
+      kind: 'automation',
+      summary: 'Knowledge Manager scheduled maintenance.',
     });
+    expect(retained.internalExecution).toBeUndefined();
     const skipped = await maintainKnowledgeAgent(f.dependencies, {
       ...f.input,
       requestId: randomUUID(),
@@ -469,19 +482,37 @@ An obsolete human lesson.
     expect(f.run).not.toHaveBeenCalled();
     prepared.fail();
     expect(f.store.getTurnById(retained.id).status).toBe('failed');
-    f.run.mockRejectedValueOnce(new Error('Synthetic provider failure.'));
+    let providerReached = false;
+    f.run.mockImplementationOnce(async (run) => {
+      expect(f.store.getTurnById(run.turn.id).internalExecution?.knowledge).toEqual(run.inputs);
+      expect(run.inputs).toMatchObject({
+        purpose: 'maintenance',
+        trigger: 'schedule',
+        baseRevision: f.notebook.publishedRevision(),
+      });
+      expect(f.notebook.readRevision(run.inputs!.baseRevision).files).toEqual(
+        f.notebook.readRevision(f.humanRevision).files
+      );
+      providerReached = true;
+      throw new Error('Synthetic provider failure.');
+    });
     const failed = await maintainKnowledgeAgent(f.dependencies, {
       ...f.input,
       requestId: randomUUID(),
+      trigger: 'schedule',
     });
     expect(failed.outcome).toBe('failed');
+    expect(providerReached).toBe(true);
     expect(f.store.getTurnById(failed.turnId).status).toBe('failed');
     expect(
       f.store
         .getTurnById(failed.turnId)
         .internalExecution?.knowledge?.sourceRange.map((range) => range.turnId)
     ).toEqual([f.ordinaryTurn.id]);
-    expect(f.notebook.publishedRevision()).toBe(f.humanRevision);
+    expect(f.notebook.publishedRevision()).toBe(failed.notebookRevision);
+    expect(f.notebook.readRevision(failed.notebookRevision).files).toEqual(
+      f.notebook.readRevision(f.humanRevision).files
+    );
   });
   it('reuses the scheduled maintenance Thread after model admission failed before pinning', async () => {
     const f = fixture();

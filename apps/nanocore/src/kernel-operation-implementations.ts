@@ -45,8 +45,10 @@ export function createKernelOperationImplementations(
         }
         const response = {
           ...app,
-          meaning: app.schema.references.map((reference) =>
-            resolveLightAppMeaning({ workspaceId: input.workspaceId, reference, access })
+          meaning: await Promise.all(
+            app.schema.references.map((reference) =>
+              resolveLightAppMeaning({ workspaceId: input.workspaceId, reference, access })
+            )
           ),
         };
         const maximum = 2 * 1024 * 1024;

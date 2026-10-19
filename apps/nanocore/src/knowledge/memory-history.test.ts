@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -101,7 +101,7 @@ function retained(f: ReturnType<typeof fixture>, content: string, publish = true
 }
 
 describe('native self Memory history', () => {
-  it('admits current self Source versions for exact history, diff and restore and fails closed after Source corruption', async () => {
+  it('preserves exact history after raw loss and fails closed after canonical Source pointer corruption', async () => {
     const f = fixture();
     const source = await registerUserKnowledgeSource(f.input, {
       requestId: randomUUID(),
@@ -110,7 +110,12 @@ describe('native self Memory history', () => {
       content: 'Exact retained evidence.',
     });
     const refs = [`source:${source.id}@${source.contentDigest}`];
-    const original = f.request(f.baseRevision, 'preferences', 'Earlier sourced text.\r\n', refs);
+    const original = f.request(
+      f.notebook.publishedRevision(),
+      'preferences',
+      'Earlier sourced text.\r\n',
+      refs
+    );
     const saved = await saveMemoryPage(f.input, original);
     const edited = await editMemoryPage(
       f.input,
@@ -136,12 +141,28 @@ describe('native self Memory history', () => {
       f.input.coreDb.dataRoot,
       'users',
       userId,
+      'memory',
+      'raw',
       'sources',
-      'materials',
       source.id,
-      'content.txt'
+      'original'
     );
-    writeFileSync(material, 'Corrupt evidence.');
+    rmSync(material);
+    expect(readMemoryPage(f.input, 'preferences')?.content).toBe(original.content);
+    expect(readMemoryHistory(f.input, {}).revisions[0]?.availability).toBe('available');
+    expect(diffMemoryHistory(f.input, selection).changes[0]?.after).toBe(original.content);
+
+    // Corrupt the actual canonical Source blob below native admission to test disclosure independently.
+    const corruptPointer = 'Corrupt canonical Source pointer.\n';
+    const corruptRevision = f.notebook.prepareSourcePointers({
+      baseRevision: restored.notebookRevision,
+      changes: { [source.id]: corruptPointer },
+      metadata: f.notebook.readRevision(restored.notebookRevision).metadata,
+    });
+    f.notebook.publish({
+      baseRevision: restored.notebookRevision,
+      candidateRevision: corruptRevision,
+    });
     expect(() => readMemoryHistory(f.input, {})).toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
@@ -151,12 +172,14 @@ describe('native self Memory history', () => {
     await expect(
       restoreMemoryHistory(f.input, {
         ...selection,
-        baseRevision: restored.notebookRevision,
+        baseRevision: corruptRevision,
         requestId: randomUUID(),
         summary: 'Refuse corrupt source',
       })
     ).rejects.toMatchObject({ code: 'recovery_required' });
-    expect(f.notebook.publishedRevision()).toBe(restored.notebookRevision);
+    expect(f.notebook.publishedRevision()).toBe(corruptRevision);
+    expect(f.notebook.readSourcePointers(corruptRevision)[source.id]).toBe(corruptPointer);
+    expect(f.notebook.readRevision(corruptRevision).files['preferences.md']).toBe(original.content);
   });
 
   it('reads published history and exact diffs, then restores through one new publication and receipt', async () => {

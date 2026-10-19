@@ -607,7 +607,21 @@ describe('User-private bounded Memory maintenance', () => {
     expect((await runUserMemoryMaintenanceCommand(f.dependencies, f.input)).outcome).toBe('failed');
     expect(f.notebook().publishedRevision()).toBe(current);
     const nativeNotebook = f.notebook();
+    const humanFiles = nativeNotebook.readRevision(current).files;
+    let capturedBase = '';
+    let capturedAuditCount = 0;
+    const auditCount = () =>
+      (
+        f.userDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get() as {
+          count: number;
+        }
+      ).count;
     f.run.mockImplementationOnce(async (run) => {
+      // The new Source is captured under valid self authority before this revocation.
+      capturedBase = nativeNotebook.publishedRevision();
+      expect(run.inputs!.baseRevision).toBe(capturedBase);
+      expect(nativeNotebook.readRevision(capturedBase).files).toEqual(humanFiles);
+      capturedAuditCount = auditCount();
       f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, userId))();
       return original(run);
     });
@@ -619,7 +633,10 @@ describe('User-private bounded Memory maintenance', () => {
         })
       ).outcome
     ).toBe('failed');
-    expect(nativeNotebook.publishedRevision()).toBe(current);
+    expect(capturedBase).not.toBe('');
+    expect(nativeNotebook.publishedRevision()).toBe(capturedBase);
+    expect(nativeNotebook.readRevision(capturedBase).files).toEqual(humanFiles);
+    expect(auditCount()).toBe(capturedAuditCount);
     await expect(
       runUserMemoryMaintenanceCommand(f.dependencies, { ...f.input, requestId: randomUUID() })
     ).rejects.toThrow('Scoped notebook access denied');

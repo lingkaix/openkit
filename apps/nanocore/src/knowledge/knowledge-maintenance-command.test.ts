@@ -333,25 +333,30 @@ it.each([
   expect(publication.outcome).toBe(reviewRequired ? 'review_required' : 'published');
   const selected = reviewRequired ? result.candidateRevision! : result.notebookRevision;
   const committed = f.notebook.readRevision(selected);
-  expect(committed.parentRevision).toBe(f.baseRevision);
+  const turn = f.store.getTurnById(result.turnId);
+  const runBaseRevision = turn.internalExecution!.knowledge!.baseRevision;
+  const capturedBase = f.notebook.readRevision(runBaseRevision);
+  expect(capturedBase.parentRevision).toBe(f.baseRevision);
+  expect(capturedBase.files).toEqual(f.notebook.readRevision(f.baseRevision).files);
+  expect(Object.keys(f.notebook.readSourcePointers(runBaseRevision))).toHaveLength(1);
+  expect(committed.parentRevision).toBe(runBaseRevision);
   expect(committed.files['labels.md']).toContain('Human note: keep this sentence.');
   expect(committed.files['labels.md']).toContain('The project uses cobalt labels.');
   expect(committed.files['labels.md']).toContain(f.sourceReference());
   expect(committed.files['index.md']).toContain('[Labels](labels.md)');
   if (reviewRequired) {
-    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+    expect(f.notebook.publishedRevision()).toBe(runBaseRevision);
     expect(f.store.projectKnowledgeProposalDraft(f.workspace.id, result.proposalId!)).toMatchObject(
       { candidateRevision: selected }
     );
   } else expect(f.notebook.publishedRevision()).toBe(selected);
-  const turn = f.store.getTurnById(result.turnId);
   expect(turn).toMatchObject({
     status: 'completed',
     internalExecution: {
       logicalModelId: 'maintenance',
       knowledge: {
         purpose: 'maintenance',
-        baseRevision: f.baseRevision,
+        baseRevision: runBaseRevision,
         sourceRange: [{ turnId: f.sourceTurn.id }],
       },
     },
@@ -367,7 +372,7 @@ it.each([
     IdempotencyKeyConflictError
   );
   expect(f.createResponses).toHaveBeenCalledTimes(3);
-  expect(f.notebook.publishedRevision()).toBe(reviewRequired ? f.baseRevision : selected);
+  expect(f.notebook.publishedRevision()).toBe(reviewRequired ? runBaseRevision : selected);
   expect(
     f.store
       .listThreads(f.workspace.id)

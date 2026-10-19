@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { KnowledgeNotebookCommitMetadataSchema } from '@openkit/protocol';
+import { KnowledgeNotebookCommitMetadataSchema, KnowledgeSourceIdSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 
 const PUBLISHED_REF = 'refs/heads/published';
@@ -172,6 +172,7 @@ export class KnowledgeNotebook {
   /** Establishes a fresh notebook once; a partial or initialized repository is never replaced. */
   initialize(input: {
     readonly files?: Readonly<Record<string, string>>;
+    readonly sourcePointers?: Readonly<Record<string, string>>;
     readonly metadata: NotebookCommitMetadata;
     readonly beforePublish?: (candidateRevision: string) => void;
   }): string {
@@ -189,7 +190,13 @@ export class KnowledgeNotebook {
         this.git(['hash-object', '-w', '--stdin'], content).trim(),
       ])
     );
-    const revision = this.createCommit(entries, metadata.data, null);
+    const sources = Object.fromEntries(
+      Object.entries(input.sourcePointers ?? {}).map(([id, content]) => {
+        KnowledgeSourceIdSchema.parse(id);
+        return [id, this.git(['hash-object', '-w', '--stdin'], content).trim()];
+      })
+    );
+    const revision = this.createCommit(entries, metadata.data, null, sources);
     // Native fresh-scope admission retains its Audit evidence after the exact commit exists and before its ref does.
     input.beforePublish?.(revision);
     this.git(['update-ref', PUBLISHED_REF, revision, '0'.repeat(revision.length)]);
@@ -232,9 +239,12 @@ export class KnowledgeNotebook {
     const entries: Record<string, string> = Object.create(null);
     for (const row of this.git(['ls-tree', '-r', '-z', '--full-tree', revision]).split('\0')) {
       if (!row) continue;
-      const match = /^100644 blob ([a-f0-9]+)\tpages\/(.+)$/.exec(row);
-      if (!match || !validPath(match[2]!)) throw new NotebookError('recovery_required');
-      entries[match[2]!] = match[1]!;
+      const match = /^100644 blob ([a-f0-9]+)\t(pages|sources)\/(.+)$/.exec(row);
+      if (!match || !validPath(match[3]!)) throw new NotebookError('recovery_required');
+      if (match[2] === 'sources') {
+        if (!KnowledgeSourceIdSchema.safeParse(match[3]!.slice(0, -3)).success)
+          throw new NotebookError('recovery_required');
+      } else entries[match[3]!] = match[1]!;
     }
     if (!Object.hasOwn(entries, 'index.md')) throw new NotebookError('recovery_required');
     return {
@@ -255,6 +265,62 @@ export class KnowledgeNotebook {
       files[path] = this.readBlob(object);
     }
     return { ...record, files };
+  }
+
+  /** Reads only native Source pointer blobs from the same immutable Git tree as the pages. */
+  readSourcePointers(revision: string): Readonly<Record<string, string>> {
+    this.inspectRevision(revision);
+    return Object.fromEntries(
+      Object.entries(this.sourceObjects(revision)).map(([id, object]) => [
+        id,
+        this.readBlob(object),
+      ])
+    );
+  }
+
+  /** Creates a Source-only candidate; native Source admission owns captured facts and publication. */
+  prepareSourcePointers(input: {
+    readonly baseRevision: string;
+    readonly changes: Readonly<Record<string, string | null>>;
+    readonly metadata: NotebookCommitMetadata;
+  }): string {
+    const base = this.inspectRevision(input.baseRevision);
+    const metadata = NotebookCommitMetadataSchema.parse(input.metadata);
+    const sources = { ...this.sourceObjects(input.baseRevision) };
+    for (const [id, content] of Object.entries(input.changes)) {
+      if (
+        !KnowledgeSourceIdSchema.safeParse(id).success ||
+        (content !== null &&
+          (typeof content !== 'string' ||
+            Buffer.byteLength(content) > FILE_BYTES ||
+            Buffer.from(content).toString('utf8') !== content))
+      )
+        throw new NotebookError('invalid_request');
+      if (content === null) delete sources[id];
+      else sources[id] = this.git(['hash-object', '-w', '--stdin'], content).trim();
+    }
+    return this.createCommit(base.entries, metadata, input.baseRevision, sources);
+  }
+
+  /** Gets immutable Source objects without loading raw originals or admitting metadata for disclosure. */
+  private sourceObjects(revision: string): Readonly<Record<string, string>> {
+    const sources: Record<string, string> = Object.create(null);
+    for (const row of this.git([
+      'ls-tree',
+      '-r',
+      '-z',
+      '--full-tree',
+      revision,
+      '--',
+      'sources/',
+    ]).split('\0')) {
+      if (!row) continue;
+      const match = /^100644 blob ([a-f0-9]+)\tsources\/([^/]+)\.md$/.exec(row);
+      if (!match || !KnowledgeSourceIdSchema.safeParse(match[2]).success)
+        throw new NotebookError('recovery_required');
+      sources[match[2]!] = match[1]!;
+    }
+    return sources;
   }
 
   /** Creates an unpublished fixed-base candidate; validation/authority checks precede caller publication. */
@@ -414,12 +480,23 @@ export class KnowledgeNotebook {
   private createCommit(
     objects: Readonly<Record<string, string>>,
     metadata: NotebookCommitMetadata,
-    parent: string | null
+    parent: string | null,
+    sourceObjects?: Readonly<Record<string, string>>
   ): string {
     const tree = new Map<string, string | Map<string, unknown>>();
-    for (const [path, object] of Object.entries(objects)) {
+    const paths = {
+      ...Object.fromEntries(
+        Object.entries(objects).map(([path, object]) => [`pages/${path}`, object])
+      ),
+      ...Object.fromEntries(
+        Object.entries(sourceObjects ?? (parent ? this.sourceObjects(parent) : {})).map(
+          ([id, object]) => [`sources/${id}.md`, object]
+        )
+      ),
+    };
+    for (const [path, object] of Object.entries(paths)) {
       let entries = tree;
-      const parts = ['pages', ...path.split('/')];
+      const parts = path.split('/');
       for (const segment of parts.slice(0, -1)) {
         const found = entries.get(segment);
         if (typeof found === 'string') throw new NotebookError('invalid_request');

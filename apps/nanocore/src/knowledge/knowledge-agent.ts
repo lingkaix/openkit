@@ -39,8 +39,17 @@ import {
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
 } from './okf.js';
-import { readUserKnowledgeSource } from './scoped-knowledge-sources.js';
-import { listServerKnowledgeSources, readServerKnowledgeSource } from './server-knowledge-owner.js';
+import {
+  readUserKnowledgeSource,
+  readUserKnowledgeSourceMetadata,
+} from './scoped-knowledge-sources.js';
+import {
+  listServerKnowledgeSources,
+  readServerKnowledgeSource,
+  readServerKnowledgeSourceMetadata,
+} from './server-knowledge-owner.js';
+import { readSourcePointers } from './source-pointers.js';
+import { readManagedSourceText } from './source-reading.js';
 
 /** Trusted query context remains that of the asker, separate from the Knowledge Manager work Turn. */
 export interface KnowledgeAgentQuestion {
@@ -300,7 +309,24 @@ export async function askKnowledgeAgent(
         throw new Error('Knowledge Base is no longer available.');
       return current.pages;
     };
-    const currentSource = (candidate: KnowledgeRetrievalCandidate, sourceId: string) => {
+    const currentSourceMetadata = (candidate: KnowledgeRetrievalCandidate, sourceId: string) => {
+      if (memoryAccess)
+        return readUserKnowledgeSourceMetadata(
+          {
+            coreDb: memoryAccess.coreDb,
+            userDb: memoryAccess.userDb,
+            actor: memoryAccess.requestActor,
+          },
+          sourceId,
+          'model'
+        );
+      if (parseReferenceScope(candidate.reference.scopeId)?.kind === 'server')
+        return readServerKnowledgeSourceMetadata(serverContext, sourceId);
+      if (!knowledgeSourceAudienceReadable(bound, sourceId)) return null;
+      return store.getKnowledgeSource(input.workspaceId, sourceId);
+    };
+    // Exact original bytes are fetched only at the asynchronous Source delivery boundary.
+    const currentSource = async (candidate: KnowledgeRetrievalCandidate, sourceId: string) => {
       if (memoryAccess)
         return readUserKnowledgeSource(
           {
@@ -314,9 +340,21 @@ export async function askKnowledgeAgent(
       if (parseReferenceScope(candidate.reference.scopeId)?.kind === 'server')
         return readServerKnowledgeSource(serverContext, sourceId);
       if (!knowledgeSourceAudienceReadable(bound, sourceId)) return null;
-      const source = store.getKnowledgeSource(input.workspaceId, sourceId);
-      const content = store.readKnowledgeSourceMaterial(input.workspaceId, sourceId);
-      return content === null ? null : { source, content };
+      const owner = {
+        dataRoot,
+        ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
+      };
+      const pointer = readSourcePointers(owner).get(sourceId);
+      if (!pointer) return null;
+      const delivered = await readManagedSourceText({ owner, pointer, access: bound.access });
+      if (
+        delivered.status !== 'ok' ||
+        !knowledgeSourceAudienceReadable(bound, sourceId) ||
+        store.getKnowledgeSource(input.workspaceId, sourceId).contentDigest !==
+          pointer.source.contentDigest
+      )
+        return null;
+      return { source: pointer.source, content: delivered.value };
     };
     const assertCallerCurrent = () => {
       input.assertCurrent?.();
@@ -344,8 +382,8 @@ export async function askKnowledgeAgent(
             throw new Error('Knowledge evidence is no longer available.');
       }
       for (const { pageId, sourceId, digest } of readSources.values()) {
-        const source = currentSource(read.get(pageId)!.candidate, sourceId);
-        if (!source || source.source.contentDigest !== digest)
+        const source = currentSourceMetadata(read.get(pageId)!.candidate, sourceId);
+        if (!source || source.contentDigest !== digest)
           throw new Error('Knowledge Source is no longer available.');
       }
       assertCallerCurrent();
@@ -489,7 +527,7 @@ export async function askKnowledgeAgent(
             )
           )
             throw new Error('Source is unavailable.');
-          const captured = currentSource(evidence.candidate, sourceId);
+          const captured = await currentSource(evidence.candidate, sourceId);
           if (
             !captured ||
             captured.source.contentDigest !==

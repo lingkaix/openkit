@@ -1084,6 +1084,7 @@ export function importVerifiedWorkspace({
         if (release) reservation?.release();
       }
     }
+    snapshot.verifySourceOriginals(workspaceRoot);
     for (const [path, text] of snapshot.artifactVersionRecords) {
       assertWorkspaceArchiveFilePath(path);
       const target = join(workspaceRoot, path);
@@ -1546,7 +1547,6 @@ export function createVerifiedWorkspaceExport({
     turns,
     knowledge: store.listKnowledge(workspaceId),
     knowledgeSources: store.listKnowledgeSources(workspaceId),
-    knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
     itemRevisions: canonicalItemRevisions,
     artifacts: store.listArtifacts(workspaceId),
     artifactReviews: workspaceRowFamilies.artifactReviews,

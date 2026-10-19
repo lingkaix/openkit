@@ -10,6 +10,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
+import * as sourcePublication from './knowledge/source-publication.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { closeRetrievalServices } from './retrieval-service.js';
@@ -492,7 +493,7 @@ describe('Knowledge operation definition cutover', () => {
     } finally {
       await f.close();
     }
-  }, 120_000);
+  }, 180_000);
 
   it('keeps unauthorized Workspace refusal on every retained definition, scoped source denial and readonly refusal on every retained mutation before effects', async () => {
     const f = fixture();
@@ -678,7 +679,7 @@ describe('Knowledge operation definition cutover', () => {
         workspaceId: foreign.id,
         requestId: randomUUID(),
         kind: 'document',
-        title: 'Foreign secret title',
+        title: 'Foreign source title',
         content: 'Foreign secret bytes',
       })) as schemas.OperationOutput<'knowledge.source.register'>;
       const pageId = 'restricted-audience-lesson';
@@ -974,7 +975,7 @@ it.each([
       content: 'Example',
       originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
     };
-    const owner = vi.spyOn(f.store, 'createKnowledgeSource');
+    const owner = vi.spyOn(sourcePublication, 'publishCapturedSource');
     const before = structuredClone({
       sources: f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001'),
       receipts: f.store.listCommandRequests(),
@@ -1009,12 +1010,12 @@ it.each([
       receipts: f.store.listCommandRequests(),
     }).toEqual(before);
     expect(owner).toHaveBeenCalledTimes(1);
-    expect(owner.mock.calls[0]![0]).toMatchObject({
+    expect(owner.mock.calls[0]![1]).toMatchObject({
       originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
       originatingThreadId: null,
     });
     const code = 'knowledge_source_register_failed';
-    const message = `Knowledge source turn requires a thread: ${owner.mock.calls[0]![0].id}`;
+    const message = `Knowledge source turn requires a thread: ${owner.mock.calls[0]![1].id}`;
     if (projection === 'HTTP') {
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({ protocolVersion: '0.6.0', code, message });

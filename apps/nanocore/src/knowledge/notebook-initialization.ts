@@ -1,5 +1,9 @@
 import { join } from 'node:path';
-import type { ActorRef, KnowledgeNotebookAdmission } from '@openkit/protocol';
+import {
+  type ActorRef,
+  type KnowledgeNotebookAdmission,
+  parseReferenceScope,
+} from '@openkit/protocol';
 import {
   recordServerAuditEvent,
   recordUserAuditEvent,
@@ -12,6 +16,7 @@ import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './note
 import type { NotebookPublicationAdmission } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument } from './okf.js';
+import { decodeSourcePointer } from './source-pointers.js';
 
 /** Native User attribution or the exact service-owned empty seed; page bytes cannot supply these facts. */
 export interface NotebookInitialization {
@@ -71,6 +76,7 @@ export function initializeWorkspaceNotebook(input: {
   readonly workspaceDb: WorkspaceDb;
   readonly initialization: NotebookInitialization;
   readonly files?: Readonly<Record<string, string>>;
+  readonly sourcePointers?: Readonly<Record<string, string>>;
   readonly revalidate: () => NotebookPublicationAdmission;
 }): string {
   if (input.workspaceDb.workspaceId !== input.workspaceId)
@@ -80,6 +86,7 @@ export function initializeWorkspaceNotebook(input: {
     owner: { kind: 'workspace', workspaceDb: input.workspaceDb },
     initialization: input.initialization,
     ...(input.files === undefined ? {} : { files: input.files }),
+    ...(input.sourcePointers === undefined ? {} : { sourcePointers: input.sourcePointers }),
     revalidate: input.revalidate,
   });
 }
@@ -93,6 +100,7 @@ export function initializeNotebook(input: {
     | { readonly kind: 'server'; readonly coreDb: CoreDb };
   readonly initialization: NotebookInitialization;
   readonly files?: Readonly<Record<string, string>>;
+  readonly sourcePointers?: Readonly<Record<string, string>>;
   readonly revalidate: () => NotebookPublicationAdmission;
 }): string {
   const ownerScope =
@@ -108,6 +116,7 @@ export function initializeNotebook(input: {
     (input.initialization.producer.kind !== 'system' ||
       input.initialization.producer.id !== 'notebook-initializer' ||
       input.initialization.producer.responsibleUserId !== null ||
+      Object.keys(input.sourcePointers ?? {}).length !== 0 ||
       Object.keys(files).length !== 1 ||
       files['index.md'] !== DEFAULT_NOTEBOOK_INDEX)
   )
@@ -116,11 +125,35 @@ export function initializeNotebook(input: {
     kind: 'direct',
     instructionReference: input.initialization.instructionReference,
   } as const;
-  const inputDigest = commandInputHash({ ownerScope, files, authority });
+  const inputDigest = commandInputHash({
+    ownerScope,
+    files,
+    sourcePointers: input.sourcePointers ?? {},
+    authority,
+  });
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(input.notebookRoot, 'notebook.git'),
   });
   const admission = input.revalidate();
+  const pageScope = parseReferenceScope(admission.pageScopeId ?? '');
+  const sources = new Map(
+    Object.entries(input.sourcePointers ?? {}).map(([id, content]) => {
+      if (pageScope?.family !== 'page') throw new NotebookError('invalid_request');
+      const pointer = decodeSourcePointer({
+        ownerScope,
+        knowledgeBaseId: pageScope.knowledgeBaseId,
+        scopeSchemaText: admission.scopeSchemaText,
+        id,
+        content,
+      });
+      return [id, pointer.source.contentDigest];
+    })
+  );
+  if (
+    sources.size !== admission.registeredSources.size ||
+    [...sources].some(([id, digest]) => admission.registeredSources.get(id) !== digest)
+  )
+    throw new NotebookError('invalid_request');
   const validation = validateNotebookCandidate({
     ...admission,
     ownerScope,
@@ -153,6 +186,7 @@ export function initializeNotebook(input: {
   };
   const revision = notebook.initialize({
     files,
+    ...(input.sourcePointers === undefined ? {} : { sourcePointers: input.sourcePointers }),
     metadata: {
       summary: `Initialize ${input.owner.kind === 'workspace' ? 'Workspace' : input.owner.kind === 'user' ? 'User' : 'Server'} notebook`,
       changeRequest: { requestId: input.initialization.requestId, inputDigest },

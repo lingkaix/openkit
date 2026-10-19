@@ -88,6 +88,7 @@ async function fixture(mode: StorageAccess['mode'] = 'read-only') {
   });
   fixtures.push({ directory, storage });
   const access: StorageAccess = {
+    basis: 'lease',
     grantId: allocateEntityId('grant'),
     knowledgeBaseId,
     ownerScope,

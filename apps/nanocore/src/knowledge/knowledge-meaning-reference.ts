@@ -11,6 +11,7 @@ import {
   admitServerKnowledgeRetrieval,
   type KnowledgeRetrievalAccess,
   knowledgePageDelegated,
+  knowledgeSourceLineageReadable,
   readAuthorizedServerNotebookPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
@@ -22,6 +23,8 @@ import {
   stringFrontmatterField,
   validateScopeKnowledgeSchema,
 } from './okf.js';
+import { readSourcePointers, type SourcePointer } from './source-pointers.js';
+import { readManagedSourceText } from './source-reading.js';
 
 /** One request-local exact meaning read; it grants neither publication nor execution authority. */
 export type KnowledgeMeaningResolution =
@@ -35,15 +38,15 @@ export type KnowledgeMeaningResolution =
   | { readonly status: 'unavailable'; readonly reference: string };
 
 /**
- * Resolves a pinned page URI through its current owner and bounded published ancestry.
+ * Resolves a pinned page or raw URI through its current owner and bounded published ancestry.
  *
- * The Native caller supplies existing access, never a request-selected owner or filesystem path. Exact inspection can retain archived/superseded context, but grants no active-fact, publication or execution authority. Raw content remains unavailable until its Storage/Source reader is activated; it is never treated as page or legacy registry content.
+ * The Native caller supplies existing access, never a request-selected owner or filesystem path. Exact inspection can retain archived/superseded context, but grants no active-fact, publication or execution authority. Raw content uses its exact current SourceSummary and verified Storage original, never a page digest or legacy registry.
  */
-export function resolveKnowledgeMeaningReference(input: {
+export async function resolveKnowledgeMeaningReference(input: {
   readonly workspaceId: string;
   readonly reference: string;
   readonly access: KnowledgeRetrievalAccess;
-}): KnowledgeMeaningResolution {
+}): Promise<KnowledgeMeaningResolution> {
   const unavailable = { status: 'unavailable' as const, reference: input.reference };
   try {
     const parsed = parseReferenceUri(input.reference);
@@ -52,7 +55,7 @@ export function resolveKnowledgeMeaningReference(input: {
     if (
       !parsed?.contentDigest ||
       !scope ||
-      scope.family !== 'page' ||
+      (scope.family !== 'page' && scope.family !== 'raw') ||
       scope.kind === 'user' ||
       !dataRoot ||
       !input.access.coreDb ||
@@ -68,6 +71,64 @@ export function resolveKnowledgeMeaningReference(input: {
       : { kind: 'workspace', workspaceId: input.workspaceId };
     const binding = () => readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
     if (binding() !== scope.knowledgeBaseId) return unavailable;
+    if (scope.family === 'raw') {
+      // This native meaning path cannot turn a Worker's KB read grant into an original-byte lease.
+      if (input.access.resourcePolicyActor?.kind === 'agent') return unavailable;
+      const owner = { dataRoot, ownerScope };
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(
+          server
+            ? join(dataRoot, 'server', 'knowledge')
+            : join(dataRoot, 'workspaces', input.workspaceId, 'knowledge'),
+          'notebook.git'
+        ),
+      });
+      const current = (): { pointer: SourcePointer; revision: string } | null => {
+        if (server) admitServerKnowledgeRetrieval(target);
+        else admitKnowledgeRetrieval(target);
+        if (binding() !== scope.knowledgeBaseId) return null;
+        const revision = notebook.publishedRevision();
+        const matches = [...readSourcePointers(owner, revision).values()].filter(
+          ({ fields }) =>
+            fields.contentRef.locator.path === parsed.reference.objectId &&
+            fields.contentRef.contentDigest === parsed.contentDigest &&
+            fields.contentRef.availability === 'available'
+        );
+        if (matches.length !== 1) return null;
+        const pointer = matches[0]!;
+        const doc = parseOkfDocument({
+          path: `sources/${pointer.source.id}.md`,
+          content: pointer.content,
+        });
+        if (
+          !doc.ok ||
+          ['restricted', 'confidential'].includes(
+            stringFrontmatterField(doc.document, 'sensitivity') ?? ''
+          ) ||
+          ['invalid', 'deleted'].includes(
+            stringFrontmatterField(doc.document, 'openkit_status') ?? ''
+          ) ||
+          (!server && !knowledgeSourceLineageReadable(target, pointer.source))
+        )
+          return null;
+        return { pointer, revision };
+      };
+      const selected = current();
+      if (!selected) return unavailable;
+      const bytes = await readManagedSourceText({
+        owner,
+        pointer: selected.pointer,
+        access: input.access,
+      });
+      if (bytes.status !== 'ok' || !current()) return unavailable;
+      return {
+        status: 'available',
+        reference: input.reference,
+        notebookRevision: selected.revision,
+        contentDigest: parsed.contentDigest,
+        content: bytes.value,
+      };
+    }
     const id = parsed.reference.objectId;
     const path = `${id}.md`;
     // Reuse the Notebook's path and exact UTF-8 delivery bounds before any selected Git read.

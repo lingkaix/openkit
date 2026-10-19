@@ -1,3 +1,4 @@
+import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -30,6 +31,7 @@ import {
   knowledgeSourceReferencesReadable,
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { type CoreDb, openCoreDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -38,10 +40,13 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
+import { applyMigrations } from './storage/migrate.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const ACTOR = {
   kind: 'user',
@@ -54,8 +59,10 @@ const REQUEST_ACTOR = {
 const NOW = '2026-10-15T12:00:00.000Z';
 
 const testRoots: string[] = [];
+const sourceDbs: CoreDb[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
+  for (const db of sourceDbs.splice(0)) db.sqlite.close();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -503,8 +510,11 @@ describe('retrieval query context, references, and query-owned traces', () => {
       { visibility: 'private', privateOwnerUserId: ACTOR.id }
     );
     const material = 'revocation source private bytes';
-    const source = fixture.store.createKnowledgeSource(
-      {
+    const source = await captureWorkspaceSourceFixture({
+      ...fixture,
+      coreDb: fixture.coreDb,
+      userId: ACTOR.id,
+      source: {
         id: 'ks_00000000-0000-7bb4-9e84-6db11783ad59',
         workspaceId: fixture.workspaceId,
         kind: 'document',
@@ -518,8 +528,8 @@ describe('retrieval query context, references, and query-owned traces', () => {
         createdAt: NOW,
         updatedAt: NOW,
       },
-      material
-    );
+      content: material,
+    });
     const page = createEntry(fixture, 'Revocation page', 'revocation-marker page-private-bytes', [
       `source:${source.id}@${source.contentDigest}`,
     ]);
@@ -746,8 +756,11 @@ describe('retrieval query context, references, and query-owned traces', () => {
       { visibility: 'private', privateOwnerUserId: ACTOR.id }
     );
     const material = 'stale source reference private material';
-    const source = fixture.store.createKnowledgeSource(
-      {
+    const source = await captureWorkspaceSourceFixture({
+      ...fixture,
+      coreDb: fixture.coreDb,
+      userId: ACTOR.id,
+      source: {
         id: 'ks_00000000-0000-7359-ac61-fab2907627df',
         workspaceId: fixture.workspaceId,
         kind: 'document',
@@ -761,8 +774,8 @@ describe('retrieval query context, references, and query-owned traces', () => {
         createdAt: NOW,
         updatedAt: NOW,
       },
-      material
-    );
+      content: material,
+    });
     const sourceReference = `source:${source.id}@${source.contentDigest}`;
     const page = createEntry(
       fixture,
@@ -1025,6 +1038,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
 });
 
 interface Fixture {
+  coreDb: CoreDb;
   dataRoot: string;
   workspaceId: string;
   workspaceRoot: string;
@@ -1074,6 +1088,11 @@ function createFixture(
         producer: ACTOR,
         instructionReference: 'test-fixture:retrieval-query-context',
       });
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  sourceDbs.push(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: ACTOR.id });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const access: KnowledgeRetrievalAccess = {
     store,
@@ -1081,6 +1100,7 @@ function createFixture(
     requestActor: REQUEST_ACTOR,
   };
   return {
+    coreDb,
     dataRoot,
     workspaceId: workspace.id,
     workspaceRoot,

@@ -61,6 +61,7 @@ import {
   stringListFrontmatterField,
   validateOpenKitKnowledgeProfile,
 } from '../knowledge/okf.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import type {
   AgentSession,
   KnowledgeProposalRecord,
@@ -1040,7 +1041,6 @@ export function writeWorkspaceFileRecords(
   writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
   writeThreads(workspaceRoot, records);
   writeKnowledge(workspaceRoot, records);
-  writeSources(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records, initialArtifact);
   writeAgentSessions(workspaceRoot, records);
 }
@@ -1871,36 +1871,19 @@ function loadKnowledgeSources(
   threadIds: ReadonlySet<string>,
   turnsById: ReadonlyMap<string, Turn>
 ): KnowledgeSourceRecord[] {
-  const root = join(workspaceRoot, 'sources', 'registry');
-  const sources = listFileNames(root)
-    .filter((name) => name.endsWith('.json'))
-    .map((fileName) => {
-      const source = KnowledgeSourceRecordSchema.parse(readJson(join(root, fileName)));
-
-      if (
-        fileName !== `${source.id}.json` ||
-        source.workspaceId !== workspaceId ||
-        (source.originatingThreadId !== null && !threadIds.has(source.originatingThreadId)) ||
-        (source.originatingTurnId !== null &&
-          turnsById.get(source.originatingTurnId)?.threadId !== source.originatingThreadId)
-      ) {
-        throw new Error(`Knowledge source ${fileName} has invalid lineage.`);
-      }
-
-      return source;
-    });
-
-  const sourceIds = new Set(sources.map((source) => source.id));
-  for (const ownedRoot of [
-    join(workspaceRoot, 'sources', 'materials'),
-    join(workspaceRoot, 'sources', 'derived'),
-  ]) {
-    for (const sourceId of listDirectoryNames(ownedRoot)) {
-      if (!sourceIds.has(sourceId)) {
-        throw new Error(`Source directory has no registry record: ${sourceId}.`);
-      }
-    }
-  }
+  const sources = [
+    ...readSourcePointers({
+      dataRoot: dirname(dirname(workspaceRoot)),
+      ownerScope: { kind: 'workspace', workspaceId },
+    }).values(),
+  ].map(({ source }) => KnowledgeSourceRecordSchema.parse({ ...source, workspaceId }));
+  for (const source of sources)
+    if (
+      (source.originatingThreadId !== null && !threadIds.has(source.originatingThreadId)) ||
+      (source.originatingTurnId !== null &&
+        turnsById.get(source.originatingTurnId)?.threadId !== source.originatingThreadId)
+    )
+      throw new Error(`Knowledge Source ${source.id} has invalid lineage.`);
 
   return sources;
 }
@@ -2548,34 +2531,6 @@ function parseRetainedKnowledgeProposal(value: unknown): KnowledgeProposalRecord
     if (retained) Object.defineProperty(proposal, retainedProposal, { value: retained });
   }
   return proposal;
-}
-
-/**
- * Writes source registry records and removes stale owned source directories.
- *
- * @param workspaceRoot Resolved workspace root.
- * @param records Current workspace records.
- */
-function writeSources(workspaceRoot: string, records: WorkspaceFileRecords): void {
-  const registryRoot = join(workspaceRoot, 'sources', 'registry');
-  const materialsRoot = join(workspaceRoot, 'sources', 'materials');
-  const derivedRoot = join(workspaceRoot, 'sources', 'derived');
-  const expectedFiles = new Set(records.knowledgeSources.map((source) => `${source.id}.json`));
-  const expectedIds = new Set(records.knowledgeSources.map((source) => source.id));
-
-  ensureCanonicalDirectory(registryRoot);
-  ensureCanonicalDirectory(materialsRoot);
-  ensureCanonicalDirectory(derivedRoot);
-  removeStaleFiles(registryRoot, expectedFiles, '.json');
-  removeStaleDirectories(materialsRoot, expectedIds);
-  removeStaleDirectories(derivedRoot, expectedIds);
-  for (const source of records.knowledgeSources) {
-    writeOwnedDescriptiveJson(
-      join(registryRoot, `${source.id}.json`),
-      source,
-      KnowledgeSourceRecordSchema
-    );
-  }
 }
 
 /**

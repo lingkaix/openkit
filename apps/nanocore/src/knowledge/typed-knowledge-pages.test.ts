@@ -14,6 +14,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -292,8 +293,12 @@ it('retains selector mismatch separately from an actual Source audience denial w
     { visibility: 'workspace' }
   );
   const captured = 'domain-selector private evidence.';
-  const source = f.store.createKnowledgeSource(
-    {
+  const source = await captureWorkspaceSourceFixture({
+    dataRoot: f.dataRoot,
+    coreDb: f.coreDb,
+    store: f.store,
+    userId: f.access.actor.id,
+    source: {
       id: allocateEntityId('ks'),
       workspaceId: f.workspace.id,
       kind: 'document',
@@ -307,8 +312,8 @@ it('retains selector mismatch separately from an actual Source audience denial w
       createdAt: NOW,
       updatedAt: NOW,
     },
-    captured
-  );
+    content: captured,
+  });
   const publication = await f.publish([
     { path: 'invoice-rule.md', content: page('invoice-rule', 'Rule', f.workspace.id) },
     {

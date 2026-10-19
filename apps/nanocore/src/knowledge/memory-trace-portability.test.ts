@@ -33,8 +33,9 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readMemoryPage, saveMemoryPage } from './memory-lifecycle.js';
+import { KnowledgeNotebook } from './notebook.js';
 import { registerUserKnowledgeSource } from './scoped-knowledge-sources.js';
-import { initializeScopedNotebook } from './scoped-notebook-owner.js';
+import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 
 const query = 'portablePreferenceMarker';
 
@@ -71,10 +72,16 @@ function deployment() {
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
     inflightCommands: new WeakMap(),
   };
-  const baseRevision = initializeScopedNotebook({
+  initializeScopedNotebook({
     ...writer,
     target: { kind: 'user' },
     initialization: { requestId: randomUUID(), instructionReference: 'test:memory-portability' },
+  });
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(
+      resolveScopedNotebookOwner({ ...writer, target: { kind: 'user' } }).notebookRoot,
+      'notebook.git'
+    ),
   });
   const timeline = openAssistantTimeline(store, workspace.id, userId, 'Private Assistant');
   const access = {
@@ -88,7 +95,7 @@ function deployment() {
   const save = (sourceReferences: string[] = []) =>
     saveMemoryPage(writer, {
       requestId: randomUUID(),
-      baseRevision,
+      baseRevision: notebook.publishedRevision(),
       pageId: 'preferences',
       content: serializeKnowledgePageFixture(
         {

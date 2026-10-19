@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { appendMemorySuppression } from './knowledge/memory-maintenance.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
@@ -48,7 +49,7 @@ function fixture() {
 }
 
 describe('public explicit self Source intake', () => {
-  it('retains exact text and replays its original Source without recreating a notebook or another Source', async () => {
+  it('retains exact text and replays its original Source without extra commits or Sources', async () => {
     const f = fixture();
     const content = 'Keep this exact document.\r\nSecond line.\n';
     const input = {
@@ -95,7 +96,15 @@ describe('public explicit self Source intake', () => {
     expect(listed.body.items.map((row: { id: string }) => row.id).sort()).toEqual(
       [first.body.source.id, second.body.source.id].sort()
     );
-    expect(existsSync(userMemoryRoot(f.dataRoot, f.userId))).toBe(false);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(userMemoryRoot(f.dataRoot, f.userId), 'notebook.git'),
+    });
+    const revision = notebook.publishedRevision();
+    expect(Object.keys(notebook.readSourcePointers(revision)).sort()).toEqual(
+      [first.body.source.id, second.body.source.id].sort()
+    );
+    expect(await f.call('memory.source.register', input)).toEqual(first);
+    expect(notebook.publishedRevision()).toBe(revision);
   });
 
   it('publishes and inspects an explicitly authored page against the exact current self Source', async () => {
@@ -121,7 +130,9 @@ describe('public explicit self Source intake', () => {
       );
     const input = {
       requestId: randomUUID(),
-      baseRevision: null,
+      baseRevision: new KnowledgeNotebook({
+        repositoryPath: join(userMemoryRoot(f.dataRoot, f.userId), 'notebook.git'),
+      }).publishedRevision(),
       pageId: 'cited-preference',
       content: page('Keep my explicit preference.\n'),
       summary: 'Save my cited preference',
@@ -184,7 +195,9 @@ describe('public explicit self Source intake', () => {
     );
     const saved = await f.call('memory.create', {
       requestId: randomUUID(),
-      baseRevision: null,
+      baseRevision: new KnowledgeNotebook({
+        repositoryPath: join(userMemoryRoot(f.dataRoot, f.userId), 'notebook.git'),
+      }).publishedRevision(),
       pageId: 'suppressed-context',
       content,
       summary: 'Save my cited entry',
@@ -253,7 +266,10 @@ describe('public explicit self Source intake', () => {
     };
     const first = await f.call('memory.source.register', input);
     expect(first.status).toBe(200);
-    const registry = join(f.dataRoot, 'users', f.userId, 'sources', 'registry');
+    const root = userMemoryRoot(f.dataRoot, f.userId);
+    const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
+    const revision = notebook.publishedRevision();
+    const pointers = notebook.readSourcePointers(revision);
     const database = userDbPath(f.dataRoot, f.userId);
     rmSync(database);
     const refused = await f.call('memory.source.register', {
@@ -262,7 +278,12 @@ describe('public explicit self Source intake', () => {
     });
     expect(refused).toMatchObject({ status: 503, body: { code: 'recovery_required' } });
     expect(existsSync(database)).toBe(false);
-    expect(readdirSync(registry)).toEqual([`${first.body.source.id}.json`]);
+    expect(notebook.publishedRevision()).toBe(revision);
+    expect(notebook.readSourcePointers(revision)).toEqual(pointers);
+    expect(Object.keys(pointers)).toEqual([first.body.source.id]);
+    expect(
+      readFileSync(join(root, 'raw', 'sources', first.body.source.id, 'original'), 'utf8')
+    ).toBe(input.content);
   });
 
   it('refuses another owner and unjoined transcript provenance without capturing them', async () => {

@@ -1,0 +1,190 @@
+// openkit-test-platform: posix
+// Native managed-original confinement checks inspect physical paths and link boundaries.
+import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { FsStore } from '../lib/store.js';
+import { openCoreDb, openUserDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { KnowledgeNotebook } from './notebook.js';
+import { parseOkfDocument, validateOpenKitKnowledgeProfile } from './okf.js';
+import {
+  readUserKnowledgeSource,
+  registerUserKnowledgeSource,
+} from './scoped-knowledge-sources.js';
+import { initializeScopedNotebook } from './scoped-notebook-owner.js';
+import {
+  readServerKnowledgeSource,
+  registerServerKnowledgeSource,
+} from './server-knowledge-owner.js';
+
+describe('canonical Source pointer publication', () => {
+  it.each([
+    'user',
+    'server',
+  ] as const)('publishes an admitted %s SourceSummary at its package path and reopens exact originals', async (kind) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-source-pointer-'));
+    let coreDb = openCoreDb(dataRoot);
+    let userDb: ReturnType<typeof openUserDb> | undefined;
+    onTestFinished(() => {
+      userDb?.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const actor = { kind: 'local' as const, userId };
+    const initialization = {
+      requestId: randomUUID(),
+      instructionReference: 'test:explicit-source-capture',
+    };
+    if (kind === 'user') {
+      userDb = openUserDb(dataRoot, userId);
+      applyScopedMigrations(userDb);
+      initializeScopedNotebook({
+        coreDb,
+        userDb,
+        actor,
+        target: { kind: 'user' },
+        initialization,
+      });
+    } else {
+      initializeScopedNotebook({ coreDb, actor, target: { kind: 'server' }, initialization });
+    }
+    const scopeRoot = kind === 'user' ? join(dataRoot, 'users', userId) : join(dataRoot, 'server');
+    const notebookRoot = join(scopeRoot, kind === 'user' ? 'memory' : 'knowledge');
+    const repositoryPath = join(notebookRoot, 'notebook.git');
+    const request = {
+      requestId: randomUUID(),
+      kind: 'document' as const,
+      title: 'Exact admitted original',
+      content: 'Literal original.\r\nUnicode Ω 雪.\n',
+    };
+    const writer = {
+      coreDb,
+      actor,
+      store: new FsStore({ dataRoot }),
+      inflightCommands: new WeakMap(),
+    };
+    const source =
+      kind === 'user'
+        ? await registerUserKnowledgeSource({ ...writer, userDb: userDb! }, request)
+        : await registerServerKnowledgeSource(writer, request);
+    const original = Buffer.from(request.content);
+    const contentDigest = `sha256:${createHash('sha256').update(original).digest('hex')}`;
+    expect(source).toMatchObject({
+      kind: request.kind,
+      title: request.title,
+      uri: null,
+      originatingThreadId: null,
+      originatingTurnId: null,
+      originatingFileId: null,
+    });
+    expect(source.contentDigest).toBe(contentDigest);
+
+    userDb?.sqlite.close();
+    coreDb.sqlite.close();
+    coreDb = openCoreDb(dataRoot);
+    if (kind === 'user') userDb = openUserDb(dataRoot, userId);
+    const reopened =
+      kind === 'user'
+        ? await readUserKnowledgeSource({ coreDb, userDb: userDb!, actor }, source.id)
+        : await readServerKnowledgeSource({ coreDb, actor }, source.id);
+    expect(reopened).toEqual({ source, content: request.content });
+    if (kind === 'user') {
+      const otherUserId = allocateEntityId('usr');
+      coreDb.sqlite
+        .prepare(
+          "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, status) VALUES (?, 'human', 'Other current User', ?, 0, ?, ?, 'active')"
+        )
+        .run(otherUserId, `${otherUserId}@example.invalid`, Date.now(), Date.now());
+      await expect(
+        Promise.resolve().then(() =>
+          readUserKnowledgeSource(
+            { coreDb, userDb: userDb!, actor: { kind: 'session', userId: otherUserId } },
+            source.id
+          )
+        )
+      ).rejects.toThrow('Scoped notebook access denied.');
+    }
+
+    const notebook = new KnowledgeNotebook({ repositoryPath });
+    const revision = notebook.publishedRevision();
+    // Git paths are the package paths; the page reader's relative view cannot prove this boundary.
+    const paths = execFileSync(
+      'git',
+      [`--git-dir=${repositoryPath}`, 'ls-tree', '-r', '--name-only', revision],
+      { encoding: 'utf8' }
+    )
+      .trim()
+      .split('\n');
+    const pointerPath = `sources/${source.id}.md`;
+    expect(paths).toContain(pointerPath);
+    expect(paths).toContain('pages/index.md');
+    expect(paths.some((path) => path.startsWith('raw/'))).toBe(false);
+    const pointer = execFileSync(
+      'git',
+      [`--git-dir=${repositoryPath}`, 'show', `${revision}:${pointerPath}`],
+      { encoding: 'utf8' }
+    );
+    const parsed = parseOkfDocument({ path: pointerPath, content: pointer });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('Published Source pointer must be valid OKF.');
+    const ownerScope = kind === 'user' ? ({ kind, userId } as const) : ({ kind } as const);
+    expect(validateOpenKitKnowledgeProfile(parsed.document, ownerScope)).toMatchObject({
+      conformance: 'OpenKit-profile-valid',
+      errors: [],
+    });
+    const facts = parsed.document.frontmatter;
+    expect(facts).toMatchObject({
+      type: 'SourceSummary',
+      scope: ownerScope,
+      title: request.title,
+      sourceKind: request.kind,
+      uri: null,
+      byteLength: original.byteLength,
+      mediaType: 'application/octet-stream',
+      capturedAt: source.capturedAt,
+      captureChannel: 'knowledge.source.register',
+      originatingThreadId: null,
+      originatingTurnId: null,
+      originatingFileId: null,
+      created_at: source.createdAt,
+      updated_at: source.updatedAt,
+    });
+    const contentRef = ContentReferenceSchema.parse(facts.contentRef);
+    expect(contentRef).toMatchObject({
+      knowledgeBaseId: readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope }),
+      contentDigest,
+      locator: { ownerScope },
+      range: null,
+      availability: 'available',
+    });
+    const metadata = notebook.readRevision(revision).metadata;
+    expect(metadata.producer).toEqual({ kind: 'user', id: userId });
+    expect(metadata.changeRequest.requestId).toBe(request.requestId);
+    expect(metadata.authority).toMatchObject({ kind: 'direct' });
+
+    // Resolve only the admitted descriptor's confined path; the raw filename is not a fixture rule.
+    expect(lstatSync(join(notebookRoot, 'raw')).isSymbolicLink()).toBe(false);
+    const rawRoot = realpathSync(join(notebookRoot, 'raw'));
+    const rawPath = realpathSync(resolve(rawRoot, contentRef.locator.path));
+    const confined = relative(rawRoot, rawPath);
+    expect(confined).not.toBe('');
+    expect(isAbsolute(confined)).toBe(false);
+    expect(confined.split(sep)).not.toContain('..');
+    const retainedOriginal = readFileSync(rawPath);
+    expect(retainedOriginal).toEqual(original);
+    expect(retainedOriginal.byteLength).toBe(facts.byteLength);
+    expect(`sha256:${createHash('sha256').update(retainedOriginal).digest('hex')}`).toBe(
+      contentRef.contentDigest
+    );
+    expect(existsSync(join(scopeRoot, 'sources', 'registry', `${source.id}.json`))).toBe(false);
+  });
+});

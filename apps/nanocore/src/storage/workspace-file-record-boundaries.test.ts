@@ -17,7 +17,13 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
+import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { openCoreDb } from './db.js';
 import { ensureLayout } from './fs-layout.js';
+import { applyMigrations } from './migrate.js';
 import { parseCanonicalWorkspaceHistory } from './workspace-file-records.js';
 
 /**
@@ -67,6 +73,21 @@ function createBoundaryFixture() {
       root: join(dataRoot, 'workspaces', secondWorkspace.id),
     },
   };
+}
+
+/** Admits public Source requests with real current authority; the caller cannot choose a Source ID. */
+function sourceBoundaryApp(f: ReturnType<typeof createBoundaryFixture>) {
+  const coreDb = openCoreDb(f.dataRoot);
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  for (const scope of [f.first, f.second])
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: scope.workspace.id,
+      ownerUserId: userId,
+    });
+  onTestFinished(() => coreDb.sqlite.close());
+  return createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
 }
 
 /** Fresh import supplies actual User attribution; no materialized page directory initializes content. */
@@ -204,8 +225,9 @@ describe('workspace file-record write and load boundaries', () => {
     'AgentSession',
     'artifact',
     'knowledge source',
-  ] as const)('rejects a cross-workspace duplicate %s id without replacing its owner', (family) => {
-    const { first, second, store } = createBoundaryFixture();
+  ] as const)('rejects a cross-workspace duplicate %s id without replacing its owner', async (family) => {
+    const f = createBoundaryFixture();
+    const { first, second, store } = f;
     const firstTimestamp = first.turn.startedAt ?? new Date().toISOString();
     const secondTimestamp = second.turn.startedAt ?? new Date().toISOString();
 
@@ -301,51 +323,52 @@ describe('workspace file-record write and load boundaries', () => {
       }
 
       case 'knowledge source': {
-        const id = 'ks_00000000-0000-7d9a-90f6-cb95212c42e2';
+        const app = sourceBoundaryApp(f);
         const originalMaterial = 'The first workspace owns this source material.';
-        const original = store.createKnowledgeSource(
-          {
-            id,
-            workspaceId: first.workspace.id,
-            kind: 'upload',
-            title: 'Original source',
-            uri: null,
-            contentDigest: 'sha256:original-source',
-            originatingThreadId: first.thread.id,
-            originatingTurnId: first.turn.id,
-            originatingFileId: 'file_original_source',
-            capturedAt: firstTimestamp,
-            createdAt: firstTimestamp,
-            updatedAt: firstTimestamp,
-          },
-          originalMaterial
+        const created = await app.request(
+          ...operationRequest(
+            'knowledge.source.register',
+            { workspaceId: first.workspace.id },
+            {
+              body: JSON.stringify({
+                requestId: randomUUID(),
+                kind: 'upload',
+                title: 'Original source',
+                content: originalMaterial,
+                originatingThreadId: first.thread.id,
+                originatingTurnId: first.turn.id,
+              }),
+            }
+          )
         );
-
-        expect
-          .soft(() =>
-            store.createKnowledgeSource(
-              {
-                id,
-                workspaceId: second.workspace.id,
+        expect(created.status, await created.clone().text()).toBe(200);
+        const { source: original } = await created.json();
+        const attempted = await app.request(
+          ...operationRequest(
+            'knowledge.source.register',
+            { workspaceId: second.workspace.id },
+            {
+              body: JSON.stringify({
+                id: original.id,
+                requestId: randomUUID(),
                 kind: 'upload',
                 title: 'Replacement source',
-                uri: null,
-                contentDigest: 'sha256:replacement-source',
+                content: 'The second workspace must not replace this material.',
                 originatingThreadId: second.thread.id,
                 originatingTurnId: second.turn.id,
-                originatingFileId: 'file_replacement_source',
-                capturedAt: secondTimestamp,
-                createdAt: secondTimestamp,
-                updatedAt: secondTimestamp,
-              },
-              'The second workspace must not replace this material.'
-            )
+              }),
+            }
           )
-          .toThrow();
-        expect.soft(store.listKnowledgeSources(first.workspace.id)).toContainEqual(original);
-        expect
-          .soft(readFileSync(join(first.root, 'sources', 'materials', id, 'content.txt'), 'utf8'))
-          .toBe(originalMaterial);
+        );
+        expect(attempted.status).toBe(400);
+        expect(store.listKnowledgeSources(first.workspace.id)).toEqual([original]);
+        expect(store.listKnowledgeSources(second.workspace.id)).toEqual([]);
+        expect(
+          readFileSync(
+            join(first.root, 'knowledge', 'raw', 'sources', original.id, 'original'),
+            'utf8'
+          )
+        ).toBe(originalMaterial);
         break;
       }
     }
@@ -857,8 +880,9 @@ describe('workspace file-record write and load boundaries', () => {
     ['knowledge source', 'missing thread'],
     ['knowledge source', 'missing turn'],
     ['knowledge source', 'cross-workspace lineage'],
-  ] as const)('rejects a new %s with %s before mutation', (family, violation) => {
-    const { dataRoot, first, second, store } = createBoundaryFixture();
+  ] as const)('rejects a new %s with %s before mutation', async (family, violation) => {
+    const f = createBoundaryFixture();
+    const { dataRoot, first, second, store } = f;
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const threadId =
       violation === 'missing thread'
@@ -919,23 +943,31 @@ describe('workspace file-record write and load boundaries', () => {
         });
         return;
       }
-      store.createKnowledgeSource({
-        id,
-        workspaceId: first.workspace.id,
-        kind: 'upload',
-        title: 'Invalid create lineage',
-        uri: null,
-        contentDigest: 'sha256:invalid-create-lineage',
-        originatingThreadId: threadId,
-        originatingTurnId: turnId,
-        originatingFileId: null,
-        capturedAt: timestamp,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
+      const app = sourceBoundaryApp(f);
+      return app.request(
+        ...operationRequest(
+          'knowledge.source.register',
+          { workspaceId: first.workspace.id },
+          {
+            body: JSON.stringify({
+              requestId: randomUUID(),
+              kind: 'upload',
+              title: 'Invalid create lineage',
+              content: 'This record must not be retained.',
+              originatingThreadId: threadId,
+              ...(turnId ? { originatingTurnId: turnId } : {}),
+            }),
+          }
+        )
+      );
     };
 
-    expect.soft(operation).toThrow();
+    if (family === 'knowledge source') {
+      const response = await operation();
+      expect(response?.status).toBe(violation === 'missing turn' ? 404 : 403);
+      expect(store.listKnowledgeSources(first.workspace.id)).toEqual([]);
+      expect(existsSync(join(first.root, 'knowledge', 'raw', 'sources'))).toBe(false);
+    } else expect.soft(operation).toThrow();
     expect.soft(() => store.getAgentSession(id)).toThrow();
     expect
       .soft(store.listArtifacts(first.workspace.id))
