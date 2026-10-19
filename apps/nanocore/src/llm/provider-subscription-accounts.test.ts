@@ -6028,6 +6028,128 @@ describe('Codex account policy at Gateway and periodic boundaries', () => {
   });
 });
 
+describe('Codex review regressions', () => {
+  it('R1 binds weekly recovery to the failed material inside reset admission', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    await fixture.manager.updateCodexSettings(fixture.pair, { codexUseCredits: true });
+    const handle = await fixture.manager.getPairHandle(fixture.pair);
+    const failedVersion = await handle.getCredentialVersion();
+    const original = fixture.manager.tryWeeklyCodexReset.bind(fixture.manager);
+    const recovery = vi
+      .spyOn(fixture.manager, 'tryWeeklyCodexReset')
+      .mockImplementation(async (...args) => {
+        // Rotate after the Gateway's currentness check but before the real reset fence.
+        await handle.credentials.modify('openai-codex', async () =>
+          oauthCredential('replacement-at-reset-admission')
+        );
+        expect(await handle.getCredentialVersion()).not.toBe(failedVersion);
+        return original(...args);
+      });
+    let attempts = 0;
+    await expect(
+      dispatchCodexManagement(
+        fixture,
+        async () => {
+          if (++attempts === 1) {
+            throw Object.assign(new Error('Synthetic settled quota.'), {
+              failure: { kind: 'quota_exhausted', settled: true },
+            });
+          }
+          return 'unexpected-retry';
+        },
+        false
+      )
+    ).rejects.toMatchObject({ cause: 'quota_exhausted' });
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(attempts).toBe(1);
+    expect(transport.bodies).toHaveLength(0);
+  });
+
+  it('R2 keeps an unknown axb reset independent from the literal a_b slot', async () => {
+    const fixture = await codexManagementFixture();
+    const firstPair = accountPair('axb');
+    const secondPair = accountPair('a_b');
+    await createStoredPair(
+      fixture,
+      firstPair,
+      allocateEntityId('vault'),
+      oauthCredential('wildcard-first')
+    );
+    await createStoredPair(
+      fixture,
+      secondPair,
+      allocateEntityId('vault'),
+      oauthCredential('wildcard-second')
+    );
+    let posts = 0;
+    const transport = codexManagementTransport(() => {
+      if (++posts === 1) throw new TypeError('Synthetic unknown reset.');
+      return Response.json({ code: 'reset' });
+    });
+    const first = await fixture.invoke('account-use-reset', {
+      ...firstPair,
+      redeemRequestId: '15f801c1-e10e-49eb-a340-b98ec960c66a',
+    });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ ...firstPair, outcome: 'unknown' });
+    const second = await fixture.invoke('account-use-reset', {
+      ...secondPair,
+      redeemRequestId: '81ce64fd-50f3-4c42-93b1-2a9128da23bb',
+    });
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ ...secondPair, outcome: 'reset' });
+    expect(transport.bodies).toHaveLength(2);
+    const accounts = transport.fetchSpy.mock.calls
+      .filter(([url]) => String(url).endsWith('/consume'))
+      .map(([, init]) => new Headers(init?.headers).get('chatgpt-account-id'));
+    expect(accounts).toEqual(['account-wildcard-first', 'account-wildcard-second']);
+  });
+
+  it('R3 retains Codex recovery when an ordinary backup also exhausts quota', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    await fixture.manager.updateCodexSettings(fixture.pair, { codexUseCredits: true });
+    const attempts: string[] = [];
+    await expect(
+      dispatchCodexManagement(fixture, async (id) => {
+        attempts.push(id);
+        if (id === 'codex' && transport.bodies.length > 0) return 'served-after-reset';
+        throw Object.assign(new Error('Synthetic settled quota.'), {
+          failure: { kind: 'quota_exhausted', settled: true },
+        });
+      })
+    ).resolves.toBe('served-after-reset');
+    expect(attempts).toEqual(['codex', 'backup', 'codex']);
+    expect(transport.bodies).toHaveLength(1);
+  });
+
+  it('R4 isolates an invalid account record from a healthy account expiry pass', async () => {
+    const fixture = await codexManagementFixture();
+    const corruptPair = accountPair('a_corrupt');
+    await createStoredPair(
+      fixture,
+      corruptPair,
+      allocateEntityId('vault'),
+      oauthCredential('expiry-corrupt')
+    );
+    writeFileSync(accountPath(fixture.dataRoot, corruptPair), '{}');
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    // Public inventory must retain its existing all-or-nothing validity rule.
+    await expect(fixture.manager.listAccounts('openai-codex')).rejects.toMatchObject(
+      PERSISTENCE_ERROR
+    );
+    await expect(
+      fixture.manager.checkExpiringCodexResets(new AbortController().signal)
+    ).resolves.toBeUndefined();
+    expect(transport.bodies).toHaveLength(1);
+    const accounts = transport.fetchSpy.mock.calls
+      .filter(([url]) => String(url).endsWith('/consume'))
+      .map(([, init]) => new Headers(init?.headers).get('chatgpt-account-id'));
+    expect(accounts).toEqual(['account-management-canary']);
+  });
+});
+
 describe('native subscription credential attribution', () => {
   it('keeps the asynchronous login caller, attributes logout to its caller and leaves later background rotation unattributed', async () => {
     const fixture = createFixture();
