@@ -726,7 +726,7 @@ function pinnedPageReadable(
   return pinnedSourcesReadable(input, refs ?? [], new Set([...visiting, pageId]));
 }
 
-/** Reuses the completed-work owner, then intersects every source with its current bytes and audience. */
+/** Reuses the completed-work owner, then checks current Source pins and audience without fetching originals. */
 function pinnedSourcesReadable(
   input: PinnedNotebookTarget,
   refs: readonly string[],
@@ -757,8 +757,6 @@ function pinnedSourcesReadable(
         if (!resolution.resolved || !resolution.targetId) return false;
         if (!knowledgeSourceAudienceReadable(input, resolution.targetId)) return false;
         const source = store.getKnowledgeSource(input.workspaceId, resolution.targetId);
-        const material = store.readKnowledgeSourceMaterial(input.workspaceId, source.id);
-        if (material === null || digest(material) !== source.contentDigest) return false;
         if (!knowledgeSourceAudienceReadable(input, source.id)) return false;
       } else if (reference.startsWith('openkit:')) {
         const parsedReference = parseKnowledgePageSourceReference(reference, input.pageScopeId);

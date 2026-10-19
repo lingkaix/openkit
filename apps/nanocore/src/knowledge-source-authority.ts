@@ -199,16 +199,7 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
           const source = resolution.targetId
             ? input.store.getKnowledgeSource(input.workspaceId, resolution.targetId)
             : null;
-          const material = source
-            ? input.store.readKnowledgeSourceMaterial(input.workspaceId, source.id)
-            : null;
-          if (
-            !resolution.resolved ||
-            !source ||
-            material === null ||
-            sha256(material) !== source.contentDigest
-          )
-            throw new KnowledgePageValidationError();
+          if (!resolution.resolved || !source) throw new KnowledgePageValidationError();
           verified.add(reference);
         } else if (reference.startsWith('openkit:')) {
           const parsedReference = parseKnowledgePageSourceReference(reference, pageScopeId);
