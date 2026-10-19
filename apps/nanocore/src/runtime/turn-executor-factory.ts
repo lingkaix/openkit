@@ -62,6 +62,7 @@ import {
 } from './nanohost-attempt-records.js';
 import {
   createNanoHostEffectRequest,
+  nanoHostSandboxId,
   nanoHostSandboxIdFromBackendSessionId,
   stableNanoHostEffectJson,
 } from './nanohost-effect-identity.js';
@@ -5685,11 +5686,6 @@ function nanoHostSandboxCompatibilityKey(
       })
     )
     .digest('hex');
-}
-
-/** Derives the NanoHost-facing physical Sandbox identity from its reuse key. */
-function nanoHostSandboxId(sandboxCompatibilityKey: string): string {
-  return `nh-${sandboxCompatibilityKey.slice(0, 16)}`;
 }
 
 /** Hashes the process-static adapter and Integration configuration of one Harness. */

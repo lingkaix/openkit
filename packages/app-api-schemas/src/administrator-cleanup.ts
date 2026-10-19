@@ -10,6 +10,32 @@ import {
 import { z } from 'zod';
 import { WorkspaceDeletionPhaseSchema } from './workspace-sharing.js';
 
+/** Maximum UTF-8 JSON size of one optional Host-observed Sandbox resource summary. */
+export const NANOHOST_RESOURCE_SUMMARY_MAX_BYTES = 1024;
+
+/** Closed lifetime observations from the exact Sandbox container, never cleanup authority. */
+export const NanoHostResourceSummarySchema = z
+  .object({
+    memoryPeakBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    oomKillCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    backendOomKilled: z.boolean().optional(),
+    cpuUsageSeconds: z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    cpuThrottledSeconds: z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    pidsPeak: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    exitState: z
+      .enum(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'])
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (summary) =>
+      new TextEncoder().encode(JSON.stringify(summary)).byteLength <=
+      NANOHOST_RESOURCE_SUMMARY_MAX_BYTES,
+    'Host resource summary exceeds its byte bound.'
+  );
+/** Optional diagnostic facts, absent when collection was unavailable. */
+export type NanoHostResourceSummary = z.infer<typeof NanoHostResourceSummarySchema>;
+
 /** Maximum aggregate item count for the administrator cleanup observation. */
 export const ADMINISTRATOR_CLEANUP_MAX_ENTRIES = 100;
 /** Inclusive UTF-8 byte ceiling for the complete normalized JSON response. */
@@ -200,7 +226,10 @@ export const AdministratorCleanupSandboxRuntimeItemSchema = cleanupItemSchema(
     cleanupState: z.enum(['clean', 'unknown']),
     physicalEpochRelation,
   }
-);
+).safeExtend({
+  /** Process-local Host observations; not covered by the record's cleanup evidence. */
+  resourceSummary: NanoHostResourceSummarySchema.optional(),
+});
 
 /** Retained-storage state and revision, without paths, contributors or volume internals. */
 export const AdministratorCleanupWorkerStorageItemSchema = cleanupItemSchema(

@@ -58,6 +58,16 @@ export function stableNanoHostEffectJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/**
+ * Derives the unchanged NanoHost physical Sandbox identity from its stored reuse key.
+ *
+ * @param sandboxCompatibilityKey Existing admitted Sandbox compatibility identity.
+ * @returns The physical name used by both execution and diagnostic correlation.
+ */
+export function nanoHostSandboxId(sandboxCompatibilityKey: string): string {
+  return `nh-${sandboxCompatibilityKey.slice(0, 16)}`;
+}
+
 /** Recovers the embedded physical Sandbox identity from one backend attempt identity. */
 export function nanoHostSandboxIdFromBackendSessionId(backendSessionId: string): string {
   if (!/^nh-[0-9a-f]{16}-[0-9a-f]{16}$/.test(backendSessionId)) {

@@ -62,6 +62,7 @@ import {
 import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import type { NanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { createSchedulerAdmissionOperationImplementations } from './runtime/scheduler-admission-operations.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
@@ -182,6 +183,8 @@ export interface OperationInvocationDependencies {
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
+  /** Bounded, process-local Host facts for the existing administrator diagnosis projection. */
+  readonly readNanoHostResourceSummary?: NanoHostSessionDispatch['readResourceSummary'];
 }
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {

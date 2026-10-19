@@ -1,5 +1,7 @@
 # nanocore
 
+Application assembly supplies the existing administrator cleanup operation with the latest process-local NanoHost delete resource observation. Only exact Sandbox and origin-Epoch matches appear on Sandbox-runtime items; no database write, Host probe or cleanup decision follows. Invalid diagnostics cannot alter delete receipts or cleanup evidence. See the [runtime guide](src/runtime/README.md) and [Host resource contract](../../docs/specs/20260802-nanohost_runtime_and_transport.md#host-observed-sandbox-resource-summary).
+
 Native Knowledge page lists pin the authorized Git notebook reader. Source lists filter identities through the same current Source audience owner, and Source detail rechecks current credentials and origin audience after derived metadata and usage reads. A retained notebook commit does not retain a disclosure grant when its Source becomes private.
 
 `src/catalog/resource-catalog.ts` keeps retained history reads private so ordinary catalog mutations preserve descriptive annotations. Its public `loadWorkspaceResourceCatalog` and publication return values select only known fields; exact producer, executable declaration and credential boundaries live in the [config-schema guide](../../packages/config-schema/README.md). Revision-protected pin, binding and plugin-installation rewrites carry the owned annotations without changing historical configuration/tree identity. The [runtime guide](src/runtime/README.md) describes the corresponding synchronization read, replay and mutation boundaries.
