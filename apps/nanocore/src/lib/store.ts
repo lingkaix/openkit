@@ -99,6 +99,7 @@ import {
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js';
+import { CanonicalPublicationError } from '../storage/canonical-publication-error.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import {
   getCommandRequestRecord,
@@ -1197,6 +1198,8 @@ function emptyWorkspaceFileRecords(workspace: WorkspaceRecord): WorkspaceFileRec
  * File-backed protocol store used by NanoCore.
  */
 export class FsStore {
+  // A failed post-rename sync leaves visible bytes uncertain and caches stale until ordinary reopen.
+  private readonly unacknowledgedWorkspaces = new Set<string>();
   private workspaces = new Map<string, WorkspaceRecord>();
   private workspaceResources = new Map<string, WorkspaceResources>();
   private workspaceResourcePolicyProjection:
@@ -1537,6 +1540,21 @@ export class FsStore {
     }
   }
 
+  /** Refuses stale Workspace state after a failed canonical directory commit; only reopen clears it. */
+  private assertWorkspacePublicationAcknowledged(workspaceId: string): void {
+    if (this.unacknowledgedWorkspaces.has(workspaceId)) {
+      throw new CanonicalPublicationError(
+        'FsStore: directory synchronization failed after rename during publication acknowledgement. Ordinary Store reopen is required.'
+      );
+    }
+  }
+
+  /** Applies the same refusal to opaque Turn reads without changing absent-id behavior. */
+  private assertTurnPublicationAcknowledged(turnId: string): void {
+    const turn = this.turns.get(turnId);
+    if (turn) this.assertWorkspacePublicationAcknowledged(workspaceIdForOwner(turn.owner));
+  }
+
   /**
    * Projects one workspace's in-memory state into its canonical file records.
    *
@@ -1559,15 +1577,23 @@ export class FsStore {
       return;
     }
 
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
-    this.writeWorkspaceFileRecordsToRoot(
-      workspaceId,
-      workspaceRoot,
-      updateWorkspaceConfigName,
-      turnFilePayloads,
-      initialArtifact,
-      candidate
-    );
+    try {
+      this.writeWorkspaceFileRecordsToRoot(
+        workspaceId,
+        workspaceRoot,
+        updateWorkspaceConfigName,
+        turnFilePayloads,
+        initialArtifact,
+        candidate
+      );
+    } catch (error) {
+      if (error instanceof CanonicalPublicationError) {
+        this.unacknowledgedWorkspaces.add(workspaceId);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1738,6 +1764,7 @@ export class FsStore {
    * @returns Workspace root path.
    */
   private workspaceRootPath(workspaceId: string): string {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     if (!this.dataRoot) {
       throw new Error('FsStore data root is not configured.');
     }
@@ -2234,6 +2261,9 @@ export class FsStore {
   }
 
   public listWorkspaces(): WorkspaceRecord[] {
+    for (const workspaceId of this.unacknowledgedWorkspaces) {
+      this.assertWorkspacePublicationAcknowledged(workspaceId);
+    }
     return [...this.workspaces.values()];
   }
 
@@ -2246,6 +2276,7 @@ export class FsStore {
    */
   public ensureQuickChatWorkspace(userId: string): WorkspaceRecord {
     const workspaceId = quickChatWorkspaceIdForUser(userId);
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const existing = this.workspaces.get(workspaceId);
     if (existing) {
       if (existing.kind !== 'personal') {
@@ -2508,6 +2539,7 @@ export class FsStore {
 
   /** Removes one Workspace from process-local read models without touching its filesystem root. */
   public evictWorkspace(workspaceId: string): void {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const turnIds = new Set(
       [...this.turns.values()]
         .filter((turn) => workspaceIdForOwner(turn.owner) === workspaceId)
@@ -2566,6 +2598,7 @@ export class FsStore {
   }
 
   public getWorkspace(workspaceId: string): WorkspaceRecord {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const workspace = this.workspaces.get(workspaceId);
 
     if (!workspace) {
@@ -2667,6 +2700,9 @@ export class FsStore {
   public refreshWorkspaceConfigNames(
     workspaceNames: readonly { readonly workspaceId: string; readonly name: string }[]
   ): void {
+    for (const { workspaceId } of workspaceNames) {
+      this.assertWorkspacePublicationAcknowledged(workspaceId);
+    }
     for (const { workspaceId, name } of workspaceNames) {
       const workspace = this.workspaces.get(workspaceId);
       if (workspace && workspace.name !== name) {
@@ -3101,6 +3137,7 @@ export class FsStore {
   }
 
   public listThreads(workspaceId: string): Thread[] {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     return [...this.threads.values()].filter(
       (thread) => workspaceIdForOwner(thread.owner) === workspaceId
     );
@@ -3205,6 +3242,7 @@ export class FsStore {
   }
 
   public getThread(workspaceId: string, threadId: string): Thread {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const thread = this.threads.get(threadId);
 
     if (!thread || workspaceIdForOwner(thread.owner) !== workspaceId) {
@@ -3342,6 +3380,7 @@ export class FsStore {
    * @returns Executor, or null when admission did not declare one.
    */
   public getTurnExecutor(turnId: string): 'worker' | 'assistant' | 'coordinator' | 'person' | null {
+    this.assertTurnPublicationAcknowledged(turnId);
     return this.turnExecutors.get(turnId) ?? null;
   }
 
@@ -3370,10 +3409,12 @@ export class FsStore {
    * @returns Recorded pair, or null when that Turn was never recorded.
    */
   public getTurnCaptureCoverage(turnId: string): CaptureCoverageBinding | null {
+    this.assertTurnPublicationAcknowledged(turnId);
     return this.turnCaptureCoverage.get(turnId) ?? null;
   }
 
   public getTurn(workspaceId: string, threadId: string, turnId: string): Turn {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const turn = this.turns.get(turnId);
 
     if (!turn || workspaceIdForOwner(turn.owner) !== workspaceId || turn.threadId !== threadId) {
@@ -3385,11 +3426,13 @@ export class FsStore {
 
   /** Returns only the opaque Turn's canonical Workspace and Thread selectors before content admission. */
   public getTurnLineage(turnId: string): { workspaceId: string; threadId: string } | null {
+    this.assertTurnPublicationAcknowledged(turnId);
     const turn = this.turns.get(turnId);
     return turn ? { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId } : null;
   }
 
   public getTurnById(turnId: string): Turn {
+    this.assertTurnPublicationAcknowledged(turnId);
     const turn = this.turns.get(turnId);
 
     if (!turn) {
@@ -3443,6 +3486,7 @@ export class FsStore {
     >,
     admission?: TerminalTurnWriteAdmission
   ): Turn {
+    this.assertTurnPublicationAcknowledged(turnId);
     const turn = this.turns.get(turnId);
 
     if (!turn) {
@@ -3732,6 +3776,9 @@ export class FsStore {
    * @returns Stored items.
    */
   public listAllItems(): Item[] {
+    for (const workspaceId of this.unacknowledgedWorkspaces) {
+      this.assertWorkspacePublicationAcknowledged(workspaceId);
+    }
     return [...this.items.values()];
   }
 
@@ -3743,6 +3790,7 @@ export class FsStore {
    * @throws When the id belongs to the portable-import history namespace.
    */
   public createApproval(input: ApprovalRequest): ApprovalRequest {
+    this.assertWorkspacePublicationAcknowledged(input.workspaceId);
     if (!isTargetIssuedEffectAuthority(input.id)) {
       throw new Error('Approval id uses the reserved portable-import authority namespace.');
     }
@@ -3756,6 +3804,7 @@ export class FsStore {
     workspaceId: string,
     requestId: string
   ): { workspaceId: string; threadId: string } | null {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const approval = this.approvals.get(requestId);
     if (approval?.workspaceId === workspaceId) return { workspaceId, threadId: approval.threadId };
     return null;
@@ -3768,6 +3817,7 @@ export class FsStore {
       throw new StoreRecordNotFoundError(`Approval request not found: ${approvalRequestId}`);
     }
 
+    this.assertWorkspacePublicationAcknowledged(approval.workspaceId);
     return approval;
   }
 
@@ -3777,6 +3827,7 @@ export class FsStore {
   ): ApprovalRequest {
     const approval = this.getApproval(approvalRequestId);
     const updated: ApprovalRequest = { ...approval, ...input };
+    this.assertWorkspacePublicationAcknowledged(updated.workspaceId);
     this.approvals.set(approvalRequestId, updated);
     return updated;
   }
@@ -3836,6 +3887,7 @@ export class FsStore {
       throw new StoreRecordNotFoundError(`AgentSession not found: ${agentSessionId}`);
     }
 
+    this.assertWorkspacePublicationAcknowledged(agentSession.workspaceId);
     return agentSession;
   }
 
@@ -4060,6 +4112,7 @@ export class FsStore {
   public rollbackArtifactCreation(artifactId: string): void {
     const artifact = this.artifacts.get(artifactId);
     if (!artifact) return;
+    this.assertWorkspacePublicationAcknowledged(artifact.workspaceId);
     if (artifact.version !== 1)
       throw new ArtifactAuthorityError(
         'recovery_required',
@@ -4119,6 +4172,7 @@ export class FsStore {
    * @throws ArtifactAuthorityError when the target is stale, busy, conflicting, or incomplete.
    */
   public introduceArtifact(input: IntroduceArtifactInput): IntroduceWorkspaceArtifactResponse {
+    this.assertWorkspacePublicationAcknowledged(input.workspaceId);
     const thread = this.threads.get(input.threadId);
     if (
       !this.workspaces.has(input.workspaceId) ||
@@ -4250,10 +4304,12 @@ export class FsStore {
   }
 
   public listArtifacts(workspaceId: string): Artifact[] {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     return [...this.artifacts.values()].filter((artifact) => artifact.workspaceId === workspaceId);
   }
 
   public getArtifact(workspaceId: string, artifactId: string): Artifact {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const artifact = this.artifacts.get(artifactId);
 
     if (!artifact || artifact.workspaceId !== workspaceId) {
@@ -4652,7 +4708,9 @@ export class FsStore {
    * @returns Stored proposal, or null.
    */
   public getKnowledgeProposal(proposalId: string): KnowledgeProposalRecord | null {
-    return this.knowledgeProposals.get(proposalId) ?? null;
+    const proposal = this.knowledgeProposals.get(proposalId);
+    if (proposal) this.assertWorkspacePublicationAcknowledged(proposal.workspaceId);
+    return proposal ?? null;
   }
 
   /**
@@ -4667,6 +4725,7 @@ export class FsStore {
     workspaceId: string,
     proposalId: string
   ): KnowledgeProposalRecord {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     const proposal = this.knowledgeProposals.get(proposalId);
     if (!proposal || proposal.workspaceId !== workspaceId) {
       throw knowledgeProposalAuthorityError('recovery_required');
@@ -4958,7 +5017,9 @@ export class FsStore {
   public getKnowledgeProposalReviewDecision(
     proposalId: string
   ): KnowledgeProposalReviewRecord | null {
-    return this.knowledgeProposalReviews.get(proposalId)?.at(-1) ?? null;
+    const review = this.knowledgeProposalReviews.get(proposalId)?.at(-1);
+    if (review) this.assertWorkspacePublicationAcknowledged(review.workspaceId);
+    return review ?? null;
   }
 
   /**
@@ -5093,6 +5154,7 @@ export class FsStore {
   }
 
   public addTurnListener(turnId: string, listener: EventListener): () => void {
+    this.assertTurnPublicationAcknowledged(turnId);
     const stream = this.streams.get(turnId);
 
     if (!stream) {
@@ -5107,6 +5169,7 @@ export class FsStore {
   }
 
   public getTurnEvents(turnId: string): SseEventEnvelope[] {
+    this.assertTurnPublicationAcknowledged(turnId);
     return this.streams.get(turnId)?.events ?? [];
   }
 
@@ -5124,6 +5187,7 @@ export class FsStore {
   }
 
   public addTimer(turnId: string, timer: NodeJS.Timeout): void {
+    this.assertTurnPublicationAcknowledged(turnId);
     this.streams.get(turnId)?.timers.add(timer);
   }
 

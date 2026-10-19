@@ -74,6 +74,7 @@ import {
   stageArtifactVersionRecord,
 } from './artifacts/artifact-version-records.js';
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
+import { CanonicalPublicationError } from './canonical-publication-error.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 import {
@@ -2193,7 +2194,13 @@ export function publishNewRecordDirectory(
   try {
     mkdirSync(stagingRoot, { mode: 0o700 });
     assertCanonicalDirectory(stagingRoot);
-    writeContents(stagingRoot);
+    try {
+      writeContents(stagingRoot);
+    } catch (error) {
+      // A staged leaf is not a published record. Its failure leaves the canonical owner absent.
+      if (error instanceof CanonicalPublicationError) throw error.cause;
+      throw error;
+    }
     publishCanonicalPath(stagingRoot, destination);
   } catch (error) {
     rmSync(stagingRoot, { recursive: true, force: true });
@@ -2891,7 +2898,14 @@ export function writeFileAtomic(
     } else {
       renameSync(temporaryPath, path);
     }
-    syncCanonicalDirectory(dirname(path));
+    try {
+      syncCanonicalDirectory(dirname(path));
+    } catch (error) {
+      throw new CanonicalPublicationError(
+        `Directory sync after ${publication === 'create' ? 'link' : 'rename'} failed during publication acknowledgement: ${error instanceof Error ? error.message : 'I/O failure'}`,
+        error
+      );
+    }
     reservation?.assertAvailable();
     safeToRelease = true;
   } catch (error) {
@@ -3172,8 +3186,15 @@ export function syncCanonicalTree(path: string): void {
 export function publishCanonicalPath(staged: string, destination: string): void {
   syncCanonicalTree(staged);
   renameSync(staged, destination);
-  syncCanonicalDirectory(dirname(destination));
-  if (dirname(staged) !== dirname(destination)) syncCanonicalDirectory(dirname(staged));
+  try {
+    syncCanonicalDirectory(dirname(destination));
+    if (dirname(staged) !== dirname(destination)) syncCanonicalDirectory(dirname(staged));
+  } catch (error) {
+    throw new CanonicalPublicationError(
+      `Directory sync after rename failed during publication acknowledgement: ${error instanceof Error ? error.message : 'I/O failure'}`,
+      error
+    );
+  }
 }
 
 /** Synchronizes one directory without blocking asynchronous file collection or following a link. */
