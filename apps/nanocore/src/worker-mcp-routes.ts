@@ -831,7 +831,20 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 );
               }
             }
-            const result = { tools: observed.visibleTools };
+            // Credential cleanup can await a Policy change after the original observation.
+            const result = {
+              tools: observed.snapshotTools.filter(
+                (tool) =>
+                  selected.allowedTools.includes(tool.name) &&
+                  !currentWorkerMcpPermissions(
+                    input,
+                    environmentPackage,
+                    serverId,
+                    tool.name,
+                    activeWorkspaceDb!
+                  ).some((rule) => rule.effect === 'prohibit')
+              ),
+            };
             finishCapabilityCall({
               callId: call.id,
               status: 'succeeded',
@@ -1308,15 +1321,19 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     });
   }
   const available = input.selected.allowedTools.includes(input.toolName);
+  const toolConditions = available
+    ? currentWorkerMcpPermissions(
+        input.input,
+        input.environmentPackage,
+        input.serverId,
+        input.toolName,
+        input.workspaceDb
+      )
+    : [];
+  // A prohibition must reach the final Kernel, including when an older Pending duplicate exists.
   const approvalRequired =
-    available &&
-    currentWorkerMcpPermissions(
-      input.input,
-      input.environmentPackage,
-      input.serverId,
-      input.toolName,
-      input.workspaceDb
-    ).some((rule) => rule.effect === 'require_approval');
+    toolConditions.some((rule) => rule.effect === 'require_approval') &&
+    !toolConditions.some((rule) => rule.effect === 'prohibit');
   const currentSnapshot = approvalRequired
     ? (readTurnMcpToolSchemaSnapshot(input) ??
       readCurrentMcpToolSchemaSnapshot({

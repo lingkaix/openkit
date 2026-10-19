@@ -569,7 +569,32 @@ describe('worker MCP routes', () => {
       await client.connect(transport('echo'));
       await approvalClient.connect(transport('echo-approval'));
       await client.listTools();
-      await approvalClient.listTools();
+      const beforeDiscoveryPolicy = document;
+      let enteredCleanup!: () => void;
+      let releaseCleanup!: () => void;
+      const cleanupEntered = new Promise<void>((resolve) => {
+        enteredCleanup = resolve;
+      });
+      const cleanupHold = new Promise<void>((resolve) => {
+        releaseCleanup = resolve;
+      });
+      vi.mocked(gateway.closeServerIfIdle).mockImplementationOnce(async () => {
+        enteredCleanup();
+        await cleanupHold;
+      });
+      const firstApprovalDiscovery = approvalClient.listTools();
+      try {
+        await cleanupEntered;
+        condition('prohibit', 'echo-approval');
+        releaseCleanup();
+        const currentDiscovery = await firstApprovalDiscovery;
+        expect.soft(currentDiscovery.tools).toEqual([]);
+      } finally {
+        releaseCleanup();
+        conditions = [];
+        admit();
+      }
+      expect(document).toEqual(beforeDiscoveryPolicy);
       const seeded = workspaceDb.sqlite
         .prepare(
           "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo'"
@@ -690,6 +715,60 @@ describe('worker MCP routes', () => {
         packageDigest: environmentPackage.snapshotId,
       });
       expect(boundaryCounts()).toEqual(allowedBoundary);
+      const originalApprovalPolicy = document;
+      const approvalOnlyConditions = conditions;
+      const originalPending = afterPolicyApproval.find(
+        (request) => request.serverId === 'echo-approval'
+      )!;
+      expect(await approvalCall()).toMatchObject({
+        isError: true,
+        structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
+      });
+      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+        afterPolicyApproval
+      );
+      const approvalCondition = approvalOnlyConditions.find(
+        (statement) => statement.kind === 'permission'
+      );
+      if (!approvalCondition) throw new Error('Expected the admitted approval condition.');
+      conditions = [
+        ...approvalOnlyConditions,
+        { ...approvalCondition, id: 'prohibit-existing-approval', effect: 'prohibit' },
+      ];
+      admit();
+      const beforeProhibitedDuplicate = boundaryCounts();
+      const beforeDuplicateDecisions = decisions().length;
+      // The SDK allocates a fresh protocol request id for identical qualified Tool arguments.
+      const prohibitedDuplicate = await approvalCall().then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
+      );
+      expect.soft(prohibitedDuplicate).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+      expect
+        .soft(
+          decisions()
+            .slice(beforeDuplicateDecisions)
+            .find((row) => row.mediation?.role === 'final')
+        )
+        .toMatchObject({
+          result: 'deny',
+          mediation: { kernel: { effect: 'deny' } },
+        });
+      expect(boundaryCounts()).toEqual(beforeProhibitedDuplicate);
+      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+        afterPolicyApproval
+      );
+      conditions = approvalOnlyConditions;
+      admit();
+      expect(document).toEqual(originalApprovalPolicy);
+      expect(await approvalCall()).toMatchObject({
+        isError: true,
+        structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
+      });
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+        afterPolicyApproval
+      );
       let release!: () => void;
       hold = new Promise<void>((resolve) => {
         release = resolve;
