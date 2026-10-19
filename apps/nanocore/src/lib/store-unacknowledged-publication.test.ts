@@ -88,7 +88,24 @@ describe('unacknowledged canonical Thread publication', () => {
     const candidateBytes = readFileSync(path, 'utf8');
     expect(candidateBytes).not.toBe(previousBytes);
     expect(JSON.parse(candidateBytes).name).toBe('Visible unacknowledged Thread');
-    expect(store.getThread(workspace.id, previousThread.id)).toEqual(previousThread);
+    const cachedThreads = (store as unknown as { threads: Map<string, typeof previousThread> })
+      .threads;
+    expect(cachedThreads.get(previousThread.id)).toEqual(previousThread);
+    let readFailure: unknown;
+    try {
+      store.getThread(workspace.id, previousThread.id);
+    } catch (error) {
+      readFailure = error;
+    }
+    expect(readFailure).toMatchObject({ code: 'recovery_required' });
+    for (const diagnostic of [
+      /FsStore/,
+      /directory sync(?:hroni[sz]ation)?/i,
+      /after rename/i,
+      /publication[ -]acknowledg(?:e)?ment/i,
+    ]) {
+      expect(readFailure).toHaveProperty('message', expect.stringMatching(diagnostic));
+    }
     fault.armed = false;
 
     // Core Storage and Fault Tolerance require preservation of the uncertain publication.
