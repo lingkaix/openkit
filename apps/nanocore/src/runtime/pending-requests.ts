@@ -1476,10 +1476,21 @@ export function validateCanonicalLoad(
   )
     return { requestId: record.requestId, reason: 'handoff-producer' };
   const request = requestItems[0]!;
+  // A captured agent's accountable human can differ from a later Turn's triggering administrator.
+  // The exact Policy source and subject are revalidated before claim; historical load checks the requesting Worker/Session and captured context without current Goal state.
+  const capturedWorkerParties =
+    record.kind === 'approval' &&
+    record.requesterKind === 'worker' &&
+    record.serverId !== null &&
+    record.policyDecisionId !== null &&
+    record.agentSessionId !== null &&
+    raising.agentId === record.agentId &&
+    raising.agentSessionId === record.agentSessionId;
   if (
     request.workspaceId !== record.workspaceId ||
     request.threadId !== record.threadId ||
     (record.requesterKind !== 'coordinator' &&
+      !capturedWorkerParties &&
       responsibleUserIdForActor(raising.triggerActor) !== record.responsibleUserId) ||
     (record.requesterKind === 'coordinator' &&
       (raising.agentId !== record.agentId || Boolean(raising.agentSessionId))) ||

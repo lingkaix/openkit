@@ -26,6 +26,7 @@ import {
 import type { CoreDb } from '../storage/db.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing } from './notebook-agent-editing.js';
+import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
   attributedNotebookPageBytes,
@@ -394,6 +395,10 @@ export function prepareServerKnowledgeMaintenance(
         if (cursor && cursor !== since) throw new NotebookError('invalid_request');
         assertCurrent();
         const humanEdits = boundedNotebookDiff(humanChanges, false);
+        const authoringGuidance = notebookAuthoringGuidance(
+          serverNotebookAdmission(dependencies, actor!, canonicalFiles).scopeSchemaText,
+          { kind: 'server' }
+        );
         const editor = createNotebookAgentEditing({
           notebook: git,
           baseRevision,
@@ -569,6 +574,7 @@ export function prepareServerKnowledgeMaintenance(
                   text: JSON.stringify({
                     instructions: input.instructions,
                     notebookRevision: baseRevision,
+                    authoringGuidance,
                     files: Object.keys(files),
                     selectedPageIds: input.pageIds ?? [],
                     humanEdits,
