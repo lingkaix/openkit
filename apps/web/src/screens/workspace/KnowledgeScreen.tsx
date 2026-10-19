@@ -29,6 +29,8 @@ import {
   type KnowledgeProposalDecisionInput,
   type KnowledgeStoreProjection,
   knowledgeActionErrorMessage,
+  knowledgePageScopeLabel,
+  matchesWorkspaceKnowledgePageReference,
   type PrepareKnowledgeContextCommand,
   type ReadKnowledgeSourceCommand,
   type RecordKnowledgeClaimCommand,
@@ -37,7 +39,9 @@ import {
   type RegisterKnowledgeSourceCommand,
   type ResolveKnowledgeConflictCommand,
   type RetrieveKnowledgeCommand,
+  readKnowledgeCitationEvidence,
   type SuggestKnowledgeRepairsCommand,
+  shouldShowKnowledgeCitationEvidence,
   type UpdateKnowledgeCommand,
   useAnswerKnowledgeManager,
   useCheckKnowledgeHealth,
@@ -63,6 +67,7 @@ import {
   useSuggestKnowledgeRepairs,
   useUpdateKnowledge,
   workspaceKeys,
+  workspaceKnowledgePageScopeId,
 } from './data';
 import { KnowledgeProposalRow } from './KnowledgeProposalRow';
 import { NotebookHistoryPanel } from './NotebookHistoryPanel';
@@ -761,11 +766,13 @@ export function KnowledgeScreen() {
         <KnowledgeRetrievalPanel
           connectionBlocked={connectionBlocked}
           workspaceId={workspaceId}
+          knowledgeBaseId={knowledge.data?.knowledgeBaseId}
           currentEntries={knowledge.isSuccess ? entries : []}
         />
         <KnowledgeManagerPanel
           connectionBlocked={connectionBlocked}
           workspaceId={workspaceId}
+          knowledgeBaseId={knowledge.data?.knowledgeBaseId}
           currentEntries={knowledge.isSuccess ? entries : []}
         />
 
@@ -1580,17 +1587,22 @@ function KnowledgeLedgerPanel({
 function KnowledgeRetrievalPanel({
   workspaceId,
   connectionBlocked,
+  knowledgeBaseId,
   currentEntries,
 }: {
   workspaceId: string | null;
   connectionBlocked: boolean;
+  knowledgeBaseId: string | undefined;
   currentEntries: KnowledgeItem[];
 }) {
   const indexes = useKnowledgeIndexes(workspaceId);
   const retrieve = useRetrieveKnowledge();
   const prepare = usePrepareKnowledgeContext();
   const [query, setQuery] = useWorkspaceScoped(workspaceId, '');
-  const currentPageScopeId = workspaceId ? `page/workspace/${workspaceId}` : null;
+  const currentPageScopeId =
+    workspaceId && knowledgeBaseId
+      ? workspaceKnowledgePageScopeId(workspaceId, knowledgeBaseId)
+      : null;
   const retrieveBlocked = connectionBlocked || !workspaceId || retrieve.isPending;
   const prepareBlocked = connectionBlocked || !workspaceId || prepare.isPending;
 
@@ -1738,10 +1750,12 @@ function KnowledgeRetrievalPanel({
 function KnowledgeManagerPanel({
   workspaceId,
   connectionBlocked,
+  knowledgeBaseId,
   currentEntries,
 }: {
   workspaceId: string | null;
   connectionBlocked: boolean;
+  knowledgeBaseId: string | undefined;
   currentEntries: KnowledgeItem[];
 }) {
   const answer = useAnswerKnowledgeManager();
@@ -1871,8 +1885,19 @@ function KnowledgeManagerPanel({
           {answerResult.citations.length ? (
             <ol aria-label="Citations" className="flex flex-col gap-2">
               {answerResult.citations.map((citation) => {
+                const evidence = readKnowledgeCitationEvidence(citation);
+                const showEvidence = shouldShowKnowledgeCitationEvidence(
+                  citation.reference.scopeId,
+                  evidence
+                );
                 const entry =
-                  citation.reference.scopeId === `page/workspace/${workspaceId}`
+                  workspaceId &&
+                  knowledgeBaseId &&
+                  matchesWorkspaceKnowledgePageReference(
+                    citation.reference.scopeId,
+                    workspaceId,
+                    knowledgeBaseId
+                  )
                     ? currentEntries.find(
                         (candidate) => candidate.id === citation.reference.objectId
                       )
@@ -1881,12 +1906,21 @@ function KnowledgeManagerPanel({
                   <li key={`${citation.reference.scopeId}:${citation.reference.objectId}`}>
                     <p className="text-sm font-bold text-fg-strong">{citation.title}</p>
                     <p className="text-xs text-fg-muted">
-                      {citation.reference.scopeId === `page/workspace/${workspaceId}`
-                        ? 'Workspace Knowledge'
-                        : citation.reference.scopeId === 'page/server'
-                          ? 'Server Knowledge'
-                          : citation.reference.scopeId}
+                      {knowledgePageScopeLabel(citation.reference.scopeId)}
                     </p>
+                    {showEvidence && evidence.revision ? (
+                      <p className="text-xs text-fg-muted">
+                        Notebook revision: {evidence.revision}
+                      </p>
+                    ) : null}
+                    {showEvidence && evidence.contentDigest ? (
+                      <p className="text-xs text-fg-muted">
+                        Content digest: {evidence.contentDigest}
+                      </p>
+                    ) : null}
+                    {evidence.referenceUri ? (
+                      <p className="text-xs text-fg-muted">{evidence.referenceUri}</p>
+                    ) : null}
                     <p className="text-sm text-fg">{citation.excerpt}</p>
                     {entry ? (
                       <Link

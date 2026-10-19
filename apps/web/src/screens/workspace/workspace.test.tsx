@@ -40,6 +40,14 @@ const WORKSPACE_B = {
   updatedAt: TIMESTAMP_NEW,
 } as const;
 
+const WORKSPACE_A_KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000001';
+const WORKSPACE_B_KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000002';
+const SERVER_KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000003';
+
+function workspaceKnowledgePageScope(workspaceId: string): string {
+  return `page/workspace/${workspaceId}/${workspaceId === WORKSPACE_B.id ? WORKSPACE_B_KNOWLEDGE_BASE_ID : WORKSPACE_A_KNOWLEDGE_BASE_ID}`;
+}
+
 const APPROVAL_ROW = {
   id: 'approval:ap1',
   kind: 'approval',
@@ -515,7 +523,7 @@ const KNOWLEDGE_RETRIEVAL = {
     workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
     actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
   },
-  sourceScope: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+  sourceScope: workspaceKnowledgePageScope(WORKSPACE_A.id),
   notebookRevision: null,
   workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   caller: 'app-api',
@@ -530,7 +538,7 @@ const KNOWLEDGE_RETRIEVAL = {
   selected: [
     {
       reference: {
-        scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+        scopeId: workspaceKnowledgePageScope(WORKSPACE_A.id),
         objectId: KNOWLEDGE_ENTRY.id,
       },
       revision: KNOWLEDGE_PAGE_DIGEST,
@@ -542,7 +550,7 @@ const KNOWLEDGE_RETRIEVAL = {
   excluded: [
     {
       reference: {
-        scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+        scopeId: workspaceKnowledgePageScope(WORKSPACE_A.id),
         objectId: 'old-plan',
       },
       revision: null,
@@ -574,7 +582,7 @@ const KNOWLEDGE_ANSWER = {
   citations: [
     {
       reference: {
-        scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+        scopeId: workspaceKnowledgePageScope(WORKSPACE_A.id),
         objectId: KNOWLEDGE_ENTRY.id,
       },
       kind: 'preference',
@@ -766,9 +774,11 @@ function makeClient(
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'artifact.review.decide': vi.fn().mockResolvedValue({}),
-      'knowledge.list': vi
-        .fn()
-        .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [] }),
+      'knowledge.list': vi.fn().mockResolvedValue({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+        notebookRevision: 'notebook-fixture-revision',
+        items: [],
+      }),
       'knowledge.proposal.read': vi
         .fn()
         .mockImplementation(async ({ proposalId, path }: { proposalId: string; path?: string }) => {
@@ -3546,6 +3556,7 @@ describe('Knowledge (board 14)', () => {
     const client = makeClient({
       core: {
         'knowledge.list': vi.fn().mockResolvedValue({
+          knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
           notebookRevision: 'notebook-fixture-revision',
           items: [KNOWLEDGE_ENTRY],
         }),
@@ -3599,9 +3610,11 @@ describe('Knowledge (board 14)', () => {
 
   it('keeps the editor base revision when the notebook refreshes before submission', async () => {
     const user = userEvent.setup();
-    const listKnowledge = vi
-      .fn()
-      .mockResolvedValue({ notebookRevision: 'opaque-base-one', items: [KNOWLEDGE_ENTRY] });
+    const listKnowledge = vi.fn().mockResolvedValue({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+      notebookRevision: 'opaque-base-one',
+      items: [KNOWLEDGE_ENTRY],
+    });
     const updateKnowledge = vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY);
     const queryClient = renderApp(
       '/knowledge',
@@ -3612,6 +3625,7 @@ describe('Knowledge (board 14)', () => {
     await user.clear(title);
     await user.type(title, 'My pending exact edit');
     listKnowledge.mockResolvedValue({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'opaque-base-two',
       items: [{ ...KNOWLEDGE_ENTRY, content: 'Another writer changed this page.' }],
     });
@@ -3635,12 +3649,14 @@ describe('Knowledge (board 14)', () => {
   it('edits exact server bytes, submits only changed non-empty fields, and waits for the authoritative refetch', async () => {
     const user = userEvent.setup();
     const authoritativeRead = createDeferred<{
+      knowledgeBaseId: string;
       notebookRevision: string;
       items: (typeof KNOWLEDGE_ENTRY)[];
     }>();
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [KNOWLEDGE_ENTRY],
       })
@@ -3687,6 +3703,7 @@ describe('Knowledge (board 14)', () => {
     expect(screen.queryByText('Mutation response must not become visible')).not.toBeInTheDocument();
 
     authoritativeRead.resolve({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
       items: [UPDATED_KNOWLEDGE_ENTRY],
     });
@@ -3706,9 +3723,11 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi
-            .fn()
-            .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [entry] }),
+          'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+            notebookRevision: 'notebook-fixture-revision',
+            items: [entry],
+          }),
           'knowledge.update': updateKnowledge,
         },
       })
@@ -3749,11 +3768,13 @@ describe('Knowledge (board 14)', () => {
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [KNOWLEDGE_ENTRY],
       })
       .mockRejectedValueOnce(new Error('authoritative read failed'))
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [UPDATED_KNOWLEDGE_ENTRY],
       });
@@ -3791,12 +3812,14 @@ describe('Knowledge (board 14)', () => {
   it('confirms removal and keeps the row until the authoritative refetch removes it', async () => {
     const user = userEvent.setup();
     const authoritativeRead = createDeferred<{
+      knowledgeBaseId: string;
       notebookRevision: string;
       items: (typeof KNOWLEDGE_ENTRY)[];
     }>();
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [KNOWLEDGE_ENTRY],
       })
@@ -3828,7 +3851,11 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledTimes(2));
     expect(screen.getByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
-    authoritativeRead.resolve({ notebookRevision: 'notebook-fixture-revision', items: [] });
+    authoritativeRead.resolve({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+      notebookRevision: 'notebook-fixture-revision',
+      items: [],
+    });
     await waitFor(() => expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument());
   });
 
@@ -3837,11 +3864,16 @@ describe('Knowledge (board 14)', () => {
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [KNOWLEDGE_ENTRY],
       })
       .mockRejectedValueOnce(new Error('authoritative read failed'))
-      .mockResolvedValueOnce({ notebookRevision: 'notebook-fixture-revision', items: [] });
+      .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+        notebookRevision: 'notebook-fixture-revision',
+        items: [],
+      });
     const deleteKnowledge = vi.fn().mockResolvedValue(undefined);
     renderApp(
       '/knowledge',
@@ -3881,6 +3913,7 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [KNOWLEDGE_ENTRY],
           }),
@@ -3952,6 +3985,7 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValue(operation === 'delete' ? undefined : laterEntry);
     const listKnowledge = vi.fn().mockImplementation(() =>
       Promise.resolve({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items:
           operation === 'delete'
@@ -4070,6 +4104,7 @@ describe('Knowledge (board 14)', () => {
         core: {
           'knowledge.delete': deleteKnowledge,
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [KNOWLEDGE_ENTRY],
           }),
@@ -4118,6 +4153,7 @@ describe('Knowledge (board 14)', () => {
         core: {
           meta,
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [KNOWLEDGE_ENTRY],
           }),
@@ -4145,6 +4181,7 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [KNOWLEDGE_ENTRY],
           }),
@@ -4243,6 +4280,7 @@ describe('Knowledge (board 14)', () => {
 
         core: {
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [KNOWLEDGE_ENTRY],
           }),
@@ -4823,6 +4861,7 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [cjkEntry],
           }),
@@ -4894,20 +4933,21 @@ describe('Knowledge (board 14)', () => {
         {
           ...KNOWLEDGE_RETRIEVAL.selected[0],
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+            scopeId: workspaceKnowledgePageScope(WORKSPACE_A.id),
             objectId: second.id,
           },
         },
         {
           ...KNOWLEDGE_RETRIEVAL.selected[0],
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-73c3-900f-8d310e4ba201',
+            scopeId: workspaceKnowledgePageScope(WORKSPACE_A.id),
             objectId: 'missing-page',
           },
         },
       ],
     };
     const listKnowledge = vi.fn().mockResolvedValue({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
       items: [excluded, second, first],
     });
@@ -4967,12 +5007,12 @@ describe('Knowledge (board 14)', () => {
     const user = userEvent.setup();
     const otherWorkspaceResult = {
       ...KNOWLEDGE_RETRIEVAL,
-      sourceScope: 'page/workspace/ws_00000000-0000-7fee-b878-266b367d3b31',
+      sourceScope: workspaceKnowledgePageScope(WORKSPACE_B.id),
       selected: [
         {
           ...KNOWLEDGE_RETRIEVAL.selected[0],
           reference: {
-            scopeId: 'page/workspace/ws_00000000-0000-7fee-b878-266b367d3b31',
+            scopeId: workspaceKnowledgePageScope(WORKSPACE_B.id),
             objectId: KNOWLEDGE_ENTRY.id,
           },
         },
@@ -4984,6 +5024,7 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [KNOWLEDGE_ENTRY],
           }),
@@ -5008,14 +5049,20 @@ describe('Knowledge (board 14)', () => {
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [KNOWLEDGE_ENTRY],
       })
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [UPDATED_KNOWLEDGE_ENTRY],
       })
-      .mockResolvedValue({ notebookRevision: 'notebook-fixture-revision', items: [] });
+      .mockResolvedValue({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+        notebookRevision: 'notebook-fixture-revision',
+        items: [],
+      });
     const retrieveKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL);
     const queryClient = renderApp(
       '/knowledge',
@@ -5056,6 +5103,7 @@ describe('Knowledge (board 14)', () => {
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [KNOWLEDGE_ENTRY],
       })
@@ -5078,6 +5126,7 @@ describe('Knowledge (board 14)', () => {
 
     // TanStack retains the previous data on a failed refetch; it is not current read authority.
     expect(queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_A.id))).toEqual({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
       items: [KNOWLEDGE_ENTRY],
     });
@@ -5101,6 +5150,7 @@ describe('Knowledge (board 14)', () => {
           'knowledge.list': vi
             .fn()
             .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+              knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
               notebookRevision: 'notebook-fixture-revision',
               items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_ENTRY] : [collidingB],
             })),
@@ -5151,7 +5201,12 @@ describe('Knowledge (board 14)', () => {
     const uncertainty = 'Server guidance does not cover the current Workspace deadline.';
     const serverCitation = {
       ...KNOWLEDGE_ANSWER.citations[0],
-      reference: { scopeId: 'page/server', objectId: KNOWLEDGE_ENTRY.id },
+      reference: {
+        scopeId: `page/server/${SERVER_KNOWLEDGE_BASE_ID}`,
+        objectId: KNOWLEDGE_ENTRY.id,
+      },
+      revision: 'server-notebook-revision-fixture',
+      contentDigest: KNOWLEDGE_ENTRY.contentDigest,
       title: 'Server update guidance',
       excerpt: 'Keep updates brief across all Workspaces.',
     };
@@ -5165,6 +5220,7 @@ describe('Knowledge (board 14)', () => {
             uncertainty,
           }),
           'knowledge.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
             items: [KNOWLEDGE_ENTRY],
           }),
@@ -5181,6 +5237,12 @@ describe('Knowledge (board 14)', () => {
     const [workspaceCitationRow, serverCitationRow] = within(citations).getAllByRole('listitem');
     expect(within(workspaceCitationRow).getByText('Workspace Knowledge')).toBeVisible();
     expect(within(serverCitationRow).getByText('Server Knowledge')).toBeVisible();
+    expect(
+      within(serverCitationRow).getByText('Notebook revision: server-notebook-revision-fixture')
+    ).toBeVisible();
+    expect(
+      within(serverCitationRow).getByText(`Content digest: ${KNOWLEDGE_ENTRY.contentDigest}`)
+    ).toBeVisible();
     expect(within(workspaceCitationRow).getByRole('link')).toHaveAttribute(
       'href',
       `#${encodeURIComponent(`knowledge-content-${encodeURIComponent(WORKSPACE_A.id)}-${encodeURIComponent(KNOWLEDGE_ENTRY.id)}`)}`
@@ -5989,6 +6051,7 @@ describe('Knowledge (board 14)', () => {
     const user = userEvent.setup();
     const pending = createDeferred<unknown>();
     const authoritativeA = createDeferred<{
+      knowledgeBaseId: string;
       notebookRevision: string;
       items: (typeof KNOWLEDGE_ENTRY)[];
     }>();
@@ -5998,6 +6061,7 @@ describe('Knowledge (board 14)', () => {
       if (workspaceId === WORKSPACE_B.id) {
         bReads += 1;
         return Promise.resolve({
+          knowledgeBaseId: WORKSPACE_B_KNOWLEDGE_BASE_ID,
           notebookRevision: 'notebook-fixture-revision',
           items:
             bReads > 1
@@ -6008,6 +6072,7 @@ describe('Knowledge (board 14)', () => {
       aReads += 1;
       if (aReads > 1) return authoritativeA.promise;
       return Promise.resolve({
+        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         items: [KNOWLEDGE_ENTRY],
       });
@@ -6082,6 +6147,7 @@ describe('Knowledge (board 14)', () => {
     expectWorkspaceBSourceDraftRetained();
 
     authoritativeA.resolve({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
       items: testCase.settled,
     });
