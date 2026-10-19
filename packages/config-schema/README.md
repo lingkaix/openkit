@@ -132,3 +132,6 @@ AEP Skill lineage optionally carries `pinAuditRef`, validated by the Protocol Au
 
 
 `workspace-resource-policy` constrains the shared Policy document for Workspace Thread restrictions at `workspace.policy.mediation`. Active permissions require an explicit managed-boundary statement; removing the final permission preserves that boundary. Exact human and Agent-process selectors retain separate rights. The required feature prevents readers from ignoring restrictions. Server finite Git maintenance permissions use the same grammar at `policy.mediation` with their endpoint, repository, binary, start and statement expiry constraints. Structural validation supplies no current membership, author authority or execution authority; NanoCore checks those owners before applying or evaluating a change. The retired resourceAccess, workerGitReadMaintenance and workspaceApprovalModes fields are refused.
+
+An omitted internal-role limits object uses a 300-second deadline for Knowledge Manager and the existing 120-second deadline for other roles. Explicit authored limits override these defaults; no additional deadline setting is introduced.
+
