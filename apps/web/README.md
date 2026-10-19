@@ -6,6 +6,8 @@ This guide owns the package's local purpose, boundaries, commands, and workflow.
 
 ## Boundaries
 
+Thread, Turn, Item and CapabilityCall share the explicit Workspace-or-Server owner defined by [Protocol](../../docs/core/protocol.md#thread-semantics). Workspace UI queries, caches, navigation and predicates use an explicit Workspace owner; Server work supplies no Workspace selector. Operation `workspaceId` parameters remain addressing inputs.
+
 Knowledge Proposal rows read the saved candidate through the Core Client before acceptance. The preview fixes the Proposal digest and base/candidate revisions. Each changed page is read in bounded parts and marked inspected; a summary or partial diff cannot enable acceptance. Current read failures hide preview bytes. Rejection and deferral retain their existing independent actions. Proposal preview state is keyed by the Workspace and exact candidate identity.
 
 The Web UI is a product surface over NanoCore and App API contracts, and it consumes the server only through the composed `@openkit/core-client` sub-clients. Its shared schema and client imports must remain browser-safe through every transitive package export; the complete `@openkit/config-schema` root includes Node-only modules and cannot enter this graph.

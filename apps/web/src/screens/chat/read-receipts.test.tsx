@@ -143,7 +143,37 @@ describe('displayed conversation receipts', () => {
     queryClient.clear();
   });
 
-  it('does not admit a server-owned dashboard Thread into workspace-scoped focus', async () => {
+  it.each([
+    {
+      label: 'server-owned dashboard',
+      threadOwner: { kind: 'server' as const },
+      expectUnavailableBanner: false,
+    },
+    {
+      label: 'workspace-owned dashboard',
+      threadOwner: { kind: 'workspace' as const, workspaceId: 'workspace' },
+      expectUnavailableBanner: true,
+    },
+  ])('focus admission for $label with empty turns', async ({
+    threadOwner,
+    expectUnavailableBanner,
+  }) => {
+    const dashboard = vi.fn(async () => ({
+      thread: {
+        id: 'thread',
+        owner: threadOwner,
+        name: null,
+        preview: 'Thread preview',
+        status: 'active' as const,
+        entryPath: 'conversation' as const,
+        visibility: threadOwner.kind === 'server' ? ('server' as const) : ('workspace' as const),
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      turns: [],
+      participants: [],
+      viewerUserId: 'viewer',
+    }));
     const client = {
       core: { meta: async () => ({}) },
       operations: {
@@ -161,22 +191,7 @@ describe('displayed conversation receipts', () => {
           ],
           nextCursor: null,
         }),
-        'thread.dashboard': async () => ({
-          thread: {
-            id: 'thread',
-            owner: { kind: 'server' },
-            name: null,
-            preview: 'Server thread',
-            status: 'active',
-            entryPath: 'conversation',
-            visibility: 'server',
-            createdAt: '2026-01-01T00:00:00.000Z',
-            updatedAt: '2026-01-01T00:00:00.000Z',
-          },
-          turns: [],
-          participants: [],
-          viewerUserId: 'viewer',
-        }),
+        'thread.dashboard': dashboard,
         'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: ['first'] }),
         'thread.mark-read': async () => ({ readItemIds: ['first'], unreadItemIds: [] }),
       },
@@ -192,9 +207,13 @@ describe('displayed conversation receipts', () => {
       </QueryClientProvider>
     );
     await screen.findByText('first reply');
-    expect(
-      screen.queryByText('This turn failed. Review the conversation before trying again.')
-    ).not.toBeInTheDocument();
+    await waitFor(() => expect(dashboard).toHaveBeenCalled());
+    const unavailableCopy = 'Recorded Turn is unavailable in this Thread.';
+    if (expectUnavailableBanner) {
+      expect(await screen.findByText(unavailableCopy)).toBeInTheDocument();
+    } else {
+      await waitFor(() => expect(screen.queryByText(unavailableCopy)).not.toBeInTheDocument());
+    }
     queryClient.clear();
   });
 });

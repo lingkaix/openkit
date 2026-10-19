@@ -10,6 +10,7 @@ export type GenerativeTextSource = Extract<ThreadItem, { type: 'assistant-messag
 
 const EMPTY_ITEMS: ThreadItem[] = [];
 
+/** Returns null for Server work so Workspace queries and source matching stay closed. */
 function workspaceIdFromOwner(owner: WorkOwner): string | null {
   return owner.kind === 'workspace' ? owner.workspaceId : null;
 }
