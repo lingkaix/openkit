@@ -10,8 +10,11 @@ import { CoreClientProvider } from '../../app/core-client';
 import { useWorkspaceStore } from '../workspace-store';
 import { workspaceKeys } from './data';
 import { KnowledgeScreen } from './KnowledgeScreen';
-import { knowledgePageContentDigest, readKnowledgePageDisplay } from './knowledge-okf';
-import { knowledgeNotebookPageFixture } from './knowledge-test-fixtures';
+import { readKnowledgePageDisplay } from './knowledge-okf';
+import {
+  knowledgeNotebookPageFixture,
+  knowledgePageContentDigest,
+} from './knowledge-test-fixtures';
 
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
 const WORKSPACE_A = allocateEntityId('ws');
