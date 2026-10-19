@@ -299,7 +299,10 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     expect(response.status(), await response.text()).toBe(202);
     const submission = StartTaskModeResponseSchema.parse(await response.json());
     const taskThreadId = thread.id;
-    expect(submission.turn).toMatchObject({ workspaceId, threadId: taskThreadId });
+    expect(submission.turn).toMatchObject({
+      owner: { kind: 'workspace', workspaceId },
+      threadId: taskThreadId,
+    });
     const selector = { workspaceId, threadId: taskThreadId, turnId: submission.turn.id };
     let completed = false;
     for await (const event of client.core.subscribeTurnEvents(selector)) {

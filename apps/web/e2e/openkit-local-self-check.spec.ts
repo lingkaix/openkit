@@ -315,7 +315,7 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   const responseBody = await response.text();
   expect(response.status(), `Task Turn start response: ${responseBody}`).toBe(202);
   const submission = StartTaskModeResponseSchema.parse(JSON.parse(responseBody));
-  expect(submission.turn).toMatchObject({ workspaceId, threadId });
+  expect(submission.turn).toMatchObject({ owner: { kind: 'workspace', workspaceId }, threadId });
   await page.goto(`${stack.webUrl}/tasks/${workspaceId}/${threadId}`);
   // 202 admits the Turn. The simulator question is published with the Context Package snapshot.
   await expect(async () => {
