@@ -371,7 +371,7 @@ describe('workspace portable file state', () => {
       '  "workspace": {',
       '    "name": "Demo Workspace",',
       `    "defaultKnowledgeBaseId": "${sourceKnowledgeBaseId}",`,
-      `    "knowledgeMounts": [{"name":"raw","knowledgeBaseId":"${sourceKnowledgeBaseId}","default":true,"backend":"local","root":"raw"}],`,
+      `    "knowledgeMounts": [{"name":"raw",/* Keep this authored mount note. */"knowledgeBaseId":"${sourceKnowledgeBaseId}","default":true,"backend":"local","root":"raw","description":"Original project evidence"}],`,
       '    "roots": [],',
       '    "assistant": { "repositoryInspection": { "enabled": false } }',
       '  }',
