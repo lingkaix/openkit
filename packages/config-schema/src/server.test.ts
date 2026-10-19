@@ -24,6 +24,44 @@ describe('server config schema', () => {
     expect(OpenKitConfigSchema.safeParse({ schemaVersion: 2 }).success).toBe(false);
   });
 
+  it('refuses retired Workspace approval-mode grammar in authored Server Policy', () => {
+    expect(
+      OpenKitConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        policy: {
+          workspaceApprovalModes: {
+            [allocateEntityId('ws')]: { 'repo.push': 'require_human_approval' },
+          },
+        },
+      }).success
+    ).toBe(false);
+  });
+
+  it('refuses retired Worker Git-read assignment grammar in authored Server Policy', () => {
+    expect(
+      OpenKitConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        policy: {
+          workerGitReadMaintenance: [
+            {
+              responsibleUserId: allocateEntityId('usr'),
+              agentId: randomUUID(),
+              networkGrantId: 'git-read',
+              host: 'git.example.com',
+              port: 443,
+              protocol: 'rest',
+              repositoryPaths: ['/team/project.git'],
+              binaries: ['/usr/bin/git'],
+              validFrom: '2026-01-01T00:00:00.000Z',
+              expiresAt: '2099-01-01T00:00:00.000Z',
+              enabled: true,
+            },
+          ],
+        },
+      }).success
+    ).toBe(false);
+  });
+
   it('admits an explicit finite Worker Git-read maintenance assignment without changing omission', () => {
     const assignment = {
       responsibleUserId: allocateEntityId('usr'),

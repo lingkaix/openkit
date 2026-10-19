@@ -16,6 +16,10 @@ const config = (resourceAccess: unknown[]) => ({
 });
 
 describe('Workspace resource privacy configuration', () => {
+  it('refuses retired resource-access grammar in authored Workspace Policy', () => {
+    expect(WorkspaceConfigSchema.safeParse(config([boundary])).success).toBe(false);
+  });
+
   it('retains a managed boundary when its final positive allocation is revoked', () => {
     const saved = WorkspaceConfigSchema.parse(config([boundary]));
     expect(saved.workspace.policy?.resourceAccess).toEqual([boundary]);
