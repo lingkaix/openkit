@@ -796,6 +796,7 @@ export function createKnowledgeOperationImplementations(
         admitKnowledgeRetrieval(current);
         return response;
       } catch (error) {
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_source_list_failed', 404);
       }
     },
@@ -934,6 +935,7 @@ export function createKnowledgeOperationImplementations(
         requireSourceAudience(workspaceId, source.id, context);
         return response;
       } catch (error) {
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_source_register_failed');
       }
     },
@@ -967,6 +969,7 @@ export function createKnowledgeOperationImplementations(
         return response;
       } catch (error) {
         if (error instanceof OperationError) throw error;
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_source_not_found', 404);
       }
     },

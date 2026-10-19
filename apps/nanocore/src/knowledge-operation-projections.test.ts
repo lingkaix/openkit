@@ -697,7 +697,7 @@ describe('Knowledge operation definition cutover', () => {
         workspaceId: foreign.id,
         requestId: randomUUID(),
         kind: 'document',
-        title: 'Foreign secret title',
+        title: 'Foreign source title',
         content: 'Foreign secret bytes',
       })) as schemas.OperationOutput<'knowledge.source.register'>;
       const entry = (await member.http('knowledge.create', {

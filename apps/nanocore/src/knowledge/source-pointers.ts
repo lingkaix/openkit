@@ -170,6 +170,15 @@ export function serializeSourcePointer(input: {
     ...(input.description === undefined ? {} : { description: input.description }),
     ...(input.tags === undefined ? {} : { tags: [...input.tags] }),
   })}---\n${input.summary ?? ''}`;
+  const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content });
+  if (!parsed.ok) throw new NotebookError('invalid_request');
+  const profile = validateScopeKnowledgeSchema(
+    parsed.document,
+    schema.schema,
+    input.owner.ownerScope
+  );
+  if (profile.conformance !== 'scope-schema-valid' || profile.errors.length)
+    throw new NotebookError('invalid_request');
   parseSourcePointer(input.owner, source.id, content);
   return content;
 }
