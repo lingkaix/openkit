@@ -13,6 +13,10 @@ import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js'
 import { FsStore } from '../lib/store.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import type {
+  ProviderSubscriptionAccountManager,
+  ProviderSubscriptionPairHandle,
+} from '../llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -382,7 +386,14 @@ it('completes the real Coordinator request through stock Codex with unchanged To
   models.setProvider(openaiCodexProvider());
   const manager = {
     gatewayUnavailableReason: () => null,
-    getPairHandle: async () => ({ models }),
+    // This Goal Tool-schema fixture explicitly admits quota; real-manager tests own defaults.
+    codexInferenceAllowed: (async () =>
+      true) satisfies ProviderSubscriptionAccountManager['codexInferenceAllowed'],
+    getPairHandle: async () => ({
+      models,
+      getCredentialVersion: (async () =>
+        'synthetic-fixture:1') satisfies ProviderSubscriptionPairHandle['getCredentialVersion'],
+    }),
   };
   const gatewayConfig = createTestGatewayConfig();
   gatewayConfig.logicalModels[0]!.routes[0]!.providerModel = 'openai-codex/gpt-6-astra';
