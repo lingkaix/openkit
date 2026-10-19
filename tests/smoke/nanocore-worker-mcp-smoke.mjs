@@ -43,6 +43,20 @@ async function main() {
 
   try {
     await seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort);
+    const { loadProviderProfiles } = await import(
+      '../../apps/nanocore/dist/config/providers-loader.js'
+    );
+    const providerProfiles = loadProviderProfiles(dataRoot);
+    assert.deepEqual(
+      providerProfiles.diagnostics.map(({ code, profileId }) => ({ code, profileId })),
+      [],
+      'Smoke provider fixture must pass the production configuration loader.'
+    );
+    assert.deepEqual(
+      providerProfiles.profiles.map(({ id }) => id),
+      ['agent-openrouter'],
+      'Smoke provider fixture must load the configured Task provider.'
+    );
     const nanoHostSecret = await issueNanoHostToken(dataRoot);
     const env = {
       ...process.env,
