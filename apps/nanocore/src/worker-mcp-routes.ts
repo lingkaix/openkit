@@ -2516,7 +2516,6 @@ async function observeWorkerMcpTools(input: {
   injections: readonly PendingMcpVaultInjection[];
   snapshotId: string;
   snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
-  visibleTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
 }> {
   const resolvedCredentials = await resolveWorkerMcpCredentials(input);
   const gatewayInput = {
@@ -2620,17 +2619,6 @@ async function observeWorkerMcpTools(input: {
     injections: resolvedCredentials.injections,
     snapshotId,
     snapshotTools,
-    visibleTools: snapshotTools.filter(
-      (tool) =>
-        input.selected.allowedTools.includes(tool.name) &&
-        !currentWorkerMcpPermissions(
-          input.input,
-          input.environmentPackage,
-          input.serverId,
-          tool.name,
-          input.workspaceDb
-        ).some((rule) => rule.effect === 'prohibit')
-    ),
   };
 }
 
