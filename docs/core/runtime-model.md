@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-30
+updated: 2026-10-19
 ---
 # Runtime Model
 
@@ -221,6 +221,21 @@ The substrate lifecycle has these responsibilities:
 A pending approval or user-input request never pauses the Turn that raised it and never closes its AgentSession. A worker's outcome is delivered on a later Turn of the same Thread, which the current AgentSession executes, or a successor that resumes the native conversation when that binding has ended. Outcomes for the internal Assistant or for a person are delivered by their own owners without an AgentSession. The current implementation leaves Goal worker execution unavailable until the Goal implementation replaces it. A Goal-dispatched Task is an ordinary worker Turn, and this runtime adds no separate Goal execution path.
 
 An execution substrate can fail while a Turn remains inspectable or eligible for a separately authorized retry, and after a Turn completes, is cancelled, or fails, its AgentSession remains reusable only when the owning runtime can prove that continuity and reuse are safe. Failure of one shared epoch may interrupt multiple AgentSessions, but it MUST NOT merge their identities, lineages, evidence, or terminal outcomes.
+
+### Safe Points And Danger Windows
+
+[Fault Tolerance](fault-tolerance.md) defines safe points and danger windows. A worker Turn passes through them in this order. Each stage ends at a safe point. The window before it belongs to the named owner, and the last column is the only result recovery may record when that window breaks.
+
+| Stage | Safe point reached | Danger window and its owner | When the window breaks |
+| --- | --- | --- | --- |
+| Admission | The Turn request, admission decision and attempt intent are committed. | None; no external effect has started. | Recovery re-reads the committed admission. |
+| Preparation | Immutable preparation inputs and the attempt are committed before any preparation effect. | Creating or attaching Sandbox, Harness, volumes and credentials; runtime. | Adopt only the exact survivor under an accepted proof contract; otherwise clean up and fence. Readiness is never inferred. |
+| Dispatch | The command is recorded for delivery. | Handing the command to the substrate; the command owner. | Acknowledged: continue. Proven non-receipt: deliver the identical command again. Otherwise unknown, reported within the delivery bound. |
+| Execution | The accepted start, then each accepted observation. | Native work, tool calls and external effects; the substrate for its local effects and [Agent Capability](agent-capability.md) for calls. | Interruption keeps effect uncertainty; an uncertain effect is not replayed. |
+| Collection and closeout | The accepted terminal result, after output, evidence and Workspace collection. | Publishing collected content and its references; their storage owners. | Content is durable before its reference; incomplete collection is reported as incomplete. |
+| Cleanup and release | Proved local cleanup, then capacity release. | Stopping processes and detaching resources; runtime. | Unprovable cleanup widens the fence to the boundary that can be proved, up to the epoch. |
+
+[Permissions](permissions.md) enforcement points, approval gates and later extension points attach at these safe points, before the next window opens. The resolved Agent setup and environment are fixed when the Turn is prepared; a later Agent, Skill or image change applies to later Turns. Authorization is not fixed with them: each governed effect is checked against current policy at its enforcement point.
 
 ## Runtime Setup
 

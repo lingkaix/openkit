@@ -145,7 +145,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection | `work-model.md` |
 | App, Core, Agent layer boundary, Agent Adapter, workspace service, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
-| Fault Source, Acknowledgement Point, Collection Before Loss, correctness properties under failure, guarantee limits | `fault-tolerance.md` |
+| Fault Source, Acknowledgement Point, Collection Before Loss, Safe Point, Danger Window, End-To-End Owner, Proven Non-Receipt, correctness properties under failure, guarantee limits | `fault-tolerance.md` |
 | Light App, Light App Catalog, Generative Kernel, Generative UI, agent-first data and presentation composition | `generative-apps.md` |
 | Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |

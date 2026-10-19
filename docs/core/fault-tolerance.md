@@ -19,6 +19,12 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 **Report only what the evidence establishes.** A timeout, disconnect or crash establishes that a result is unavailable, not that an effect did not happen. Unknown is a valid, visible outcome. A later attempt keeps the earlier attempt's result and uncertainty.
 
+**Recover only from safe points.** Recovery proceeds from a state it can rebuild from durable records alone. Between an external effect and the durable record of its result lies a window in which the two can disagree. Each such window has one owner, a bound, and a defined result when the bound passes or the owner is lost: proof of the result, proof that the effect did not happen, or unknown. A decision that governs an effect, such as a permission check or an approval, is taken and recorded before that effect's window opens, so a repeat after a crash finds the recorded decision instead of deciding again.
+
+**One owner and one deadline per operation.** An operation that crosses a process or network boundary has one end-to-end owner whose deadline bounds the whole operation: waiting, delivery, execution and result. Inner layers retry within the time that remains. They do not start a fresh budget, and retries at different layers are not stacked. A liveness signal shows that a participant is alive; it does not extend the deadline.
+
+**Name the failure.** A failure carries the owner that refused, the check that failed and the lifecycle stage it reached, at least in diagnostics. A message that names a later symptom instead of the first failed check turns a fault into guesswork.
+
 **Collect valuable information while it exists.** Harness, Sandbox and native state are temporary and may become unreadable or be deleted. OpenKit collects the information it needs to understand admitted work and its result while the work runs. It does not depend on teardown-time recovery or on native history. The decision and its reason are recorded in [Fault Tolerance And Work Collection](../decisions/20261017-fault_tolerance_and_work_collection.md).
 
 **Prefer interruption and a deliberate new attempt.** When a failure breaks an operation, OpenKit stops it with a truthful state and lets an authorized actor start a new attempt. Transparent recovery is an optional optimization; it never adds a second workflow and never guesses.
@@ -36,6 +42,14 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 `Acknowledgement Point` is the durable commit after which an owner may report that content or a decision is accepted.
 
 `Collection Before Loss` is the rule that valuable work information is collected while its source is still readable.
+
+`Safe Point` is a state from which recovery proceeds by re-reading durable records alone.
+
+`Danger Window` is the interval between an external effect and the durable record of its result, in which the effect and the record can disagree.
+
+`End-To-End Owner` is the one owner whose deadline bounds an operation across every layer it crosses.
+
+`Proven Non-Receipt` is a receiver's proof that it has not processed a command. It makes the outcome of a broken delivery known.
 
 ## Fault Model
 
@@ -71,6 +85,8 @@ Damaged or unreadable authority-bearing storage fails closed. Missing authority-
 
 [Protocol](protocol.md) and [Communication](communication.md) own request identity, replay, stream ordering, cursor expiry and terminal evidence. A lost response calls for an authoritative read or the same request identity, not a new Turn. A client that stops observing does not stop server work. Output that cannot be collected within the owner's bounds fails the affected work explicitly; it is never dropped silently under a complete result.
 
+A command that its sender records as dispatched when the receiver collects it is delivered only when the receiver acknowledges it. Writing the command to the connection is not delivery. When the exchange breaks before acknowledgement, the delivery outcome is unknown unless the receiver supplies proven non-receipt. With that proof the owner MAY deliver the identical command again under the same identity, and the receiver processes each command identity at most once. Proven non-receipt is a known outcome, so this delivery does not repeat an unknown effect. Without the proof, the owner reports the outcome as unknown within its delivery bound rather than at the end of the operation's deadline.
+
 ### Worker Harnesses
 
 [Runtime Model](runtime-model.md) owns collection: messages, accepted instructions and decisions, meaningful tool and effect outcomes, output files and Artifacts, and errors are collected through admitted interfaces while the work runs, and stored through existing Item, Artifact, evidence and Workspace owners. Complete means the information needed to understand the admitted work and its result; it does not mean every native event, private reasoning trace or temporary file. A lossy summary does not replace content its owner requires. When required collection fails, OpenKit keeps what arrived and reports the missing part; it never claims complete capture. A scan of changing files is not a consistent snapshot. Planned disposal collects first; urgent revocation does not wait for collection.
@@ -83,7 +99,7 @@ Damaged or unreadable authority-bearing storage fails closed. Missing authority-
 
 ## Boundaries And Non-Goals
 
-This document adds no entity, record, status value, ledger or recovery service. It does not authorize a new retry, replay, reconstruction or reconciliation mechanism. It does not make native histories or opaque Worker volumes a recovery prerequisite, and it does not authorize purging them; [Storage](storage.md) keeps its retained-volume protections.
+This document adds no entity, record, status value, ledger or recovery service. Apart from delivering an unprocessed command again under proven non-receipt, it does not authorize a new retry, replay, reconstruction or reconciliation mechanism. It does not make native histories or opaque Worker volumes a recovery prerequisite, and it does not authorize purging them; [Storage](storage.md) keeps its retained-volume protections.
 
 ## Invariants
 
@@ -91,6 +107,10 @@ This document adds no entity, record, status value, ledger or recovery service. 
 - An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed. Recovery MUST preserve what remains and MUST NOT replace lost authority with an empty store.
 - A timeout, disconnect, crash or interruption MUST NOT be reported as proof that an effect did or did not happen.
 - An effect with an unknown outcome MUST NOT be repeated automatically.
+- A command MAY be delivered again only under proven non-receipt, with the same identity and content. A receiver MUST process each command identity at most once.
+- An inner retry, wait or liveness signal MUST NOT extend the deadline set by an operation's end-to-end owner.
+- A decision that governs an effect MUST be recorded at the safe point before that effect, never inside its danger window.
+- Diagnostics for a failure MUST identify the owner, the failed check and the lifecycle stage.
 - Required collection that fails MUST be reported as incomplete, never as complete success.
 - A failed native resume MUST NOT be presented as continued context; continuation MUST use a new Thread whose parent is the old Thread and whose context comes from authorized Core records.
 - A failure in one scope, Worker or external dependency MUST NOT expose another scope's data or a secret, or bypass authorization.
@@ -115,7 +135,8 @@ Before `v0.1.0`, release resets are explicit operator actions under [Contract Ev
 - [Foundation](foundation.md) owns durable product truth and trust boundaries; this document applies them to failure.
 - [Storage](storage.md) owns acknowledgement points, integrity failure handling, retained volumes and backup coverage.
 - [Protocol](protocol.md) and [Communication](communication.md) own request replay, Turn outcomes, streams, pending-outcome delivery and closeout.
-- [Runtime Model](runtime-model.md) owns collection, interruption and execution-domain cleanup.
+- [Runtime Model](runtime-model.md) owns collection, interruption and execution-domain cleanup, and projects safe points and danger windows onto the execution lifecycle.
+- [Permissions](permissions.md) owns enforcement points; they sit at safe points.
 - [AgentSession](agent-session.md) owns native continuity and its failure.
 - [Agent Capability](agent-capability.md) and [Vault](vault.md) own external call outcomes and secret injection receipts.
 - [Knowledge](knowledge.md) owns notebook publication and its recovery-required outcome.
