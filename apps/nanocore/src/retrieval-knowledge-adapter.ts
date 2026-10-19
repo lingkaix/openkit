@@ -598,6 +598,19 @@ export function knowledgeSourceAudienceReadable(
   admitKnowledgeRetrieval(input);
   try {
     const source = input.access.store.getKnowledgeSource(input.workspaceId, sourceId);
+    return knowledgeSourceLineageReadable(input, source);
+  } catch {
+    return false;
+  }
+}
+
+/** Applies the same current audience checks to canonical SourceSummary metadata and Store projections. */
+export function knowledgeSourceLineageReadable(
+  input: Pick<Target, 'workspaceId' | 'access'>,
+  source: { readonly originatingThreadId: string | null; readonly originatingTurnId: string | null }
+): boolean {
+  admitKnowledgeRetrieval(input);
+  try {
     if (source.originatingThreadId && !threadReadable(input, source.originatingThreadId))
       return false;
     if (source.originatingTurnId) {

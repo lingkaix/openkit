@@ -11,12 +11,13 @@ import { stringify } from 'yaml';
 import { z } from 'zod';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
+import { readCanonicalTextFile } from '../storage/workspace-file-records.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import {
-  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   parseOkfDocument,
+  parseScopeKnowledgeSchema,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
-  validateOpenKitKnowledgeProfile,
+  validateScopeKnowledgeSchema,
 } from './okf.js';
 
 /** Existing Source metadata, projected from the sole Notebook pointer rather than a registry. */
@@ -73,12 +74,12 @@ export function parseSourcePointer(
     const parsed = parseOkfDocument({ path: `sources/${id}.md`, content });
     if (!parsed.ok || parsed.document.frontmatter.type !== 'SourceSummary')
       throw new NotebookError('recovery_required');
-    const profile = validateOpenKitKnowledgeProfile(parsed.document, owner.ownerScope);
-    if (
-      profile.conformance !== 'OpenKit-profile-valid' ||
-      profile.errors.length ||
-      parsed.document.frontmatter.schema_version !== DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION
-    )
+    const schema = parseScopeKnowledgeSchema(
+      readCanonicalTextFile(join(sourceNotebookRoot(owner), 'schema', 'scope-schema.yaml'))
+    );
+    if (!schema.ok) throw new NotebookError('recovery_required');
+    const profile = validateScopeKnowledgeSchema(parsed.document, schema.schema, owner.ownerScope);
+    if (profile.conformance !== 'scope-schema-valid' || profile.errors.length)
       throw new NotebookError('recovery_required');
     const fields = SourcePointerFieldsSchema.parse(parsed.document.frontmatter);
     if (
@@ -127,11 +128,15 @@ export function serializeSourcePointer(input: {
     fields.originatingFileId !== source.originatingFileId
   )
     throw new NotebookError('invalid_request');
+  const schema = parseScopeKnowledgeSchema(
+    readCanonicalTextFile(join(sourceNotebookRoot(input.owner), 'schema', 'scope-schema.yaml'))
+  );
+  if (!schema.ok) throw new NotebookError('recovery_required');
   const content = `---\n${stringify({
     okf_version: '0.2',
     type: 'SourceSummary',
     title: source.title,
-    schema_version: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
+    schema_version: schema.schema.schemaVersion,
     openkit_status: 'active',
     scope: input.owner.ownerScope,
     requiredFeatures: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],

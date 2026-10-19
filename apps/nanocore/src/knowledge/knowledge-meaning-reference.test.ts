@@ -109,12 +109,12 @@ function resolve(f: ReturnType<typeof fixture>, uri: string) {
 const unavailable = (reference: string) => ({ status: 'unavailable', reference });
 
 describe('exact governed Knowledge meaning receiver', () => {
-  it('returns exact current and older published bytes without selecting an unpublished candidate', () => {
+  it('returns exact current and older published bytes without selecting an unpublished candidate', async () => {
     const f = fixture();
     const content = page(f.ownerScope);
     const revision = publish(f, f.notebook, content);
     const uri = reference(f);
-    expect(resolve(f, uri)).toEqual({
+    expect(await resolve(f, uri)).toEqual({
       status: 'available',
       reference: uri,
       contentDigest: digest(content),
@@ -123,7 +123,7 @@ describe('exact governed Knowledge meaning receiver', () => {
     });
     const changed = content.replace('Exact domain meaning.', 'Later domain meaning.');
     publish(f, f.notebook, changed);
-    expect(resolve(f, uri)).toEqual({
+    expect(await resolve(f, uri)).toEqual({
       status: 'available',
       reference: uri,
       contentDigest: digest(content),
@@ -133,10 +133,10 @@ describe('exact governed Knowledge meaning receiver', () => {
     const pending = changed.replace('Later domain meaning.', 'Unpublished meaning.');
     publish(f, f.notebook, pending, true);
     const pendingUri = reference(f, f.ownerScope, pending);
-    expect(resolve(f, pendingUri)).toEqual(unavailable(pendingUri));
+    expect(await resolve(f, pendingUri)).toEqual(unavailable(pendingUri));
   });
 
-  it('refuses missing pins, wrong bytes/KB/Workspace, private User and unsupported raw targets uniformly', () => {
+  it('refuses missing pins, wrong bytes/KB/Workspace, private User and unsupported raw targets uniformly', async () => {
     const f = fixture();
     publish(f, f.notebook, page(f.ownerScope));
     const uri = reference(f);
@@ -155,28 +155,28 @@ describe('exact governed Knowledge meaning receiver', () => {
       uri.replace('openkit:page/', 'openkit:raw/'),
       'openkit:page/workspace/../domain@sha256:bad',
     ]) {
-      expect(resolve(f, denied)).toEqual(unavailable(denied));
+      expect(await resolve(f, denied)).toEqual(unavailable(denied));
     }
   });
 
-  it('rechecks current caller and current page sensitivity even for a retained old pin', () => {
+  it('rechecks current caller and current page sensitivity even for a retained old pin', async () => {
     const f = fixture();
     const content = page(f.ownerScope);
     publish(f, f.notebook, content);
     const uri = reference(f);
-    expect(resolve(f, uri).status).toBe('available');
+    expect((await resolve(f, uri)).status).toBe('available');
     publish(
       f,
       f.notebook,
       updateOkfFrontmatter({ path: 'domain.md', content, updates: { sensitivity: 'confidential' } })
     );
-    expect(resolve(f, uri)).toEqual(unavailable(uri));
+    expect(await resolve(f, uri)).toEqual(unavailable(uri));
     publish(f, f.notebook, content);
     f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(f.userId);
-    expect(resolve(f, uri)).toEqual(unavailable(uri));
+    expect(await resolve(f, uri)).toEqual(unavailable(uri));
   });
 
-  it('keeps current recursive Source audience checks on exact page reads', () => {
+  it('keeps current recursive Source audience checks on exact page reads', async () => {
     const f = fixture();
     const sourceThread = f.store.createThread(
       f.workspace.id,
@@ -214,15 +214,15 @@ describe('exact governed Knowledge meaning receiver', () => {
     const content = page(f.ownerScope, [`source:${source.id}@${digest(material)}`]);
     publish(f, f.notebook, content);
     const uri = reference(f, f.ownerScope, content);
-    expect(resolve(f, uri).status).toBe('available');
+    expect((await resolve(f, uri)).status).toBe('available');
     Object.assign(sourceThread, {
       visibility: 'private',
       privateOwnerUserId: allocateEntityId('usr'),
     });
-    expect(resolve(f, uri)).toEqual(unavailable(uri));
+    expect(await resolve(f, uri)).toEqual(unavailable(uri));
   });
 
-  it('refuses invalid governed pages and fabricated delegation while preserving descriptive extensions', () => {
+  it('refuses invalid governed pages and fabricated delegation while preserving descriptive extensions', async () => {
     const f = fixture();
     const content = updateOkfFrontmatter({
       path: 'domain.md',
@@ -230,7 +230,7 @@ describe('exact governed Knowledge meaning receiver', () => {
       updates: { custom: { keep: ['exact', 'extension'] } },
     });
     publish(f, f.notebook, content);
-    expect(resolve(f, reference(f, f.ownerScope, content))).toMatchObject({
+    expect(await resolve(f, reference(f, f.ownerScope, content))).toMatchObject({
       status: 'available',
       content,
     });
@@ -242,11 +242,11 @@ describe('exact governed Knowledge meaning receiver', () => {
       const invalid = updateOkfFrontmatter({ path: 'domain.md', content, updates });
       publish(f, f.notebook, invalid);
       const uri = reference(f, f.ownerScope, invalid);
-      expect(resolve(f, uri)).toEqual(unavailable(uri));
+      expect(await resolve(f, uri)).toEqual(unavailable(uri));
     }
   });
 
-  it('admits Server meaning separately and does not treat Workspace membership as Server authority', () => {
+  it('admits Server meaning separately and does not treat Workspace membership as Server authority', async () => {
     const f = fixture();
     initializeScopedNotebook({
       coreDb: f.coreDb,
@@ -261,7 +261,7 @@ describe('exact governed Knowledge meaning receiver', () => {
     const content = page(scope);
     const revision = publish(f, notebook, content);
     const uri = reference(f, scope, content);
-    expect(resolve(f, uri)).toEqual({
+    expect(await resolve(f, uri)).toEqual({
       status: 'available',
       reference: uri,
       content,
@@ -269,6 +269,6 @@ describe('exact governed Knowledge meaning receiver', () => {
       notebookRevision: revision,
     });
     f.access.requestActor = { kind: 'session', userId: f.userId };
-    expect(resolve(f, uri)).toEqual(unavailable(uri));
+    expect(await resolve(f, uri)).toEqual(unavailable(uri));
   });
 });
