@@ -51,6 +51,7 @@ export function createGoalTaskPolicyService(deps: {
     const result = evaluateGoalTaskAccess({
       ...input,
       domain,
+      permissions: deps.domains.readPermissions({ context, ...(decision ? { decision } : {}) }),
       responsibleHumanId: context.responsibleUserId,
       resources: context.resources,
     });
@@ -61,13 +62,17 @@ export function createGoalTaskPolicyService(deps: {
         requestInputHash: context.requestInputHash,
       }),
       authorizationUses:
-        domain?.lifetime.uses !== undefined && result.kernel.effect === 'allow'
-          ? [
-              {
-                statement: { id: domain.id, digest: policyDigest(domain) },
-                limit: domain.lifetime.uses,
-              },
-            ]
+        result.kernel.effect === 'allow'
+          ? [domain, result.permission].flatMap((statement) =>
+              statement?.lifetime.uses !== undefined
+                ? [
+                    {
+                      statement: { id: statement.id, digest: policyDigest(statement) },
+                      limit: statement.lifetime.uses,
+                    },
+                  ]
+                : []
+            )
           : [],
     };
   }

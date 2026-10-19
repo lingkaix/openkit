@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { type NativeOperationDefinition, OPERATION_REGISTRY } from '@openkit/app-api-schemas';
+import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import {
   canonicalIdentifierName,
@@ -141,6 +142,40 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
         throw new Error('Storage lease activation requires a human root and exact owner scope.');
       continue;
     }
+    if (
+      statement.kind === 'permission' &&
+      statement.authority.kind === 'delegation' &&
+      statement.grant.kind === 'ordinary'
+    ) {
+      const anchor = statement.lifetime.anchor;
+      const subject = statement.scope.subjects[0];
+      const workspaceId = anchor.owner.kind === 'workspace' ? anchor.owner.workspaceId : null;
+      if (
+        statement.effect !== 'allow' ||
+        statement.author.kind !== 'agent' ||
+        statement.author.id !== 'goal-coordinator' ||
+        statement.scope.subjects.length !== 1 ||
+        subject?.kind !== 'agent' ||
+        subject.id === statement.author.id ||
+        anchor.owner.kind !== 'workspace' ||
+        !['goal', 'thread', 'turn'].includes(anchor.kind) ||
+        statement.scope.actions.some(
+          (action) => !Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, action)
+        ) ||
+        statement.scope.resources.some((resource) =>
+          resource.kind === 'mcp-tool'
+            ? resource.workspaceId !== workspaceId
+            : resource.container.owner.kind !== 'workspace' ||
+              resource.container.owner.workspaceId !== workspaceId
+        )
+      )
+        throw new Error(
+          'Delegated Goal permission requires its native Coordinator and Workspace scope.'
+        );
+      // The native reader checks the exact current root. A withdrawn or replaced
+      // root suspends this permission; it must not prevent that root's withdrawal.
+      continue;
+    }
     // Other forms stay declarations until their native authority consumer exists.
     if (statement.kind !== 'binding') throw new Error('This Policy form must remain inactive.');
     const definition = OPERATION_REGISTRY[statement.operation as keyof typeof OPERATION_REGISTRY];
@@ -190,7 +225,7 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       );
     if (statement.scope.actions.some((action) => action !== 'tool.use'))
       throw new Error('I16 binding requires the existing Tool-use action.');
-    if (!scopeContains(statement.scope, statement.inputDisclosure))
+    if (!policyScopeContains(statement.scope, statement.inputDisclosure))
       throw new Error('Participant input disclosure exceeds its admitted binding scope.');
     const position = JSON.stringify([
       statement.operation,
@@ -202,8 +237,17 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       throw new Error('Active binding order must be explicit and unique.');
     positions.add(position);
   }
-  if (document.statements.some((statement) => statement.authority.kind === 'delegation'))
-    throw new Error('Delegated Policy authority is unavailable.');
+  if (
+    document.statements.some(
+      (statement) =>
+        statement.authority.kind === 'delegation' &&
+        (statement.kind !== 'permission' ||
+          statement.grant.kind !== 'ordinary' ||
+          statement.author.kind !== 'agent' ||
+          statement.author.id !== 'goal-coordinator')
+    )
+  )
+    throw new Error('This delegated Policy form is unavailable.');
   const agents = document.statements.filter(
     (s): s is PolicyAgentPrincipalV1 => s.kind === 'agent-principal' && s.state === 'active'
   );
@@ -239,7 +283,7 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     // The chain was checked above; every edge also limits the declared disclosure domain.
     for (;;) {
       if (
-        !scopeContains(
+        !policyScopeContains(
           { ...agent.scope, subjects: binding.inputDisclosure.subjects },
           binding.inputDisclosure
         )
@@ -376,7 +420,7 @@ export function selectPolicyBindings(input: {
 }
 
 /** Exact finite selectors make disclosure containment decidable without a wildcard language. */
-function scopeContains(
+export function policyScopeContains(
   scope: PolicyBindingV1['scope'],
   disclosure: PolicyBindingV1['inputDisclosure']
 ): boolean {
