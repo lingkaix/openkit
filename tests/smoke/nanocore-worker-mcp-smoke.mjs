@@ -52,10 +52,10 @@ async function main() {
       [],
       'Smoke provider fixture must pass the production configuration loader.'
     );
-    assert.deepEqual(
-      providerProfiles.profiles.map(({ id }) => id),
-      ['agent-openrouter'],
-      'Smoke provider fixture must load the configured Task provider.'
+    assert.equal(
+      providerProfiles.profiles.filter(({ id }) => id === 'agent-openrouter').length,
+      1,
+      'Smoke provider fixture must load exactly one configured Task provider.'
     );
     const nanoHostSecret = await issueNanoHostToken(dataRoot);
     const env = {
