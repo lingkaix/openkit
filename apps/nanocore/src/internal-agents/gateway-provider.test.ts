@@ -63,6 +63,10 @@ import { OpenAICompatibleProviderError } from '../llm/openai-compatible-client.j
 import { GatewayUnsupportedFeatureError, PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { attachPiAiFailure } from '../llm/pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import type {
+  ProviderSubscriptionAccountManager,
+  ProviderSubscriptionPairHandle,
+} from '../llm/provider-subscription-accounts.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 import { type InternalAgentProviderRequest, runInternalAgentLoop } from './internal-agent-loop.js';
 import { internalContextFailure } from './rolling-context.js';
@@ -1330,7 +1334,14 @@ describe('internal Agent Gateway provider', () => {
       }),
       capture: captureBinding(),
       providerSubscriptionAccountManager: {
-        getPairHandle: async () => ({ models: pairModels }),
+        // This metadata/capture fixture explicitly admits quota; real-manager tests own defaults.
+        codexInferenceAllowed: (async () =>
+          true) satisfies ProviderSubscriptionAccountManager['codexInferenceAllowed'],
+        getPairHandle: async () => ({
+          models: pairModels,
+          getCredentialVersion: (async () =>
+            'synthetic-work:1') satisfies ProviderSubscriptionPairHandle['getCredentialVersion'],
+        }),
       } as never,
       promptCacheScope: {
         sessionId: 'administration:th_00000000-0000-7915-b626-0b698e2552dc',

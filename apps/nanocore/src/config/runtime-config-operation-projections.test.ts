@@ -127,6 +127,21 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
   const manager = new ProviderSubscriptionAccountManager({ coreDb, vaultBackend: () => backend });
   const pair = { subscriptionProviderId: 'xai' as const, accountSlotId: 'kept' };
   await manager.createAccount(pair);
+  const codexPair = { subscriptionProviderId: 'openai-codex' as const, accountSlotId: 'kept' };
+  await manager.createAccount(codexPair);
+  const codexHandle = await manager.getPairHandle(codexPair);
+  await codexHandle.credentials.modify('openai-codex', async () => ({
+    type: 'oauth',
+    access: 'synthetic-b4-access',
+    refresh: 'synthetic-b4-refresh',
+    accountId: 'synthetic-b4-account',
+    expires: Date.parse('2099-01-01T00:00:00.000Z'),
+  }));
+  const codexAccountPath = join(
+    dataRoot,
+    'server/files/provider-subscriptions/openai-codex/accounts/kept/account.json'
+  );
+  const codexAccountBytes = readFileSync(codexAccountPath);
   const accountPath = join(
     dataRoot,
     'server/files/provider-subscriptions/xai/accounts/kept/account.json'
@@ -208,6 +223,14 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
     },
     'provider-subscription.account-create': { subscriptionProviderId: 'xai', accountSlotId: 'new' },
     'provider-subscription.account-update': { ...pair, displayName: 'Changed' },
+    'provider-subscription.codex-settings': {
+      ...codexPair,
+      settings: { codexUseCredits: true },
+    },
+    'provider-subscription.account-use-reset': {
+      ...codexPair,
+      redeemRequestId: '9ebc0870-9621-40a8-84af-dc09b48fbc31',
+    },
     'provider-subscription.account-delete': pair,
     'provider-subscription.login-start': { ...pair, mode: 'device_code' },
     'provider-subscription.login-cancel': { ...pair, interactionId: 'pending' },
@@ -252,6 +275,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
         code: 'product_work_unavailable',
       });
       expect(readFileSync(accountPath)).toEqual(accountBytes);
+      expect(readFileSync(codexAccountPath)).toEqual(codexAccountBytes);
       expect(readFileSync(sourcePath)).toEqual(sourceBytes);
       expect(readFileSync(profilePath)).toEqual(profileBytes);
       expect(backend.listReferences()).toEqual(inventory);
@@ -350,6 +374,97 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
     expect(existsSync(accountPath)).toBe(false);
     expect(backend.listReferences()).toEqual(inventory);
     expect(providerFetch).not.toHaveBeenCalled();
+
+    const settingsUpdated = await app.request(
+      '/api/app/operations/provider-subscription.codex-settings',
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
+        body: JSON.stringify(cases['provider-subscription.codex-settings']),
+      }
+    );
+    expect(settingsUpdated.status).toBe(200);
+    expect(await settingsUpdated.json()).toMatchObject({ ...codexPair, codexUseCredits: true });
+    const settingsBytes = readFileSync(codexAccountPath);
+    expect(JSON.parse(settingsBytes.toString('utf8'))).toEqual({
+      ...JSON.parse(codexAccountBytes.toString('utf8')),
+      codexUseCredits: true,
+      updatedAt: expect.any(String),
+    });
+    expect(backend.listReferences()).toEqual(inventory);
+    expect(providerFetch).not.toHaveBeenCalled();
+
+    const usageUrl = 'https://chatgpt.com/backend-api/wham/usage';
+    const creditsUrl = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits';
+    const consumeUrl = `${creditsUrl}/consume`;
+    providerFetch.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === usageUrl)
+        return Response.json({
+          plan_type: 'pro',
+          rate_limit: {
+            allowed: false,
+            limit_reached: true,
+            primary_window: {
+              used_percent: 100,
+              limit_window_seconds: 604800,
+              reset_at: 2000000000,
+              reset_after_seconds: 3600,
+            },
+            secondary_window: null,
+          },
+          rate_limit_reset_credits: { available_count: 1 },
+        });
+      if (url === creditsUrl)
+        return Response.json({
+          available_count: 1,
+          credits: [
+            { id: 'b4-reset-credit', reset_type: 'weekly', status: 'available', expires_at: null },
+          ],
+        });
+      expect(url).toBe(consumeUrl);
+      return Response.json({ code: 'reset', windows_reset: true });
+    });
+    const reset = await app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token.secret}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'openkit_call',
+          arguments: {
+            operation: 'provider-subscription.account-use-reset',
+            input: cases['provider-subscription.account-use-reset'],
+          },
+        },
+      }),
+    });
+    expect(reset.status).toBe(200);
+    const resetResult = (await reset.json()).result;
+    expect(resetResult.isError).not.toBe(true);
+    expect(JSON.parse(resetResult.content[0].text)).toEqual({
+      ...cases['provider-subscription.account-use-reset'],
+      outcome: 'reset',
+      creditId: 'b4-reset-credit',
+      windowsReset: true,
+    });
+    expect(providerFetch.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual([
+      [usageUrl, 'GET'],
+      [creditsUrl, 'GET'],
+      [consumeUrl, 'POST'],
+    ]);
+    expect(JSON.parse(String(providerFetch.mock.calls[2]?.[1]?.body))).toEqual({
+      credit_id: 'b4-reset-credit',
+      redeem_request_id: cases['provider-subscription.account-use-reset'].redeemRequestId,
+    });
+    expect(readFileSync(codexAccountPath)).toEqual(settingsBytes);
+    expect(backend.listReferences()).toEqual(inventory);
   } finally {
     vault.lock();
     coreDb.sqlite.close();
