@@ -332,6 +332,8 @@ interface PairHandleState {
   active: boolean;
   /** Number of admitted credential removals that have not settled. */
   removalPending: number;
+  /** Resets keep the credential version; this local generation rejects predecessor quota reads. */
+  quotaResetGeneration: number;
   /** Public pair-scoped handle. */
   handle: ProviderSubscriptionPairHandle;
   /** Exact active or settling process-local login. */
@@ -598,6 +600,8 @@ export class ProviderSubscriptionAccountManager {
     signal?.throwIfAborted();
     const handle = await this.getPairHandle(exactPair);
     const version = await handle.getCredentialVersion();
+    const pairState = this.handles.get(pairKey(exactPair));
+    const quotaGeneration = pairState?.quotaResetGeneration;
     const observedAt = this.canonicalNow();
     /** Rechecks the existing projection at consumption time, including overlapping successful reads. */
     const cachedObservation = (): CodexAccountQuota | undefined => {
@@ -617,9 +621,13 @@ export class ProviderSubscriptionAccountManager {
     if (version === undefined || (await handle.getCredentialVersion()) !== version)
       return { observedAt, quota: null };
     if (quota?.availability === 'available') {
+      if (pairState?.quotaResetGeneration !== quotaGeneration)
+        return cachedObservation() ?? { observedAt, quota: null };
       const observation = { version, observedAt, quota };
       this.codexQuotas.set(pairKey(exactPair), observation);
       await handle.observeQuota(version, quota.availability, true, signal);
+      if (pairState?.quotaResetGeneration !== quotaGeneration)
+        return cachedObservation() ?? { observedAt, quota: null };
     }
     // A failed overlapping read cannot erase another call's fresh full-window proof.
     return quota === null ? (cachedObservation() ?? { observedAt, quota }) : { observedAt, quota };
@@ -647,7 +655,6 @@ export class ProviderSubscriptionAccountManager {
     options: {
       readonly signal?: AbortSignal | undefined;
       readonly trigger?: 'manual' | 'weekly' | 'expiring';
-      readonly weeklyResetsAt?: string;
       /** Failed inference material, checked while holding this same effect fence. */
       readonly expectedVersion?: string;
     } = {}
@@ -714,11 +721,7 @@ export class ProviderSubscriptionAccountManager {
           (window) => window.limitWindowSeconds === 604_800 && window.usedPercent >= 100
         );
         if (trigger === 'weekly') {
-          if (
-            record.codexAutoUseWeeklyReset === false ||
-            !weekly ||
-            (options.weeklyResetsAt && options.weeklyResetsAt !== weekly.resetsAt)
-          )
+          if (record.codexAutoUseWeeklyReset === false || !weekly)
             return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
           const suffix = `:${encodeURIComponent(weekly.resetsAt)}`;
           const previousWindow = this.coreDb.sqlite
@@ -759,12 +762,17 @@ export class ProviderSubscriptionAccountManager {
       }
       options.signal?.throwIfAborted();
       const creditId = decodeURIComponent(resource.slice(prefix.length).split(':')[0]!);
-      this.codexQuotas.delete(pairKey(exactPair));
       const result = await consumeCodexReset(
         presented,
         { creditId, redeemRequestId },
         options.signal
       );
+      if (result.outcome === 'reset') {
+        // Invalidate at confirmation while the effect fence is held, including in-flight reads.
+        const pairState = this.handles.get(pairKey(exactPair));
+        if (pairState) pairState.quotaResetGeneration += 1;
+        this.codexQuotas.delete(pairKey(exactPair));
+      }
       const outcome: CodexAccountResetResult = {
         ...exactPair,
         redeemRequestId,
@@ -1347,6 +1355,7 @@ export class ProviderSubscriptionAccountManager {
       login: null,
       loginError: null,
       removalPending: 0,
+      quotaResetGeneration: 0,
     } as PairHandleState;
     const credentials: CredentialStore = {
       delete: (providerId) => {
