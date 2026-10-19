@@ -4,7 +4,7 @@ import {
   createRequestId,
   type WorkspaceRecord,
 } from '@openkit/core-client';
-import { formatReferenceUri, type PageReference, parseReferenceScope } from '@openkit/protocol';
+import { parseReferenceScope } from '@openkit/protocol';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import {
@@ -78,18 +78,6 @@ export function shouldShowKnowledgeCitationEvidence(
 ): boolean {
   const scope = parseReferenceScope(scopeId);
   return scope?.kind === 'server' || evidence.referenceUri !== undefined;
-}
-
-/** Formats one canonical page URI when a separate content digest is available. */
-export function formatKnowledgeCitationReferenceUri(
-  reference: PageReference,
-  contentDigest?: string
-): string | null {
-  try {
-    return formatReferenceUri(reference, contentDigest);
-  } catch {
-    return null;
-  }
 }
 
 export const workspaceKeys = {
