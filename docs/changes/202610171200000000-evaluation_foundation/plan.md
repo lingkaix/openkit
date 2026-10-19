@@ -30,7 +30,7 @@ Landing 1 publishes immutable Artifact versions, parent lineage, exact history r
 
 The version producer and retained-file reader share the exact version record and payload contract. Public history, download and Context consumers must read the requested version rather than substituting the current head. Focused regressions cover that seam before the final complete affected-module and Web browser gate. Range correction uses the existing UTF-16 and digest oracle. Selection uses existing pinned-input admission without a new delivery lifecycle.
 
-The primary owns owner text, integration and held paths after release. A separate builder owns version Protocol, API, Store and stream seams in `lane/web-evaluation-versions`. Another builder owns Artifact Web history/publication and browser regressions in `lane/web-evaluation-ui`. Each has a private worktree, dependencies and temporary root. Both use the builder contract and normal merge handoff. A third independent Sol reviewer inspects the combined head and named evidence before landing.
+The primary owns owner text, integration and held paths after release. A separate builder owns version Protocol, API, Store and stream seams in `lane/web-evaluation-versions`. Another builder owns Artifact Web history/publication and browser regressions in `lane/web-evaluation-ui`. Each has a private worktree, dependencies and temporary root. Both use the builder contract and normal merge handoff. An independent Sol reviewer inspects the combined head and named evidence before landing.
 
 ## Intent Revision 3
 
@@ -42,7 +42,9 @@ The coordinator released the naming-held paths on main `fe05c77bf` on 2026-10-18
 
 ## Current Checkpoint
 
-Landing 1 preserves real immutable initial versions and every historical original through native publication and Workspace transfer. The mixed file-to-inline-to-file regression exposed a physical-header parser mismatch; the correction shares the existing body-free physical reader without relaxing public schemas, digest checks or retained history. Complete direct version and public projection suites passed 52 cases on `1b50b2949fc9755745e9fa7f1fde0eb5ba2d1adf`. The naming join aligns Storage Layout, exact operation inventories and regenerated projections. The external lane checkpoint names current heads, reviews and gates; no final qualification or landing is claimed here.
+Landing 2 normally joins Landing 1 `3d0e249a980a4cc574c412ab7de0848c417cc5ea`, including the released naming main, immutable version correction and retained Storage Layout. Landing 2 ancestry stays out of Landing 1. The external lane checkpoint records exact heads, reviews and observed gates.
+
+Landing 2 adds target-owned attributable judgements, candidate sets and selection, exact UTF-16 Material range corrections, portable retained records and explicit selected-version next-Turn inputs. Its naming join aligns the Workspace SQLite owner and generated projections. Independent delta review, the complete applicable module gate and large-branch CI remain required before landing after Landing 1. No complete gate or landing is claimed here.
 
 ## Effect Boundary
 

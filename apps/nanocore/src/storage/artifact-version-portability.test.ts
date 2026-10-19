@@ -3,18 +3,27 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CandidateSetRecordSchema,
+  type JsonOperationId,
   WorkspaceExportResponseSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { correctMaterialRange } from '../material-range-corrections.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import {
+  createWorkspaceMaterial,
+  getWorkspaceMaterialRevision,
+  listWorkspaceMaterials,
+  saveWorkspaceMaterialRevision,
+} from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { openCoreDb } from './db.js';
-import { applyMigrations } from './migrate.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { verifyWorkspaceExportTree } from './workspace-export.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
 import { existingWorkspaceExportRoot } from './workspace-transfer-routes.js';
@@ -406,4 +415,359 @@ it('retains historical Artifact event snapshots and Item deltas after a newer ve
       artifactVersion: 1,
     })
   );
+});
+
+it('round trips target-owned judgements, exact range results and candidate choices with reminted references', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'evaluation-portability-'));
+  const coreDb = openCoreDb(dataRoot);
+  onTestFinished(() => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const actor = { kind: 'user', id: userId } as const;
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Evaluation history', {
+    producer: actor,
+    requestId: randomUUID(),
+    instructionReference: 'test:evaluation-portability',
+  });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const candidates = ['First original', 'Second original'].map((body, index) => {
+    const requestId = `portable-original-${index}`;
+    const recordedAt = new Date().toISOString();
+    const contentDigest = digest(Buffer.from(body));
+    const artifact = store.createArtifact({
+      id: allocateEntityId('ar'),
+      workspaceId: workspace.id,
+      threadId: null,
+      turnId: null,
+      kind: 'file',
+      title: body,
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body },
+      contentDigest,
+      lastMutationRequestId: requestId,
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: requestId,
+        sourceDigest: contentDigest,
+        actor,
+        requestId,
+        recordedAt,
+      },
+      createdAt: recordedAt,
+      updatedAt: recordedAt,
+    });
+    return { artifactId: artifact.id, artifactVersion: 1, contentDigest };
+  });
+  const db = openWorkspaceDb(dataRoot, workspace.id);
+  let originalRevisionId: string;
+  let materialId: string;
+  let correction: ReturnType<typeof correctMaterialRange>;
+  try {
+    applyScopedMigrations(db);
+    const acceptedAt = new Date().toISOString();
+    ({ materialId } = createWorkspaceMaterial(db, {
+      actor,
+      acceptedAt,
+      requestId: 'portable-material',
+      title: 'Portable feedback',
+      kind: 'text',
+      sensitivity: 'internal',
+    }));
+    const content = 'Original 😀 source\r\n';
+    const contentDigest = digest(Buffer.from(content));
+    ({ revisionId: originalRevisionId } = saveWorkspaceMaterialRevision(db, {
+      actor,
+      acceptedAt,
+      materialId,
+      requestId: 'portable-revision',
+      expectedRevisionId: null,
+      content,
+      contentDigest,
+    }));
+    correction = db.sqlite.transaction(() =>
+      correctMaterialRange(db, {
+        workspaceId: workspace.id,
+        actor,
+        acceptedAt,
+        requestId: 'portable-correction',
+        target: {
+          kind: 'material-range',
+          materialId,
+          revisionId: originalRevisionId,
+          contentDigest,
+          start: 9,
+          end: 11,
+          originalText: '😀',
+        },
+        replacementText: 'new',
+        decision: 'apply',
+        note: 'Exact feedback',
+        extensions: { review: 'manual' },
+      })
+    )();
+  } finally {
+    db.sqlite.close();
+  }
+  const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
+  /** Invokes the public projection so the round trip also exercises the native family join. */
+  async function post(operation: JsonOperationId, input: unknown, status: number) {
+    const response = await app.request(
+      ...operationRequest(operation, {}, { body: JSON.stringify(input) })
+    );
+    expect(response.status, await response.clone().text()).toBe(status);
+    return response.json();
+  }
+  const set = CandidateSetRecordSchema.parse(
+    await post(
+      'evaluation.candidate-set-create',
+      { workspaceId: workspace.id, requestId: 'portable-set', candidates },
+      201
+    )
+  );
+  const selected = CandidateSetRecordSchema.parse(
+    await post(
+      'evaluation.candidate-set-select',
+      {
+        workspaceId: workspace.id,
+        candidateSetId: set.candidateSetId,
+        requestId: 'portable-selection',
+        choice: candidates[0],
+        note: 'Preferred original',
+      },
+      200
+    )
+  );
+  const assessment = await post(
+    'evaluation.judgement-add',
+    {
+      workspaceId: workspace.id,
+      requestId: 'portable-judgement',
+      judgement: {
+        kind: 'accept',
+        target: { kind: 'artifact-version', ...candidates[0] },
+        choice: null,
+        note: 'Human acceptance',
+      },
+    },
+    201
+  );
+  const description = {
+    artifactId: candidates[0]!.artifactId,
+    materialId,
+    candidateSetId: set.candidateSetId,
+  };
+  /** Adds ignored descriptions whose reference-looking strings must survive without reminting. */
+  function addDescriptions(raw: {
+    actor: object;
+    target: object;
+    choice: unknown;
+    description?: unknown;
+  }) {
+    raw.description = description;
+    raw.actor = { ...raw.actor, description: 'Historical actor' };
+    raw.target = { ...raw.target, description: 'Historical target' };
+    if (typeof raw.choice === 'object' && raw.choice !== null)
+      raw.choice = { ...raw.choice, description: 'Historical choice' };
+  }
+  const sourceDb = openWorkspaceDb(dataRoot, workspace.id);
+  try {
+    const setRow = sourceDb.sqlite
+      .prepare(
+        'SELECT payload_json AS payload FROM evaluation_candidate_sets WHERE candidate_set_id = ?'
+      )
+      .get(set.candidateSetId) as { payload: string };
+    const rawSet = JSON.parse(setRow.payload);
+    rawSet.description = description;
+    rawSet.createdBy.description = 'Historical creator';
+    rawSet.candidates[0].description = 'Historical member';
+    addDescriptions(rawSet.judgements[0]);
+    sourceDb.sqlite
+      .prepare('UPDATE evaluation_candidate_sets SET payload_json = ? WHERE candidate_set_id = ?')
+      .run(JSON.stringify(rawSet), set.candidateSetId);
+    const reviewRow = sourceDb.sqlite
+      .prepare(
+        'SELECT judgements FROM artifact_reviews WHERE artifact_id = ? AND artifact_version = 1'
+      )
+      .get(candidates[0]!.artifactId) as { judgements: string };
+    const reviewJudgements = JSON.parse(reviewRow.judgements);
+    addDescriptions(reviewJudgements[0]);
+    sourceDb.sqlite
+      .prepare(
+        'UPDATE artifact_reviews SET judgements = ? WHERE artifact_id = ? AND artifact_version = 1'
+      )
+      .run(JSON.stringify(reviewJudgements), candidates[0]!.artifactId);
+    const revisionRow = sourceDb.sqlite
+      .prepare(
+        'SELECT judgements FROM workspace_material_revisions WHERE material_id = ? AND revision_id = ?'
+      )
+      .get(materialId, originalRevisionId) as { judgements: string };
+    const rangeJudgements = JSON.parse(revisionRow.judgements);
+    addDescriptions(rangeJudgements[0]);
+    rangeJudgements[0].choice.resultingRevision.description = 'Historical correction result';
+    sourceDb.sqlite
+      .prepare(
+        'UPDATE workspace_material_revisions SET judgements = ? WHERE material_id = ? AND revision_id = ?'
+      )
+      .run(JSON.stringify(rangeJudgements), materialId, originalRevisionId);
+  } finally {
+    sourceDb.sqlite.close();
+  }
+  const exportedResponse = await app.request(
+    ...operationRequest('workspace.export', { workspaceId: workspace.id })
+  );
+  expect(exportedResponse.status, await exportedResponse.clone().text()).toBe(200);
+  const exported = WorkspaceExportResponseSchema.parse(await exportedResponse.json());
+  const verified = verifyWorkspaceExportTree({
+    exportRoot: existingWorkspaceExportRoot(dataRoot, workspace.id, exported.exportId),
+  });
+  const files = new Map(verified.fileContents);
+  const revisionsPath = 'records/workspace-material-revisions.jsonl';
+  const invalidRevisions = files
+    .get(revisionsPath)!
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  invalidRevisions.find(
+    (revision) => revision.revisionId === originalRevisionId
+  ).judgements[0].target.originalText = 'xx';
+  files.set(
+    revisionsPath,
+    `${invalidRevisions.map((revision) => JSON.stringify(revision)).join('\n')}\n`
+  );
+  expect(() =>
+    readWorkspaceImportSnapshot({
+      verified: { ...verified, fileContents: files },
+      targetWorkspaceId: workspace.id,
+    })
+  ).toThrow('Portable judgement contradicts its exact original UTF-16 Material range.');
+  const imported = WorkspaceImportResponseSchema.parse(
+    await post(
+      'workspace.import',
+      { sourceWorkspaceId: workspace.id, exportId: exported.exportId, requestId: randomUUID() },
+      200
+    )
+  );
+  const restoredWorkspace = imported.importedWorkspaceId;
+  const reopened = new FsStore({ dataRoot });
+  const restoredArtifact = reopened
+    .listArtifacts(restoredWorkspace)
+    .find((item) => item.title === 'First original');
+  expect(restoredArtifact).toBeDefined();
+  const listedResponse = await app.request(
+    ...operationRequest('evaluation.candidate-set-list', { workspaceId: restoredWorkspace })
+  );
+  expect(listedResponse.status).toBe(200);
+  const listed = (await listedResponse.json()) as { items: unknown[] };
+  const restoredSet = CandidateSetRecordSchema.parse(listed.items[0]);
+  expect(restoredSet.workspaceId).toBe(restoredWorkspace);
+  expect(restoredSet.candidates[0]).toEqual({ ...candidates[0], artifactId: restoredArtifact!.id });
+  expect(restoredSet.judgements[0]).toMatchObject({
+    actor,
+    recordedAt: selected.judgements[0]!.recordedAt,
+    kind: 'select',
+    choice: {
+      artifactId: restoredArtifact!.id,
+      artifactVersion: 1,
+      contentDigest: candidates[0]!.contentDigest,
+    },
+  });
+  const reviewResponse = await app.request(
+    ...operationRequest('artifact.review-list', {
+      workspaceId: restoredWorkspace,
+      artifactId: restoredArtifact!.id,
+    })
+  );
+  expect(reviewResponse.status).toBe(200);
+  const reviews = (await reviewResponse.json()) as { reviews: Array<{ judgements: unknown[] }> };
+  expect(reviews.reviews[0]!.judgements[0]).toMatchObject({
+    actor,
+    recordedAt: assessment.judgement.recordedAt,
+    kind: 'accept',
+    target: { kind: 'artifact-version', artifactId: restoredArtifact!.id, artifactVersion: 1 },
+  });
+  const restoredDb = openWorkspaceDb(dataRoot, restoredWorkspace);
+  try {
+    const material = listWorkspaceMaterials(restoredDb).find(
+      (item) => item.title === 'Portable feedback'
+    )!;
+    expect(material.materialId).not.toBe(materialId);
+    const result = getWorkspaceMaterialRevision(
+      restoredDb,
+      material.materialId,
+      material.currentRevisionId!
+    );
+    const original = getWorkspaceMaterialRevision(
+      restoredDb,
+      material.materialId,
+      result.parentRevisionId!
+    );
+    expect(original.revisionId).not.toBe(originalRevisionId);
+    expect(original.content).toBe('Original 😀 source\r\n');
+    expect(result.content).toBe('Original new source\r\n');
+    expect(original.judgements[0]).toMatchObject({
+      actor,
+      recordedAt: correction.recordedAt,
+      kind: 'correct',
+      target: {
+        materialId: material.materialId,
+        revisionId: original.revisionId,
+        originalText: '😀',
+      },
+      choice: {
+        outcome: 'apply',
+        resultingRevision: {
+          materialId: material.materialId,
+          revisionId: result.revisionId,
+          contentDigest: result.contentDigest,
+        },
+      },
+    });
+    const rawSet = JSON.parse(
+      (
+        restoredDb.sqlite
+          .prepare(
+            'SELECT payload_json AS payload FROM evaluation_candidate_sets WHERE candidate_set_id = ?'
+          )
+          .get(restoredSet.candidateSetId) as { payload: string }
+      ).payload
+    );
+    expect(rawSet.description).toEqual(description);
+    expect(rawSet.createdBy.description).toBe('Historical creator');
+    expect(rawSet.candidates[0].description).toBe('Historical member');
+    const rawReview = JSON.parse(
+      (
+        restoredDb.sqlite
+          .prepare(
+            'SELECT judgements FROM artifact_reviews WHERE artifact_id = ? AND artifact_version = 1'
+          )
+          .get(restoredArtifact!.id) as { judgements: string }
+      ).judgements
+    );
+    const rawRange = JSON.parse(
+      (
+        restoredDb.sqlite
+          .prepare(
+            'SELECT judgements FROM workspace_material_revisions WHERE material_id = ? AND revision_id = ?'
+          )
+          .get(material.materialId, original.revisionId) as { judgements: string }
+      ).judgements
+    );
+    for (const judgement of [rawSet.judgements[0], rawReview[0], rawRange[0]]) {
+      expect(judgement.description).toEqual(description);
+      expect(judgement.actor.description).toBe('Historical actor');
+      expect(judgement.target.description).toBe('Historical target');
+    }
+    expect(rawSet.judgements[0].choice.description).toBe('Historical choice');
+    expect(rawRange[0].choice.description).toBe('Historical choice');
+    expect(rawRange[0].choice.resultingRevision.description).toBe('Historical correction result');
+  } finally {
+    restoredDb.sqlite.close();
+  }
 });

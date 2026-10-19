@@ -316,9 +316,18 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   const submission = StartTaskModeResponseSchema.parse(JSON.parse(responseBody));
   expect(submission.turn).toMatchObject({ workspaceId, threadId });
   await page.goto(`${stack.webUrl}/tasks/${workspaceId}/${threadId}`);
-  await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible({
-    timeout: 15_000,
-  });
+  // 202 admits the Turn. The simulator question is published with the Context Package snapshot.
+  await expect(async () => {
+    const snapshot = await getJson<{ contextPackageDigest: string | null }>(
+      '/api/app/operations/turn.read',
+      { workspaceId, threadId, turnId: submission.turn.id }
+    );
+    expect(snapshot.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+    expect(
+      await page.getByText('Which summary tone should the simulator use?').count()
+    ).toBeGreaterThan(0);
+  }).toPass({ timeout: 15_000 });
+  await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await expect(page.getByText("Couldn't send that message. Try again.")).toHaveCount(0);
   const turn = await getJson<{ status: string; contextPackageDigest: string | null }>(
     '/api/app/operations/turn.read',

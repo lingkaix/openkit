@@ -5,8 +5,10 @@ import {
   ArchivedWorkspaceRepositoryGitConfigSchema,
   BackendWorkspaceHandleReaderSchema,
   BackendWorkspaceHandleSchema,
+  type CandidateSetRecord,
   EvidenceBundleRecordSchema,
   InjectionVisibilitySchema,
+  JudgementRecordReaderSchema,
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
@@ -146,6 +148,11 @@ import {
 
 import { parseArtifactVersionDescriptor } from './artifacts/artifact-version-records.js';
 import {
+  readPortableJudgements,
+  remintPortableCandidateSets,
+  remintPortableJudgements,
+} from './evaluation-portability.js';
+import {
   RECURRING_PORTABLE_FEATURE,
   readRecurringPortableFiles,
   remapRecurringPortableHistory,
@@ -237,6 +244,7 @@ const ImportedThreadMaterialBindingSchema = z
   })
   .strip();
 const ImportedArtifactReviewSchema = StoredArtifactReviewV1Schema.safeExtend({
+  judgements: z.array(JudgementRecordReaderSchema).default([]),
   materialProposal: StoredArtifactReviewV1Schema.shape.materialProposal.unwrap().strip().nullable(),
   rangeFeedback: StoredArtifactReviewV1Schema.shape.rangeFeedback
     .unwrap()
@@ -594,6 +602,8 @@ export interface WorkspaceImportSnapshot {
   threadMaterialBindings: ImportedThreadMaterialBinding[];
   /** Imported version-keyed Artifact Reviews. */
   artifactReviews: ImportedArtifactReview[];
+  /** Imported raw candidate-set payloads with exact reminted membership and judgements. */
+  evaluationCandidateSets: CandidateSetRecord[];
   /** Imported durable AgentSessions. */
   agentSessions: AgentSession[];
   /** Imported retained turn event logs keyed by reminted turn id. */
@@ -908,7 +918,13 @@ export function readWorkspaceImportSnapshot(
   const sourceWorkspaceMaterialRevisions = readImportJsonl(
     input.verified.fileContents,
     'records/workspace-material-revisions.jsonl'
-  ).map((record) => ImportedWorkspaceMaterialRevisionSchema.parse(record));
+  ).map((record) => {
+    const parsed = ImportedWorkspaceMaterialRevisionSchema.parse(record);
+    return {
+      ...parsed,
+      judgements: readPortableJudgements((record as { judgements?: unknown }).judgements ?? []),
+    };
+  });
   const sourceThreadMaterialBindings = readImportJsonl(
     input.verified.fileContents,
     'records/thread-material-bindings.jsonl'
@@ -916,7 +932,13 @@ export function readWorkspaceImportSnapshot(
   const sourceArtifactReviews = readImportJsonl(
     input.verified.fileContents,
     'records/artifact-reviews.jsonl'
-  ).map((record) => ImportedArtifactReviewSchema.parse(record));
+  ).map((record) => {
+    const parsed = ImportedArtifactReviewSchema.parse(record);
+    return {
+      ...parsed,
+      judgements: readPortableJudgements((record as { judgements?: unknown }).judgements ?? []),
+    };
+  });
   const context: ImportRemintContext = {
     files: input.verified.fileContents,
     binaryFiles: input.verified.binaryFileContents,
@@ -1170,6 +1192,7 @@ export function readWorkspaceImportSnapshot(
     workspaceMaterialRevisions: workResources.workspaceMaterialRevisions,
     threadMaterialBindings: workResources.threadMaterialBindings,
     artifactReviews: workResources.artifactReviews,
+    evaluationCandidateSets: workResources.evaluationCandidateSets,
     agentSessions: canonical.agentSessions,
     turnEvents: workResources.turnEvents,
     knowledgeSources: canonical.knowledgeSources,
@@ -2740,6 +2763,7 @@ function readWorkResourceImportState(
         ? requiredMaterialRevisionId(context, revision.materialId, revision.parentRevisionId)
         : null,
       createdByRequestId: importRequestLineage(context, revision.createdByRequestId),
+      judgements: [],
     })
   );
   const threadMaterialBindings = context.sourceThreadMaterialBindings.map((binding) =>
@@ -2760,6 +2784,33 @@ function readWorkResourceImportState(
     threadMaterialBindings,
     context.targetWorkspaceId,
     new Set(canonical.threads.map((thread) => thread.id))
+  );
+  const evaluationContext = {
+    sourceWorkspaceId: context.report.exportedWorkspaceId,
+    targetWorkspaceId: context.targetWorkspaceId,
+    artifactIds: context.artifactIds,
+    materialIds: context.materialIds,
+    materialRevisionId: (materialId: string, revisionId: string) =>
+      requiredMaterialRevisionId(context, materialId, revisionId),
+    requestId: (requestId: string) => importRequestLineage(context, requestId),
+    artifactVersions: canonical.artifactVersions.map(({ record }) => record),
+    materialRevisions: workspaceMaterialRevisions,
+  };
+  for (const [index, source] of context.sourceWorkspaceMaterialRevisions.entries()) {
+    workspaceMaterialRevisions[index]!.judgements = remintPortableJudgements(
+      source.judgements,
+      {
+        kind: 'material-range',
+        materialId: source.materialId,
+        revisionId: source.revisionId,
+        contentDigest: source.contentDigest,
+      },
+      evaluationContext
+    );
+  }
+  const evaluationCandidateSets = remintPortableCandidateSets(
+    readImportJsonl(context.files, 'records/evaluation-candidate-sets.jsonl'),
+    evaluationContext
   );
   const itemText = new Map<string, string>();
   const threadPreviewText = new Map<string, string>();
@@ -3339,8 +3390,19 @@ function readWorkResourceImportState(
           baseContentDigest: review.materialProposal.baseContentDigest,
         }
       : null;
+    const judgements = remintPortableJudgements(
+      review.judgements,
+      {
+        kind: 'artifact-version',
+        artifactId: review.artifactId,
+        artifactVersion: review.artifactVersion,
+        contentDigest: review.contentDigest,
+      },
+      evaluationContext
+    );
     const imported = ImportedArtifactReviewSchema.parse({
       ...review,
+      judgements,
       workspaceId: context.targetWorkspaceId,
       reviewId: deriveArtifactReviewId(
         context.targetWorkspaceId,
@@ -3388,13 +3450,14 @@ function readWorkResourceImportState(
       tracesBySourceTurn,
       context.itemLineage
     );
-    return imported;
+    return { ...imported, judgements };
   });
 
   return {
     artifactPayloadFiles,
     agentEnvironmentPackageSnapshots,
     artifactReviews,
+    evaluationCandidateSets,
     itemRevisions,
     threadMaterialBindings,
     threads,

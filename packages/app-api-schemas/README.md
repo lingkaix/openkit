@@ -234,6 +234,8 @@ Server operation targets carry an optional explicit `family` of administration, 
 
 `external-trigger.ts` and `external-trigger-operations.ts` declare the scheduled poll event admission input and its ordinary Worker references. The operation accepts only Worker-package credentials. Native invocation binds source scope; model arguments cannot select another schedule or target Thread. `external-trigger.test.ts` checks that boundary without adding event execution states.
 
+Evaluation Material-range targets use the existing half-open UTF-16 contract without a duplicate unit field. Candidate-set select judgements and independent version-owned Review choices have separate targets and are never dual-written; [Evaluation Foundation](../../docs/specs/20261017-evaluation_foundation.md) owns that boundary.
+
 The existing operation registry also includes native Policy points for `mcp.call-tool` and `policy.write`. These entries declare stage, crossing, mode and participant limits without creating App API endpoints or primary rights. API projections select API bindings explicitly. Administration configuration schemas expose the typed human Policy candidate; permission-decision projections carry its optional mediated envelope.
 
 Knowledge retrieval accepts optional nonempty `types` and `appliesTo` identifier lists. They narrow existing scope-derived retrieval without changing Page reference fields or authority. Existing retrieval parameters retain supplied normalized lists and omit both keys when absent. The [Notebook owner](../../docs/specs/20260909-knowledge_notebook_editing.md#typed-domain-pages) defines matching; NanoCore owns eligibility and execution.

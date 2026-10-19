@@ -137,6 +137,8 @@ const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<
   git_push_record: null,
   artifact: ArtifactIdSchema,
   artifact_review: ArtifactReviewIdSchema,
+  evaluation_candidate_set: null,
+  evaluation_judgement: null,
   workspace_sync_review: null,
   knowledge_proposal: null,
   knowledge_proposal_review: KnowledgeReviewIdSchema,

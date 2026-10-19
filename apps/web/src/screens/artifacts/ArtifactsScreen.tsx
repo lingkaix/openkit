@@ -1,3 +1,4 @@
+import type { EvaluationCandidate } from '@openkit/app-api-schemas';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { TextField as AriaTextField, FileTrigger, Label, TextArea } from 'react-aria-components';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -17,6 +18,7 @@ import {
   TextField,
 } from '../../primitives';
 import { artifactInventoryPath } from '../operations/data';
+import { ArtifactCandidateSets } from './ArtifactCandidateSets';
 import { ArtifactVersionHistory } from './ArtifactVersionHistory';
 import {
   type ArtifactImportInput,
@@ -42,6 +44,7 @@ import {
   useThreads,
   useWorkspaces,
 } from './data';
+import { sameCandidate } from './evaluation-data';
 
 /** User-facing output kinds, independent of review lifecycle and content format. */
 const ARTIFACT_KIND_LABEL: Record<ArtifactListItem['kind'], string> = {
@@ -134,6 +137,45 @@ export function ArtifactsScreen() {
   const [content, setContent] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [threadId, setThreadId] = useState('');
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [comparisonDraft, setComparisonDraft] = useState<{
+    workspaceId: string;
+    candidates: EvaluationCandidate[];
+  } | null>(null);
+  const [comparisonLock, setComparisonLock] = useState<{
+    workspaceId: string;
+    locked: boolean;
+  } | null>(null);
+  const comparisonLocked = comparisonLock?.workspaceId === workspaceId && comparisonLock.locked;
+  const comparisonCandidates =
+    comparisonDraft?.workspaceId === workspaceId ? comparisonDraft.candidates : [];
+  const comparisonLockChanged = useCallback(
+    (locked: boolean) => {
+      if (workspaceId && workspaceIdRef.current === workspaceId)
+        setComparisonLock({ workspaceId, locked });
+    },
+    [workspaceId]
+  );
+  const clearComparisonDraft = useCallback(() => {
+    if (workspaceId && workspaceIdRef.current === workspaceId)
+      setComparisonDraft({ workspaceId, candidates: [] });
+  }, [workspaceId]);
+  const addComparisonCandidate = useCallback(
+    (candidate: EvaluationCandidate) => {
+      if (!workspaceId || comparisonLocked) return;
+      setComparisonDraft((previous) => {
+        const candidates = previous?.workspaceId === workspaceId ? previous.candidates : [];
+        return {
+          workspaceId,
+          candidates: candidates.some((entry) => sameCandidate(entry, candidate))
+            ? candidates
+            : [...candidates, candidate],
+        };
+      });
+      setComparisonOpen(true);
+    },
+    [workspaceId, comparisonLocked]
+  );
   const [inspectedVersion, setInspectedVersion] = useState<{
     workspaceId: string;
     artifactId: string;
@@ -165,6 +207,7 @@ export function ArtifactsScreen() {
   // Workspace identity is the reset trigger even though its bytes are not rendered here.
   // biome-ignore lint/correctness/useExhaustiveDependencies: clear workspace-bound form and command state on selection change
   useEffect(() => {
+    setComparisonOpen(false);
     setImporting(false);
     setTitle('');
     setMediaType('');
@@ -425,6 +468,9 @@ export function ArtifactsScreen() {
         actions={
           <>
             {disconnected ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
+            <Button size="sm" variant="outline" onPress={() => setComparisonOpen(true)}>
+              Compare candidates
+            </Button>
             <Button size="sm" isDisabled={importActionBlocked} onPress={() => setImporting(true)}>
               Import artifact
             </Button>
@@ -544,6 +590,27 @@ export function ArtifactsScreen() {
         </ul>
       )}
 
+      {comparisonOpen ? (
+        <Card>
+          <ArtifactCandidateSets
+            workspaceId={workspaceId}
+            draftCandidates={comparisonCandidates}
+            disabled={writeBlocked}
+            onDraftLockedChange={comparisonLockChanged}
+            onClearDraft={clearComparisonDraft}
+            onRemoveCandidate={(candidate) => {
+              if (!comparisonLocked)
+                setComparisonDraft({
+                  workspaceId,
+                  candidates: comparisonCandidates.filter(
+                    (entry) => !sameCandidate(entry, candidate)
+                  ),
+                });
+            }}
+          />
+        </Card>
+      ) : null}
+
       {selectedId || unavailableArtifact ? (
         <Card className="flex flex-col gap-3">
           {listedItem ? (
@@ -566,6 +633,8 @@ export function ArtifactsScreen() {
               disabled={writeBlocked}
               unavailable={!detail || selected.isFetching}
               onVersionChange={onInspectedVersionChange}
+              onAddCandidate={addComparisonCandidate}
+              comparisonDisabled={comparisonLocked}
             />
           ) : null}
           {historicalSelection ? (

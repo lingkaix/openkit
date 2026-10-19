@@ -16,6 +16,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { ArtifactReviewDecisionSchema } from './action-center.js';
+import { JudgementRecordReaderSchema } from './evaluation-readers.js';
 import { ArtifactReviewRangeFeedbackSchema } from './material-range.js';
 
 export { ArtifactReviewRangeFeedbackSchema } from './material-range.js';
@@ -132,6 +133,7 @@ export const WorkspaceMaterialRevisionSummarySchema = z
 /** Closed public view of one immutable Workspace Material revision and its canonical content. */
 export const WorkspaceMaterialRevisionViewSchema = WorkspaceMaterialRevisionSummarySchema.extend({
   content: z.string(),
+  judgements: z.array(JudgementRecordReaderSchema).default([]),
 }).strict();
 
 /** Immutable Material target and base captured by one Artifact Review. */
@@ -170,6 +172,7 @@ export const ArtifactReviewViewSchema = z
     feedback: z.string().min(1).nullable(),
     rangeFeedback: ArtifactReviewRangeFeedbackSchema.nullable().optional(),
     candidateSelections: z.array(ArtifactReviewCandidateSelectionSchema).default([]),
+    judgements: z.array(JudgementRecordReaderSchema).default([]),
     decidedAt: TimestampSchema.nullable(),
     followUpTurnId: TurnIdSchema.nullable(),
     appliedMaterialRevisionId: MaterialRevisionIdSchema.nullable(),

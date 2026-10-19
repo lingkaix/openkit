@@ -95,6 +95,7 @@ describe('Artifact Review authority', () => {
         feedback: null,
         rangeFeedback: null,
         candidateSelections: [],
+        judgements: [],
         decidedAt: null,
         followUpTurnId: null,
         appliedMaterialRevisionId: null,
@@ -364,6 +365,7 @@ describe('Artifact Review authority', () => {
         mediaType: 'text/markdown',
         contentDigest: contentDigest(proposalContent),
         content: proposalContent,
+        judgements: [],
         authorId: 'usr_00000000-0000-7431-952e-1a295ae9b2ab',
         createdAt: decideInput.decidedAt,
       });

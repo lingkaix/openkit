@@ -183,6 +183,7 @@ export async function startIsolatedWebStack(
         detached: useWebProcessGroup,
         env: {
           ...process.env,
+          OPENKIT_WEB_E2E: '1',
           VITE_CACHE_DIR: join(fixtureRoot, 'vite-cache'),
           VITE_CORE_BASE_URL: coreUrl,
           VITE_CORE_URL: coreUrl,
@@ -191,6 +192,7 @@ export async function startIsolatedWebStack(
       }
     );
     await waitForHttp(webUrl, web);
+    await waitForHttp(`${webUrl}/src/main.tsx`, web);
   } catch (error) {
     await stop();
     throw error;

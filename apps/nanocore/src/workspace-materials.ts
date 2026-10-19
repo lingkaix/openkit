@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type {
+  ArtifactReviewRangeFeedback,
   BindThreadMaterialRequest,
   BindThreadMaterialResponse,
   CreateWorkspaceMaterialRequest,
@@ -17,6 +18,7 @@ import type {
   WorkspaceMaterialRevisionView,
   WorkspaceMaterialView,
 } from '@openkit/app-api-schemas';
+import { JudgementRecordReaderSchema } from '@openkit/app-api-schemas';
 import { type ActorRef, deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 
 import type { WorkspaceDb } from './storage/db.js';
@@ -32,7 +34,52 @@ type WorkspaceMaterialErrorCode =
 type MaterialRow = WorkspaceMaterialView & { readonly lastMutationRequestId: string };
 
 /** Immutable revision authority row with private request proof. */
-type RevisionRow = WorkspaceMaterialRevisionView & { readonly createdByRequestId: string };
+type RevisionRow = Omit<WorkspaceMaterialRevisionView, 'judgements'> & {
+  readonly createdByRequestId: string;
+  readonly judgementsJson: string;
+};
+
+/**
+ * Verifies a UTF-16 range against the exact immutable Material source.
+ * @param workspaceDb Database that owns the original revision.
+ * @param range Exact source identity, digest, offsets and original text.
+ * @returns The verified original revision without normalization.
+ * @throws A stale or recovery error when the source cannot support the range.
+ */
+export function assertWorkspaceMaterialRange(
+  workspaceDb: WorkspaceDb,
+  range: ArtifactReviewRangeFeedback
+): WorkspaceMaterialRevisionView {
+  const revision = getWorkspaceMaterialRevision(workspaceDb, range.materialId, range.revisionId);
+  const content = revision.content;
+  /** Source offsets count UTF-16 units and must not separate a surrogate pair. */
+  const splitsPair = (offset: number) =>
+    offset > 0 &&
+    offset < content.length &&
+    content.charCodeAt(offset - 1) >= 0xd800 &&
+    content.charCodeAt(offset - 1) <= 0xdbff &&
+    content.charCodeAt(offset) >= 0xdc00 &&
+    content.charCodeAt(offset) <= 0xdfff;
+  if (
+    revision.contentDigest !== range.contentDigest ||
+    !Number.isSafeInteger(range.start) ||
+    !Number.isSafeInteger(range.end) ||
+    range.start < 0 ||
+    range.start >= range.end ||
+    range.end > content.length ||
+    splitsPair(range.start) ||
+    splitsPair(range.end) ||
+    content.slice(range.start, range.end) !== range.originalText
+  ) {
+    throw materialError('stale', 'The range does not match the exact original Material source.');
+  }
+  return revision;
+}
+
+/** Portable revision retains its raw descriptive annotations without exposing their SQLite encoding. */
+type ExportableRevisionRow = Omit<RevisionRow, 'judgementsJson'> & {
+  readonly judgements: WorkspaceMaterialRevisionView['judgements'];
+};
 
 /** Thread binding authority row. */
 type BindingRow = {
@@ -114,7 +161,7 @@ FROM workspace_materials`;
 const REVISION_SELECT = `SELECT
   workspace_id AS workspaceId, material_id AS materialId, revision_id AS revisionId,
   parent_revision_id AS parentRevisionId, media_type AS mediaType,
-  content_digest AS contentDigest, content, author_id AS authorId,
+  content_digest AS contentDigest, content, author_id AS authorId, judgements AS judgementsJson,
   created_by_request_id AS createdByRequestId, created_at AS createdAt
 FROM workspace_material_revisions`;
 
@@ -128,18 +175,24 @@ FROM thread_material_bindings`;
 /** Lists raw portable Material, revision, and binding owners in stable identity order. @param workspaceDb Workspace database. @returns Private export rows retaining request proof. */
 export function listExportableWorkspaceMaterialRows(workspaceDb: WorkspaceDb): {
   readonly materials: readonly MaterialRow[];
-  readonly revisions: readonly RevisionRow[];
+  readonly revisions: readonly ExportableRevisionRow[];
   readonly bindings: readonly BindingRow[];
 } {
   return {
     materials: workspaceDb.sqlite
       .prepare(`${MATERIAL_SELECT} WHERE workspace_id = ? ORDER BY material_id`)
       .all(workspaceDb.workspaceId) as MaterialRow[],
-    revisions: workspaceDb.sqlite
-      .prepare(
-        `${REVISION_SELECT} WHERE workspace_id = ? ORDER BY material_id, created_at, revision_id`
-      )
-      .all(workspaceDb.workspaceId) as RevisionRow[],
+    revisions: (
+      workspaceDb.sqlite
+        .prepare(
+          `${REVISION_SELECT} WHERE workspace_id = ? ORDER BY material_id, created_at, revision_id`
+        )
+        .all(workspaceDb.workspaceId) as RevisionRow[]
+    ).map(({ judgementsJson, ...row }) => {
+      const judgements: unknown = JSON.parse(judgementsJson);
+      JudgementRecordReaderSchema.array().parse(judgements);
+      return { ...row, judgements: judgements as WorkspaceMaterialRevisionView['judgements'] };
+    }),
     bindings: workspaceDb.sqlite
       .prepare(`${BINDING_SELECT} WHERE workspace_id = ? ORDER BY thread_id, material_id`)
       .all(workspaceDb.workspaceId) as BindingRow[],
@@ -737,7 +790,11 @@ function toRevisionSummary(row: RevisionRow): WorkspaceMaterialRevisionSummary {
 
 /** Projects a closed exact revision. @param row Authority row. @returns Public view. */
 function toRevisionView(row: RevisionRow): WorkspaceMaterialRevisionView {
-  return { ...toRevisionSummary(row), content: row.content };
+  return {
+    ...toRevisionSummary(row),
+    content: row.content,
+    judgements: JudgementRecordReaderSchema.array().parse(JSON.parse(row.judgementsJson)),
+  };
 }
 
 /** Computes the exact UTF-8 digest. @param content Canonical content. @returns SHA-256 digest. */

@@ -76,6 +76,7 @@ const WORKSPACE_TABLES = [
   'audit_events',
   'backend_workspace_handles',
   'capability_calls',
+  'evaluation_candidate_sets',
   'evidence_bundles',
   'generative_presentations',
   'goal_card_tasks',
@@ -732,6 +733,8 @@ describe('database setup', () => {
         'workspace_0004_policy_audit_v1',
         'workspace_0005_retained_record_formats',
         'workspace_0006_audit_authentication',
+        'workspace_0007_evaluation_candidates',
+        'workspace_0008_evaluation_judgements',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1104,6 +1107,7 @@ describe('native Drizzle migrate', () => {
         range_feedback: null,
         candidate_selections: '[]',
         schema_version: 1,
+        judgements: '[]',
       });
       expect(listAppliedNativeMigrationIds(db.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
@@ -1113,6 +1117,8 @@ describe('native Drizzle migrate', () => {
         'workspace_0004_policy_audit_v1',
         'workspace_0005_retained_record_formats',
         'workspace_0006_audit_authentication',
+        'workspace_0007_evaluation_candidates',
+        'workspace_0008_evaluation_judgements',
       ]);
     } finally {
       db.sqlite.close();

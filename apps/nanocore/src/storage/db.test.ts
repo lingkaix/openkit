@@ -116,6 +116,7 @@ describe('scoped storage databases', () => {
         'audit_events',
         'backend_workspace_handles',
         'capability_calls',
+        'evaluation_candidate_sets',
         'evidence_bundles',
         'generative_presentations',
 
@@ -158,6 +159,8 @@ describe('scoped storage databases', () => {
         'workspace_0004_policy_audit_v1',
         'workspace_0005_retained_record_formats',
         'workspace_0006_audit_authentication',
+        'workspace_0007_evaluation_candidates',
+        'workspace_0008_evaluation_judgements',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -347,6 +350,8 @@ describe('scoped storage databases', () => {
         'workspace_0004_policy_audit_v1',
         'workspace_0005_retained_record_formats',
         'workspace_0006_audit_authentication',
+        'workspace_0007_evaluation_candidates',
+        'workspace_0008_evaluation_judgements',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -401,6 +406,7 @@ describe('scoped storage databases', () => {
         'author_id',
         'created_by_request_id',
         'created_at',
+        'judgements',
       ]);
       expect(
         workspaceDb.sqlite
@@ -670,6 +676,8 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0004_policy_audit_v1',
         'workspace_0005_retained_record_formats',
         'workspace_0006_audit_authentication',
+        'workspace_0007_evaluation_candidates',
+        'workspace_0008_evaluation_judgements',
       ]);
     } finally {
       userDb.sqlite.close();

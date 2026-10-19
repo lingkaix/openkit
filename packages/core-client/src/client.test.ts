@@ -2370,7 +2370,7 @@ describe('createCoreClient', () => {
       ],
       [
         'POST /api/app/operations/material.revision-read',
-        { revision: { ...revision, content: '# Demo material' } },
+        { revision: { ...revision, content: '# Demo material', judgements: [] } },
         200,
       ],
       ['POST /api/app/operations/material.thread-read', { material: threadMaterial }, 200],
@@ -2577,6 +2577,7 @@ describe('createCoreClient', () => {
       decision: null,
       decisionActorId: null,
       feedback: null,
+      judgements: [],
       decidedAt: null,
       followUpTurnId: null,
       appliedMaterialRevisionId: null,

@@ -1,3 +1,4 @@
+import { JudgementRecordReaderSchema } from '@openkit/app-api-schemas';
 import {
   ArtifactIdSchema,
   ArtifactReviewIdSchema,
@@ -73,6 +74,7 @@ export const StoredArtifactReviewV1Schema = z
     feedback: z.string().min(1).nullable(),
     rangeFeedback: ArtifactReviewRangeFeedbackSchema.nullable().optional(),
     candidateSelections: z.array(ArtifactReviewCandidateSelectionSchema).default([]),
+    judgements: z.array(JudgementRecordReaderSchema).default([]),
     decidedAt: TimestampSchema.nullable(),
     followUpTurnId: TurnIdSchema.nullable(),
     appliedMaterialRevisionId: MaterialRevisionIdSchema.nullable(),

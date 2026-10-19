@@ -107,6 +107,7 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'goal_card_tasks',
   'task_turn_terminal_facts',
   'artifact_reviews',
+  'evaluation_candidate_sets',
   'audit_events',
   'backend_workspace_handles',
   'capability_calls',
@@ -216,6 +217,8 @@ export interface WriteWorkspaceExportTreeInput {
   artifacts: readonly unknown[];
   /** Artifact review decisions to export. */
   artifactReviews: readonly unknown[];
+  /** Raw Workspace-owned candidate membership and its attributable judgement history. */
+  evaluationCandidateSets?: readonly unknown[];
   /** Raw Thread-to-Material binding owners including private request proof. */
   threadMaterialBindings: readonly unknown[];
   /** Raw immutable Material revision owners including private request proof. */
@@ -523,6 +526,10 @@ export function writeWorkspaceExportTree(
       true
     );
     writeJsonl(join(recordsRoot, 'artifact-reviews.jsonl'), input.artifactReviews);
+    writeJsonl(
+      join(recordsRoot, 'evaluation-candidate-sets.jsonl'),
+      input.evaluationCandidateSets ?? []
+    );
     writeJsonl(join(recordsRoot, 'thread-material-bindings.jsonl'), input.threadMaterialBindings);
     writeJsonl(
       join(recordsRoot, 'workspace-material-revisions.jsonl'),

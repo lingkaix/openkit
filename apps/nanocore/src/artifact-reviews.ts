@@ -6,6 +6,9 @@ import {
   ArtifactReviewRangeFeedbackSchema,
   type ArtifactReviewView,
   ArtifactReviewViewSchema,
+  type JudgementRecord,
+  JudgementRecordReaderSchema,
+  JudgementRecordSchema,
   SelectArtifactReviewCandidateRequestSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   type SubmitArtifactReviewDecisionResponse,
@@ -28,6 +31,7 @@ import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
 import type { WorkspaceDb } from './storage/db.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
 import {
+  assertWorkspaceMaterialRange,
   getWorkspaceMaterial,
   getWorkspaceMaterialRevision,
   saveWorkspaceMaterialRevision,
@@ -194,8 +198,12 @@ export type DecideArtifactReviewInput = ReplayArtifactReviewDecisionInput & {
 /** Raw Artifact Review authority row including private request proof. */
 type ArtifactReviewRow = Omit<
   typeof artifactReviews.$inferSelect,
-  'rangeFeedback' | 'candidateSelections'
-> & { readonly rangeFeedbackJson: string | null; readonly candidateSelectionsJson: string };
+  'rangeFeedback' | 'candidateSelections' | 'judgements'
+> & {
+  readonly rangeFeedbackJson: string | null;
+  readonly candidateSelectionsJson: string;
+  readonly judgementsJson: string;
+};
 
 /** Portable Review owner retaining private decision request lineage. */
 export type ExportableArtifactReview = ArtifactReviewView & {
@@ -213,6 +221,7 @@ const REVIEW_SELECT = `SELECT schema_version AS schemaVersion,
   decision, decision_actor_id AS decisionActorId,
   decision_request_id AS decisionRequestId, feedback, decided_at AS decidedAt,
   range_feedback AS rangeFeedbackJson, candidate_selections AS candidateSelectionsJson,
+  judgements AS judgementsJson,
   follow_up_turn_id AS followUpTurnId,
   applied_material_revision_id AS appliedMaterialRevisionId, created_at AS createdAt
 FROM artifact_reviews`;
@@ -308,10 +317,16 @@ export function listExportableArtifactReviews(
   rows.forEach((row) => {
     assertStoredReview(workspaceDb, row);
   });
-  return rows.map((row) => ({
-    ...readStoredReviewV1(row),
-    decisionRequestId: row.decisionRequestId,
-  }));
+  return rows.map((row) => {
+    const stored = readStoredReviewV1(row);
+    const judgements = parseReviewJson(row.judgementsJson);
+    JudgementRecordReaderSchema.array().parse(judgements);
+    return {
+      ...stored,
+      judgements: judgements as ArtifactReviewView['judgements'],
+      decisionRequestId: row.decisionRequestId,
+    };
+  });
 }
 
 /**
@@ -331,6 +346,66 @@ export function getArtifactReview(
   const row = requireReview(workspaceDb, artifactId, artifactVersion);
   assertStoredReview(workspaceDb, row);
   return toView(row);
+}
+
+/** Appends a validated annotation to its existing exact version Review without changing decision authority. */
+export function appendArtifactReviewJudgement(
+  workspaceDb: WorkspaceDb,
+  judgement: JudgementRecord
+): JudgementRecord {
+  if (!workspaceDb.sqlite.inTransaction)
+    throw new Error('Review judgement requires the existing Workspace transaction.');
+  const parsed = JudgementRecordSchema.safeParse(judgement);
+  if (
+    !parsed.success ||
+    parsed.data.target.kind !== 'artifact-version' ||
+    parsed.data.workspaceId !== workspaceDb.workspaceId
+  )
+    throw reviewError('invalid_request', 'The Artifact Review judgement is invalid.');
+  const target = parsed.data.target;
+  const row = requireReview(workspaceDb, target.artifactId, target.artifactVersion);
+  assertStoredReview(workspaceDb, row);
+  assertJudgementOwner(row, parsed.data, 'invalid_request');
+  const view = toView(row);
+  if (view.judgements.some((entry) => entry.requestId === parsed.data.requestId))
+    throw reviewError('conflict', 'The Review already owns this judgement request.');
+  const updated = ArtifactReviewViewSchema.safeParse({
+    ...view,
+    judgements: [...view.judgements, parsed.data],
+  });
+  if (!updated.success)
+    throw reviewError('invalid_request', 'The Artifact Review judgement is invalid.');
+  const raw = parseReviewJson(row.judgementsJson);
+  if (!Array.isArray(raw))
+    throw reviewError('recovery_required', 'The retained Artifact judgement history is invalid.');
+  workspaceDb.sqlite
+    .prepare(`UPDATE artifact_reviews SET judgements = ?
+    WHERE workspace_id = ? AND artifact_id = ? AND artifact_version = ?`)
+    .run(
+      JSON.stringify([...raw, parsed.data]),
+      workspaceDb.workspaceId,
+      row.artifactId,
+      row.artifactVersion
+    );
+  return parsed.data;
+}
+
+/** A version Review cannot retain another target, a selection or a correction effect. */
+function assertJudgementOwner(
+  row: ArtifactReviewRow,
+  judgement: JudgementRecord,
+  code: 'invalid_request' | 'recovery_required'
+): void {
+  const target = judgement.target;
+  if (
+    judgement.workspaceId !== row.workspaceId ||
+    target.kind !== 'artifact-version' ||
+    target.artifactId !== row.artifactId ||
+    target.artifactVersion !== row.artifactVersion ||
+    target.contentDigest !== row.contentDigest ||
+    !['accept', 'reject', 'rate'].includes(judgement.kind)
+  )
+    throw reviewError(code, 'The judgement does not identify its owning Artifact Review.');
 }
 
 /**
@@ -530,29 +605,12 @@ function assertRangeFeedback(
     range.contentDigest !== proposal.baseContentDigest
   )
     throw reviewError(code, 'Range feedback must identify the recorded Material proposal base.');
-  const base = getWorkspaceMaterialRevision(
-    workspaceDb,
-    proposal.materialId,
-    proposal.baseRevisionId
-  );
-  const content = base.content;
-  /** A UTF-16 source boundary cannot separate a high and low surrogate. */
-  const splitsPair = (offset: number) =>
-    offset > 0 &&
-    offset < content.length &&
-    content.charCodeAt(offset - 1) >= 0xd800 &&
-    content.charCodeAt(offset - 1) <= 0xdbff &&
-    content.charCodeAt(offset) >= 0xdc00 &&
-    content.charCodeAt(offset) <= 0xdfff;
-  if (
-    range.start < 0 ||
-    range.start >= range.end ||
-    range.end > content.length ||
-    splitsPair(range.start) ||
-    splitsPair(range.end) ||
-    content.slice(range.start, range.end) !== range.originalText
-  )
+  try {
+    assertWorkspaceMaterialRange(workspaceDb, range);
+  } catch (error) {
+    if (!hasErrorCode(error, 'stale')) throw error;
     throw reviewError(code, 'Range feedback does not match the exact original Material source.');
+  }
   return proposal;
 }
 
@@ -944,6 +1002,15 @@ function assertStoredReview(workspaceDb: WorkspaceDb, row: ArtifactReviewRow): v
   }
   const view = toView(row);
   const proposal = materialProposal(row);
+  if (
+    new Set(view.judgements.map((judgement) => judgement.requestId)).size !== view.judgements.length
+  )
+    throw reviewError(
+      'recovery_required',
+      'The retained Artifact judgement request identity is duplicated.'
+    );
+  for (const judgement of view.judgements)
+    assertJudgementOwner(row, judgement, 'recovery_required');
   if (proposal) {
     requireProposalAuthority(workspaceDb, proposal);
   }
@@ -980,6 +1047,7 @@ function readStoredReviewV1(row: ArtifactReviewRow): z.infer<typeof StoredArtifa
     feedback: row.feedback,
     rangeFeedback: parseReviewJson(row.rangeFeedbackJson),
     candidateSelections: parseReviewJson(row.candidateSelectionsJson),
+    judgements: parseReviewJson(row.judgementsJson),
     decidedAt: row.decidedAt,
     followUpTurnId: row.followUpTurnId,
     appliedMaterialRevisionId: row.appliedMaterialRevisionId,

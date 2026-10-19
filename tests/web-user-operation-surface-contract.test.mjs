@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 332;
+const EXPECTED_CATALOG_SIZE = 340;
 const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 246;
+const EXPECTED_INCLUDED_SIZE = 254;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -100,6 +100,12 @@ const WEB_OPERATION_GROUPS = {
     'artifact.version-read': { disposition: 'live', surface: 'Artifacts' },
     'artifact.version-commit': { disposition: 'live', surface: 'Artifacts' },
     'artifact.version-file-commit': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-create': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-list': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-read': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.candidate-set-select': { disposition: 'live', surface: 'Artifacts' },
+    'evaluation.judgement-add': { disposition: 'live', surface: 'Artifacts' },
+    'material.range-correct': { disposition: 'live', surface: 'Material' },
     'artifact.download': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-read': { disposition: 'live', surface: 'Artifacts' },
     'artifact.folder-extract': { disposition: 'live', surface: 'Artifacts' },
