@@ -718,7 +718,15 @@ export function verifyImportedWorkerContextPackageSnapshot(
     }
     verifyImportedWorkerContextPackageTrace({
       authorities,
-      trace: parseWorkerContextPackageTrace(JSON.parse(text)),
+      trace: parseWorkerContextPackageTrace(
+        JSON.parse(text),
+        Buffer.from(
+          snapshot.portableFileState.workerContextPackageFiles.get(
+            path.replace(/context-package\.json$/, 'context-package/package.json')
+          ) ?? '',
+          'utf8'
+        )
+      ),
       workspaceRoot,
     });
   }
@@ -2845,7 +2853,14 @@ function readWorkResourceImportState(
     const sourceThreadId = pathMatch[1]!;
     const sourceTurnId = pathMatch[2]!;
     const sourceTrace = parseWorkerContextPackageTrace(
-      JSON.parse(requiredExportFile(context.files, tracePath))
+      JSON.parse(requiredExportFile(context.files, tracePath)),
+      Buffer.from(
+        requiredExportFile(
+          context.files,
+          tracePath.replace(/context-package\.json$/, 'context-package/package.json')
+        ),
+        'utf8'
+      )
     );
     if (
       sourceTrace.workspaceId !== context.report.exportedWorkspaceId ||
