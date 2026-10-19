@@ -1788,9 +1788,7 @@ export class FsStore {
         knowledgeProposalReviews: [...this.knowledgeProposalReviews.values()]
           .flat()
           .filter((review) => review.workspaceId === workspaceId),
-        knowledgeSources: [...this.knowledgeSources.values()].filter(
-          (source) => source.workspaceId === workspaceId
-        ),
+        knowledgeSources: this.listKnowledgeSources(workspaceId),
         agentSessions: [...this.agentSessions.values()].filter(
           (session) => session.workspaceId === workspaceId
         ),
@@ -1893,9 +1891,7 @@ export class FsStore {
       ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
-        [...this.knowledgeSources.values()]
-          .filter((source) => source.workspaceId === workspaceId)
-          .map((source) => [source.id, source.contentDigest])
+        this.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
       ),
       knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
       resolvedReferences,
@@ -1975,9 +1971,10 @@ export class FsStore {
         candidate: { files },
         scopeSchemaText: scopeSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
         registeredSources: new Map(
-          [...this.knowledgeSources.values()]
-            .filter((source) => source.workspaceId === proposal.workspaceId)
-            .map((source) => [source.id, source.contentDigest])
+          this.listKnowledgeSources(proposal.workspaceId).map((source) => [
+            source.id,
+            source.contentDigest,
+          ])
         ),
         resolvedReferences: new Map(
           proposal.changes.map(({ path }) => [path.slice(0, -3), resolved])
@@ -2035,9 +2032,10 @@ export class FsStore {
       expectedOwnerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
-        [...this.knowledgeSources.values()]
-          .filter((source) => source.workspaceId === proposal.workspaceId)
-          .map((source) => [source.id, source.contentDigest])
+        this.listKnowledgeSources(proposal.workspaceId).map((source) => [
+          source.id,
+          source.contentDigest,
+        ])
       ),
       knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
       resolvedReferences,
@@ -2118,23 +2116,14 @@ export class FsStore {
         expectedDigest = pagePin.contentDigest;
       }
       if (qualifiedSource) {
-        const source = this.knowledgeSources.get(ownerId!);
-        if (
-          !source ||
-          source.workspaceId !== workspaceId ||
-          source.contentDigest !== expectedDigest
-        ) {
-          throw new KnowledgePageValidationError();
-        }
-        let sourceMaterial: string | null;
         try {
-          sourceMaterial = this.readKnowledgeSourceMaterial(workspaceId, ownerId!);
+          if (this.getKnowledgeSource(workspaceId, ownerId!).contentDigest !== expectedDigest)
+            throw new KnowledgePageValidationError();
         } catch {
           throw new KnowledgePageValidationError();
         }
-        if (sourceMaterial === null || contentDigest(sourceMaterial) !== expectedDigest) {
-          throw new KnowledgePageValidationError();
-        }
+        // Synchronous closure validates the canonical pointer. Original bytes are verified
+        // only by the asynchronous Storage delivery owner, never by another Store reader.
         resolvedReferences.add(reference);
         continue;
       }
@@ -5113,9 +5102,7 @@ export class FsStore {
       ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
-        [...this.knowledgeSources.values()]
-          .filter((source) => source.workspaceId === workspaceId)
-          .map((source) => [source.id, source.contentDigest])
+        this.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
       ),
       knowledgeIds: new Set(
         this.getWorkspaceResources(workspaceId).knowledge.map((entry) => entry.id)
