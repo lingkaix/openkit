@@ -468,7 +468,7 @@ Acceptance is conditional on integrated peer amendments, not promises of later a
 - [Work Data Retention](20260921-work_data_retention_format.md): default-on admitted model I/O/native transcripts, separate privacy exclusions, exact-byte/prompt/tool/prefix coverage tests.
 - [Backup/Restore/Move](20260704-workspace_backup_export_import.md): minimal `v0.1.0` operations, common-cut writer coverage, durable capture exclusion, closure and restore tests.
 - [Operational Telemetry](20260731-operational_telemetry_standardization.md): journal-only durable-trace exception and bounded unverified marker validation/export tests.
-- Integrate/link the decisions-directory record `20261019-worker_reported_phase_markers.md` with telemetry; it is not yet on this branch.
+- [Worker-Reported Phase Markers](../decisions/20261019-worker_reported_phase_markers.md): the telemetry owner supplies the closed marker variant schema and projection.
 
 Qualify systemd versions, resource limits, all 27 dispositions and individual ablations through direct tests; this documentation supplies no runtime proof.
 
