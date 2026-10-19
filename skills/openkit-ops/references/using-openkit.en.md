@@ -61,6 +61,8 @@ Use `openkit ops describe conversation.submit` to inspect the current flat input
 
 Use `goal.create` to capture current intent and `goal.read` to inspect intent, cards, separate proposed and active immutable Plans, exact Pending Requests, linked ordinary Tasks and disposition. `goal.intent.revise`, `goal.card.create`, `goal.card.edit` and `goal.card.cancel` change current desired work without steering a running worker. Human Plan and completion decisions use `goal.plan.approve` and `goal.completion.accept` with the captured Pending Request identity. A grant waits for the Goal owner to consume it; activation alone starts no worker. `goal.cancel` closes the Goal and invalidates unconsumed requests.
 
+`goal.plan.propose` also requires `goalDomain` with the shared Policy declaration's `id`, typed `scope` and `lifetime`. Native capture adds the Coordinator and exact Plan source. Inspect the complete Plan and delegation together in the same approval detail. Plan or card prose grants no Tool authority. A completed Plan decision does not prove that its Policy domain is admitted; failed publication grants nothing.
+
 The Coordinator discovers eligible Workers from the current Goal Workspace. It rechecks the exact Worker when it admits an ordinary Task. A Worker result leaves the Goal open. Review the exact completion candidate and its unresolved work before accepting it. The Goal screen shows the responsible person, the actual decision actor and whether a grant still waits for application. Use each request's captured operation; a Plan request cannot accept completion, and a completion request cannot activate a Plan.
 
 Use `usage.read` for durably recorded model usage; process-local diagnostics are not the Workspace ledger.
@@ -316,6 +318,8 @@ A reopened presentation shows historical values. Use its Refresh action to read 
 ## Manage Light App Definitions
 
 Open Catalog in the selected Workspace and use Light App definitions. Import a declarative JSON definition with a display name and catalog ID, or import an exported history. History shows each immutable version, its parent, actor and time. Export carries definitions and history, without app business data. A source default or pin selects a version for a later explicit action; changing it does not migrate a running app. Imported history does not automatically select or pin its source version.
+
+Use the definition's `references` list for exact pinned Knowledge page/raw and Skill targets supplied by their owners. Omit it only when authoring an empty list; the admitted version retains an explicit list. Purpose and descriptions are labels, not verified reusable meaning. A reference grants no access, and an unavailable meaning target does not remove access to valid local app records. Inspect the exact target through its owner before relying on that meaning; do not replace it with a current default or generated explanation.
 
 Use Create app to instantiate the selected version, or select an existing app and use Apply definition with current app and schema revisions. Supported changes are new collections, new optional fields, rename with retained IDs, and field removal. Field removal deletes those values from the current app. Every definition or kernel format migration first takes a consistent SQLite snapshot. No user script or down migration runs.
 

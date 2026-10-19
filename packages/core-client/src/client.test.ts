@@ -1729,6 +1729,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/workspace.update': { body: workspace() },
       'POST /api/app/operations/knowledge.list': {
         body: {
+          knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
           notebookRevision: notebookBaseRevision,
           items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
         },
@@ -2017,6 +2018,7 @@ describe('createCoreClient', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).resolves.toEqual({
+      knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
       notebookRevision: notebookBaseRevision,
       items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
     });
@@ -2925,7 +2927,8 @@ describe('createCoreClient', () => {
   it('routes NanoCore App API calls through app-owned schemas', async () => {
     const retrievalRequestDigest = `sha256:${'b'.repeat(64)}`;
     const retrievedPageDigest = `sha256:${'c'.repeat(64)}`;
-    const knowledgePageScopeId = 'page/workspace/ws_00000000-0000-7000-8000-000000000001';
+    const knowledgePageScopeId =
+      'page/workspace/ws_00000000-0000-7000-8000-000000000001/kb_0190f4c8-0000-7000-8000-000000000001';
     const knowledgeQueryContext = {
       serverId: 'dep_00000000-0000-7f8a-b255-5b390b0a86da',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3230,7 +3233,7 @@ describe('createCoreClient', () => {
             kind: 'retrieval',
             summary: 'Worker repeatedly needed release cadence context.',
             sourceReferences: [
-              'knowledge:kn_demo',
+              `openkit:${knowledgePageScopeId}/kn_demo`,
               'source:ks_00000000-0000-7ef0-a551-80b39073108f',
             ],
             scope: 'workspace',
@@ -3252,7 +3255,7 @@ describe('createCoreClient', () => {
               kind: 'retrieval',
               summary: 'Worker repeatedly needed release cadence context.',
               sourceReferences: [
-                'knowledge:kn_demo',
+                `openkit:${knowledgePageScopeId}/kn_demo`,
                 'source:ks_00000000-0000-7ef0-a551-80b39073108f',
               ],
               scope: 'workspace',
@@ -3273,7 +3276,7 @@ describe('createCoreClient', () => {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             statement: 'Release cadence is weekly.',
             sourceReferences: [
-              'knowledge:release-plan',
+              `openkit:${knowledgePageScopeId}/release-plan`,
               'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
             ],
             scope: 'workspace',
@@ -3295,7 +3298,7 @@ describe('createCoreClient', () => {
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               statement: 'Release cadence is weekly.',
               sourceReferences: [
-                'knowledge:release-plan',
+                `openkit:${knowledgePageScopeId}/release-plan`,
                 'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
               ],
               scope: 'workspace',
@@ -3316,7 +3319,7 @@ describe('createCoreClient', () => {
             id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             subjectReferences: [
-              'knowledge:release-plan',
+              `openkit:${knowledgePageScopeId}/release-plan`,
               'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
             ],
             sourceReferences: [
@@ -3339,7 +3342,7 @@ describe('createCoreClient', () => {
               id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               subjectReferences: [
-                'knowledge:release-plan',
+                `openkit:${knowledgePageScopeId}/release-plan`,
                 'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
               ],
               sourceReferences: [
@@ -3362,7 +3365,7 @@ describe('createCoreClient', () => {
             id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             subjectReferences: [
-              'knowledge:release-plan',
+              `openkit:${knowledgePageScopeId}/release-plan`,
               'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
             ],
             sourceReferences: [
@@ -3836,7 +3839,10 @@ describe('createCoreClient', () => {
           requestId: 'req_observation',
           kind: 'retrieval',
           summary: 'Worker repeatedly needed release cadence context.',
-          sourceReferences: ['knowledge:kn_demo', 'source:ks_00000000-0000-7ef0-a551-80b39073108f'],
+          sourceReferences: [
+            `openkit:${knowledgePageScopeId}/kn_demo`,
+            'source:ks_00000000-0000-7ef0-a551-80b39073108f',
+          ],
           producer: 'knowledge-manager',
           confidence: 0.75,
         },
@@ -3862,7 +3868,7 @@ describe('createCoreClient', () => {
           requestId: 'req_claim',
           statement: 'Release cadence is weekly.',
           sourceReferences: [
-            'knowledge:release-plan',
+            `openkit:${knowledgePageScopeId}/release-plan`,
             'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
           ],
           producer: 'knowledge-manager',
@@ -3890,7 +3896,7 @@ describe('createCoreClient', () => {
         ...{
           requestId: 'req_conflict',
           subjectReferences: [
-            'knowledge:release-plan',
+            `openkit:${knowledgePageScopeId}/release-plan`,
             'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
           ],
           sourceReferences: [

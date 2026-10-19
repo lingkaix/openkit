@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { listServerAuditEvents } from '../audit-events.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -69,9 +70,24 @@ describe('vault provider credential resolver', () => {
         vaultBackend: () => vaultUnlockState.backend(),
       });
 
-      expect(resolver('vault://vault_00000000-0000-74ac-b50a-3150f74675d0')).toBe(
+      const consumer = {
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
+        capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
+        consumerWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      } as const;
+      expect(resolver('vault://vault_00000000-0000-74ac-b50a-3150f74675d0', consumer)).toBe(
         'sk-vault-provider'
       );
+      expect(listServerAuditEvents(coreDb)).toEqual([
+        expect.objectContaining({
+          action: 'vault.resolve',
+          actor: consumer.actor,
+          agentSessionId: consumer.agentSessionId,
+          capabilityCallId: consumer.capabilityCallId,
+          workspaceId: consumer.consumerWorkspaceId,
+        }),
+      ]);
       expect(listVaultUseRecords(coreDb)).toEqual([
         expect.objectContaining({
           backendKind: 'encrypted-file',
@@ -83,6 +99,7 @@ describe('vault provider credential resolver', () => {
         }),
       ]);
       expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-provider');
+      expect(JSON.stringify(listServerAuditEvents(coreDb))).not.toContain('sk-vault-provider');
     } finally {
       coreDb.sqlite.close();
     }

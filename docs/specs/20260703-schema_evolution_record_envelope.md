@@ -96,7 +96,7 @@ requiredFeatures
 extensions
 ```
 
-`schemaVersion` identifies the major schema family for the record.
+`schemaVersion` identifies the major schema family for the record. Writers emit an explicit marker, and readers check it with the shared retained-format helper before decoding payload fields. New retained formats begin at version 1. An absent or unsupported marker fails closed. Family-local stored schemas define retained meaning independently of release-coupled API and Protocol response schemas; those responses project from admitted stored records. Existing native migration journals govern scalar SQL rows, while independently decoded JSON-bearing rows carry their own version. Original content and opaque native payloads retain exact bytes under their versioned owning descriptors.
 
 `recordType` identifies the record family, such as workspace, thread, turn, item-log-entry, artifact, knowledge-page, source, context-package, aep-snapshot, evidence-bundle, or runtime-evidence.
 
@@ -226,6 +226,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 
 | Feature | Status | Description |
 | --- | --- | --- |
+| `openkit.workspace-resource-policy.v1` | active | Workspace configuration carries managed resource boundaries and exact associations and prohibitions across export and import. |
 | `openkit.memory-suppression.v1` | active | User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression. |
 | `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |

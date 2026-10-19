@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 
 import type { CoreDb } from '../storage/db.js';
 
@@ -104,6 +104,7 @@ export interface WorkerStorageSelectionInput {
 }
 
 interface WorkerStorageBindingRow {
+  schemaVersion: unknown;
   attachment_generation: number;
   created_at: string;
   current_agent_session_id: string | null;
@@ -182,8 +183,8 @@ export function createWorkerStorageBinding(
          storage_ref, runtime_target_id, deployment_id, workspace_id, scope_digest,
          layout_digest, layout_family, layout_version, platform_os, platform_architecture,
          owner_uid, owner_gid, working_directory, targets_json, revision,
-         attachment_generation, state, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'idle', ?, ?)`
+         attachment_generation, state, created_at, updated_at, schema_version
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'idle', ?, ?, ?)`
     )
     .run(
       storageRef,
@@ -201,7 +202,8 @@ export function createWorkerStorageBinding(
       layout.workingDirectory,
       JSON.stringify(targets),
       now,
-      now
+      now,
+      writeRetainedV1({}).schemaVersion
     );
   return requireWorkerStorageBinding(coreDb, storageRef);
 }
@@ -213,7 +215,9 @@ export function getWorkerStorageBinding(
 ): WorkerStorageBinding | null {
   const storageRef = requireIdentity(input.storageRef, 'storage');
   const row = coreDb.sqlite
-    .prepare('SELECT * FROM worker_storage_bindings WHERE storage_ref = ?')
+    .prepare(
+      'SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings WHERE storage_ref = ?'
+    )
     .get(storageRef) as WorkerStorageBindingRow | undefined;
   return row ? bindingFromRow(coreDb, row) : null;
 }
@@ -225,7 +229,9 @@ export function getWorkerStorageBindingForSandbox(
 ): WorkerStorageBinding | null {
   const sandboxBindingRef = requireIdentity(input.sandboxBindingRef, 'Sandbox binding');
   const row = coreDb.sqlite
-    .prepare('SELECT * FROM worker_storage_bindings WHERE current_sandbox_binding_ref = ?')
+    .prepare(
+      'SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings WHERE current_sandbox_binding_ref = ?'
+    )
     .get(sandboxBindingRef) as WorkerStorageBindingRow | undefined;
   return row ? bindingFromRow(coreDb, row) : null;
 }
@@ -242,7 +248,7 @@ export function listWorkerStorageBindings(
   return (
     coreDb.sqlite
       .prepare(
-        `SELECT * FROM worker_storage_bindings
+        `SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings
          WHERE workspace_id = ? AND state <> 'purged'
          ORDER BY created_at, storage_ref`
       )
@@ -783,7 +789,9 @@ export function resolveWorkerStorageWorkSlotRef(
 
 /** Projects one strict SQLite row and its append-only contributor rows. */
 function bindingFromRow(coreDb: CoreDb, row: WorkerStorageBindingRow): WorkerStorageBinding {
-  const targets = normalizeStoredTargets(JSON.parse(row.targets_json) as unknown);
+  const targets = readRetainedV1(row, () =>
+    normalizeStoredTargets(JSON.parse(row.targets_json) as unknown)
+  );
   const layout: WorkerStorageLayout = normalizeWorkerStorageLayout({
     family: row.layout_family,
     version: row.layout_version,

@@ -271,6 +271,8 @@ Set `OPENKIT_DATA_ROOT` to persist canonical Workspace records under `temp/nanoc
 
 ## Remote Git Sources And Goal Mode
 
+Goal Plan proposals capture typed Policy bounds beside the exact immutable Plan in one Pending Request. The complete preview contains both; native capture fixes the Coordinator and Plan source. Plan and card records carry no new authority fields. Policy publication and current admitted readback remain separate from the committed Plan outcome; see the [runtime guide](src/runtime/README.md).
+
 Configuration file creation and update refuse unsupported work-slot source selections before storage with `workspace_data_source_blocked`; authored non-Git configuration remains loadable, unselected catalog registration remains available, and work without a source input still runs.
 
 NanoCore host repository resources, host Git publication, host inspection, and the Repositories screen are removed. Remote Git sources use catalog URL/commit pins and Sandbox-reported baselines; hosted writes use selected vendor MCP through the Gateway.
@@ -594,7 +596,7 @@ The Host effect producer fixture, definition-derived Worker lifecycle cases, nat
 
 Selected PDF text-layer extraction uses the packaged `pdfjs-dist` dependency in a short-lived Node child on both the host and containers. The child has bounded input, pages, text, heap and wall time, an explicit environment without inherited secrets, and no native text-extractor fallback. The [Context guide](src/context/README.md) describes provenance and focused checks.
 
-The built-in Work source Tools read exact retained selected Turn inputs and search retained PDF text through the existing Retrieval Kernel. Original bytes, complete extracted text and delivered preview keep separate digests. Current source and destination checks precede source/index access and disclosure; no current source reconstruction or PDF parser runs in the Core parent or Kernel. The [Context guide](src/context/README.md) documents bounds and the complete affected checks.
+The built-in Work source Tools resolve exact selected owner/version references under current source and destination authority. Original, complete representation and delivered preview keep separate digests; only actual delivered bytes are retained in Context history. Missing or changed originals are unavailable, without newer substitution or historical reconstruction. Current PDF processing uses disposable bounded staging and no parser in the Core parent or Kernel. The [Context guide](src/context/README.md) documents bounds and the complete affected checks.
 
 `skill-candidate-artifact.ts` admits exact current JSON Artifacts from retained inline content or file-backed `application/json` originals. Native parsing reads the verified no-follow original within the existing 64 MiB JSON framing bound, then applies the separate 16 MiB Skill tree bound. It preserves the retained version, digest, producer and current source/destination checks without copying original bytes into model context. Material text processing retains its independent 16 MiB cap.
 

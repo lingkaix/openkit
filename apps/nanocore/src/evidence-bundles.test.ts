@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -42,6 +42,11 @@ describe('evidence bundles', () => {
       applyScopedMigrations(workspaceDb);
 
       const first = recordWorkspaceEvidenceBundle(workspaceDb, record);
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT schema_version FROM evidence_bundles WHERE evidence_bundle_id = ?')
+          .get(record.id)
+      ).toEqual({ schema_version: 1 });
       const replay = recordWorkspaceEvidenceBundle(workspaceDb, record);
 
       expect(replay).toEqual(first);
@@ -65,6 +70,67 @@ describe('evidence bundles', () => {
       ).toEqual([first]);
     } finally {
       workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unknown retained evidence format before replay or JSON decode', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-replay-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const record = {
+      id: 'evb_runtime_provenance_replay',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      goalId: null,
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
+      backendType: 'openshell',
+      sourceKind: 'worker-runtime-provenance-index',
+      summary: 'Verified worker runtime provenance index.',
+      rawEvidenceRefs: [],
+      redactedEvidenceRefs: [
+        { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
+      ],
+      contentDigests: ['sha256:index'],
+      retentionClass: 'ephemeral-diagnostic' as const,
+      sensitivityClass: 'product-safe' as const,
+      importStatus: 'promoted' as const,
+      requiredFeatures: ['worker.runtime-provenance.v1'],
+      createdAt: '2026-07-13T00:00:00.000Z',
+    };
+
+    try {
+      applyScopedMigrations(workspaceDb);
+
+      recordWorkspaceEvidenceBundle(workspaceDb, record);
+      workspaceDb.sqlite
+        .prepare(
+          "UPDATE evidence_bundles SET schema_version = 2, raw_evidence_refs_json = 'invalid-json' WHERE evidence_bundle_id = ?"
+        )
+        .run(record.id);
+      expect(() => recordWorkspaceEvidenceBundle(workspaceDb, record)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => listWorkspaceEvidenceBundles(workspaceDb, record.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        compactWorkspaceEvidenceBundles({
+          workspaceDb,
+          workspaceId: record.workspaceId,
+          olderThan: '2026-07-14T00:00:00.000Z',
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            'SELECT schema_version, raw_evidence_refs_json FROM evidence_bundles WHERE evidence_bundle_id = ?'
+          )
+          .get(record.id)
+      ).toEqual({ schema_version: 2, raw_evidence_refs_json: 'invalid-json' });
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 

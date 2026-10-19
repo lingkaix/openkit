@@ -204,7 +204,8 @@ function jsonContainsKey(value: unknown, key: string): boolean {
   return false;
 }
 const retrievalTraceId = 'krt_00000000-0000-75f3-bd1b-a7b739921bbd';
-const knowledgePageScopeId = 'page/workspace/ws_00000000-0000-7000-8000-000000000001';
+const knowledgePageScopeId =
+  'page/workspace/ws_00000000-0000-7000-8000-000000000001/kb_00000000-0000-7000-8000-000000000001';
 const retrievalTraceRef = {
   scopeId:
     'retrieval-trace/thread/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001',
@@ -266,6 +267,7 @@ const allowedRuntimeNeutralImports = new Set([
   '@openkit/config-schema/native-environment',
   '@openkit/config-schema/provider-subscription',
   '@openkit/config-schema/workspace-export',
+  '@openkit/config-schema/workspace-resource-policy',
   '@openkit/protocol',
   'zod',
 ]);

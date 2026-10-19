@@ -5,7 +5,11 @@ import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
-import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
+import {
+  canDiscloseThreadToAudience,
+  isArtifactVisible,
+  isThreadVisible,
+} from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { ProductOperation } from './policy/workspace-access.js';
@@ -93,12 +97,7 @@ export function collectProductRetrievalScopes(
   const permittedThread = (threadId: string): boolean => {
     const thread = store.getThread(workspaceId, threadId);
     if (!isThreadVisible(store, thread, actor.userId, administrator)) return false;
-    return (
-      !destination ||
-      thread.visibility === 'workspace' ||
-      (destination.visibility === 'private' &&
-        destination.privateOwnerUserId === thread.privateOwnerUserId)
-    );
+    return !destination || canDiscloseThreadToAudience(store, thread, destination);
   };
   const scopes = new Map<string, ProductRetrievalScope>();
   const partition = (family: string, threadId: string | null) => {

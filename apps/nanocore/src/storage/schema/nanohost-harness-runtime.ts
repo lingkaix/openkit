@@ -1,3 +1,4 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
 import {
   index,
@@ -60,6 +61,8 @@ export const sandboxRuntimeRecords = sqliteTable(
 export const harnessInstanceRecords = sqliteTable(
   'harness_instance_records',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable private Harness identity. */
     harnessInstanceId: text('harness_instance_id').primaryKey().notNull(),
     /** Owning Sandbox runtime identity. */
@@ -126,6 +129,8 @@ export const harnessInstanceRecords = sqliteTable(
 export const agentSessionRuntimeBindings = sqliteTable(
   'agent_session_runtime_bindings',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable private binding identity. */
     agentSessionRuntimeBindingId: text('agent_session_runtime_binding_id').primaryKey().notNull(),
     /** Owning Harness identity. */

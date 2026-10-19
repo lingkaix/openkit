@@ -1,33 +1,23 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
   ArchivedGitPushRecordSchema,
   ArchivedWorkspaceRepositoryGitConfigSchema,
-  ArtifactReviewViewSchema,
   BackendWorkspaceHandleReaderSchema,
   BackendWorkspaceHandleSchema,
   type CandidateSetRecord,
   EvidenceBundleRecordSchema,
-  GoalCardSchema,
-  GoalPlanVersionSchema,
-  GoalRecordSchema,
-  GoalTaskLinkSchema,
   InjectionVisibilitySchema,
+  JudgementRecordReaderSchema,
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
   KnowledgeRetrievalTraceSchema,
   type ProductRetrievalTrace,
-  RuntimeEvidenceRecordSchema,
   StagedWorkspaceReviewReaderSchema,
   StagedWorkspaceReviewSchema,
   WorkerOutputManifestReaderSchema,
   WorkerOutputManifestSchema,
-  WorkspaceApplyPlanSchema,
-  WorkspaceApplyResultReaderSchema,
-  WorkspaceApplyResultSchema,
   WorkspaceChangeSetReaderSchema,
   WorkspaceChangeSetSchema,
   WorkspaceInputSnapshotReaderSchema,
@@ -36,9 +26,6 @@ import {
   WorkspaceMaterializationRecordSchema,
   WorkspaceMaterialRevisionViewSchema,
   WorkspaceMaterialViewSchema,
-  WorkspaceQuarantineRecordSchema,
-  WorkspaceReconciliationRecordReaderSchema,
-  WorkspaceReconciliationRecordSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
 import type {
@@ -55,6 +42,7 @@ import {
   WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
   type WorkspaceExportManifest,
+  type WorkspacePolicySubject,
 } from '@openkit/config-schema';
 import {
   AgentSessionIdSchema,
@@ -62,19 +50,20 @@ import {
   ArtifactSchema,
   type ArtifactVersionRecord,
   AuditEventIdSchema,
-  AuditEventSchema,
   allocateEntityId,
   CapabilityCallIdSchema,
   CapabilityCallSchema,
   deriveEntityId,
   type EntityKind,
   ItemSchema,
+  KnowledgeBaseIdSchema,
   KnowledgeEntrySchema,
   MaterialIdSchema,
   PermissionDecisionIdSchema,
   parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
+  readRetainedV1,
   SseEventEnvelopeSchema,
   ThreadIdSchema,
   ThreadSchema,
@@ -87,8 +76,10 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
+import { StoredArtifactReviewV1Schema } from '../artifact-review-v1.js';
 import {
   ArtifactReviewFollowUpRequestSchema,
   deriveArtifactReviewFollowUpTurnId,
@@ -104,7 +95,7 @@ import {
   reconstructImportedWorkspaceCatalog,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { PDF_TEXT_LAYER_LIMITS } from '../context/pdf-text-layer.js';
+import { remintPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   canonicalJson,
@@ -127,14 +118,34 @@ import {
 import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
+import { remintResourcePolicyConfig } from '../policy/resource-policy-portability.js';
+import {
+  AuditEventRetainedV1Schema,
+  PermissionDecisionRetainedV1Schema,
+  projectPermissionDecision,
+} from '../policy/retained-records-v1.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
+import {
+  StoredGoalCardTaskV1Schema,
+  StoredGoalCardV1Schema,
+  StoredGoalPlanVersionV1Schema,
+  StoredGoalV1Schema,
+  StoredTaskTerminalFactV1Schema,
+} from '../runtime/goal-retained-v1.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
-import { TaskTerminalFactSchema } from '../runtime/task-terminal-fact.js';
+import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import {
   createWorkerRuntimeProvenanceBundleId,
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
+import { StoredWorkspaceApplyPlanV1Schema } from '../runtime/workspace-apply-plans.js';
+import {
+  StoredWorkspaceApplyResultV1Schema,
+  StoredWorkspaceQuarantineRecordV1Schema,
+  StoredWorkspaceReconciliationRecordV1Schema,
+} from '../runtime/workspace-sync-outcomes-v1.js';
+
 import { parseArtifactVersionDescriptor } from './artifacts/artifact-version-records.js';
 import {
   readPortableJudgements,
@@ -146,6 +157,13 @@ import {
   readRecurringPortableFiles,
   remapRecurringPortableHistory,
 } from './recurring-portable-history.js';
+import {
+  StoredEventPayloadV1Schema,
+  StoredTurnSnapshotV1Schema,
+  StoredWorkspaceSnapshotV1Schema,
+} from './retained-work-events-v1.js';
+import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
+import { StoredArtifactV1Schema, StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
@@ -165,7 +183,6 @@ import {
   artifactReferenceItemId,
   assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
-  CaptureCoverageBindingSchema,
   KnowledgeSourceRecordSchema,
   knowledgeEntriesEqual,
   listUnresolvedUserInputRequestItemIds,
@@ -194,18 +211,18 @@ type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
-type AuditEvent = import('zod').infer<typeof AuditEventSchema>;
+type AuditEvent = import('zod').infer<typeof AuditEventRetainedV1Schema>;
 type EvidenceBundleRecord = z.infer<typeof EvidenceBundleRecordSchema>;
-type RuntimeEvidenceRecord = z.infer<typeof RuntimeEvidenceRecordSchema>;
+type RuntimeEvidenceRecord = z.infer<typeof StoredRuntimeEvidenceV1Schema>;
 type UsageRecord = import('zod').infer<typeof UsageRecordSchema>;
 type WorkspaceInputSnapshot = z.infer<typeof WorkspaceInputSnapshotSchema>;
 type WorkspaceMaterializationRecord = z.infer<typeof WorkspaceMaterializationRecordSchema>;
 type BackendWorkspaceHandle = z.infer<typeof BackendWorkspaceHandleSchema>;
 type WorkerOutputManifest = z.infer<typeof WorkerOutputManifestSchema>;
 type WorkspaceChangeSet = z.infer<typeof WorkspaceChangeSetSchema>;
-type WorkspaceApplyPlan = z.infer<typeof WorkspaceApplyPlanSchema>;
-type WorkspaceQuarantineRecord = z.infer<typeof WorkspaceQuarantineRecordSchema>;
-type WorkspaceReconciliationRecord = z.infer<typeof WorkspaceReconciliationRecordSchema>;
+type WorkspaceApplyPlan = z.infer<typeof StoredWorkspaceApplyPlanV1Schema>;
+type WorkspaceQuarantineRecord = z.infer<typeof StoredWorkspaceQuarantineRecordV1Schema>;
+type WorkspaceReconciliationRecord = z.infer<typeof StoredWorkspaceReconciliationRecordV1Schema>;
 
 const ImportedWorkspaceMaterialSchema = WorkspaceMaterialViewSchema.extend({
   lastMutationRequestId: z.string().min(1),
@@ -226,16 +243,17 @@ const ImportedThreadMaterialBindingSchema = z
     updatedAt: z.string().datetime(),
   })
   .strip();
-const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.safeExtend({
-  materialProposal: ArtifactReviewViewSchema.shape.materialProposal.unwrap().strip().nullable(),
-  rangeFeedback: ArtifactReviewViewSchema.shape.rangeFeedback
+const ImportedArtifactReviewSchema = StoredArtifactReviewV1Schema.safeExtend({
+  judgements: z.array(JudgementRecordReaderSchema).default([]),
+  materialProposal: StoredArtifactReviewV1Schema.shape.materialProposal.unwrap().strip().nullable(),
+  rangeFeedback: StoredArtifactReviewV1Schema.shape.rangeFeedback
     .unwrap()
     .unwrap()
     .strip()
     .nullable()
     .optional(),
   candidateSelections: z
-    .array(ArtifactReviewViewSchema.shape.candidateSelections.unwrap().element.strip())
+    .array(StoredArtifactReviewV1Schema.shape.candidateSelections.unwrap().element.strip())
     .default([]),
   decisionRequestId: z.string().min(1).nullable(),
 }).strip();
@@ -255,10 +273,7 @@ const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.safeExtend
     EvidenceBundleRecordSchema.shape.redactedEvidenceRefs.element.strip()
   ),
 }).strip();
-const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.safeExtend({
-  uploadManifest: z.array(RuntimeEvidenceRecordSchema.shape.uploadManifest.element.strip()),
-  downloadManifest: z.array(RuntimeEvidenceRecordSchema.shape.downloadManifest.element.strip()),
-}).strip();
+
 const ImportedUsageRecordSchema = UsageRecordSchema.strip();
 const ImportedKnowledgeObservationSchema = KnowledgeObservationSchema.strip();
 const ImportedKnowledgeClaimSchema = KnowledgeClaimSchema.strip();
@@ -355,45 +370,16 @@ const ExportedStagedWorkspaceReviewReaderSchema = ExportedStagedWorkspaceReviewS
   review: StagedWorkspaceReviewReaderSchema,
 });
 
-const ExportedWorkspaceApplyResultSchema = WorkspaceApplyResultSchema.extend({
+const ExportedWorkspaceApplyResultSchema = StoredWorkspaceApplyResultV1Schema.extend({
   requestId: z.string().min(1),
 }).strip();
 
 type ExportedWorkspaceApplyResult = z.infer<typeof ExportedWorkspaceApplyResultSchema>;
 
-/** Portable apply-result observation with its required retained replay identity. */
-const ExportedWorkspaceApplyResultReaderSchema = WorkspaceApplyResultReaderSchema.safeExtend({
-  requestId: z.string().min(1),
-}).strip();
-
-const ExportedWorkspacePermissionDecisionSchema = z
-  .object({
-    action: z.string().min(1),
-    approvalId: z.string().min(1).nullable(),
-    auditEventId: AuditEventIdSchema.nullable(),
-    contextSummary: z.unknown(),
-    createdAt: z.string().datetime(),
-    decisionId: PermissionDecisionIdSchema,
-    enforcementPoint: z.string().min(1),
-    ownerScope: z.literal('workspace'),
-    policyEngineVersion: z.string().min(1),
-    policySnapshotId: z.string().min(1),
-    reasonCode: z.string().min(1),
-    requiredApprovalKind: z.string().min(1).nullable(),
-    resourceSummary: z.unknown(),
-    result: z.enum([
-      'allow',
-      'deny',
-      'require_approval',
-      'require_escalation',
-      'defer',
-      'not_applicable',
-      'error',
-    ]),
-    subjectSummary: z.unknown(),
-    workspaceId: WorkspaceIdSchema,
-  })
-  .strict();
+const ExportedWorkspacePermissionDecisionSchema = PermissionDecisionRetainedV1Schema.safeExtend({
+  ownerScope: z.literal('workspace'),
+  workspaceId: WorkspaceIdSchema,
+});
 
 type ExportedWorkspacePermissionDecision = z.infer<
   typeof ExportedWorkspacePermissionDecisionSchema
@@ -575,10 +561,14 @@ export interface ReadWorkspaceImportSnapshotInput {
   targetWorkspaceId: string;
   /** Current target Server identity used for reminted trusted query context. */
   targetServerId?: string;
+  /** Current target authority validates source principals; absence rejects every assignment. */
+  resourcePolicySubjectEligible?: (subject: WorkspacePolicySubject) => boolean;
 }
 
 /** Importable record snapshot extracted from one workspace export. */
 export interface WorkspaceImportSnapshot {
+  /** One new default base, retained in the imported scope configuration and every remapped reference. */
+  defaultKnowledgeBaseId: string;
   /** Request-local completion under the existing initialized staging root; never serialized or a read grant. */
   finalizeNotebookKnowledge?: (binding: {
     notebookRevision: string;
@@ -819,8 +809,14 @@ interface ImportRemintContext {
   report: WorkspaceImportDryRunReport;
   /** Workspace id assigned to reconstructed records. */
   targetWorkspaceId: string;
+  /** Exact archived default base; imports never infer another base from a matching page name. */
+  sourceKnowledgeBaseId: string;
+  /** Independent target base allocated once for this fresh imported scope. */
+  targetKnowledgeBaseId: string;
   /** Current target Server identity, required when the export contains retrieval traces. */
   targetServerId?: string;
+  /** Current target authority validates source principals; absence rejects every assignment. */
+  resourcePolicySubjectEligible?: (subject: WorkspacePolicySubject) => boolean;
   /** Parsed source Material owners. */
   sourceWorkspaceMaterials: ImportedWorkspaceMaterial[];
   /** Parsed source Material revisions. */
@@ -950,7 +946,19 @@ export function readWorkspaceImportSnapshot(
     manifestDigest: input.verified.manifestDigest,
     report,
     targetWorkspaceId: input.targetWorkspaceId,
+    sourceKnowledgeBaseId: KnowledgeBaseIdSchema.parse(
+      readRetainedV1(
+        parseJsoncObject(
+          requiredExportFile(input.verified.fileContents, 'workspace-files/config/workspace.jsonc')
+        ),
+        (record) => WorkspaceConfigSchema.parse(record)
+      ).workspace.defaultKnowledgeBaseId
+    ),
+    targetKnowledgeBaseId: allocateEntityId('kb'),
     ...(input.targetServerId ? { targetServerId: input.targetServerId } : {}),
+    ...(input.resourcePolicySubjectEligible
+      ? { resourcePolicySubjectEligible: input.resourcePolicySubjectEligible }
+      : {}),
     sourceWorkspaceMaterials,
     sourceWorkspaceMaterialRevisions,
     sourceThreadMaterialBindings,
@@ -997,7 +1005,7 @@ export function readWorkspaceImportSnapshot(
       threadIds: new Set(context.threadIds.keys()),
       turns: new Map(
         readImportJsonl(context.files, 'records/turns.jsonl').map((row) => {
-          const turn = TurnSchema.parse(row);
+          const turn = readRetainedV1(row, StoredTurnSnapshotV1Schema.parse);
           return [turn.id, turn.threadId];
         })
       ),
@@ -1038,7 +1046,7 @@ export function readWorkspaceImportSnapshot(
     }
   }
   const sourceTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
-    TurnSchema.parse(record)
+    readRetainedV1(record, StoredTurnSnapshotV1Schema.parse)
   );
   const sourceNotebookPages = new Map(
     [...context.files]
@@ -1082,13 +1090,7 @@ export function readWorkspaceImportSnapshot(
         );
     }
   }
-  const knowledgeReferenceReplacements = [
-    ...context.contextPackageReferences,
-    ...context.turnIds,
-    ...context.itemIds,
-    ...context.knowledgeSourceIds,
-    ...context.knowledgePageReferences,
-  ] as const;
+  const knowledgeReferenceReplacements = portableReferenceReplacements(context);
   const knowledge = canonical.knowledge.map((entry) =>
     KnowledgeEntrySchema.parse({
       ...entry,
@@ -1167,6 +1169,8 @@ export function readWorkspaceImportSnapshot(
 
   return {
     artifactPayloadFiles,
+    defaultKnowledgeBaseId: context.targetKnowledgeBaseId,
+
     artifactVersionRecords,
     finalizeNotebookKnowledge: (binding) => {
       workResources.finalizeNotebookKnowledge(binding);
@@ -1329,14 +1333,16 @@ function readCanonicalImportState(context: ImportRemintContext) {
   if (context.files.has('records/workspace.json')) {
     throw new Error('Unsupported workspace export file: records/workspace.json.');
   }
-  const exportedWorkspaceRecord = WorkspaceSystemRecordSchema.parse(
-    readImportJson(context.files, 'records/workspace-record.json')
+  const exportedWorkspaceRecord = readRetainedV1(
+    readImportJson(context.files, 'records/workspace-record.json'),
+    WorkspaceSystemRecordSchema.parse
   );
-  const exportedWorkspaceConfig = WorkspaceConfigSchema.parse(
+  const exportedWorkspaceConfig = readRetainedV1(
     parseJsoncObject(
       requiredExportFile(context.files, 'workspace-files/config/workspace.jsonc'),
       'workspace-files/config/workspace.jsonc'
-    )
+    ),
+    (record) => WorkspaceConfigSchema.parse(record)
   );
   if (exportedWorkspaceRecord.id !== report.manifest.workspaceId) {
     throw new Error('Workspace record id does not match the export manifest.');
@@ -1358,7 +1364,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     (record) => KnowledgeEntrySchema.parse(record)
   );
   const exportedTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
-    TurnSchema.parse(record)
+    readRetainedV1(record, StoredTurnSnapshotV1Schema.parse)
   );
   const turnIds = allocateImportedEntityIds(
     'tu',
@@ -1366,7 +1372,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
   );
   const exported = readExportedArtifacts(context.files, context.payloadFiles, report.manifest);
   const exportedArtifacts = exported.artifacts;
-  const exportedWorkspace = WorkspaceRecordSchema.parse({
+  const exportedWorkspace = StoredWorkspaceSnapshotV1Schema.parse({
     ...exportedWorkspaceRecord,
     name: exportedWorkspaceConfig.workspace.name,
     counts: {
@@ -1390,14 +1396,14 @@ function readCanonicalImportState(context: ImportRemintContext) {
     exportedArtifacts.map((artifact) => artifact.id)
   );
   const exportedAgentSessions = readImportJsonl(context.files, 'records/agent-sessions.jsonl').map(
-    (record) => AgentSessionRecordSchema.parse(record) as AgentSession
+    (record) => readRetainedV1(record, AgentSessionRecordSchema.parse) as AgentSession
   );
   const agentSessionIds = allocateImportedEntityIds(
     'as',
     exportedAgentSessions.map((session) => session.id)
   );
   const exportedItemRevisions = readImportJsonl(context.files, 'records/item-revisions.jsonl').map(
-    (record) => ItemSchema.parse(record)
+    (record) => readRetainedV1(record, StoredItemPayloadV1Schema.parse)
   );
   const unresolvedUserInputRequestIds =
     listUnresolvedUserInputRequestItemIds(exportedItemRevisions);
@@ -1730,7 +1736,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
       }) as AgentSession
   );
   const exportedEvents = readImportJsonl(context.files, 'records/turn-events.jsonl').map((record) =>
-    SseEventEnvelopeSchema.parse(record)
+    readRetainedV1(record, StoredEventPayloadV1Schema.parse)
   );
   const exportedTurnIds = new Set(exportedTurns.map((turn) => turn.id));
   if (exportedEvents.some((event) => !event.turnId || !exportedTurnIds.has(event.turnId))) {
@@ -2025,9 +2031,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
   context.vaultGrantIds = vaultGrantIds;
   const auditEvents = readOptionalImportJsonl(context.files, 'records/audit-events.jsonl').map(
     (record) => {
-      const parsed = AuditEventSchema.parse(record);
+      const parsed = readRetainedV1(record, (value) => AuditEventRetainedV1Schema.parse(value));
 
-      return AuditEventSchema.parse({
+      return AuditEventRetainedV1Schema.parse({
         ...parsed,
         threadId: parsed.threadId ? requiredMapValue(threadIds, parsed.threadId, 'thread') : null,
         turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
@@ -2101,7 +2107,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
   const exportedRuntimeEvidence = readOptionalImportJsonl(
     context.files,
     'records/runtime-evidence.jsonl'
-  ).map((record) => ImportedRuntimeEvidenceRecordSchema.parse(record));
+  ).map((record) => StoredRuntimeEvidenceV1Schema.parse(record));
   if (
     new Set(exportedEvidenceBundles.map((bundle) => bundle.id)).size !==
     exportedEvidenceBundles.length
@@ -2121,7 +2127,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     if (!firstLine) {
       throw new Error('Runtime provenance index is empty.');
     }
-    const firstRow = WorkerRuntimeOriginIndexRowSchema.parse(JSON.parse(firstLine));
+    const firstRow = readRetainedV1(JSON.parse(firstLine), (value) =>
+      WorkerRuntimeOriginIndexRowSchema.parse(value)
+    );
     const sourceLineage = firstRow.lineage;
     if (
       bundle.workspaceId !== sourceLineage.workspaceId ||
@@ -2373,7 +2381,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         .map((id) => rawProvenancePackageIds.get(id))
         .find((id) => id !== undefined);
 
-    return RuntimeEvidenceRecordSchema.parse({
+    return StoredRuntimeEvidenceV1Schema.parse({
       ...parsed,
       ...(targetProvenancePackageId
         ? { id: createWorkerRuntimeProvenanceEvidenceId(targetProvenancePackageId) }
@@ -2469,7 +2477,9 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     context.files,
     'records/permission-decisions.jsonl'
   ).map((record) => {
-    const parsed = ExportedWorkspacePermissionDecisionSchema.parse(record);
+    const parsed = readRetainedV1(record, (value) =>
+      ExportedWorkspacePermissionDecisionSchema.parse(projectPermissionDecision(value))
+    );
 
     return ExportedWorkspacePermissionDecisionSchema.parse({
       ...parsed,
@@ -2652,7 +2662,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-apply-results.jsonl'
   ).map((record) => {
-    const parsed = ExportedWorkspaceApplyResultReaderSchema.parse(record);
+    const parsed = ExportedWorkspaceApplyResultSchema.parse(record);
 
     return ExportedWorkspaceApplyResultSchema.parse({
       ...parsed,
@@ -2663,9 +2673,9 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-apply-plans.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceApplyPlanSchema.parse(record);
+    const parsed = StoredWorkspaceApplyPlanV1Schema.parse(record);
 
-    return WorkspaceApplyPlanSchema.parse({
+    return StoredWorkspaceApplyPlanV1Schema.parse({
       ...parsed,
       workspaceId: context.targetWorkspaceId,
     });
@@ -2674,9 +2684,9 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-reconciliation-records.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceReconciliationRecordReaderSchema.parse(record);
+    const parsed = StoredWorkspaceReconciliationRecordV1Schema.parse(record);
 
-    return WorkspaceReconciliationRecordSchema.parse({
+    return StoredWorkspaceReconciliationRecordV1Schema.parse({
       ...parsed,
       evidenceBundleIds: parsed.evidenceBundleIds.map((id) =>
         requiredMapValue(evidenceBundleIds, id, 'evidence bundle')
@@ -2688,9 +2698,9 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-quarantine-records.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceQuarantineRecordSchema.parse(record);
+    const parsed = StoredWorkspaceQuarantineRecordV1Schema.parse(record);
 
-    return WorkspaceQuarantineRecordSchema.parse({
+    return StoredWorkspaceQuarantineRecordV1Schema.parse({
       ...parsed,
       workspaceId: context.targetWorkspaceId,
     });
@@ -2877,6 +2887,12 @@ function readWorkResourceImportState(
     if (canonicalJson(originalManifest) !== sourceManifestText) {
       throw new Error('Worker Context Package source manifest is not canonical.');
     }
+    if (
+      [...sourceTrace.knowledgeSelections, ...sourceTrace.knowledgeExclusions].some(
+        (entry) => entry.knowledgeBaseId !== context.sourceKnowledgeBaseId
+      )
+    )
+      throw new Error('Worker Context Package Knowledge belongs to another base.');
     const knowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => ({
       ...selection,
       content: requiredExportFile(
@@ -2909,73 +2925,34 @@ function readWorkResourceImportState(
       return {
         content: target.content,
         contentDigest: target.contentDigest,
+        knowledgeBaseId: context.targetKnowledgeBaseId,
         knowledgePageId: selection.knowledgePageId,
         sourceRefs: target.targetSourceReferences,
       };
     });
     const sourceFiles = (sourceTrace.sourceFiles ?? []).map(
       (entry): WorkerContextPackageSourceFileInput => {
-        const sourcePath = requiredMapValue(
-          context.payloadFiles,
-          `${sourcePackageRoot}/${entry.originalSnapshotPath}`,
-          'Context Package original'
-        );
-        // Complete extracted text has its own small processor bound; originals stay path-backed.
-        const representationPath = entry.projection.representationSnapshotPath;
-        const representation = representationPath
-          ? requiredExportFile(context.files, `${sourcePackageRoot}/${representationPath}`)
-          : undefined;
-        if (
-          representation !== undefined &&
-          (Buffer.byteLength(representation) > PDF_TEXT_LAYER_LIMITS.maxOutputBytes ||
-            Buffer.byteLength(representation) !== entry.projection.representationByteLength ||
-            `sha256:${createHash('sha256').update(representation).digest('hex')}` !==
-              entry.projection.representationDigest)
-        )
-          throw new Error('Context Package representation integrity is inconsistent.');
         return {
           ...entry,
           deliveredBytes: Buffer.from(
             requiredExportFile(context.files, `${sourcePackageRoot}/${entry.packagePath}`),
             'utf8'
           ),
-          ...(representation !== undefined
-            ? {
-                openRepresentation: async function* (signal: AbortSignal) {
-                  const bytes = Buffer.from(representation);
-                  for (let offset = 0; offset < bytes.byteLength; offset += 65_536) {
-                    signal.throwIfAborted();
-                    yield bytes.subarray(offset, offset + 65_536);
-                  }
-                },
-              }
-            : {}),
-          open: async function* (signal) {
-            signal.throwIfAborted();
-            const handle = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
-            try {
-              yield* handle.createReadStream({
-                highWaterMark: 65_536,
-                autoClose: false,
-                signal,
-              });
-            } finally {
-              await handle.close();
-            }
+          // Portable history carries delivered bytes and references, not a source-retention promise.
+          // A current admission must acquire its own canonical source supplier.
+          open: () => {
+            throw new Error('Imported source content is unavailable.');
           },
           assertUnchanged: () => {
-            const proof = measureCanonicalFile(sourcePath);
-            if (
-              proof.byteLength !== entry.byteLength ||
-              proof.contentDigest !== entry.originalDigest
-            )
-              throw new Error('Context Package original integrity is inconsistent.');
+            throw new Error('Imported source content is unavailable.');
           },
         };
       }
     );
+    const sourceKnowledgeOverview = context.files.get(`${sourcePackageRoot}/knowledge-overview.md`);
     const sourcePackage = createWorkerContextPackageFiles({
       sourceFiles,
+      knowledgeOverview: sourceKnowledgeOverview,
       contextBudgetTokens: sourceManifest.contextBudgetTokens,
       includedItemIds: sourceTrace.includedItemIds,
       knowledgeSelections,
@@ -3062,13 +3039,6 @@ function readWorkResourceImportState(
         throw new Error(`Worker Context Package source bytes are contradictory: ${file.path}`);
       }
     }
-    for (const entry of sourceFiles) {
-      sourcePackagePaths.add(`${sourcePackageRoot}/${entry.originalSnapshotPath}`);
-      if (entry.projection.representationSnapshotPath)
-        sourcePackagePaths.add(
-          `${sourcePackageRoot}/${entry.projection.representationSnapshotPath}`
-        );
-    }
     const unexpectedSourceFile = [...context.files.keys(), ...context.payloadFiles.keys()].find(
       (path) => path.startsWith(`${sourcePackageRoot}/`) && !sourcePackagePaths.has(path)
     );
@@ -3094,31 +3064,35 @@ function readWorkResourceImportState(
     }
     const targetSourceFiles = sourceFiles.map((entry) => remintContextSourceFile(entry, context));
     const targetRoot = `threads/${targetThreadId}/turns/${targetTurnId}`;
-    for (const [index, entry] of targetSourceFiles.entries()) {
-      artifactPayloadFiles.set(
-        `${targetRoot}/context-package/${entry.originalSnapshotPath}`,
-        requiredMapValue(
-          context.payloadFiles,
-          `${sourcePackageRoot}/${sourceFiles[index]!.originalSnapshotPath}`,
-          'Context Package original'
-        )
-      );
-      if (entry.projection.representationSnapshotPath)
-        workerContextPackageFiles.set(
-          `${targetRoot}/context-package/${entry.projection.representationSnapshotPath}`,
-          requiredExportFile(
-            context.files,
-            `${sourcePackageRoot}/${sourceFiles[index]!.projection.representationSnapshotPath!}`
-          )
-        );
-    }
     tracesBySourceTurn.set(sourceTurnId, sourceTrace);
     const finalizeTargetPackage = (binding?: {
       notebookRevision: string;
       nativeKnowledgePages: ReadonlyMap<string, string>;
     }) => {
+      if (sourceKnowledgeOverview !== undefined && !binding)
+        throw new Error('Portable Knowledge overview requires the published target Notebook.');
       const targetPackage = createWorkerContextPackageFiles({
         sourceFiles: targetSourceFiles,
+        knowledgeOverview:
+          sourceKnowledgeOverview === undefined
+            ? undefined
+            : remintPortableKnowledgeOverview({
+                text: sourceKnowledgeOverview,
+                sourceWorkspaceId: context.report.exportedWorkspaceId,
+                sourceKnowledgeBaseId: context.sourceKnowledgeBaseId,
+                targetWorkspaceId: context.targetWorkspaceId,
+                targetKnowledgeBaseId: context.targetKnowledgeBaseId,
+                notebookRevision: binding!.notebookRevision,
+                indexContentDigest: `sha256:${createHash('sha256')
+                  .update(
+                    requiredMapValue(
+                      binding!.nativeKnowledgePages,
+                      'knowledge/pages/index.md',
+                      'Notebook index'
+                    )
+                  )
+                  .digest('hex')}`,
+              }),
         contextBudgetTokens: sourceManifest.contextBudgetTokens,
         includedItemIds: sourceTrace.includedItemIds.map((id) =>
           requiredMapValue(context.itemIds, id, 'included Item')
@@ -3184,21 +3158,6 @@ function readWorkResourceImportState(
                       selection.materialId,
                       selection.revisionId
                     ),
-                    ...(selection.projection.originalSnapshotPath
-                      ? {
-                          originalSnapshotPath: remintContextSourcePath(
-                            selection.projection.originalSnapshotPath,
-                            selection.materialId,
-                            requiredMapValue(context.materialIds, selection.materialId, 'Material'),
-                            selection.revisionId,
-                            requiredMaterialRevisionId(
-                              context,
-                              selection.materialId,
-                              selection.revisionId
-                            )
-                          ),
-                        }
-                      : {}),
                   },
                 }
               : {}),
@@ -3238,7 +3197,11 @@ function readWorkResourceImportState(
               'Worker Context Package Knowledge exclusion contradicts its retrieval trace.'
             );
           }
-          return { ...exclusion, contentDigest: target.contentDigest };
+          return {
+            ...exclusion,
+            knowledgeBaseId: context.targetKnowledgeBaseId,
+            contentDigest: target.contentDigest,
+          };
         }),
         knowledgeSelectionInput: targetRetrievalReference
           ? { retrievalTraceRef: targetRetrievalReference }
@@ -3359,7 +3322,10 @@ function readWorkResourceImportState(
           workspaceId: context.targetWorkspaceId,
         });
     };
-    if (sourceTrace.knowledgeSelections.some((entry) => entry.projection)) {
+    if (
+      sourceKnowledgeOverview !== undefined ||
+      sourceTrace.knowledgeSelections.some((entry) => entry.projection)
+    ) {
       notebookFinalizers.push((binding) => finalizeTargetPackage(binding));
     } else finalizeTargetPackage();
   }
@@ -3410,6 +3376,7 @@ function readWorkResourceImportState(
     const artifactId = requiredMapValue(context.artifactIds, review.artifactId, 'artifact');
     const materialProposal = review.materialProposal
       ? {
+          ...review.materialProposal,
           materialId: requiredMapValue(
             context.materialIds,
             review.materialProposal.materialId,
@@ -3526,6 +3493,7 @@ function remintKnowledgeDelivery(
   target: {
     content: string;
     contentDigest: string;
+    knowledgeBaseId: string;
     knowledgePageId: string;
     sourceRefs: readonly string[];
   },
@@ -3644,13 +3612,6 @@ function remintContextSourceFile(
       },
     };
   }
-  const originalSnapshotPath = remintContextSourcePath(
-    entry.originalSnapshotPath,
-    sourceId,
-    targetId,
-    oldRevision,
-    newRevision
-  );
   let deliveredBytes = entry.deliveredBytes;
   // The current Turn producer includes a qualified reference in its unavailable descriptor.
   if (
@@ -3675,7 +3636,6 @@ function remintContextSourceFile(
     ...entry,
     source: targetSource,
     deliveredBytes,
-    originalSnapshotPath,
     packagePath: remintContextSourcePath(
       entry.packagePath,
       sourceId,
@@ -3686,20 +3646,8 @@ function remintContextSourceFile(
     projection: {
       ...entry.projection,
       ...(newRevision ? { sourceRevision: newRevision } : {}),
-      ...(entry.projection.representationSnapshotPath
-        ? {
-            representationSnapshotPath: remintContextSourcePath(
-              entry.projection.representationSnapshotPath,
-              sourceId,
-              targetId,
-              oldRevision,
-              newRevision
-            ),
-          }
-        : {}),
       deliveredDigest: `sha256:${createHash('sha256').update(deliveredBytes).digest('hex')}`,
       byteLength: deliveredBytes.byteLength,
-      originalSnapshotPath,
     },
   };
 }
@@ -4324,6 +4272,7 @@ function portableReferenceReplacements(
 ): readonly (readonly [string, string])[] {
   const replacementMap = new Map<string, string>([
     [context.report.exportedWorkspaceId, context.targetWorkspaceId],
+    [context.sourceKnowledgeBaseId, context.targetKnowledgeBaseId],
   ]);
   for (const idMap of [
     context.contextPackageReferences,
@@ -4355,10 +4304,13 @@ function remintImportedPageScope(scopeId: string, context: ImportRemintContext):
     throw new Error('Portable retrieval trace source scope is invalid.');
   }
   if (scope.kind === 'workspace') {
-    if (scope.workspaceId !== context.report.exportedWorkspaceId) {
+    if (
+      scope.workspaceId !== context.report.exportedWorkspaceId ||
+      scope.knowledgeBaseId !== context.sourceKnowledgeBaseId
+    ) {
       throw new Error('Portable retrieval trace belongs to another Workspace source.');
     }
-    return `page/workspace/${context.targetWorkspaceId}`;
+    return `page/workspace/${context.targetWorkspaceId}/${context.targetKnowledgeBaseId}`;
   }
   return scopeId;
 }
@@ -4406,8 +4358,9 @@ function readRetrievalTraceImportState(
   const references = new Map<string, RetrievalTraceReference>();
   const selectedPages = new Map<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>();
   const importedSource =
-    WorkspaceSystemRecordSchema.parse(
-      readImportJson(context.files, 'records/workspace-record.json')
+    readRetainedV1(
+      readImportJson(context.files, 'records/workspace-record.json'),
+      WorkspaceSystemRecordSchema.parse
     ).importedFrom !== undefined;
 
   for (const exportPath of tracePaths) {
@@ -4465,15 +4418,19 @@ function readRetrievalTraceImportState(
     }
     const targetSourceScope = remintImportedPageScope(sourceTrace.sourceScope, context);
     const userSelection = sourceTrace.retrievalParameters.sourceScope === 'user';
-    const expectedSourceScope =
-      sourceTrace.retrievalParameters.sourceScope === 'workspace'
-        ? `page/workspace/${context.report.exportedWorkspaceId}`
+    const pageOwner = parseReferenceScope(sourceTrace.sourceScope);
+    const validSourceOwner =
+      pageOwner?.family === 'page' &&
+      (sourceTrace.retrievalParameters.sourceScope === 'workspace'
+        ? pageOwner.kind === 'workspace' &&
+          pageOwner.workspaceId === context.report.exportedWorkspaceId &&
+          pageOwner.knowledgeBaseId === context.sourceKnowledgeBaseId
         : userSelection
-          ? sourceTrace.queryContext.actor.kind === 'user'
-            ? `page/user/${sourceTrace.queryContext.actor.id}`
-            : null
-          : 'page/server';
-    if (sourceTrace.sourceScope !== expectedSourceScope) {
+          ? pageOwner.kind === 'user' &&
+            sourceTrace.queryContext.actor.kind === 'user' &&
+            pageOwner.userId === sourceTrace.queryContext.actor.id
+          : pageOwner.kind === 'server');
+    if (!validSourceOwner) {
       throw new Error('Portable retrieval trace source selection is contradictory.');
     }
     if (
@@ -4485,6 +4442,27 @@ function readRetrievalTraceImportState(
       );
     const targetSelections = new Map<string, ImportedRetrievalSelectedPage>();
     const selected = sourceTrace.selected.map((entry) => {
+      const original = entry.contentRef;
+      const targetEntry =
+        original &&
+        original.knowledgeBaseId === context.sourceKnowledgeBaseId &&
+        original.locator.ownerScope.kind === 'workspace' &&
+        original.locator.ownerScope.workspaceId === context.report.exportedWorkspaceId
+          ? {
+              ...entry,
+              contentRef: {
+                ...original,
+                knowledgeBaseId: context.targetKnowledgeBaseId,
+                locator: {
+                  ...original.locator,
+                  ownerScope: {
+                    kind: 'workspace' as const,
+                    workspaceId: context.targetWorkspaceId,
+                  },
+                },
+              },
+            }
+          : entry;
       const reference = remintImportedPageReference(
         entry.reference,
         sourceTrace.sourceScope,
@@ -4493,7 +4471,7 @@ function readRetrievalTraceImportState(
       );
       if (!sourceTrace.sourceScope.startsWith('page/workspace/')) {
         return {
-          ...entry,
+          ...targetEntry,
           reference,
           sourceReferences: userSelection
             ? entry.sourceReferences
@@ -4535,7 +4513,7 @@ function readRetrievalTraceImportState(
         targetSourceReferences,
       });
       return {
-        ...entry,
+        ...targetEntry,
         reference,
         revision: sourceTrace.notebookRevision,
         contentDigest: targetContentDigest,
@@ -4597,7 +4575,7 @@ function readRetrievalTraceImportState(
         ...sourceTrace.queryContext,
         // User and Server selections keep their originating authority; import cannot turn them into local grants.
         serverId:
-          userSelection || sourceTrace.sourceScope === 'page/server'
+          userSelection || pageOwner?.kind === 'server'
             ? sourceTrace.queryContext.serverId
             : context.targetServerId,
         workspaceId: context.targetWorkspaceId,
@@ -4671,6 +4649,8 @@ function remintImportedNotebookPages(
     pages,
     sourceWorkspaceId: context.report.exportedWorkspaceId,
     targetWorkspaceId: context.targetWorkspaceId,
+    sourceKnowledgeBaseId: context.sourceKnowledgeBaseId,
+    targetKnowledgeBaseId: context.targetKnowledgeBaseId,
     rewriteReferences: (references) =>
       rewritePortableReferences(references, portableReferenceReplacements(context)),
   });
@@ -4792,7 +4772,26 @@ function readPortableFileStateFromExport(
     const workspacePath = exportPath.slice('workspace-files/'.length);
     assertPortableWorkspaceFilePath(workspacePath);
     if (workspacePath === 'config/workspace.jsonc') {
-      workspaceConfig = content;
+      const remintedConfig = remintResourcePolicyConfig({
+        content,
+        threadIds: context.threadIds,
+        threads: readWorkspaceExportThreads(files),
+        manifestFeatures: context.report.manifest.requiredFeatures,
+        ...(context.resourcePolicySubjectEligible
+          ? { subjectEligible: context.resourcePolicySubjectEligible }
+          : {}),
+      });
+      workspaceConfig = applyEdits(
+        remintedConfig,
+        modify(
+          remintedConfig,
+          ['workspace', 'defaultKnowledgeBaseId'],
+          context.targetKnowledgeBaseId,
+          {
+            formattingOptions: { insertSpaces: true, tabSize: 2 },
+          }
+        )
+      );
     } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
     } else if (workspacePath.startsWith('knowledge/pages/')) {
@@ -4882,7 +4881,10 @@ function readExportedArtifacts(
   const versions: Array<{ record: ArtifactVersionRecord; raw: Record<string, unknown> }> = [];
   const artifacts = metadataPaths.map((metadataPath) => {
     const artifactId = metadataPath.split('/')[1]!;
-    const metadata = readImportJson(files, metadataPath) as Record<string, unknown>;
+    const metadata = readRetainedV1(
+      readImportJson(files, metadataPath),
+      StoredArtifactV1Schema.parse
+    );
     const format = z
       .enum(['markdown', 'text', 'json', 'file'])
       .parse((metadata.content as { format?: unknown } | undefined)?.format);
@@ -5098,14 +5100,16 @@ function readWorkObservationImportState(
   const expectedPaths = new Set<string>();
   const rawTurns = readImportJsonl(context.files, 'records/turns.jsonl');
   for (const value of rawTurns) {
-    const raw = z
-      .object({
-        captureCoverage: CaptureCoverageBindingSchema.optional(),
-        requiredFeatures: z.array(z.string()).optional(),
-      })
-      .passthrough()
-      .parse(value);
-    const turn = TurnSchema.parse(value);
+    const raw = readRetainedV1(value, (record) =>
+      z
+        .object({
+          captureCoverage: StoredTurnV1Schema.shape.captureCoverage,
+          requiredFeatures: StoredTurnV1Schema.shape.requiredFeatures,
+        })
+        .passthrough()
+        .parse(record)
+    );
+    const turn = StoredTurnSnapshotV1Schema.parse(raw);
     const targetTurnId = requiredMapValue(context.turnIds, turn.id, 'turn');
     if (raw.captureCoverage) turnCaptureCoverage.set(targetTurnId, raw.captureCoverage);
     const path = `workspace-files/threads/${turn.threadId}/turns/${turn.id}/observations.jsonl`;
@@ -5715,11 +5719,11 @@ function readWorkerRuntimeControlState(context: ImportRemintContext) {
 function readCurrentGoalImportState(context: ImportRemintContext) {
   const text = context.files.get('records/goal-state.json');
   const shape = z.object({
-    goals: z.array(GoalRecordSchema),
-    cards: z.array(GoalCardSchema),
-    versions: z.array(GoalPlanVersionSchema),
-    tasks: z.array(GoalTaskLinkSchema),
-    terminalFacts: z.array(TaskTerminalFactSchema),
+    goals: z.array(StoredGoalV1Schema),
+    cards: z.array(StoredGoalCardV1Schema),
+    versions: z.array(StoredGoalPlanVersionV1Schema),
+    tasks: z.array(StoredGoalCardTaskV1Schema),
+    terminalFacts: z.array(StoredTaskTerminalFactV1Schema),
   });
   const source = shape.parse(
     text ? JSON.parse(text) : { goals: [], cards: [], versions: [], tasks: [], terminalFacts: [] }

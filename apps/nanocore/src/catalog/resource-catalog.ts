@@ -148,7 +148,11 @@ export function validateLightAppDefinitionCatalog(catalog: ResourceCatalogDocume
   for (const version of versions) {
     try {
       const definition: unknown = JSON.parse(version.definitionJson);
-      LightAppSchemaInputSchema.parse(definition);
+      const parsed = LightAppSchemaInputSchema.parse(definition);
+      // Authoring may omit an empty list; retained canonical bytes must already contain it.
+      if (!Object.hasOwn(parsed, 'references')) {
+        throw new Error('Retained Light App definitions require an explicit references list.');
+      }
       if (
         stableJson(definition) !== version.definitionJson ||
         `sha256:${createHash('sha256').update(version.definitionJson, 'utf8').digest('hex')}` !==

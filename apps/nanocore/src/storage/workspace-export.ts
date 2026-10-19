@@ -7,16 +7,19 @@ import {
   parseWorkspaceExportManifest,
   type RequiredFeatureId,
   WORKSPACE_EXPORT_FORMAT_VERSION,
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
   WorkspaceConfigSchema,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import {
   type ArtifactVersionRecord,
   deriveEntityId,
-  ItemSchema,
+  type ItemSchema,
   KnowledgeEntrySchema,
+  readRetainedV1,
   ThreadSchema,
-  TurnSchema,
+  type TurnSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
@@ -27,7 +30,8 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
+import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
+import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
@@ -45,6 +49,8 @@ import {
   readRecurringPortableFiles,
   readRecurringPortableHistory,
 } from './recurring-portable-history.js';
+import { StoredTurnSnapshotV1Schema } from './retained-work-events-v1.js';
+import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
 import {
   isSupportedWorkObservationType,
   parseWorkObservationRecord,
@@ -399,9 +405,12 @@ export function writeWorkspaceExportTree(
   if (!portableFileState?.workspaceConfig) {
     throw new Error('Workspace export requires config/workspace.jsonc.');
   }
-  const workspaceConfig = WorkspaceConfigSchema.parse(
-    parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc')
+  const workspaceConfig = readRetainedV1(
+    parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc'),
+    (record) => WorkspaceConfigSchema.parse(record)
   );
+  const resourceAccess = workspaceConfig.workspace.policy?.resourceAccess ?? [];
+  assertPortableResourcePolicy(resourceAccess, history.threads);
   if (workspaceConfig.workspace.name !== history.workspace.name) {
     throw new Error('Workspace config name does not match the public Workspace projection.');
   }
@@ -449,20 +458,20 @@ export function writeWorkspaceExportTree(
     }
     writeJson(
       join(recordsRoot, 'workspace-record.json'),
-      projectWorkspaceSystemRecord(history.workspace)
+      writeRetainedV1(projectWorkspaceSystemRecord(history.workspace))
     );
     writeJsonl(join(recordsRoot, 'threads.jsonl'), history.threads);
     writeJsonl(
       join(recordsRoot, 'turns.jsonl'),
       history.turns.map((turn) => {
         const binding = input.turnCaptureCoverage?.get(turn.id);
-        return {
+        return writeRetainedV1({
           ...turn,
           ...(binding ? { captureCoverage: CaptureCoverageBindingSchema.parse(binding) } : {}),
           ...(input.turnObservations?.has(turn.id)
             ? { requiredFeatures: ['openkit.work-observations.v1'] }
             : {}),
-        };
+        });
       })
     );
     for (const turn of history.turns) {
@@ -511,7 +520,11 @@ export function writeWorkspaceExportTree(
       writeFileAtomic(path, rows.length ? text.slice(0, text.lastIndexOf('\n') + 1) : '');
     }
     writeJsonl(join(recordsRoot, 'knowledge.jsonl'), knowledge);
-    writeJsonl(join(recordsRoot, 'item-revisions.jsonl'), history.itemRevisions, true);
+    writeJsonl(
+      join(recordsRoot, 'item-revisions.jsonl'),
+      history.itemRevisions.map((item) => writeRetainedV1(item)),
+      true
+    );
     writeJsonl(join(recordsRoot, 'artifact-reviews.jsonl'), input.artifactReviews);
     writeJsonl(
       join(recordsRoot, 'evaluation-candidate-sets.jsonl'),
@@ -526,35 +539,13 @@ export function writeWorkspaceExportTree(
     // Portable history cannot carry source-deployment attachment authority.
     writeJsonl(
       join(recordsRoot, 'agent-sessions.jsonl'),
-      history.agentSessions.map((session) => ({ ...session, retainedStorage: null }))
+      history.agentSessions.map((session) => writeRetainedV1({ ...session, retainedStorage: null }))
     );
     writeJsonl(
       join(recordsRoot, 'turn-events.jsonl'),
-      history.turnEvents.flatMap(([, events]) => events)
+      history.turnEvents.flatMap(([, events]) => events.map((event) => writeRetainedV1(event)))
     );
     writeWorkspacePortableExportState(input.exportRoot, portableFileState);
-    for (const [path, text] of portableFileState?.workerContextPackageFiles ?? []) {
-      if (!path.endsWith('/context-package/package.json')) continue;
-      const manifest = WorkerContextPackageManifestSchema.parse(JSON.parse(text));
-      const packageRoot = path.slice(0, -'/package.json'.length);
-      for (const original of manifest.sourceFiles ?? []) {
-        if (!input.sourceWorkspaceRoot)
-          throw new Error('Context Package original source is unavailable.');
-        const relativePath = `${packageRoot}/${original.originalSnapshotPath}`;
-        assertWorkspaceArchiveFilePath(relativePath);
-        const sourcePath = join(input.sourceWorkspaceRoot, relativePath);
-        const measured = measureCanonicalFile(sourcePath);
-        if (
-          measured.byteLength !== original.byteLength ||
-          measured.contentDigest !== original.originalDigest
-        )
-          throw new Error('Context Package original source integrity is inconsistent.');
-        const target = join(input.exportRoot, 'workspace-files', relativePath);
-        mkdirSync(dirname(target), { recursive: true });
-        copyPortableOriginal(sourcePath, target, original.byteLength);
-      }
-    }
-
     const artifactVersions: ArtifactVersionRecord[] = [];
     for (const artifact of history.artifacts) {
       if (!input.sourceWorkspaceRoot) throw new Error('Artifact history source is unavailable.');
@@ -594,16 +585,19 @@ export function writeWorkspaceExportTree(
     for (const artifact of history.artifacts) {
       const artifactRoot = join(input.exportRoot, 'artifacts', artifact.id);
       if (artifact.content.format === 'file') {
-        writeJson(join(artifactRoot, 'artifact.json'), artifact);
+        writeJson(join(artifactRoot, 'artifact.json'), writeRetainedV1(artifact));
         continue;
       }
       const filesRoot = join(artifactRoot, 'files');
 
       mkdirSync(filesRoot, { recursive: true });
-      writeJson(join(artifactRoot, 'artifact.json'), {
-        ...artifact,
-        content: { format: artifact.content.format },
-      });
+      writeJson(
+        join(artifactRoot, 'artifact.json'),
+        writeRetainedV1({
+          ...artifact,
+          content: { format: artifact.content.format },
+        })
+      );
       writeFileAtomic(
         join(filesRoot, artifactContentFileName(artifact.content.format)),
         artifact.content.body
@@ -656,7 +650,13 @@ export function writeWorkspaceExportTree(
       }
     }
     if (input.auditEvents?.length) {
-      writeJsonl(join(recordsRoot, 'audit-events.jsonl'), input.auditEvents);
+      writeJsonl(
+        join(recordsRoot, 'audit-events.jsonl'),
+        input.auditEvents.map((event) => {
+          if (!isRecord(event)) throw new TypeError('Audit export requires an object record.');
+          return writeRetainedV1(event);
+        })
+      );
     }
     if (input.capabilityCalls?.length) {
       writeJsonl(join(recordsRoot, 'capability-calls.jsonl'), input.capabilityCalls);
@@ -812,7 +812,14 @@ export function writeWorkspaceExportTree(
       );
     }
     if (input.permissionDecisions?.length) {
-      writeJsonl(join(recordsRoot, 'permission-decisions.jsonl'), input.permissionDecisions);
+      writeJsonl(
+        join(recordsRoot, 'permission-decisions.jsonl'),
+        input.permissionDecisions.map((decision) => {
+          if (!isRecord(decision))
+            throw new TypeError('PermissionDecision export requires an object record.');
+          return writeRetainedV1(retainPermissionDecision(decision));
+        })
+      );
     }
     if (input.goalState) writeJson(join(recordsRoot, 'goal-state.json'), input.goalState);
     if (input.workerCheckpoints?.length) {
@@ -868,6 +875,7 @@ export function writeWorkspaceExportTree(
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
     ];
+    if (resourceAccess.length) requiredFeatures.push(WORKSPACE_RESOURCE_POLICY_FEATURE);
     if (
       input.lightApps?.length ||
       input.lightAppDefinitions?.length ||
@@ -910,6 +918,7 @@ export function writeWorkspaceExportTree(
       supportedFeatures: [
         WORKSPACE_EXPORT_CATALOG_FEATURE,
         RECURRING_PORTABLE_FEATURE,
+        WORKSPACE_RESOURCE_POLICY_FEATURE,
         'workspace.generative-kernel.v1',
         'workspace.generative-ui.native-v1',
         'openkit.work-observations.v1',
@@ -1078,6 +1087,7 @@ export function verifyWorkspaceExportTree(
     supportedFeatures: [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
+      WORKSPACE_RESOURCE_POLICY_FEATURE,
       'workspace.generative-kernel.v1',
       'workspace.generative-ui.native-v1',
       'openkit.work-observations.v1',
@@ -1182,7 +1192,9 @@ export function verifyWorkspaceExportTree(
         .filter(Boolean)
         .map((line) => JSON.parse(line));
     const threads = readRows('records/threads.jsonl').map((row) => ThreadSchema.parse(row));
-    const turns = readRows('records/turns.jsonl').map((row) => TurnSchema.parse(row));
+    const turns = readRows('records/turns.jsonl').map((row) =>
+      readRetainedV1(row, StoredTurnSnapshotV1Schema.parse)
+    );
     readRecurringPortableFiles(fileContents, {
       workspaceId: manifest.workspaceId,
       threadIds: new Set(threads.map((thread) => thread.id)),
@@ -1197,11 +1209,11 @@ export function verifyWorkspaceExportTree(
       : itemRevisionText
           .trimEnd()
           .split('\n')
-          .map((line) => ItemSchema.parse(JSON.parse(line)));
+          .map((line) => readRetainedV1(JSON.parse(line), StoredItemPayloadV1Schema.parse));
   const unresolvedUserInputRequestIds = listUnresolvedUserInputRequestItemIds(itemRevisions);
   const inputPaths = new Set<string>();
   for (const value of (fileContents.get('records/turns.jsonl') ?? '').split('\n').filter(Boolean)) {
-    const turn = TurnSchema.parse(JSON.parse(value));
+    const turn = readRetainedV1(JSON.parse(value), StoredTurnSnapshotV1Schema.parse);
     verifyTurnFileInputs(input.exportRoot, turn);
     for (const ordinal of (turn.fileInputs ?? []).keys()) {
       inputPaths.add(`threads/${turn.threadId}/turns/${turn.id}/inputs/${ordinal}/payload`);
@@ -1258,16 +1270,16 @@ function verifyPortableRetrievalTraceFiles(
     .strip();
   const turnOwnerSchema = z
     .object({
-      id: TurnSchema.shape.id,
-      threadId: TurnSchema.shape.threadId,
-      workspaceId: TurnSchema.shape.workspaceId,
+      id: StoredTurnSnapshotV1Schema.shape.id,
+      threadId: StoredTurnSnapshotV1Schema.shape.threadId,
+      workspaceId: StoredTurnSnapshotV1Schema.shape.workspaceId,
     })
     .strip();
   const threads = readJsonlForVerification(files, 'records/threads.jsonl').map((value) =>
     threadOwnerSchema.parse(value)
   );
   const turns = readJsonlForVerification(files, 'records/turns.jsonl').map((value) =>
-    turnOwnerSchema.parse(value)
+    readRetainedV1(value, turnOwnerSchema.parse)
   );
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn] as const));

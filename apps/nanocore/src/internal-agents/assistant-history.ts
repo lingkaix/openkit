@@ -16,7 +16,7 @@ import {
   currentWorkspaceAuthority,
   isWorkspaceOperationAuthorized,
 } from '../auth/operation-authorizer.js';
-import { isThreadVisible } from '../auth/thread-visibility.js';
+import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { searchProductSources } from '../retrieval-sources.js';
@@ -96,9 +96,7 @@ function requireSelection(input: AssistantHistoryContext, selection: Selection):
   const destination = input.store.getThread(input.workspaceId, input.threadId);
   if (
     !isThreadVisible(input.store, source, userId, false) ||
-    (source.visibility === 'private' &&
-      (destination.visibility !== 'private' ||
-        destination.privateOwnerUserId !== source.privateOwnerUserId))
+    !canDiscloseThreadToAudience(input.store, source, destination)
   )
     throw unavailable();
   const item = input.store
@@ -375,9 +373,7 @@ function requireRange(
   const destination = input.store.getThread(input.workspaceId, input.threadId);
   if (
     !isThreadVisible(input.store, source, userId, false) ||
-    (source.visibility === 'private' &&
-      (destination.visibility !== 'private' ||
-        source.privateOwnerUserId !== destination.privateOwnerUserId))
+    !canDiscloseThreadToAudience(input.store, source, destination)
   )
     throw unavailable();
   const current = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);

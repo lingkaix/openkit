@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { formatReferenceUri } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { ServerKnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
@@ -19,7 +20,8 @@ import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-re
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { initializeScopedNotebook } from './scoped-notebook-owner.js';
+import { attributedNotebookPageBytes } from './notebook-publication.js';
+import { initializeScopedNotebook, pinScopedNotebook } from './scoped-notebook-owner.js';
 import {
   prepareServerKnowledgeMaintenance,
   runServerKnowledgeMaintenanceCommand,
@@ -148,6 +150,197 @@ function fixture(enabled: boolean) {
 }
 
 it.each([
+  'unpinned',
+  'pinned',
+  'candidate-pinned',
+  'reviewed-candidate',
+  'foreign-scope',
+  'wrong-pin',
+  'missing-target',
+] as const)('admits only exact Server page citations through maintenance publication: %s', async (kind) => {
+  const f = fixture(kind !== 'reviewed-candidate');
+  const context = { ...f.dependencies, actor: f.requestActor };
+  const source = await registerServerKnowledgeSource(context, {
+    requestId: randomUUID(),
+    kind: 'document',
+    title: 'Server evidence',
+    content: 'Server evidence remains available.',
+  });
+  const target = serializeUserAuthoredKnowledgePage(
+    {
+      id: 'target',
+      kind: 'project-context',
+      title: 'Target',
+      content: 'Server evidence.',
+      sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+      createdAt: '2026-10-18T00:00:00Z',
+      updatedAt: '2026-10-18T00:00:00Z',
+    },
+    { kind: 'server' }
+  );
+  const baseRevision = f.notebook.prepare({
+    baseRevision: f.human,
+    changes: { 'target.md': target },
+    metadata: {
+      summary: 'Retain source-backed target',
+      producer: f.input.actor,
+      authority: { kind: 'direct', instructionReference: 'fixture' },
+      sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(target) },
+    },
+  });
+  f.notebook.publish({ baseRevision: f.human, candidateRevision: baseRevision });
+  const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
+  const changesTarget = kind === 'candidate-pinned' || kind === 'reviewed-candidate';
+  const authoredTarget = target.replace('Server evidence.', 'Updated Server evidence.');
+  const selectedTarget = changesTarget
+    ? attributedNotebookPageBytes(
+        'target.md',
+        authoredTarget,
+        { kind: 'server' },
+        kind === 'reviewed-candidate' ? 'accepted' : 'delegated'
+      )
+    : target;
+  const reference = formatReferenceUri(
+    {
+      scopeId:
+        kind === 'foreign-scope'
+          ? `page/user/${f.requestActor.userId}/${pin.knowledgeBaseId}`
+          : `page/server/${pin.knowledgeBaseId}`,
+      objectId: kind === 'missing-target' ? 'missing' : 'target',
+    },
+    kind === 'pinned' || changesTarget
+      ? `sha256:${createHash('sha256').update(selectedTarget).digest('hex')}`
+      : kind === 'wrong-pin'
+        ? `sha256:${'0'.repeat(64)}`
+        : undefined
+  );
+  const citing = serializeUserAuthoredKnowledgePage(
+    {
+      id: 'citing',
+      kind: 'project-context',
+      title: 'Citing',
+      content: 'Compare the target.',
+      sourceReferences: [reference],
+      createdAt: '2026-10-18T00:00:00Z',
+      updatedAt: '2026-10-18T00:00:00Z',
+    },
+    { kind: 'server' }
+  );
+  f.run.mockImplementationOnce(async (run) => {
+    const script = `${changesTarget ? `cat > target.md <<'TARGET'\n${authoredTarget}TARGET\n` : ''}cat > citing.md <<'PAGE'\n${citing}\nPAGE`;
+    for (const [name, args] of [
+      ['knowledge.notebook-workspace.update', { script }],
+      ['knowledge.notebook.update', { summary: 'Compare admitted Server page bytes.' }],
+    ] as const) {
+      await run.tools
+        .find((tool) => tool.name === name)!
+        .execute(args, {
+          callId: randomUUID(),
+          toolOccurrence: 1,
+          signal: run.signal,
+        });
+    }
+    f.store.updateServerTurn(run.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    return { turnId: run.turn.id, text: '{"summary":"Finished."}' };
+  });
+  const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, {
+    ...f.input,
+    tellContent: undefined,
+  });
+  const allowed = kind === 'unpinned' || kind === 'pinned' || changesTarget;
+  expect(result.outcome).toBe(
+    kind === 'reviewed-candidate' ? 'review-required' : allowed ? 'published' : 'failed'
+  );
+  expect(f.run).toHaveBeenCalledTimes(1);
+  let publishedRevision = result.notebookRevision;
+  if (kind === 'reviewed-candidate') {
+    expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    const proposalContext = {
+      ...f.dependencies,
+      actor: f.requestActor,
+      revalidate: (files?: Readonly<Record<string, string>>) =>
+        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+    };
+    const saved = readServerNotebookProposal(proposalContext, result.proposalId!);
+    const accepted = await decideServerNotebookProposal(proposalContext, {
+      requestId: randomUUID(),
+      proposalId: result.proposalId!,
+      proposalDigest: saved.proposalDigest,
+      baseRevision,
+      candidateRevision: result.candidateRevision!,
+      decision: 'accepted',
+    });
+    publishedRevision = accepted.notebookRevision!;
+    expect(publishedRevision).toBe(result.candidateRevision);
+  }
+  if (allowed) {
+    expect(f.notebook.readRevision(publishedRevision).files['citing.md']).toContain(reference);
+    expect(f.notebook.readRevision(publishedRevision).files['target.md']).toBe(selectedTarget);
+    const admission = serverNotebookAdmission(f.dependencies, f.requestActor);
+    expect(admission.pageScopeId).toBe(`page/server/${pin.knowledgeBaseId}`);
+    expect(admission.resolvedReferences.get('citing')?.has(reference)).toBe(true);
+  } else {
+    expect(f.notebook.publishedRevision()).toBe(baseRevision);
+  }
+});
+
+it('withholds historical human page bodies when their original Source is unavailable', async () => {
+  const f = fixture(true);
+  const source = await registerServerKnowledgeSource(
+    { ...f.dependencies, actor: f.requestActor },
+    {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Historical evidence',
+      content: 'Historical private evidence.',
+    }
+  );
+  let baseRevision = f.human;
+  for (const historical of [true, false]) {
+    const content = serializeUserAuthoredKnowledgePage(
+      {
+        id: 'history',
+        kind: 'project-context',
+        title: 'History',
+        content: historical ? 'Historical private evidence.' : 'Current independent human note.',
+        sourceReferences: historical ? [`source:${source.id}@${source.contentDigest}`] : [],
+        createdAt: '2026-10-18T00:00:00Z',
+        updatedAt: '2026-10-18T00:00:00Z',
+      },
+      { kind: 'server' }
+    );
+    const revision = f.notebook.prepare({
+      baseRevision,
+      changes: { 'history.md': content },
+      metadata: {
+        summary: 'Human history',
+        producer: f.input.actor,
+        authority: { kind: 'direct', instructionReference: 'fixture' },
+        sourceReferences: [],
+        changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(content) },
+      },
+    });
+    f.notebook.publish({ baseRevision, candidateRevision: revision });
+    baseRevision = revision;
+  }
+  writeFileSync(
+    join(f.coreDb.dataRoot, 'server', 'sources', 'materials', source.id, 'content.txt'),
+    'Changed Source bytes.'
+  );
+  const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, {
+    ...f.input,
+    tellContent: undefined,
+  });
+  expect(result.outcome).toBe('failed');
+  expect(f.run).not.toHaveBeenCalled();
+  expect(f.notebook.publishedRevision()).toBe(baseRevision);
+});
+
+it.each([
   true,
   false,
 ])('keeps Server maintenance off Workspace storage, preserves human inputs and uses delegation=%s or exact review', async (enabled) => {
@@ -173,7 +366,8 @@ it.each([
     const context = {
       ...f.dependencies,
       actor: f.requestActor,
-      revalidate: () => serverNotebookAdmission(f.dependencies, f.requestActor),
+      revalidate: (files?: Readonly<Record<string, string>>) =>
+        serverNotebookAdmission(f.dependencies, f.requestActor, files),
     };
     const candidate = readServerNotebookProposal(context, result.proposalId!);
     expect(candidate.diff[0]!.after).toContain('Preserve this human correction.');
@@ -197,7 +391,8 @@ it('recalls the exact Server candidate only after its human Review publishes the
   const context = {
     ...f.dependencies,
     actor: f.requestActor,
-    revalidate: () => serverNotebookAdmission(f.dependencies, f.requestActor),
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
   };
   const source = await registerServerKnowledgeSource(context, {
     requestId: randomUUID(),
@@ -376,7 +571,8 @@ it('previews and reviews a valid candidate larger than the display limit using t
   const context = {
     ...f.dependencies,
     actor: f.requestActor,
-    revalidate: () => serverNotebookAdmission(f.dependencies, f.requestActor),
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
   };
   const content = `---\nokf_version: "0.2"\n---\n# Large candidate\n${'Large retained content. '.repeat(3600)}`;
   const proposal = createServerNotebookProposal(
@@ -421,7 +617,8 @@ it('reads retained Proposal/Review annotations and preserves them on the next hu
   const context = {
     ...f.dependencies,
     actor: f.requestActor,
-    revalidate: () => serverNotebookAdmission(f.dependencies, f.requestActor),
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
   };
   const path = join(
     f.coreDb.dataRoot,

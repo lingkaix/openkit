@@ -1,4 +1,5 @@
-import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /**
  * Durable workspace apply result status.
@@ -11,6 +12,8 @@ export type WorkspaceApplyResultStatus = 'applied' | 'conflicted' | 'blocked';
 export const workspaceApplyResults = sqliteTable(
   'workspace_apply_results',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable workspace apply result id. */
     applyResultId: text('apply_result_id').notNull(),
     /** Workspace that owns the applied review. */

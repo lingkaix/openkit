@@ -6,9 +6,13 @@ import {
   deriveEntityId,
   type Item,
   isSealedTurnTerminal,
+  readRetainedV1,
   responsibleUserIdForActor,
   type TurnSchema,
+  WorkspaceIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
+import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import type { CommandRequestRecord } from '../lib/store.js';
@@ -21,6 +25,26 @@ type Turn = import('zod').infer<typeof TurnSchema>;
 import type Database from 'better-sqlite3';
 
 import { listExistingWorkspaceDatabaseScopes, openWorkspaceDb } from '../storage/db.js';
+
+/** Fixed retained handoff meaning; current publisher and Approval admission remain separate. */
+const StoredPendingAssistantHandoffV1Schema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('task'),
+      targetWorkspaceId: WorkspaceIdSchema,
+      input: z.string().min(1).max(65536),
+      agentId: z.string().min(1).optional(),
+      modelId: z.string().min(1).optional(),
+    })
+    .strip(),
+  z
+    .object({
+      kind: z.literal('goal'),
+      targetWorkspaceId: WorkspaceIdSchema,
+      intent: z.string().min(1).max(65536),
+    })
+    .strip(),
+]);
 
 /** Pending requests one Thread may hold at once. */
 export const PENDING_REQUEST_BOUND = 16;
@@ -162,6 +186,7 @@ export function refuseCommandIntentGrant(
   reason: string,
   now: string
 ): PendingRequestRecord | null {
+  if (!readPendingRequest(sqlite, requestId)) return null;
   const changed = sqlite
     .prepare(
       `UPDATE pending_requests SET disposition = 'denied-not-executed', disposition_reason = ?, updated_at = ? WHERE request_id = ? AND state = 'resolved' AND resolution = 'granted' AND claim = 'unclaimed' AND disposition IS NULL AND server_id IS NULL AND governed_intent_json IS NOT NULL`
@@ -430,6 +455,7 @@ export interface GrantStepResult {
 }
 
 interface PendingRequestRow {
+  schemaVersion: unknown;
   request_id: string;
   workspace_id: string;
   thread_id: string;
@@ -482,6 +508,7 @@ interface PendingRequestRow {
 }
 
 const SELECT_COLUMNS = `
+  schema_version AS schemaVersion,
   request_id, workspace_id, thread_id, raising_turn_id, request_item_id, kind, requester_kind,
   agent_id, agent_session_id, responsible_user_id, state, resolution, deciding_actor_kind,
   deciding_actor_id, deciding_actor_context_json, decided_at, answer_map_json, ending, invalidating_event, ending_actor_kind,
@@ -613,7 +640,15 @@ export function listThreadPendingRequests(
  * @param requestId Request id.
  */
 export function deletePendingRequest(sqlite: Database.Database, requestId: string): void {
-  sqlite.prepare('DELETE FROM pending_requests WHERE request_id = ?').run(requestId);
+  const row = sqlite
+    .prepare('SELECT schema_version AS schemaVersion FROM pending_requests WHERE request_id = ?')
+    .get(requestId);
+  if (row) {
+    // Compensation can remove unreadable fresh payloads, but never a different retained format.
+    readRetainedV1(row, () =>
+      sqlite.prepare('DELETE FROM pending_requests WHERE request_id = ?').run(requestId)
+    );
+  }
 }
 
 /**
@@ -747,6 +782,7 @@ export function answerPendingRequest(
   decisionContext?: Actor
 ): PendingRequestRecord | null {
   const answer = sqlite.transaction(() => {
+    if (!readPendingRequest(sqlite, requestId)) return null;
     const result = sqlite
       .prepare(
         `UPDATE pending_requests
@@ -919,6 +955,7 @@ export function grantCommandIntentRequest(
   decisionContext?: Actor
 ): PendingRequestRecord | null {
   const grant = sqlite.transaction(() => {
+    if (!readPendingRequest(sqlite, requestId)) return null;
     const result = sqlite
       .prepare(
         `UPDATE pending_requests
@@ -953,6 +990,7 @@ export function claimCommandIntentGrant(
   now: string
 ): PendingRequestRecord | null {
   const claim = sqlite.transaction(() => {
+    if (!readPendingRequest(sqlite, requestId)) return null;
     const callId = executionCallIdForRequest(requestId);
     const result = sqlite
       .prepare(
@@ -987,6 +1025,7 @@ export function finishPendingExecution(
   now: string
 ): PendingRequestRecord | null {
   const finish = sqlite.transaction(() => {
+    if (!readPendingRequest(sqlite, requestId)) return null;
     const result = sqlite
       .prepare(
         `UPDATE pending_requests
@@ -1147,6 +1186,7 @@ export function releaseFrozenOutcomes(
          WHERE delivery = 'frozen' AND delivery_turn_id = ?`
       )
       .all(turnId) as PendingRequestRow[];
+    const records = rows.map(parsePendingRequestRow);
     sqlite
       .prepare(
         `UPDATE pending_requests
@@ -1154,9 +1194,7 @@ export function releaseFrozenOutcomes(
          WHERE delivery = 'frozen' AND delivery_turn_id = ?`
       )
       .run(now, turnId);
-    return rows.map(
-      (row) => readPendingRequest(sqlite, row.request_id) ?? parsePendingRequestRow(row)
-    );
+    return records.map((record) => readPendingRequest(sqlite, record.requestId) ?? record);
   });
   return release();
 }
@@ -1915,6 +1953,7 @@ function endPendingRequest(
     readonly now: string;
   }
 ): PendingRequestRecord | null {
+  if (!readPendingRequest(sqlite, requestId)) return null;
   const result = sqlite
     .prepare(
       `UPDATE pending_requests
@@ -1948,6 +1987,7 @@ function moveFrozenDelivery(
          WHERE delivery = 'frozen' AND delivery_turn_id = ?`
       )
       .all(turnId) as PendingRequestRow[];
+    const records = rows.map(parsePendingRequestRow);
     sqlite
       .prepare(
         `UPDATE pending_requests
@@ -1955,7 +1995,7 @@ function moveFrozenDelivery(
          WHERE delivery = 'frozen' AND delivery_turn_id = ?`
       )
       .run(delivery, clearResult ? 1 : 0, now, turnId);
-    return rows.map((row) => readPendingRequest(sqlite, row.request_id)!).filter(Boolean);
+    return records.map((record) => readPendingRequest(sqlite, record.requestId)!).filter(Boolean);
   });
   return move();
 }
@@ -1972,11 +2012,11 @@ function insertPendingRequest(sqlite: Database.Database, input: RaisePendingRequ
          authorization_context_json, governed_intent_json, questions_json, assistant_handoff_json, approval_kind, title,
          description, claim, execution_call_id, disposition, disposition_reason, held_result_json,
          publication_turn_id, invalidation_turn_id, delivery, delivery_turn_id, delivery_cause,
-         created_at, updated_at
+         created_at, updated_at, schema_version
        ) VALUES (
          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
          NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', NULL, NULL, NULL, NULL,
-         NULL, NULL, 'undelivered', NULL, NULL, ?, ?
+         NULL, NULL, 'undelivered', NULL, NULL, ?, ?, ?
        )`
     )
     .run(
@@ -2008,7 +2048,8 @@ function insertPendingRequest(sqlite: Database.Database, input: RaisePendingRequ
       input.approval?.title ?? null,
       input.approval?.description ?? null,
       input.now,
-      input.now
+      input.now,
+      writeRetainedV1({}).schemaVersion
     );
 }
 
@@ -2082,76 +2123,80 @@ function pendingRequestTableExists(sqlite: Database.Database): boolean {
 }
 
 function parsePendingRequestRow(row: PendingRequestRow): PendingRequestRecord {
-  const kind = closedValue(KINDS, row.kind, 'kind');
-  const requesterKind = closedValue(REQUESTERS, row.requester_kind, 'requester_kind');
-  const state = closedValue(STATES, row.state, 'state');
-  const resolution =
-    row.resolution === null ? null : closedValue(RESOLUTIONS, row.resolution, 'resolution');
-  const ending = row.ending === null ? null : closedValue(ENDINGS, row.ending, 'ending');
-  const claim = closedValue(CLAIMS, row.claim, 'claim');
-  const disposition =
-    row.disposition === null ? null : closedValue(DISPOSITIONS, row.disposition, 'disposition');
-  const delivery = closedValue(DELIVERIES, row.delivery, 'delivery');
-  const deliveryCause =
-    row.delivery_cause === null ? null : closedValue(CAUSES, row.delivery_cause, 'delivery_cause');
-  const approvalKind =
-    row.approval_kind === null
-      ? null
-      : closedValue(APPROVAL_KINDS, row.approval_kind, 'approval_kind');
-  return {
-    requestId: row.request_id,
-    workspaceId: row.workspace_id,
-    threadId: row.thread_id,
-    raisingTurnId: row.raising_turn_id,
-    requestItemId: row.request_item_id,
-    kind,
-    requesterKind,
-    agentId: row.agent_id,
-    agentSessionId: row.agent_session_id,
-    responsibleUserId: row.responsible_user_id,
-    state,
-    resolution,
-    decidingActor: actorFrom(row.deciding_actor_kind, row.deciding_actor_id),
-    decidingActorContext: parseDecisionContext(row.deciding_actor_context_json),
-    decidedAt: row.decided_at,
-    answerMap: parseAnswerMap(row.answer_map_json),
-    ending,
-    invalidatingEvent: row.invalidating_event,
-    endingActor: actorFrom(row.ending_actor_kind, row.ending_actor_id),
-    endedAt: row.ended_at,
-    serverId: row.server_id,
-    catalogRevision: row.catalog_revision,
-    schemaSnapshotId: row.schema_snapshot_id,
-    toolName: row.tool_name,
-    canonicalArgumentsJson: row.canonical_arguments_json,
-    argumentsDigest: row.arguments_digest,
-    packageDigest: row.package_digest,
-    policyDecisionId: row.policy_decision_id,
-    authorizationContext: parseObject(
-      row.authorization_context_json
-    ) as PendingAuthorizationContext | null,
-    governedIntent: parseObject(row.governed_intent_json),
-    questions: parseQuestions(row.questions_json),
-    assistantHandoff:
-      row.assistant_handoff_json === null
+  return readRetainedV1(row, () => {
+    const kind = closedValue(KINDS, row.kind, 'kind');
+    const requesterKind = closedValue(REQUESTERS, row.requester_kind, 'requester_kind');
+    const state = closedValue(STATES, row.state, 'state');
+    const resolution =
+      row.resolution === null ? null : closedValue(RESOLUTIONS, row.resolution, 'resolution');
+    const ending = row.ending === null ? null : closedValue(ENDINGS, row.ending, 'ending');
+    const claim = closedValue(CLAIMS, row.claim, 'claim');
+    const disposition =
+      row.disposition === null ? null : closedValue(DISPOSITIONS, row.disposition, 'disposition');
+    const delivery = closedValue(DELIVERIES, row.delivery, 'delivery');
+    const deliveryCause =
+      row.delivery_cause === null
         ? null
-        : AssistantHandoffSchema.parse(parseJson(row.assistant_handoff_json)),
-    approvalKind,
-    title: row.title,
-    description: row.description,
-    claim,
-    executionCallId: row.execution_call_id,
-    disposition,
-    dispositionReason: row.disposition_reason,
-    heldResult: row.held_result_json === null ? null : parseJson(row.held_result_json),
-    publicationTurnId: row.publication_turn_id,
-    invalidationTurnId: row.invalidation_turn_id,
-    delivery,
-    deliveryTurnId: row.delivery_turn_id,
-    deliveryCause,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+        : closedValue(CAUSES, row.delivery_cause, 'delivery_cause');
+    const approvalKind =
+      row.approval_kind === null
+        ? null
+        : closedValue(APPROVAL_KINDS, row.approval_kind, 'approval_kind');
+    return {
+      requestId: row.request_id,
+      workspaceId: row.workspace_id,
+      threadId: row.thread_id,
+      raisingTurnId: row.raising_turn_id,
+      requestItemId: row.request_item_id,
+      kind,
+      requesterKind,
+      agentId: row.agent_id,
+      agentSessionId: row.agent_session_id,
+      responsibleUserId: row.responsible_user_id,
+      state,
+      resolution,
+      decidingActor: actorFrom(row.deciding_actor_kind, row.deciding_actor_id),
+      decidingActorContext: parseDecisionContext(row.deciding_actor_context_json),
+      decidedAt: row.decided_at,
+      answerMap: parseAnswerMap(row.answer_map_json),
+      ending,
+      invalidatingEvent: row.invalidating_event,
+      endingActor: actorFrom(row.ending_actor_kind, row.ending_actor_id),
+      endedAt: row.ended_at,
+      serverId: row.server_id,
+      catalogRevision: row.catalog_revision,
+      schemaSnapshotId: row.schema_snapshot_id,
+      toolName: row.tool_name,
+      canonicalArgumentsJson: row.canonical_arguments_json,
+      argumentsDigest: row.arguments_digest,
+      packageDigest: row.package_digest,
+      policyDecisionId: row.policy_decision_id,
+      authorizationContext: parseObject(
+        row.authorization_context_json
+      ) as PendingAuthorizationContext | null,
+      governedIntent: parseObject(row.governed_intent_json),
+      questions: parseQuestions(row.questions_json),
+      assistantHandoff:
+        row.assistant_handoff_json === null
+          ? null
+          : StoredPendingAssistantHandoffV1Schema.parse(parseJson(row.assistant_handoff_json)),
+      approvalKind,
+      title: row.title,
+      description: row.description,
+      claim,
+      executionCallId: row.execution_call_id,
+      disposition,
+      dispositionReason: row.disposition_reason,
+      heldResult: row.held_result_json === null ? null : parseJson(row.held_result_json),
+      publicationTurnId: row.publication_turn_id,
+      invalidationTurnId: row.invalidation_turn_id,
+      delivery,
+      deliveryTurnId: row.delivery_turn_id,
+      deliveryCause,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  });
 }
 
 function actorFrom(kind: string | null, id: string | null): PendingRequestActor | null {
@@ -2279,7 +2324,13 @@ export function readPendingRequestLineage(
   requestId: string
 ): { workspaceId: string; threadId: string } | null {
   const row = sqlite
-    .prepare('SELECT workspace_id, thread_id FROM pending_requests WHERE request_id = ?')
-    .get(requestId) as { workspace_id: string; thread_id: string } | undefined;
-  return row ? { workspaceId: row.workspace_id, threadId: row.thread_id } : null;
+    .prepare(
+      'SELECT schema_version AS schemaVersion, workspace_id, thread_id FROM pending_requests WHERE request_id = ?'
+    )
+    .get(requestId) as
+    | { schemaVersion: unknown; workspace_id: string; thread_id: string }
+    | undefined;
+  return row
+    ? readRetainedV1(row, () => ({ workspaceId: row.workspace_id, threadId: row.thread_id }))
+    : null;
 }

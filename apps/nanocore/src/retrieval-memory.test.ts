@@ -7,6 +7,7 @@ import { RetrieveKnowledgeRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import {
@@ -28,7 +29,10 @@ import {
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
 import { FsStore } from './lib/store.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
-import { readAuthorizedUserMemoryPages } from './retrieval-knowledge-adapter.js';
+import {
+  collectUserMemoryInventory,
+  readAuthorizedUserMemoryPages,
+} from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
@@ -227,12 +231,12 @@ describe('governed current-self Memory search', () => {
     expect(f.store.getThread(f.workspaceId, f.alice.timeline.id).status).toBe('archived');
     const page = readMemoryPage(f.alice.writer, 'preferences')!;
     expect(result).toMatchObject({
-      sourceScope: `page/user/${aliceId}`,
+      sourceScope: memoryPageScope(f, aliceId),
       notebookRevision: saved.notebookRevision,
       retrievalParameters: { sourceScope: 'user', limit: 5 },
       selected: [
         {
-          reference: { scopeId: `page/user/${aliceId}`, objectId: 'preferences' },
+          reference: { scopeId: memoryPageScope(f, aliceId), objectId: 'preferences' },
           revision: saved.notebookRevision,
           contentDigest: page.digest,
         },
@@ -241,14 +245,42 @@ describe('governed current-self Memory search', () => {
     expect(result.selected).toHaveLength(1);
     expect(result.selected[0]!.score).toBe(first.selected[0]!.score);
     const bob = await retrieveUserMemory(f.bob.query());
-    expect(bob.selected[0]!.reference.scopeId).toBe(`page/user/${bobId}`);
+    expect(bob.selected[0]!.reference.scopeId).toBe(memoryPageScope(f, bobId));
     expect(bob.selected[0]!.contentDigest).not.toBe(page.digest);
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'user', userId: aliceId },
+    });
+    expect(JSON.parse(collectUserMemoryInventory(f.alice.query()).view.scope)).toContain(
+      knowledgeBaseId
+    );
+    const foreignBaseScope = `page/user/${aliceId}/kb_00000000-0000-7000-8000-000000000009`;
+    expect(foreignBaseScope).not.toBe(memoryPageScope(f, aliceId));
+    await expect(
+      retrieveUserMemory({
+        ...f.alice.query(),
+        pinnedReferences: [{ scopeId: foreignBaseScope, objectId: 'preferences' }],
+      })
+    ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(() =>
+      resolveWorkspaceKnowledgeRetrievalPages({
+        ...f.alice.query(),
+        selection: {
+          ...result,
+          sourceScope: foreignBaseScope,
+          selected: result.selected.map((entry) => ({
+            ...entry,
+            reference: { ...entry.reference, scopeId: foreignBaseScope },
+          })),
+        },
+      })
+    ).toThrowError(expect.objectContaining({ code: 'workspace_access_denied', status: 403 }));
     expect(
       RetrieveKnowledgeRequestSchema.safeParse({ query: marker, sourceScope: 'user' }).success
     ).toBe(false);
     const trace = readRetrievalTrace(f.workspaceRoot, result.retrievalTraceRef!)!;
     expect(trace).toMatchObject({
-      sourceScope: `page/user/${aliceId}`,
+      sourceScope: memoryPageScope(f, aliceId),
       queryContext: { threadId: f.alice.timeline.id, actor: { kind: 'user', id: aliceId } },
     });
     const bytes = readFileSync(
@@ -274,8 +306,8 @@ describe('governed current-self Memory search', () => {
       resolveWorkspaceKnowledgeRetrievalPages({
         ...f.alice.query(),
         retrievalTraceRef: result.retrievalTraceRef!,
-      })?.[0]?.content
-    ).toBe(page.content);
+      })?.[0]
+    ).toMatchObject({ content: page.content, knowledgeBaseId });
     // A new local self selection does not grant imported foreign-deployment evidence authority.
     const foreignTraceId = allocateEntityId('krt');
     const foreignTraceRef = { ...result.retrievalTraceRef!, objectId: foreignTraceId };
@@ -306,7 +338,7 @@ describe('governed current-self Memory search', () => {
     await expect(
       retrieveUserMemory({
         ...f.alice.query(),
-        pinnedReferences: [{ scopeId: `page/user/${bobId}`, objectId: 'preferences' }],
+        pinnedReferences: [{ scopeId: memoryPageScope(f, bobId), objectId: 'preferences' }],
       })
     ).rejects.toMatchObject({ code: 'invalid_request' });
   });
@@ -335,17 +367,17 @@ describe('governed current-self Memory search', () => {
     const limited = await retrieveUserMemory({
       ...f.alice.query(),
       limit: 1,
-      pinnedReferences: [{ scopeId: `page/user/${aliceId}`, objectId: 'beta' }],
+      pinnedReferences: [{ scopeId: memoryPageScope(f, aliceId), objectId: 'beta' }],
     });
     expect(limited.selected.map(({ reference }) => reference.objectId)).toEqual(['beta']);
     expect(limited.excluded).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          reference: { scopeId: `page/user/${aliceId}`, objectId: 'alpha' },
+          reference: { scopeId: memoryPageScope(f, aliceId), objectId: 'alpha' },
           reason: 'budget_exceeded',
         }),
         expect.objectContaining({
-          reference: { scopeId: `page/user/${aliceId}`, objectId: 'archived' },
+          reference: { scopeId: memoryPageScope(f, aliceId), objectId: 'archived' },
           reason: 'lower_conformance',
         }),
       ])
@@ -373,7 +405,7 @@ describe('governed current-self Memory search', () => {
     });
     expect((await retrieveUserMemory(f.alice.query())).excluded).toContainEqual(
       expect.objectContaining({
-        reference: { scopeId: `page/user/${aliceId}`, objectId: 'beta' },
+        reference: { scopeId: memoryPageScope(f, aliceId), objectId: 'beta' },
         reason: 'freshness_expired',
       })
     );
@@ -508,3 +540,8 @@ describe('governed current-self Memory search', () => {
     ).toBe(false);
   });
 });
+
+/** Reads a fixture User's established base without changing its configuration. */
+function memoryPageScope(f: ReturnType<typeof fixture>, userId: string): string {
+  return `page/user/${userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId } })}`;
+}

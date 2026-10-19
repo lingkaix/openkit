@@ -1,6 +1,11 @@
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { AgentSessionSchema, deriveEntityId, type StopReason } from '@openkit/protocol';
+import {
+  AgentSessionSchema,
+  deriveEntityId,
+  readRetainedV1,
+  type StopReason,
+} from '@openkit/protocol';
 import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import {
@@ -1032,7 +1037,7 @@ export async function clearWorkerCheckpointAfterTerminalState(
   ) {
     const rawBundle = workspaceDb.sqlite
       .prepare(
-        `SELECT evidence_bundle_id, backend_type, created_at
+        `SELECT schema_version, evidence_bundle_id, backend_type, created_at
         FROM evidence_bundles
         WHERE workspace_id = ?
           AND thread_id = ?
@@ -1047,7 +1052,12 @@ export async function clearWorkerCheckpointAfterTerminalState(
         input.turnId,
         environmentPackage.scope.agentSessionId
       ) as
-      | { evidence_bundle_id: string; backend_type: string | null; created_at: string }
+      | {
+          schema_version: number;
+          evidence_bundle_id: string;
+          backend_type: string | null;
+          created_at: string;
+        }
       | undefined;
     if (!rawBundle) {
       throw new OperationError(
@@ -1056,6 +1066,7 @@ export async function clearWorkerCheckpointAfterTerminalState(
         400
       );
     }
+    readRetainedV1({ schemaVersion: rawBundle.schema_version }, () => undefined);
     const runtime = workspaceDb.sqlite
       .prepare(
         `SELECT backend_version, placement

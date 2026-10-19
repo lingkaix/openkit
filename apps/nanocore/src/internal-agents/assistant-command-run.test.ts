@@ -467,6 +467,12 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         .all(calls[0]!.id)
     ).toEqual([
       expect.objectContaining({
+        action: 'capability.admit',
+        request_id: requestId,
+        actor_json: JSON.stringify({ kind: 'user', id: f.actor.userId }),
+        authentication_json: JSON.stringify({ credentialKind: f.actor.kind, credentialId: null }),
+      }),
+      expect.objectContaining({
         action: 'capability.finish',
         capability_call_id: calls[0]!.id,
         request_id: requestId,
@@ -719,7 +725,20 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       f.workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
         .all(calls[0]!.id)
-    ).toEqual([expect.objectContaining({ request_id: requestId, outcome: 'succeeded' })]);
+    ).toEqual([
+      expect.objectContaining({
+        action: 'capability.admit',
+        request_id: requestId,
+        outcome: 'unknown',
+        actor_json: JSON.stringify({ kind: 'user', id: f.actor.userId }),
+        authentication_json: JSON.stringify({ credentialKind: f.actor.kind, credentialId: null }),
+      }),
+      expect.objectContaining({
+        action: 'capability.finish',
+        request_id: requestId,
+        outcome: 'succeeded',
+      }),
+    ]);
     expect(environments(f)).toHaveLength(1);
   });
 
@@ -784,6 +803,12 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
           .all(call.id)
       ).toEqual([
+        expect.objectContaining({
+          action: 'capability.admit',
+          request_id: requestId,
+          actor_json: JSON.stringify({ kind: 'user', id: f.actor.userId }),
+          authentication_json: JSON.stringify({ credentialKind: f.actor.kind, credentialId: null }),
+        }),
         expect.objectContaining({
           action: 'capability.finish',
           capability_call_id: call.id,

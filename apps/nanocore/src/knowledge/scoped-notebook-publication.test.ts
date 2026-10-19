@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
@@ -246,7 +246,7 @@ describe('internal direct User and Server Notebook publication', () => {
       writeFileSync(
         configPath,
         JSON.stringify({
-          schemaVersion: 1,
+          ...JSON.parse(readFileSync(configPath, 'utf8')),
           knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: pageIds },
         })
       );

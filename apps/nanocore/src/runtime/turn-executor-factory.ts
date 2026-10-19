@@ -10,7 +10,7 @@ import {
   validateAgentEnvironmentPackageForBackend,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import { readRetainedV1, responsibleUserIdForActor } from '@openkit/protocol';
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   WorkerRuntimeRawStreamManifestSchema,
@@ -23,7 +23,7 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { isThreadVisible } from '../auth/thread-visibility.js';
+import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ArtifactAuthorityError, FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
@@ -1372,7 +1372,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               input.environmentPackage,
               input.workerStorageChoice,
               responsibleUserId,
-              currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
+              currentWorkerStorageAudienceAuthorizer(
+                this.coreDb,
+                input.environmentPackage,
+                this.readRuntimeConfig
+              )
             )
           );
           if (released && input.workerStorageChoice?.kind === 'selected')
@@ -1437,7 +1441,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           input.environmentPackage,
           input.workerStorageChoice,
           responsibleUserId,
-          currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
+          currentWorkerStorageAudienceAuthorizer(
+            this.coreDb,
+            input.environmentPackage,
+            this.readRuntimeConfig
+          )
         )
       );
       return releasedBinding && input.workerStorageChoice?.kind === 'selected'
@@ -1481,7 +1489,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           environmentPackage,
           input.workerStorageChoice,
           responsibleUserId,
-          currentWorkerStorageAudienceAuthorizer(this.coreDb, environmentPackage)
+          currentWorkerStorageAudienceAuthorizer(
+            this.coreDb,
+            environmentPackage,
+            this.readRuntimeConfig
+          )
         )!
       );
     }
@@ -2733,7 +2745,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const choice = context.workerStorageChoice;
     const authorizeContributor = currentWorkerStorageAudienceAuthorizer(
       this.coreDb,
-      environmentPackage
+      environmentPackage,
+      this.readRuntimeConfig
     );
     const replacementSelection = this.workerStorageReplacementSelection(
       environmentPackage,
@@ -3306,6 +3319,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: new Date().toISOString(),
         workspaceId: session.environmentPackage.scope.workspaceId,
       });
+      const retainedBinding = this.coreDb.sqlite
+        .prepare(
+          'SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        )
+        .get(session.agentSessionRuntimeBindingId);
+      if (retainedBinding) readRetainedV1(retainedBinding, () => retainedBinding);
       this.coreDb.sqlite
         .prepare(
           'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
@@ -3991,9 +4010,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Record<string, string> {
     const row = this.coreDb.sqlite
       .prepare(
-        'SELECT runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
       )
-      .get(session.agentSessionRuntimeBindingId) as { versions: string | null } | undefined;
+      .get(session.agentSessionRuntimeBindingId) as
+      | { schemaVersion: unknown; versions: string | null }
+      | undefined;
+    if (row) readRetainedV1(row, () => row);
     try {
       const versions = JSON.parse(row?.versions ?? 'null') as Array<{
         targetEnvVarName: string;
@@ -5321,7 +5343,8 @@ function requireAttachedWorkerStorageBinding(
 /** Rechecks exact live Worker authority and every retained contributor's current Thread audience. */
 function currentWorkerStorageAudienceAuthorizer(
   coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackagePreview
+  environmentPackage: AgentEnvironmentPackagePreview,
+  readRuntimeConfig: (() => PublicNetworkConfiguration) | undefined
 ): (contributor: WorkerStorageContributor) => boolean {
   const { scope } = environmentPackage;
   const requesterUserId = responsibleUserIdForActor(scope.triggerActor);
@@ -5375,11 +5398,29 @@ function currentWorkerStorageAudienceAuthorizer(
       (records) => records.workspace.id === scope.workspaceId
     );
     const thread = records?.threads.find((thread) => thread.id === contributor.threadId);
+    if (!records || !thread || thread.workspaceId !== scope.workspaceId) return false;
+    const audienceOwner = {
+      getWorkspace: () => records.workspace,
+      getWorkspaceResourceAccess: (workspaceId: string) => {
+        if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');
+        return (
+          readRuntimeConfig().workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)
+            ?.config.workspace.policy?.resourceAccess ?? []
+        );
+      },
+    };
     return (
-      !!records &&
-      !!thread &&
-      thread.workspaceId === scope.workspaceId &&
-      isThreadVisible({ getWorkspace: () => records.workspace }, thread, requesterUserId)
+      isThreadVisible(audienceOwner, thread, requesterUserId, false, 'thread.read', {
+        kind: 'agent',
+        userId: requesterUserId,
+        agentId: environmentPackage.agent.agentId,
+        processId: scope.agentSessionId,
+      }) &&
+      canDiscloseThreadToAudience(
+        audienceOwner,
+        thread,
+        records.threads.find((candidate) => candidate.id === scope.threadId) ?? null
+      )
     );
   };
 }

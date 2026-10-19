@@ -1,48 +1,57 @@
-import { isSealedTurnTerminal, TurnSchema } from '@openkit/protocol';
-import { z } from 'zod';
+import {
+  isSealedTurnTerminal,
+  readRetainedV1,
+  type TurnSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
+import type { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { advanceGoalRevision } from './goal-owner.js';
+import { StoredTaskTerminalFactV1Schema } from './goal-retained-v1.js';
 
 /** Minimal Task-owned result; canonical Turn files publish this already committed fact. */
-export const TaskTerminalFactSchema = z.object({
-  id: TurnSchema.shape.id,
-  workspaceId: TurnSchema.shape.workspaceId,
-  threadId: TurnSchema.shape.threadId,
-  status: z.enum(['completed', 'failed', 'interrupted']),
-  error: TurnSchema.shape.error,
-  completedAt: TurnSchema.shape.completedAt,
-  durationMs: TurnSchema.shape.durationMs,
-});
+export const TaskTerminalFactSchema = StoredTaskTerminalFactV1Schema;
 /** Commits a linked Task terminal fact and its Goal wake together, exactly once. */
 export function recordTaskTerminalFact(db: WorkspaceDb, turn: z.infer<typeof TurnSchema>): void {
   if (!isSealedTurnTerminal(turn.status)) return;
   const link = db.sqlite
-    .prepare('SELECT goal_id FROM goal_card_tasks WHERE thread_id=?')
-    .get(turn.threadId) as { goal_id: string } | undefined;
+    .prepare(
+      'SELECT schema_version AS schemaVersion,goal_id FROM goal_card_tasks WHERE thread_id=?'
+    )
+    .get(turn.threadId) as { schemaVersion: unknown; goal_id: string } | undefined;
   if (!link) return;
+  const goalId = readRetainedV1(link, () => link.goal_id);
   const bytes = JSON.stringify(TaskTerminalFactSchema.parse(turn));
   db.sqlite.transaction(() => {
     const prior = db.sqlite
-      .prepare('SELECT payload_json FROM task_turn_terminal_facts WHERE turn_id=?')
-      .get(turn.id) as { payload_json: string } | undefined;
+      .prepare(
+        'SELECT schema_version AS schemaVersion,payload_json FROM task_turn_terminal_facts WHERE turn_id=?'
+      )
+      .get(turn.id) as { schemaVersion: unknown; payload_json: string } | undefined;
     if (prior) {
-      if (prior.payload_json !== bytes)
-        throw new Error('Task terminal fact conflicts with its committed result.');
+      readRetainedV1(prior, () => {
+        if (prior.payload_json !== bytes)
+          throw new Error('Task terminal fact conflicts with its committed result.');
+      });
       return;
     }
     db.sqlite
-      .prepare('INSERT INTO task_turn_terminal_facts VALUES (?,?,?)')
-      .run(turn.id, turn.threadId, bytes);
-    advanceGoalRevision(db, link.goal_id);
+      .prepare(
+        'INSERT INTO task_turn_terminal_facts (turn_id,thread_id,payload_json,schema_version) VALUES (?,?,?,?)'
+      )
+      .run(turn.id, turn.threadId, bytes, writeRetainedV1({}).schemaVersion);
+    advanceGoalRevision(db, goalId);
   })();
 }
 /** Finishes file publication after a crash; never asks a model to infer a Task result. */
 export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void {
   for (const row of db.sqlite
-    .prepare('SELECT payload_json FROM task_turn_terminal_facts')
-    .all() as { payload_json: string }[]) {
-    const fact = TaskTerminalFactSchema.parse(JSON.parse(row.payload_json));
+    .prepare('SELECT schema_version AS schemaVersion,payload_json FROM task_turn_terminal_facts')
+    .all() as { schemaVersion: unknown; payload_json: string }[]) {
+    const fact = readRetainedV1(row, () =>
+      StoredTaskTerminalFactV1Schema.parse(JSON.parse(row.payload_json))
+    );
     // Lost ordinary history stays an unresolved Task; recovery must not fabricate it.
     if (!store.listThreads(db.workspaceId).some((thread) => thread.id === fact.threadId)) continue;
     const turn = store

@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 338;
+const EXPECTED_CATALOG_SIZE = 340;
 const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 252;
+const EXPECTED_INCLUDED_SIZE = 254;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -23,6 +23,8 @@ const SERVER_WEB_OPERATIONS = {
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.delete', 'R049'],
+  ['workspace.resource-access-request', 'R033'],
+  ['workspace.resource-access-apply', 'R033'],
   ['workspace.archive-download', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
   ['workspace.archive-import-dry-run', 'R008'],
@@ -303,6 +305,10 @@ const WEB_OPERATION_GROUPS = {
     'vault.grant-revoke': { disposition: 'live', surface: 'Vault backend' },
     'vault.secret-revoke': { disposition: 'live', surface: 'Vault backend' },
     'vault.secret-rotate': { disposition: 'live', surface: 'Vault backend' },
+  },
+  'Workspace resource access': {
+    'workspace.resource-access-request': { disposition: 'roadmap', roadmap: 'R033' },
+    'workspace.resource-access-apply': { disposition: 'roadmap', roadmap: 'R033' },
   },
   'Workspace sharing': {
     'workspace.my-invitation-accept': { disposition: 'live', surface: 'Account' },

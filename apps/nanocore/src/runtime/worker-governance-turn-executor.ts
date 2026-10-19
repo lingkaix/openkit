@@ -27,7 +27,11 @@ import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js';
+import {
+  canDiscloseThreadToAudience,
+  isArtifactVisible,
+  isThreadVisible,
+} from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import { openBoundedSourceView } from '../context/bounded-source-view.js';
@@ -85,6 +89,7 @@ import {
 import {
   consumeQueuedThreadMaterialRevision,
   type QueuedThreadMaterialSelection,
+  readWorkspaceMaterialSensitivity,
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -301,6 +306,8 @@ interface WorkerTurnBackendLifecycle {
 export interface PreparedWorkerTurnContext {
   /** Transient source and audience check before backend disclosure and native submission. */
   readonly assertCurrentKnowledgeOverview: () => void;
+  /** Releases the transient queue check only after strict acceptance and its queue transaction. */
+  readonly markMaterialSelectionAccepted: () => void;
   /** Task diagnostic lineage, absent for an outcome-initiated Turn. */
   readonly checkpoint: WorkerCheckpointRecord | null;
   /** Exact scheduler request identity, including checkpoint-free outcome Turns. */
@@ -375,6 +382,20 @@ export async function prepareWorkerTurnContextPackage(
     : null;
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
+  if (!responsibleUserId || !turn.agentId)
+    throw new TurnStartValidationError(
+      'source_unavailable',
+      'Current Worker resource identity is unavailable.',
+      503
+    );
+  const resourcePolicyActor = {
+    kind: 'agent' as const,
+    userId: responsibleUserId,
+    agentId: turn.agentId,
+    processId: input.agentSessionId,
+  };
+
   const sourceAdmission = coreDb ? findSchedulerAdmissionForTurn(coreDb, input) : null;
   const serverKnowledgeActor =
     sourceAdmission?.serverAdminTokenId && sourceAdmission.triggerActor.kind === 'user'
@@ -490,6 +511,7 @@ export async function prepareWorkerTurnContextPackage(
           actor: store.getTurnById(input.turnId).triggerActor,
           outputThreadId: input.threadId,
           outputTurnId: input.turnId,
+          resourcePolicyActor,
         },
         retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
         workspaceId: input.workspaceId,
@@ -572,7 +594,9 @@ export async function prepareWorkerTurnContextPackage(
         store,
         store.getThread(input.workspaceId, input.threadId),
         responsibleUserIdForActor(admission.triggerActor) ?? undefined,
-        admission.serverAdminTokenId !== null
+        admission.serverAdminTokenId !== null,
+        'thread.read',
+        resourcePolicyActor
       )
     )
       throw new TurnStartValidationError(
@@ -600,11 +624,10 @@ export async function prepareWorkerTurnContextPackage(
         store,
         current,
         responsibleUserIdForActor(sourceAdmission.triggerActor) ?? undefined,
-        sourceAdmission.serverAdminTokenId !== null
+        sourceAdmission.serverAdminTokenId !== null,
+        resourcePolicyActor
       ) ||
-      (sourceThread?.visibility === 'private' &&
-        (destination.visibility !== 'private' ||
-          destination.privateOwnerUserId !== sourceThread.privateOwnerUserId))
+      (sourceThread !== null && !canDiscloseThreadToAudience(store, sourceThread, destination))
     )
       throw new TurnStartValidationError(
         'source_unavailable',
@@ -612,6 +635,7 @@ export async function prepareWorkerTurnContextPackage(
         503
       );
   };
+  let materialSelectionAccepted = false;
   let sourceFiles: WorkerContextPackageSourceFileInput[];
   try {
     sourceFiles = await prepareTurnFileSourceInputs({
@@ -631,10 +655,12 @@ export async function prepareWorkerTurnContextPackage(
       const assertCurrentMaterial = () => {
         assertCurrentSources();
         if (
-          !isDeepStrictEqual(
-            selectQueuedThreadMaterialRevision(workspaceDb, input.threadId),
-            bindingCandidate
-          )
+          readWorkspaceMaterialSensitivity(workspaceDb, selection.materialId) === 'restricted' ||
+          (!materialSelectionAccepted &&
+            !isDeepStrictEqual(
+              selectQueuedThreadMaterialRevision(workspaceDb, input.threadId),
+              bindingCandidate
+            ))
         )
           throw new TurnStartValidationError(
             'source_unavailable',
@@ -671,6 +697,7 @@ export async function prepareWorkerTurnContextPackage(
         actor: turn.triggerActor,
         outputThreadId: input.threadId,
         outputTurnId: input.turnId,
+        resourcePolicyActor,
       },
       retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
       workspaceId: input.workspaceId,
@@ -750,6 +777,7 @@ export async function prepareWorkerTurnContextPackage(
       )
         throw error;
       knowledgeExclusions.push({
+        knowledgeBaseId: page.knowledgeBaseId,
         contentDigest: page.contentDigest,
         knowledgePageId: page.knowledgePageId,
         reason: 'budget_exceeded',
@@ -785,6 +813,10 @@ export async function prepareWorkerTurnContextPackage(
   for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);
   return {
     assertCurrentKnowledgeOverview,
+    markMaterialSelectionAccepted: () => {
+      // Acceptance consumes the queue; later queued intent cannot replace this frozen revision.
+      materialSelectionAccepted = true;
+    },
     checkpoint,
     requestId: input.requestId,
     knowledgeExclusions,
@@ -864,6 +896,7 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
     }
   })();
 
+  preparedContext.markMaterialSelectionAccepted();
   return acceptedTrace;
 }
 
@@ -2226,6 +2259,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       };
       const materialization = await this.backend.materialize(environmentPackage, {
         beforeMaterialization: publishMaterialization,
+        ...(preparedWorkerContext?.packageFiles.sourceFileInputs
+          ? { contextPackageSources: preparedWorkerContext.packageFiles.sourceFileInputs }
+          : {}),
         ...(this.coreDb?.dataRoot ? { dataRoot: this.coreDb.dataRoot } : {}),
         providerCredentials,
         runtimeEnvCredentials,
@@ -3453,7 +3489,23 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             });
           }
           if (workspaceDb && !gitSource) {
-            recordWorkspaceSyncReview(workspaceDb, { item: stagedItem });
+            recordWorkspaceSyncReview(workspaceDb, {
+              item: stagedItem,
+              producer: {
+                actor: {
+                  kind: 'agent',
+                  id: environmentPackage.agent.agentId,
+                  responsibleUserId: responsibleUserIdForActor(
+                    environmentPackage.scope.triggerActor
+                  ),
+                },
+                agentId: environmentPackage.agent.agentId,
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                requestId: artifactRequestId,
+                threadId: environmentPackage.scope.threadId,
+                turnId: environmentPackage.scope.turnId,
+              },
+            });
           }
           if (existingArtifact) {
             if (!isDeepStrictEqual(existingArtifact, artifact)) {

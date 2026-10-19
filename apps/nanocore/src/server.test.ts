@@ -59,6 +59,7 @@ import {
   entityIdPattern,
   MetaResponseSchema,
   PROTOCOL_VERSION,
+  readRetainedV1,
   SseEventEnvelopeSchema,
   ThreadSchema,
 } from '@openkit/protocol';
@@ -80,6 +81,7 @@ import {
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -176,6 +178,7 @@ import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker, recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { readWorkspaceImportSnapshot } from './storage/workspace-import.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
@@ -2125,7 +2128,7 @@ describe('nanocore server', () => {
         )
         .all() as Array<Record<string, unknown>>;
 
-      expect(auditRows).toHaveLength(7);
+      expect(auditRows).toHaveLength(8);
       expect(auditRows).toEqual(
         expect.arrayContaining([
           {
@@ -2140,6 +2143,12 @@ describe('nanocore server', () => {
             request_id: '00000000-0000-4000-8000-00000000d722',
             action: 'workspace.import',
             resource: `workspace:${body.importedWorkspaceId}`,
+          }),
+          expect.objectContaining({
+            workspace_id: body.importedWorkspaceId,
+            request_id: '00000000-0000-4000-8000-00000000d722',
+            action: 'capability.admit',
+            resource: 'capability:storage.workspace_import',
           }),
           expect.objectContaining({
             workspace_id: body.importedWorkspaceId,
@@ -5598,7 +5607,9 @@ describe('nanocore server', () => {
         `${retrievalTraceRef.objectId}.json`
       );
       const retrievalTrace = KnowledgeRetrievalTraceSchema.parse(
-        JSON.parse(readFileSync(retrievalTracePath, 'utf8'))
+        readRetainedV1(JSON.parse(readFileSync(retrievalTracePath, 'utf8')), (value) =>
+          StoredProductRetrievalTraceV1Schema.parse(value)
+        )
       );
 
       expect(retrievalTrace).toEqual(
@@ -5618,7 +5629,7 @@ describe('nanocore server', () => {
           selected: expect.arrayContaining([
             expect.objectContaining({
               reference: {
-                scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                scopeId: `page/workspace/ws_00000000-0000-7000-8000-000000000001/${readDefaultKnowledgeBaseId({ dataRoot: coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' } })}`,
                 objectId: knowledge.id,
               },
             }),
@@ -5686,7 +5697,11 @@ describe('nanocore server', () => {
         code: 'idempotency_key_conflict',
       });
       expect(
-        KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(retrievalTracePath, 'utf8')))
+        KnowledgeRetrievalTraceSchema.parse(
+          readRetainedV1(JSON.parse(readFileSync(retrievalTracePath, 'utf8')), (value) =>
+            StoredProductRetrievalTraceV1Schema.parse(value)
+          )
+        )
       ).toEqual(retrievalTrace);
       expect(() => store.updateTurn(parsed.turn.id, { status: 'cancelled' })).toThrow(
         /is terminal and does not admit this write/

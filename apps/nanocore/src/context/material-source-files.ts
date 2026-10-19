@@ -39,7 +39,6 @@ export async function prepareMaterialSourceInput(input: {
     scopeId: `material/workspace/${input.workspaceId}`,
     objectId: selection.materialId,
   });
-  const originalSnapshotPath = `originals/materials/${selection.materialId}/${selection.revisionId}/payload`;
   const extension = selection.mediaType === 'text/markdown' ? 'md' : 'txt';
   const packagePath = `workspace/materials/${selection.materialId}/${selection.revisionId}.${extension}`;
   const view = await openBoundedSourceView(
@@ -83,7 +82,6 @@ export async function prepareMaterialSourceInput(input: {
     byteLength: deliveredBytes.byteLength,
     truncated: page.truncated,
     availability: page.truncated ? 'incomplete' : 'available',
-    originalSnapshotPath,
   };
   assertCurrent();
   return {
@@ -93,7 +91,7 @@ export async function prepareMaterialSourceInput(input: {
       originalDigest: selection.contentDigest,
       byteLength,
       mediaType: selection.mediaType,
-      originalSnapshotPath,
+
       packagePath,
       projection,
       deliveredBytes,

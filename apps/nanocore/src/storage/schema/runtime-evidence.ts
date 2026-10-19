@@ -1,3 +1,4 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Durable runtime evidence placement. */
@@ -24,6 +25,8 @@ export type RuntimeEvidenceOutcome = 'succeeded' | 'failed' | 'cancelled' | 'tim
 export const runtimeEvidence = sqliteTable(
   'runtime_evidence',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable runtime evidence id. */
     runtimeEvidenceId: text('runtime_evidence_id').primaryKey().notNull(),
     /** Workspace that owns the runtime evidence. */

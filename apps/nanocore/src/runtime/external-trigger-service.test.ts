@@ -300,6 +300,56 @@ describe('bounded scheduled poll event admission', () => {
     }
   });
 
+  it('refuses a managed poll brief before publishing an unmanaged child despite current source grants', async () => {
+    const f = fixture();
+    const agentId = f.store.getAgentSession(f.source.agentSessionId).agentId;
+    f.store.setWorkspaceResourcePolicyProjection(() => [
+      {
+        resource: { family: 'thread', id: f.source.threadId },
+        grants: [
+          { subject: { kind: 'user', userId: f.userId }, operations: ['thread.read', 'turn.run'] },
+          {
+            subject: { kind: 'agent', userId: f.userId, agentId },
+            operations: ['thread.read', 'turn.run'],
+          },
+        ],
+        prohibitions: [],
+      },
+    ]);
+    const workspaceDb = openWorkspaceDb(f.root, f.source.workspaceId);
+    applyScopedMigrations(workspaceDb);
+    try {
+      const createThread = vi.spyOn(f.store, 'createThread');
+      await expect(
+        dispatchOpenkitWorkTool(
+          {
+            coreDb: f.db,
+            store: f.store,
+            workspaceDb,
+            environmentPackage: f.source.environmentPackage,
+            automationStore: f.schedules,
+            turnStartServices: {
+              coreDb: f.db,
+              inflightCommands: new WeakMap(),
+              runtimeConfig: () => f.dependencies.snapshot,
+              turnExecutor: f.dependencies.turnExecutor,
+              providerCredentialResolver: f.dependencies.providerCredentialResolver,
+              workerPlacement: f.dependencies.workerPlacement,
+            },
+            knowledgeCallId: 'capability-managed-event',
+          },
+          'automation_event-admit',
+          { eventKey: 'mail:protected', input: 'Handle the confidential acquisition case.' }
+        )
+      ).rejects.toMatchObject({ code: 'external_event_denied' });
+      expect(createThread).not.toHaveBeenCalled();
+      expect(findExternalTriggerAdmission(f.db, f.schedule.id, 'mail:protected')).toBeNull();
+      expect(queueCount(f.db)).toBe(1);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('isolates two events in fresh shared child Threads while the first case is pending', async () => {
     const f = fixture();
     const [first, replay] = await Promise.all([

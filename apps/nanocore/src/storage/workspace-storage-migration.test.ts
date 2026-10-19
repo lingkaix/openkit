@@ -14,11 +14,18 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { KnowledgeBaseIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
+import { parseJsoncObject } from '../config/jsonc.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from '../config/knowledge-base.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { AgentEnvironmentSnapshotReadError } from '../runtime/aep-snapshot-ledger.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -45,22 +52,6 @@ interface MigrationFixture {
   readonly ownerUserId: string;
   /** Primary Workspace id. */
   readonly workspaceId: string;
-}
-
-/** Captured identity for one migration-only legacy AEP fixture. */
-interface LegacyAepSnapshotFixture {
-  /** Predecessor V1 snapshot-record content digest. */
-  readonly predecessorContentDigest: string;
-  /** Snapshot file path relative to its Workspace root. */
-  readonly relativePath: string;
-  /** Expected V2 trigger actor. */
-  readonly triggerActor:
-    | { readonly id: string; readonly kind: 'user' }
-    | {
-        readonly id: string;
-        readonly kind: 'automation';
-        readonly responsibleUserId: string | null;
-      };
 }
 
 /**
@@ -104,6 +95,18 @@ function createOwnerNestedWorkspaceRoot(
       2
     )}\n`
   );
+
+  mkdirSync(join(workspaceRoot, 'config'), { recursive: true });
+  writeFileSync(
+    join(workspaceRoot, 'config', 'workspace.jsonc'),
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: workspaceId, defaultAgentId: null } })}\n`
+  );
+  initializeDefaultKnowledgeBaseId({
+    dataRoot,
+    workspaceRoot,
+    scope: { kind: 'workspace', workspaceId },
+    knowledgeBaseId: testEntityId('kb', `storage-layout:${workspaceId}`),
+  });
 
   // This fixture varies the outer storage layout, not the current Notebook content format.
   new KnowledgeNotebook({
@@ -217,148 +220,6 @@ function sourceWorkspaceRoot(fixture: ReturnType<typeof createMigrationFixture>)
     'workspaces',
     fixture.workspaceId
   );
-}
-
-/**
- * Records one valid V4 AEP fixture, then rewrites it into the migration-only V1 input shape.
- *
- * @param fixture Existing predecessor-layout fixture.
- * @param suffix Stable package lineage suffix.
- * @param automationId Optional legacy automation identity.
- * @param userId Optional legacy responsible or triggering user.
- * @returns Legacy record identity and expected V2 actor.
- */
-function writeLegacyAepSnapshot(
-  fixture: MigrationFixture,
-  suffix: string,
-  automationId: string | null,
-  userId: string | null
-): LegacyAepSnapshotFixture {
-  const workspaceRoot = sourceWorkspaceRoot(fixture);
-  const workspaceDb = openWorkspaceDbAtRoot({
-    dataRoot: fixture.dataRoot,
-    workspaceId: fixture.workspaceId,
-    workspaceRoot,
-  });
-
-  try {
-    applyScopedMigrations(workspaceDb);
-    const triggerActor = automationId
-      ? ({ kind: 'automation', id: automationId, responsibleUserId: userId } as const)
-      : ({ kind: 'user', id: userId! } as const);
-    const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
-      suffix,
-      triggerActor,
-      workspaceInputIds: [],
-    });
-    const threadRoot = join(workspaceRoot, 'threads', environmentPackage.scope.threadId);
-    const turnRoot = join(threadRoot, 'turns', environmentPackage.scope.turnId);
-    mkdirSync(turnRoot, { recursive: true });
-    writeFileSync(
-      join(threadRoot, 'thread.json'),
-      `${JSON.stringify(
-        {
-          id: environmentPackage.scope.threadId,
-          workspaceId: fixture.workspaceId,
-          name: suffix,
-          preview: suffix,
-          status: 'active',
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-        null,
-        2
-      )}\n`
-    );
-    writeFileSync(
-      join(turnRoot, 'turn.json'),
-      `${JSON.stringify(
-        {
-          id: environmentPackage.scope.turnId,
-          workspaceId: fixture.workspaceId,
-          threadId: environmentPackage.scope.threadId,
-          triggerActor,
-          items: [],
-          status: 'completed',
-          error: null,
-          agentId: environmentPackage.agent.agentId,
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          configVersion: null,
-          startedAt: timestamp,
-          completedAt: timestamp,
-          durationMs: 0,
-        },
-        null,
-        2
-      )}\n`
-    );
-    writeFileSync(join(turnRoot, 'items.jsonl'), '');
-    writeFileSync(
-      join(
-        workspaceRoot,
-        'runtime',
-        'agent-sessions',
-        environmentPackage.scope.agentSessionId,
-        'session.json'
-      ),
-      `${JSON.stringify(
-        {
-          id: environmentPackage.scope.agentSessionId,
-          agentId: environmentPackage.agent.agentId,
-          workspaceId: fixture.workspaceId,
-          threadId: environmentPackage.scope.threadId,
-          status: 'closed',
-          message: null,
-          sandboxSummary: null,
-          configVersion: null,
-          environmentPackageSnapshotId: environmentPackage.snapshotId,
-          policySnapshotId: null,
-          sessionCompatibilityKey: null,
-          stale: false,
-          workspaceRoots: [],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-        null,
-        2
-      )}\n`
-    );
-    const relativePath = join(
-      'runtime',
-      'agent-sessions',
-      environmentPackage.scope.agentSessionId,
-      'aep-snapshots',
-      `${environmentPackage.snapshotId}.json`
-    );
-    const path = join(workspaceRoot, relativePath);
-    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> & {
-      snapshot: Record<string, unknown> & { scope: Record<string, unknown> };
-    };
-    const legacyScope = {
-      ...record.snapshot.scope,
-      automationId,
-      organizationId: null,
-      userId,
-    };
-    delete legacyScope.triggerActor;
-    const legacySnapshot = { ...record.snapshot, schemaVersion: 1, scope: legacyScope };
-    const predecessorContentDigest = createHash('sha256')
-      .update(JSON.stringify(legacySnapshot))
-      .digest('hex');
-
-    writeFileSync(
-      path,
-      `${JSON.stringify(
-        { ...record, contentDigest: predecessorContentDigest, snapshot: legacySnapshot },
-        null,
-        2
-      )}\n`
-    );
-
-    return { predecessorContentDigest, relativePath, triggerActor };
-  } finally {
-    workspaceDb.sqlite.close();
-  }
 }
 
 const INVALID_PREFLIGHT_CASES = [
@@ -606,96 +467,105 @@ describe('workspace storage migration', () => {
     ).toMatchObject({ layoutVersion: 1 });
   });
 
-  it('transforms every staged V1 AEP snapshot into the strict V4 runtime and actor shape', () => {
+  it('refuses a V1 AEP snapshot without changing the predecessor or publishing the target root', () => {
     const fixture = createMigrationFixture();
-    const userSnapshot = writeLegacyAepSnapshot(
-      fixture,
-      'migration_user',
-      null,
-      fixture.ownerUserId
-    );
-    const automationSnapshot = writeLegacyAepSnapshot(
-      fixture,
-      'migration_automation',
-      testEntityId('auto', 'automation_migration'),
-      fixture.ownerUserId
-    );
+    const workspaceRoot = sourceWorkspaceRoot(fixture);
+    const workspaceDb = openWorkspaceDbAtRoot({
+      dataRoot: fixture.dataRoot,
+      workspaceId: fixture.workspaceId,
+      workspaceRoot,
+    });
+    let snapshotPath: string;
+    try {
+      applyScopedMigrations(workspaceDb);
+      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix: 'unsupported-layout-aep',
+        triggerActor: { kind: 'user', id: fixture.ownerUserId },
+        workspaceInputIds: [],
+      });
+      snapshotPath = join(
+        'runtime',
+        'agent-sessions',
+        environmentPackage.scope.agentSessionId,
+        'aep-snapshots',
+        `${environmentPackage.snapshotId}.json`
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const sourcePath = join(workspaceRoot, snapshotPath);
+    const record = JSON.parse(readFileSync(sourcePath, 'utf8'));
+    const snapshot = { ...record.snapshot, schemaVersion: 1 };
+    const contentDigest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    const predecessorBytes = `${JSON.stringify({ ...record, snapshot, contentDigest }, null, 2)}\n`;
+    writeFileSync(sourcePath, predecessorBytes);
+    const predecessorInventory = inventoryRegularFiles(workspaceRoot);
     const backupRoot = join(
       mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-retention-')),
       'backup'
     );
     fixture.coreDb.sqlite.close();
 
-    migrateWorkspaceStorage({
-      backupRoot,
-      dataRoot: fixture.dataRoot,
-      now: () => timestamp,
+    let failure: unknown;
+    try {
+      migrateWorkspaceStorage({
+        backupRoot,
+        dataRoot: fixture.dataRoot,
+        now: () => timestamp,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AgentEnvironmentSnapshotReadError);
+    expect(failure).toMatchObject({
+      cause: {
+        issues: expect.arrayContaining([expect.objectContaining({ path: ['schemaVersion'] })]),
+      },
     });
+    expect(readFileSync(sourcePath, 'utf8')).toBe(predecessorBytes);
+    expect(inventoryRegularFiles(workspaceRoot)).toEqual(predecessorInventory);
+    verifyDataRootBackupManifest({ backupRoot });
+    expect(
+      readFileSync(
+        join(
+          backupRoot,
+          'users',
+          fixture.ownerUserId,
+          'workspaces',
+          fixture.workspaceId,
+          snapshotPath
+        ),
+        'utf8'
+      )
+    ).toBe(predecessorBytes);
+    expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
+    expect(
+      JSON.parse(readFileSync(join(fixture.dataRoot, 'server', 'layout.json'), 'utf8'))
+    ).toMatchObject({ layoutVersion: 1 });
+  });
 
-    const successorDigests: string[] = [];
-    for (const legacy of [userSnapshot, automationSnapshot]) {
-      const record = JSON.parse(
-        readFileSync(
-          join(fixture.dataRoot, 'workspaces', fixture.workspaceId, legacy.relativePath),
-          'utf8'
-        )
-      ) as Record<string, unknown> & {
-        contentDigest: string;
-        snapshot: Record<string, unknown> & { scope: Record<string, unknown> };
-      };
-      const snapshot = AgentEnvironmentPackageSchema.parse(record.snapshot);
-      const successorDigest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-      successorDigests.push(successorDigest);
-
-      expect(snapshot.schemaVersion).toBe(4);
-      expect(snapshot.runtime.image).toEqual({
-        kind: 'reference',
-        pullPolicy: 'if-not-present',
-        ref: 'openkit/worker-codex:dev',
-      });
-      expect(snapshot.control).toMatchObject({
-        mode: 'sandbox-integration',
-        bindings: {
-          capabilities: {
-            pathPrefix: '/capabilities/',
-            tokenRef: 'runtime://openkit/capability-token',
-          },
-          inference: {
-            pathPrefix: '/inference/',
-            tokenRef: 'runtime://openkit/inference-token',
-          },
-          workerControl: {
-            pathPrefix: '/worker-control/',
-            tokenRef: 'runtime://openkit/worker-control-token',
-          },
-        },
-      });
-      expect(snapshot.control).not.toHaveProperty('endpoint');
-      expect(snapshot.control).not.toHaveProperty('auth');
-      expect(
-        AgentEnvironmentPackageSchema.safeParse({ ...snapshot, schemaVersion: 2 }).success
-      ).toBe(false);
-      expect(snapshot.scope.triggerActor).toEqual(legacy.triggerActor);
-      expect(snapshot.scope).not.toHaveProperty('userId');
-      expect(snapshot.scope).not.toHaveProperty('automationId');
-      expect(snapshot.scope).not.toHaveProperty('organizationId');
-      expect(record.contentDigest).toBe(successorDigest);
-    }
-
-    const reportFile = readdirSync(join(fixture.dataRoot, 'server', 'migrations')).find((name) =>
-      name.endsWith('.json')
+  it('refuses invalid existing Workspace configuration before publication or source removal', () => {
+    const fixture = createMigrationFixture();
+    const sourceRoot = sourceWorkspaceRoot(fixture);
+    const configPath = join(sourceRoot, 'config', 'workspace.jsonc');
+    const config = WorkspaceConfigSchema.parse(parseJsoncObject(readFileSync(configPath, 'utf8')));
+    writeFileSync(
+      configPath,
+      `${JSON.stringify({ ...config, workspace: { ...config.workspace, name: 17 } })}\n`
     );
-    const reportText = readFileSync(
-      join(fixture.dataRoot, 'server', 'migrations', reportFile!),
-      'utf8'
+    const invalidConfigBytes = readFileSync(configPath);
+    const backupRoot = join(
+      mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-invalid-config-')),
+      'backup'
     );
-    for (const digest of [
-      userSnapshot.predecessorContentDigest,
-      automationSnapshot.predecessorContentDigest,
-      ...successorDigests,
-    ]) {
-      expect(reportText).toContain(digest);
-    }
+    fixture.coreDb.sqlite.close();
+
+    expect(() =>
+      migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+    ).toThrow();
+    expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
+    expect(existsSync(sourceRoot)).toBe(true);
+    expect(readFileSync(configPath)).toEqual(invalidConfigBytes);
   });
 
   it('publishes two Workspaces as one root and retains one verified external predecessor backup', () => {
@@ -712,6 +582,21 @@ describe('workspace storage migration', () => {
       'backup'
     );
 
+    const sourceConfigurations = [
+      { workspaceId: fixture.workspaceId, sourceRoot: firstSourceRoot },
+      { workspaceId: secondWorkspaceId, sourceRoot: secondSourceRoot },
+    ].map(({ workspaceId, sourceRoot }) => {
+      const bytes = readFileSync(join(sourceRoot, 'config', 'workspace.jsonc'));
+      const config = WorkspaceConfigSchema.parse(parseJsoncObject(bytes.toString('utf8')));
+      return {
+        workspaceId,
+        bytes,
+        knowledgeBaseId: KnowledgeBaseIdSchema.parse(config.workspace.defaultKnowledgeBaseId),
+      };
+    });
+    expect(sourceConfigurations[0]!.knowledgeBaseId).not.toBe(
+      sourceConfigurations[1]!.knowledgeBaseId
+    );
     writeFileSync(join(firstSourceRoot, 'files', 'first.txt'), 'first\n');
     writeFileSync(join(secondSourceRoot, 'files', 'second.txt'), 'second\n');
     fixture.coreDb.sqlite.close();
@@ -722,6 +607,19 @@ describe('workspace storage migration', () => {
       now: () => timestamp,
     });
 
+    for (const source of sourceConfigurations) {
+      expect(
+        readFileSync(
+          join(fixture.dataRoot, 'workspaces', source.workspaceId, 'config', 'workspace.jsonc')
+        )
+      ).toEqual(source.bytes);
+      expect(
+        readDefaultKnowledgeBaseId({
+          dataRoot: fixture.dataRoot,
+          scope: { kind: 'workspace', workspaceId: source.workspaceId },
+        })
+      ).toBe(source.knowledgeBaseId);
+    }
     const verifiedBackup = verifyDataRootBackupManifest({ backupRoot });
     expect(result.backupId).toMatch(
       /^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/

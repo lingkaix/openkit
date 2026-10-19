@@ -28,6 +28,8 @@ import {
   workspaceSyncReviewPatchBytes,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import type { ActorRef, AuditEvent } from '@openkit/protocol';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
@@ -43,12 +45,21 @@ import { workspaceSnapshotAcceptedCommitIsKnown } from './workspace-snapshot-cha
 
 /** Durable workspace synchronization review persistence input. */
 export interface RecordWorkspaceSyncReviewInput {
+  /** Producing Worker actor and work lineage, captured by the runtime owner. */
+  readonly producer?: Pick<
+    AuditEvent,
+    'actor' | 'agentId' | 'agentSessionId' | 'requestId' | 'threadId' | 'turnId'
+  >;
   /** Public workspace synchronization review item. */
   readonly item: WorkspaceSyncReviewItem;
 }
 
 /** Durable workspace synchronization review decision persistence input. */
 export interface UpdateWorkspaceSyncReviewDecisionInput {
+  /** Actual command actor when supplied by the current command owner. */
+  readonly actor?: ActorRef;
+  /** Existing non-secret authentication facts when the command has a public requester. */
+  readonly authentication?: AuditEvent['authentication'];
   /** Workspace that owns the staged review. */
   readonly workspaceId: string;
   /** Staged review id to resolve. */
@@ -88,6 +99,7 @@ export interface ExportableWorkspaceSyncRecords {
 }
 
 interface WorkspaceChangeSetRow {
+  readonly schemaVersion: unknown;
   readonly change_set_id: string;
   readonly workspace_id: string;
   readonly input_snapshot_id: string;
@@ -100,6 +112,7 @@ interface WorkspaceChangeSetRow {
 }
 
 interface StagedWorkspaceReviewRow {
+  readonly schemaVersion: unknown;
   readonly review_id: string;
   readonly workspace_id: string;
   readonly change_set_id: string;
@@ -254,6 +267,7 @@ export function recordWorkspaceSyncReview(
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO staged_workspace_reviews (
+        schema_version,
         review_id,
         workspace_id,
         change_set_id,
@@ -263,9 +277,10 @@ export function recordWorkspaceSyncReview(
         patch_payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       review.id,
       review.workspaceId,
       review.changeSetId,
@@ -279,6 +294,7 @@ export function recordWorkspaceSyncReview(
 
   recordWorkspaceAuditEvent({
     action: 'workspace.review.stage',
+    ...input.producer,
     category: 'artifact',
     now: new Date(review.createdAt),
     outcome: 'succeeded',
@@ -395,6 +411,7 @@ export function listWorkspaceSyncReviews(
     workspaceDb.sqlite
       .prepare(
         `SELECT
+        schema_version AS schemaVersion,
           review_id,
           workspace_id,
           change_set_id,
@@ -430,6 +447,7 @@ export function getWorkspaceSyncReview(
   const row = workspaceDb.sqlite
     .prepare(
       `SELECT
+        schema_version AS schemaVersion,
         review_id,
         workspace_id,
         change_set_id,
@@ -472,9 +490,9 @@ export function updateWorkspaceSyncReviewDecision(
   // Preserve the validated owner's original nested observations when only decision facts change.
   const retainedReview = workspaceDb.sqlite
     .prepare(
-      'SELECT payload_json FROM staged_workspace_reviews WHERE workspace_id = ? AND review_id = ?'
+      'SELECT schema_version AS schemaVersion, payload_json FROM staged_workspace_reviews WHERE workspace_id = ? AND review_id = ?'
     )
-    .get(input.workspaceId, input.reviewId) as { payload_json: string };
+    .get(input.workspaceId, input.reviewId) as { schemaVersion: unknown; payload_json: string };
   const review = StagedWorkspaceReviewSchema.parse({
     ...item.review,
     status: input.status,
@@ -490,7 +508,7 @@ export function updateWorkspaceSyncReviewDecision(
     .run(
       review.status,
       JSON.stringify({
-        ...JSON.parse(retainedReview.payload_json),
+        ...readRetainedV1(retainedReview, () => JSON.parse(retainedReview.payload_json)),
         status: review.status,
         updatedAt: review.updatedAt,
       }),
@@ -501,6 +519,8 @@ export function updateWorkspaceSyncReviewDecision(
 
   recordWorkspaceAuditEvent({
     action: 'workspace.review.decide',
+    actor: input.actor ?? null,
+    ...(input.authentication ? { authentication: input.authentication } : {}),
     category: 'artifact',
     now: new Date(input.updatedAt),
     outcome: 'succeeded',
@@ -687,6 +707,7 @@ export function importWorkspaceSyncRecords(
     workspaceDb.sqlite
       .prepare(
         `INSERT INTO staged_workspace_reviews (
+        schema_version,
           review_id,
           workspace_id,
           change_set_id,
@@ -696,9 +717,10 @@ export function importWorkspaceSyncRecords(
           patch_payload_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        writeRetainedV1({}).schemaVersion,
         review.id,
         review.workspaceId,
         review.changeSetId,
@@ -725,14 +747,16 @@ function recordWorkspaceInputSnapshot(
   const parsed = WorkspaceInputSnapshotSchema.parse(snapshot);
   const existing = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM workspace_input_snapshots
        WHERE workspace_id = ? AND input_snapshot_id = ?`
     )
-    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+    .get(parsed.workspaceId, parsed.id) as
+    | { schemaVersion: unknown; payload_json: string }
+    | undefined;
   if (existing) {
     const stored = WorkspaceInputSnapshotReaderSchema.parse(
-      JSON.parse(existing.payload_json) as unknown
+      readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
     );
     if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
       throw new Error(`Workspace input snapshot replay conflict: ${parsed.id}`);
@@ -742,6 +766,7 @@ function recordWorkspaceInputSnapshot(
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO workspace_input_snapshots (
+        schema_version,
         input_snapshot_id,
         workspace_id,
         resource_id,
@@ -749,9 +774,10 @@ function recordWorkspaceInputSnapshot(
         payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       parsed.id,
       parsed.workspaceId,
       parsed.resourceId,
@@ -777,14 +803,16 @@ function recordWorkspaceMaterializationRecord(
   const parsed = WorkspaceMaterializationRecordSchema.parse(record);
   const existing = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM workspace_materialization_records
        WHERE workspace_id = ? AND materialization_record_id = ?`
     )
-    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+    .get(parsed.workspaceId, parsed.id) as
+    | { schemaVersion: unknown; payload_json: string }
+    | undefined;
   if (existing) {
     const stored = WorkspaceMaterializationRecordReaderSchema.parse(
-      JSON.parse(existing.payload_json) as unknown
+      readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
     );
     if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
       throw new Error(`Workspace materialization replay conflict: ${parsed.id}`);
@@ -793,6 +821,7 @@ function recordWorkspaceMaterializationRecord(
     const inserted = workspaceDb.sqlite
       .prepare(
         `INSERT INTO workspace_materialization_records (
+        schema_version,
           materialization_record_id,
           workspace_id,
           input_snapshot_id,
@@ -802,9 +831,10 @@ function recordWorkspaceMaterializationRecord(
           payload_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        writeRetainedV1({}).schemaVersion,
         parsed.id,
         parsed.workspaceId,
         parsed.inputSnapshotId,
@@ -1055,15 +1085,15 @@ export function updateBackendWorkspaceHandleCleanupStatus(
 ): BackendWorkspaceHandle[] {
   const rows = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM backend_workspace_handles
        WHERE workspace_id = ? AND package_snapshot_id = ?
        ORDER BY created_at ASC, backend_workspace_handle_id ASC`
     )
-    .all(workspaceId, packageSnapshotId) as Array<{ payload_json: string }>;
+    .all(workspaceId, packageSnapshotId) as Array<{ schemaVersion: unknown; payload_json: string }>;
   const resolved = rows.map((row) => {
     const handle = BackendWorkspaceHandleReaderSchema.parse(
-      JSON.parse(row.payload_json) as unknown
+      readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown
     );
     const effectiveCleanupStatus =
       cleanupStatus === 'retained' && ['cleaned', 'failed'].includes(handle.cleanupStatus)
@@ -1125,14 +1155,16 @@ function recordBackendWorkspaceHandle(
   const parsed = BackendWorkspaceHandleSchema.parse(handle);
   const existing = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM backend_workspace_handles
        WHERE workspace_id = ? AND backend_workspace_handle_id = ?`
     )
-    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+    .get(parsed.workspaceId, parsed.id) as
+    | { schemaVersion: unknown; payload_json: string }
+    | undefined;
   if (existing) {
     const stored = BackendWorkspaceHandleReaderSchema.parse(
-      JSON.parse(existing.payload_json) as unknown
+      readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
     );
     const replayed = preserveCleanupProgress
       ? { ...parsed, cleanupStatus: stored.cleanupStatus, updatedAt: stored.updatedAt }
@@ -1145,6 +1177,7 @@ function recordBackendWorkspaceHandle(
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO backend_workspace_handles (
+        schema_version,
         backend_workspace_handle_id,
         workspace_id,
         materialization_record_id,
@@ -1154,9 +1187,10 @@ function recordBackendWorkspaceHandle(
         payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       parsed.id,
       parsed.workspaceId,
       parsed.materializationRecordId,
@@ -1182,14 +1216,16 @@ export function recordWorkerOutputManifest(
   const parsed = WorkerOutputManifestSchema.parse(manifest);
   const existing = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM worker_output_manifests
        WHERE workspace_id = ? AND worker_output_manifest_id = ?`
     )
-    .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
+    .get(parsed.workspaceId, parsed.id) as
+    | { schemaVersion: unknown; payload_json: string }
+    | undefined;
   if (existing) {
     const stored = WorkerOutputManifestReaderSchema.parse(
-      JSON.parse(existing.payload_json) as unknown
+      readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
     );
     if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
       throw new Error(`Worker output manifest replay conflict: ${parsed.id}`);
@@ -1199,6 +1235,7 @@ export function recordWorkerOutputManifest(
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO worker_output_manifests (
+        schema_version,
         worker_output_manifest_id,
         workspace_id,
         materialization_record_id,
@@ -1209,9 +1246,10 @@ export function recordWorkerOutputManifest(
         payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       parsed.id,
       parsed.workspaceId,
       parsed.materializationRecordId,
@@ -1299,14 +1337,18 @@ function getWorkspaceInputSnapshot(
 ): WorkspaceInputSnapshot | null {
   const row = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM workspace_input_snapshots
        WHERE workspace_id = ? AND input_snapshot_id = ?`
     )
-    .get(workspaceId, inputSnapshotId) as { payload_json: string } | undefined;
+    .get(workspaceId, inputSnapshotId) as
+    | { schemaVersion: unknown; payload_json: string }
+    | undefined;
 
   return row
-    ? WorkspaceInputSnapshotReaderSchema.parse(JSON.parse(row.payload_json) as unknown)
+    ? WorkspaceInputSnapshotReaderSchema.parse(
+        readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown
+      )
     : null;
 }
 
@@ -1325,14 +1367,18 @@ function getWorkspaceMaterializationRecord(
 ): WorkspaceMaterializationRecord | null {
   const row = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM workspace_materialization_records
        WHERE workspace_id = ? AND materialization_record_id = ?`
     )
-    .get(workspaceId, materializationRecordId) as { payload_json: string } | undefined;
+    .get(workspaceId, materializationRecordId) as
+    | { schemaVersion: unknown; payload_json: string }
+    | undefined;
 
   return row
-    ? WorkspaceMaterializationRecordReaderSchema.parse(JSON.parse(row.payload_json) as unknown)
+    ? WorkspaceMaterializationRecordReaderSchema.parse(
+        readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown
+      )
     : null;
 }
 
@@ -1346,14 +1392,18 @@ function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: Workspace
   const payloadJson = JSON.stringify(WorkspaceChangeSetSchema.parse(changeSet));
   const existing = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM workspace_change_sets
        WHERE workspace_id = ? AND change_set_id = ?`
     )
-    .get(changeSet.workspaceId, changeSet.id) as { payload_json: string } | undefined;
+    .get(changeSet.workspaceId, changeSet.id) as
+    | { schemaVersion: unknown; payload_json: string }
+    | undefined;
   if (existing) {
     const existingPayloadJson = JSON.stringify(
-      WorkspaceChangeSetReaderSchema.parse(JSON.parse(existing.payload_json) as unknown)
+      WorkspaceChangeSetReaderSchema.parse(
+        readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
+      )
     );
     if (existingPayloadJson !== payloadJson) {
       throw new Error(`Workspace change set replay conflict: ${changeSet.id}`);
@@ -1364,6 +1414,7 @@ function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: Workspace
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO workspace_change_sets (
+        schema_version,
         change_set_id,
         workspace_id,
         input_snapshot_id,
@@ -1373,9 +1424,10 @@ function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: Workspace
         payload_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       changeSet.id,
       changeSet.workspaceId,
       changeSet.inputSnapshotId,
@@ -1405,12 +1457,12 @@ function withMaterializationSourceId(
 
   const row = workspaceDb.sqlite
     .prepare(
-      `SELECT payload_json
+      `SELECT schema_version AS schemaVersion, payload_json
        FROM workspace_materialization_records
        WHERE workspace_id = ? AND materialization_record_id = ?`
     )
     .get(changeSet.workspaceId, changeSet.materializationRecordId) as
-    | { payload_json: string }
+    | { schemaVersion: unknown; payload_json: string }
     | undefined;
 
   if (!row) {
@@ -1418,7 +1470,7 @@ function withMaterializationSourceId(
   }
 
   const materialization = WorkspaceMaterializationRecordReaderSchema.parse(
-    JSON.parse(row.payload_json) as unknown
+    readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown
   );
 
   return materialization.sourceId
@@ -1462,7 +1514,9 @@ function mapWorkspaceReviewRow(
   workspaceDb: WorkspaceDb,
   row: StagedWorkspaceReviewRow
 ): WorkspaceSyncReviewItem {
-  const review = StagedWorkspaceReviewReaderSchema.parse(JSON.parse(row.payload_json) as unknown);
+  const review = StagedWorkspaceReviewReaderSchema.parse(
+    readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown
+  );
   const changeSet = requireWorkspaceChangeSet(workspaceDb, row.workspace_id, review.changeSetId);
   const patchPayload = row.patch_payload_json
     ? WorkspaceSyncReviewPatchPayloadSchema.parse(JSON.parse(row.patch_payload_json) as unknown)
@@ -1496,6 +1550,7 @@ function requireWorkspaceChangeSet(
   const row = workspaceDb.sqlite
     .prepare(
       `SELECT
+        schema_version AS schemaVersion,
         change_set_id,
         workspace_id,
         input_snapshot_id,
@@ -1516,7 +1571,9 @@ function requireWorkspaceChangeSet(
     );
   }
 
-  return WorkspaceChangeSetReaderSchema.parse(JSON.parse(row.payload_json) as unknown);
+  return WorkspaceChangeSetReaderSchema.parse(
+    readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown
+  );
 }
 
 /**
@@ -1542,13 +1599,13 @@ function listPayloadRows<T>(
   return (
     workspaceDb.sqlite
       .prepare(
-        `SELECT payload_json
+        `SELECT schema_version AS schemaVersion, payload_json
         FROM ${tableName}
         WHERE workspace_id = ?
         ORDER BY created_at ASC`
       )
-      .all(workspaceId) as Array<{ payload_json: string }>
+      .all(workspaceId) as Array<{ schemaVersion: unknown; payload_json: string }>
   )
-    .map((row) => schema.parse(JSON.parse(row.payload_json) as unknown))
+    .map((row) => schema.parse(readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown))
     .reverse();
 }

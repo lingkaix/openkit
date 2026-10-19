@@ -133,7 +133,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
         );
     }
     const table = scope === 'user' ? 'idempotency_requests' : 'audit_events';
-    const before = sqlite.prepare(`SELECT * FROM ${table}`).all();
+    const before = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
     const previousCount = Number(
       (
         sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get() as {
@@ -141,13 +141,23 @@ describe('notebook publication admission in the existing Audit owners', () => {
         }
       ).count
     );
-    applyNativeScopeMigrations(sqlite, scope, current);
-    applyNativeScopeMigrations(sqlite, scope, current);
+    // This regression owns the Notebook migration, not later reset-format cutovers.
+    const notebookJournal = { ...journal, entries: journal.entries.slice(0, admissionIndex + 1) };
+    for (const entry of notebookJournal.entries)
+      copyFileSync(join(current, `${entry.tag}.sql`), join(predecessor, `${entry.tag}.sql`));
+    writeFileSync(join(predecessor, 'meta', '_journal.json'), JSON.stringify(notebookJournal));
+    applyNativeScopeMigrations(sqlite, scope, predecessor);
+    applyNativeScopeMigrations(sqlite, scope, predecessor);
     expect(sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get()).toEqual({
-      count: previousCount + journal.entries.length - admissionIndex,
+      count: previousCount + 1,
     });
     const after = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-    expect(after.map(({ notebook_admission_json: _newField, ...row }) => row)).toEqual(before);
+    if (scope === 'user') expect(after[0]?.schema_version).toBe(1);
+    expect(
+      after.map(
+        ({ notebook_admission_json: _newField, schema_version: _formatVersion, ...row }) => row
+      )
+    ).toEqual(before);
     expect(
       (sqlite.pragma('table_info(audit_events)') as Array<{ name: string }>).map(({ name }) => name)
     ).toContain('notebook_admission_json');
