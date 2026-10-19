@@ -68433,22 +68433,55 @@
                             "const": "select"
                           },
                           "target": {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "const": "candidate-set"
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "candidate-set"
+                                  },
+                                  "candidateSetId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "candidateSetId"
+                                ],
+                                "additionalProperties": false
                               },
-                              "candidateSetId": {
-                                "type": "string",
-                                "minLength": 1
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "artifactId": {
+                                    "type": "string",
+                                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "artifactVersion": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "contentDigest": {
+                                    "type": "string",
+                                    "pattern": "^sha256:[a-f0-9]{64}$"
+                                  },
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "artifact-version"
+                                  }
+                                },
+                                "required": [
+                                  "artifactId",
+                                  "artifactVersion",
+                                  "contentDigest",
+                                  "kind"
+                                ],
+                                "additionalProperties": false
                               }
-                            },
-                            "required": [
-                              "kind",
-                              "candidateSetId"
-                            ],
-                            "additionalProperties": false
+                            ]
                           },
                           "choice": {
                             "type": "object",
@@ -69638,22 +69671,55 @@
                           "const": "select"
                         },
                         "target": {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "const": "candidate-set"
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "candidate-set"
+                                },
+                                "candidateSetId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "candidateSetId"
+                              ],
+                              "additionalProperties": false
                             },
-                            "candidateSetId": {
-                              "type": "string",
-                              "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "artifactId": {
+                                  "type": "string",
+                                  "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "contentDigest": {
+                                  "type": "string",
+                                  "pattern": "^sha256:[a-f0-9]{64}$"
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "const": "artifact-version"
+                                }
+                              },
+                              "required": [
+                                "artifactId",
+                                "artifactVersion",
+                                "contentDigest",
+                                "kind"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "candidateSetId"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
                         "choice": {
                           "type": "object",
@@ -110798,22 +110864,55 @@
                           "const": "select"
                         },
                         "target": {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "const": "candidate-set"
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "candidate-set"
+                                },
+                                "candidateSetId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "candidateSetId"
+                              ],
+                              "additionalProperties": false
                             },
-                            "candidateSetId": {
-                              "type": "string",
-                              "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "artifactId": {
+                                  "type": "string",
+                                  "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "artifactVersion": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "contentDigest": {
+                                  "type": "string",
+                                  "pattern": "^sha256:[a-f0-9]{64}$"
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "const": "artifact-version"
+                                }
+                              },
+                              "required": [
+                                "artifactId",
+                                "artifactVersion",
+                                "contentDigest",
+                                "kind"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "candidateSetId"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
                         "choice": {
                           "type": "object",
@@ -112335,22 +112434,55 @@
                       "const": "select"
                     },
                     "target": {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "const": "candidate-set"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "candidate-set"
+                            },
+                            "candidateSetId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "candidateSetId"
+                          ],
+                          "additionalProperties": false
                         },
-                        "candidateSetId": {
-                          "type": "string",
-                          "minLength": 1
+                        {
+                          "type": "object",
+                          "properties": {
+                            "artifactId": {
+                              "type": "string",
+                              "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "contentDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "artifact-version"
+                            }
+                          },
+                          "required": [
+                            "artifactId",
+                            "artifactVersion",
+                            "contentDigest",
+                            "kind"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "kind",
-                        "candidateSetId"
-                      ],
-                      "additionalProperties": false
+                      ]
                     },
                     "choice": {
                       "type": "object",
@@ -113329,22 +113461,55 @@
                             "const": "select"
                           },
                           "target": {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "const": "candidate-set"
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "candidate-set"
+                                  },
+                                  "candidateSetId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "candidateSetId"
+                                ],
+                                "additionalProperties": false
                               },
-                              "candidateSetId": {
-                                "type": "string",
-                                "minLength": 1
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "artifactId": {
+                                    "type": "string",
+                                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                  },
+                                  "artifactVersion": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "contentDigest": {
+                                    "type": "string",
+                                    "pattern": "^sha256:[a-f0-9]{64}$"
+                                  },
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "artifact-version"
+                                  }
+                                },
+                                "required": [
+                                  "artifactId",
+                                  "artifactVersion",
+                                  "contentDigest",
+                                  "kind"
+                                ],
+                                "additionalProperties": false
                               }
-                            },
-                            "required": [
-                              "kind",
-                              "candidateSetId"
-                            ],
-                            "additionalProperties": false
+                            ]
                           },
                           "choice": {
                             "type": "object",
@@ -114330,22 +114495,55 @@
                       "const": "select"
                     },
                     "target": {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "const": "candidate-set"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "candidate-set"
+                            },
+                            "candidateSetId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "candidateSetId"
+                          ],
+                          "additionalProperties": false
                         },
-                        "candidateSetId": {
-                          "type": "string",
-                          "minLength": 1
+                        {
+                          "type": "object",
+                          "properties": {
+                            "artifactId": {
+                              "type": "string",
+                              "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "contentDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "artifact-version"
+                            }
+                          },
+                          "required": [
+                            "artifactId",
+                            "artifactVersion",
+                            "contentDigest",
+                            "kind"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "kind",
-                        "candidateSetId"
-                      ],
-                      "additionalProperties": false
+                      ]
                     },
                     "choice": {
                       "type": "object",
@@ -115353,22 +115551,55 @@
                       "const": "select"
                     },
                     "target": {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "const": "candidate-set"
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "candidate-set"
+                            },
+                            "candidateSetId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "candidateSetId"
+                          ],
+                          "additionalProperties": false
                         },
-                        "candidateSetId": {
-                          "type": "string",
-                          "minLength": 1
+                        {
+                          "type": "object",
+                          "properties": {
+                            "artifactId": {
+                              "type": "string",
+                              "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "artifactVersion": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "contentDigest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "artifact-version"
+                            }
+                          },
+                          "required": [
+                            "artifactId",
+                            "artifactVersion",
+                            "contentDigest",
+                            "kind"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "kind",
-                        "candidateSetId"
-                      ],
-                      "additionalProperties": false
+                      ]
                     },
                     "choice": {
                       "type": "object",
@@ -116747,22 +116978,55 @@
                     "const": "select"
                   },
                   "target": {
-                    "type": "object",
-                    "properties": {
-                      "kind": {
-                        "type": "string",
-                        "const": "candidate-set"
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "candidate-set"
+                          },
+                          "candidateSetId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "candidateSetId"
+                        ],
+                        "additionalProperties": false
                       },
-                      "candidateSetId": {
-                        "type": "string",
-                        "minLength": 1
+                      {
+                        "type": "object",
+                        "properties": {
+                          "artifactId": {
+                            "type": "string",
+                            "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "artifactVersion": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "contentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "artifact-version"
+                          }
+                        },
+                        "required": [
+                          "artifactId",
+                          "artifactVersion",
+                          "contentDigest",
+                          "kind"
+                        ],
+                        "additionalProperties": false
                       }
-                    },
-                    "required": [
-                      "kind",
-                      "candidateSetId"
-                    ],
-                    "additionalProperties": false
+                    ]
                   },
                   "choice": {
                     "type": "object",
@@ -117770,22 +118034,55 @@
                     "const": "select"
                   },
                   "target": {
-                    "type": "object",
-                    "properties": {
-                      "kind": {
-                        "type": "string",
-                        "const": "candidate-set"
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "candidate-set"
+                          },
+                          "candidateSetId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "candidateSetId"
+                        ],
+                        "additionalProperties": false
                       },
-                      "candidateSetId": {
-                        "type": "string",
-                        "minLength": 1
+                      {
+                        "type": "object",
+                        "properties": {
+                          "artifactId": {
+                            "type": "string",
+                            "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "artifactVersion": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "contentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "artifact-version"
+                          }
+                        },
+                        "required": [
+                          "artifactId",
+                          "artifactVersion",
+                          "contentDigest",
+                          "kind"
+                        ],
+                        "additionalProperties": false
                       }
-                    },
-                    "required": [
-                      "kind",
-                      "candidateSetId"
-                    ],
-                    "additionalProperties": false
+                    ]
                   },
                   "choice": {
                     "type": "object",
@@ -137958,5 +138255,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:ea4bfe3851fd0a6489fd18623a0aa8cffe0f73072dcdd86137503f6ce57cba4b"
+  "x-openkit-source-digest": "sha256:18e3801f7f3d8485869d32b4c383f69f9d0b12f7ce22ddf901487f680842db5b"
 }

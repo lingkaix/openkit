@@ -46,13 +46,31 @@ const judgementFields = {
   extensions: descriptiveExtensions,
 };
 
-/** Selection is attributable human judgement on one immutable set member. */
-export const CandidateSelectionJudgementSchema = z.object({
-  ...judgementFields,
-  kind: z.literal('select'),
-  target: CandidateSetJudgementTargetSchema,
-  choice: EvaluationCandidateSchema,
-});
+/** Selection is attributable human judgement on one immutable set member or exact Artifact version. */
+export const CandidateSelectionJudgementSchema = z
+  .object({
+    ...judgementFields,
+    kind: z.literal('select'),
+    target: z.union([
+      CandidateSetJudgementTargetSchema,
+      EvaluationCandidateSchema.extend({ kind: z.literal('artifact-version') }),
+    ]),
+    choice: EvaluationCandidateSchema,
+  })
+  .superRefine((judgement, context) => {
+    const target = judgement.target;
+    if (
+      target.kind === 'artifact-version' &&
+      (target.artifactId !== judgement.choice.artifactId ||
+        target.artifactVersion !== judgement.choice.artifactVersion ||
+        target.contentDigest !== judgement.choice.contentDigest)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A version selection must choose its exact target.',
+      });
+    }
+  });
 
 const resultingMaterialRevision = z.object({
   materialId: MaterialIdSchema,

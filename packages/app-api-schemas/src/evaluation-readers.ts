@@ -33,7 +33,11 @@ const judgementReader = z.discriminatedUnion('kind', [
   accept.safeExtend({ actor, target }),
   reject.safeExtend({ actor, target }),
   correct.safeExtend({ actor, target: materialRange }),
-  select.safeExtend({ actor, target: candidateSet, choice: candidate }),
+  select.safeExtend({
+    actor,
+    target: z.union([candidateSet, candidate.extend({ kind: z.literal('artifact-version') })]),
+    choice: candidate,
+  }),
   rate.safeExtend({ actor, target }),
 ]);
 

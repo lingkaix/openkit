@@ -47,16 +47,6 @@ const ArtifactReviewRangeFeedbackSchema = z
     path: ['end'],
   });
 
-/** Attributable choice evidence retained on its exact version-owned Review. */
-const ArtifactReviewCandidateSelectionSchema = z
-  .object({
-    actorId: opaqueIdSchema,
-    requestId: opaqueIdSchema,
-    reason: z.string().min(1).nullable(),
-    selectedAt: TimestampSchema,
-  })
-  .passthrough();
-
 /** Version 1 retained Review tuple, independent of the current API projection. */
 export const StoredArtifactReviewV1Schema = z
   .object({
@@ -73,7 +63,6 @@ export const StoredArtifactReviewV1Schema = z
     decisionActorId: opaqueIdSchema.nullable(),
     feedback: z.string().min(1).nullable(),
     rangeFeedback: ArtifactReviewRangeFeedbackSchema.nullable().optional(),
-    candidateSelections: z.array(ArtifactReviewCandidateSelectionSchema).default([]),
     judgements: z.array(JudgementRecordReaderSchema).default([]),
     decidedAt: TimestampSchema.nullable(),
     followUpTurnId: TurnIdSchema.nullable(),

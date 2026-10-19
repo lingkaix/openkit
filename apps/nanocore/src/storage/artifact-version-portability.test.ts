@@ -10,6 +10,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
+import { createArtifactReview } from '../artifact-reviews.js';
 import { FsStore } from '../lib/store.js';
 import { correctMaterialRange } from '../material-range-corrections.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
@@ -435,6 +436,10 @@ it('round trips target-owned judgements, exact range results and candidate choic
     instructionReference: 'test:evaluation-portability',
   });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const thread = store.createThread(workspace.id, 'Selected output');
+  const turn = store.createTurn(workspace.id, thread.id, 'Produce selected output', actor, null, {
+    agentId: 'portable-producer',
+  });
   const candidates = ['First original', 'Second original'].map((body, index) => {
     const requestId = `portable-original-${index}`;
     const recordedAt = new Date().toISOString();
@@ -442,8 +447,8 @@ it('round trips target-owned judgements, exact range results and candidate choic
     const artifact = store.createArtifact({
       id: allocateEntityId('ar'),
       workspaceId: workspace.id,
-      threadId: null,
-      turnId: null,
+      threadId: index === 0 ? thread.id : null,
+      turnId: index === 0 ? turn.id : null,
       kind: 'file',
       title: body,
       status: 'ready',
@@ -452,19 +457,32 @@ it('round trips target-owned judgements, exact range results and candidate choic
       content: { format: 'text', body },
       contentDigest,
       lastMutationRequestId: requestId,
-      origin: {
-        kind: 'imported',
-        sourceKind: 'direct-import',
-        sourceId: requestId,
-        sourceDigest: contentDigest,
-        actor,
-        requestId,
-        recordedAt,
-      },
+      origin:
+        index === 0
+          ? {
+              kind: 'turn-output',
+              threadId: thread.id,
+              turnId: turn.id,
+              requestId,
+            }
+          : {
+              kind: 'imported',
+              sourceKind: 'direct-import',
+              sourceId: requestId,
+              sourceDigest: contentDigest,
+              actor,
+              requestId,
+              recordedAt,
+            },
       createdAt: recordedAt,
       updatedAt: recordedAt,
     });
     return { artifactId: artifact.id, artifactVersion: 1, contentDigest };
+  });
+  store.updateTurn(turn.id, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+    durationMs: 0,
   });
   const db = openWorkspaceDb(dataRoot, workspace.id);
   let originalRevisionId: string;
@@ -472,6 +490,15 @@ it('round trips target-owned judgements, exact range results and candidate choic
   let correction: ReturnType<typeof correctMaterialRange>;
   try {
     applyScopedMigrations(db);
+    createArtifactReview(db, {
+      ...candidates[0]!,
+      sourceThreadId: thread.id,
+      sourceTurnId: turn.id,
+      sourceAgentId: turn.agentId!,
+      materialProposal: null,
+      createdAt: store.getArtifactVersion(workspace.id, candidates[0]!.artifactId, 1).version
+        .recordedAt,
+    });
     const acceptedAt = new Date().toISOString();
     ({ materialId } = createWorkspaceMaterial(db, {
       actor,
@@ -558,6 +585,17 @@ it('round trips target-owned judgements, exact range results and candidate choic
       },
     },
     201
+  );
+  const selectionRequestId = 'portable-version-selection';
+  const versionSelection = await post(
+    'artifact.review.select',
+    {
+      workspaceId: workspace.id,
+      ...candidates[0],
+      requestId: selectionRequestId,
+      reason: 'Use this exact original.',
+    },
+    200
   );
   const description = {
     artifactId: candidates[0]!.artifactId,
@@ -686,13 +724,54 @@ it('round trips target-owned judgements, exact range results and candidate choic
     })
   );
   expect(reviewResponse.status).toBe(200);
-  const reviews = (await reviewResponse.json()) as { reviews: Array<{ judgements: unknown[] }> };
+  const reviews = (await reviewResponse.json()) as {
+    reviews: Array<{ judgements: unknown[]; candidateSelections: unknown[] }>;
+  };
   expect(reviews.reviews[0]!.judgements[0]).toMatchObject({
     actor,
     recordedAt: assessment.judgement.recordedAt,
     kind: 'accept',
     target: { kind: 'artifact-version', artifactId: restoredArtifact!.id, artifactVersion: 1 },
   });
+  // Imported requests are historical lineage, so they cannot retain a live command identity.
+  const importedSelectionRequestId = `import-lineage:${digest(
+    Buffer.from(
+      [verified.manifest.sourceDeploymentId, workspace.id, selectionRequestId].join('\0'),
+      'utf8'
+    )
+  )}`;
+  const retainedSelection = {
+    schemaVersion: 1,
+    workspaceId: restoredWorkspace,
+    actor,
+    requestId: importedSelectionRequestId,
+    recordedAt: versionSelection.review.candidateSelections[0].selectedAt,
+    kind: 'select',
+    target: {
+      kind: 'artifact-version',
+      artifactId: restoredArtifact!.id,
+      artifactVersion: 1,
+      contentDigest: candidates[0]!.contentDigest,
+    },
+    choice: {
+      artifactId: restoredArtifact!.id,
+      artifactVersion: 1,
+      contentDigest: candidates[0]!.contentDigest,
+    },
+    note: 'Use this exact original.',
+    extensions: {},
+  };
+  expect(reviews.reviews[0]!.judgements).toHaveLength(2);
+  expect(reviews.reviews[0]!.judgements[1]).toEqual(retainedSelection);
+  expect(reviews.reviews[0]!.judgements[1]).not.toMatchObject({ requestId: selectionRequestId });
+  expect(reviews.reviews[0]!.candidateSelections).toEqual([
+    {
+      actorId: userId,
+      requestId: retainedSelection.requestId,
+      reason: retainedSelection.note,
+      selectedAt: retainedSelection.recordedAt,
+    },
+  ]);
   const restoredDb = openWorkspaceDb(dataRoot, restoredWorkspace);
   try {
     const material = listWorkspaceMaterials(restoredDb).find(
@@ -751,6 +830,8 @@ it('round trips target-owned judgements, exact range results and candidate choic
           .get(restoredArtifact!.id) as { judgements: string }
       ).judgements
     );
+    expect(rawReview).toHaveLength(2);
+    expect(rawReview[1]).toEqual(retainedSelection);
     const rawRange = JSON.parse(
       (
         restoredDb.sqlite
