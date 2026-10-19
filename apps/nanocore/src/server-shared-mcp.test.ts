@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -838,15 +838,11 @@ describe('Server-shared MCP through governed Worker routes', () => {
       threadId: worker.pkg.scope.threadId,
       turnId: worker.pkg.scope.turnId,
     });
-    mkdirSync(join(f.dataRoot, 'config'), { recursive: true });
-    writeFileSync(
-      join(f.dataRoot, 'config/server.jsonc'),
-      JSON.stringify({
-        ...f.manager.current().openKitConfig,
-        policy: { ...f.manager.current().openKitConfig.policy, mediation: policy },
-      })
-    );
-    expect(f.manager.reload({ mode: 'safe', dryRun: false }).status).toBe('applied');
+    // Preserve the fixture's in-memory Agent and Gateway supply while admitting this condition.
+    f.manager.current().openKitConfig.policy = {
+      ...f.manager.current().openKitConfig.policy,
+      mediation: policy,
+    };
     expect((await worker.call('approved-shared-message')).body).toMatchObject({
       result: { structuredContent: { status: 'pending-approval' } },
     });
