@@ -40,7 +40,7 @@ Provide versioned create, read, update, selection, rollback, enable/disable, and
 ## Decision
 
 - The resource identity is its owning scope and stable catalog id. Workspace installations are the default; Server-supplied entries remain read-only projections.
-- Immutable `McpConfigVersion` records own non-secret connection configuration; a mutable Workspace binding owns enablement, tool policy, timeout, schema policy, and Vault references.
+- Immutable `McpConfigVersion` records own non-secret connection configuration; a mutable Workspace binding owns enablement, selected Tool supply, timeout, schema policy, and Vault references.
 - An effective Gateway entry is the resolved projection of one exact configuration revision and current authorized binding, never a separately editable copy.
 - A plugin records exact MCP membership but does not own the MCP resource's later revisions.
 
@@ -172,3 +172,5 @@ Each preview uses a fresh instance of the existing supervisor, with a finite who
 The public result is bounded tool metadata and exact source identity, with observation time. It is not a stored preview entity, remote schema authority, activation receipt or tool execution proof. Existing operation Policy/Audit and exact VaultUse/injection plans/receipts retain their separate meanings; absent Worker lineage remains absent. Discovery is a read observation, with no persistent preview result or replay guarantee. Each new explicit invocation may contact upstream again; clients never retry it automatically. Restart retains configuration and ordinary Vault evidence, not a reconstructible preview list. Acceptance proves real fake-HTTP discovery with zero `tools/call` and unchanged catalog/binding bytes, no Workspace data, current/stale/revoked refusal, whole-operation timeout, bounds, canary exclusion and awaited temporary stdio teardown.
 
 Human preview admits only an exact scope-lifetime grant from the supported issuers (`workspace` or `server`). It cannot satisfy a Turn or AgentSession lifetime. Workspace observation rechecks the canonical active Core registry and Workspace read authority; Workspace material use also requires current `vault.use`. A cached filesystem Workspace cannot override a Core deletion fence. The complete emitted observation, including initialization metadata, shares the existing 512KiB MCP result bound. Descriptive preview readers ignore inert additions; strict input and known core values remain required.
+
+MCP bindings retain only `allowedTools` as selected Tool supply. Exact Workspace Tool prohibitions and human-approval conditions belong to the common Policy statement owner, authored through its full human candidate, confirmation and Policy CAS. Catalog binding writers accept neither `approvalRequiredTools` nor `deniedTools`; retained readers refuse those retired authority fields while preserving ordinary descriptive additions. No reset-time conversion or inferred grant is supplied.

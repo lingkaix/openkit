@@ -802,9 +802,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           id: 'echo',
           pinnedSchemaSnapshotId: null,

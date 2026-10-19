@@ -175,7 +175,7 @@ export function bundle(p = parameters()) {
     b.issues[r] = { readExit: 0, issue: p.issue };
   }
   b.binding = ok({
-    items: [{ id: 'github', approvalRequiredTools: ['example_write'] }],
+    items: [{ id: 'github', allowedTools: ['issue_read', 'example_write'] }],
   });
   b.components = {
     nanoHost: { unchanged: true, digest: p.deployment.nanoHostDigest },

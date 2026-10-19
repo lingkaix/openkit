@@ -710,11 +710,10 @@ test('prepare records exact changed Worker inputs but still refuses changed Nano
 
 for (const [name, scenario, expected, mutate] of [
   [
-    '4 binding-declared GitHub write',
+    '4 completed GitHub write',
     'codex.B',
     'N',
     (b) => {
-      b.binding.data.items[0].approvalRequiredTools = ['example_write'];
       b.runtimes.codex.steps[1].itemCoverage.items.push({
         type: 'tool-call',
         status: 'completed',
