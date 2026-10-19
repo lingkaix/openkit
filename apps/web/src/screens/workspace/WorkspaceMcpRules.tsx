@@ -20,8 +20,6 @@ export function WorkspaceMcpRules({
   refreshBlocked: boolean;
 }) {
   const [allowed, setAllowed] = useState(server.allowedTools.join(', '));
-  const [approval, setApproval] = useState(server.approvalRequiredTools.join(', '));
-  const [denied, setDenied] = useState(server.deniedTools.join(', '));
   const change = useUpdateMcpBinding();
   const disabled = blocked || change.isPending || change.isError;
   const tools = (value: string) =>
@@ -41,20 +39,6 @@ export function WorkspaceMcpRules({
         onChange={setAllowed}
         isDisabled={disabled}
       />
-      <TextField
-        label={`${server.displayName} approval-required tools`}
-        description={`Current approval-required tools: ${server.approvalRequiredTools.join(', ') || 'None'}`}
-        value={approval}
-        onChange={setApproval}
-        isDisabled={disabled}
-      />
-      <TextField
-        label={`${server.displayName} denied tools`}
-        description={`Current denied tools: ${server.deniedTools.join(', ') || 'None'}`}
-        value={denied}
-        onChange={setDenied}
-        isDisabled={disabled}
-      />
       <Button
         size="sm"
         isDisabled={disabled || tools(allowed).length === 0}
@@ -66,8 +50,6 @@ export function WorkspaceMcpRules({
             bindingRevision: server.bindingRevision,
             enabled: server.enabled,
             allowedTools: tools(allowed),
-            approvalRequiredTools: tools(approval),
-            deniedTools: tools(denied),
             schemaPolicy: server.schemaPolicy ?? 'tracking',
             timeoutMs: server.timeoutMs ?? 60_000,
           })

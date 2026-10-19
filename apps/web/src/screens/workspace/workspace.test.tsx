@@ -247,8 +247,6 @@ function workspaceWorker(overrides: Record<string, unknown> = {}) {
         {
           id: 'github',
           allowedTools: ['list_issues'],
-          deniedTools: ['delete_repo'],
-          approvalRequiredTools: ['create_issue'],
         },
       ],
       filesystem: { default: 'deny', enforcement: 'openshell', ruleCount: 1 },
@@ -2614,7 +2612,7 @@ describe('Catalog', () => {
     expect(screen.getByRole('button', { name: 'Import plugin package' })).toBeDisabled();
   });
 
-  it('preserves MCP policy on enable and saves explicit human tool-rule edits', async () => {
+  it('preserves allowed tools on enable and saves explicit human tool-rule edits', async () => {
     const user = userEvent.setup();
     const digest = `sha256:${'c'.repeat(64)}`;
     const updateMcpBinding = vi.fn().mockResolvedValue({ revision: 4 });
@@ -2626,10 +2624,8 @@ describe('Catalog', () => {
         {
           availability: 'available',
           allowedTools: ['echo'],
-          approvalRequiredTools: ['danger'],
           bindingRevision: 2,
           currentVersionDigest: digest,
-          deniedTools: ['secret'],
           displayName: 'Echo',
           enabled: false,
           id: 'echo',
@@ -2650,30 +2646,18 @@ describe('Catalog', () => {
     await waitFor(() => expect(updateMcpBinding).toHaveBeenCalled());
     expect(updateMcpBinding.mock.calls[0]?.[0]).toMatchObject({
       allowedTools: ['echo'],
-      approvalRequiredTools: ['danger'],
-      deniedTools: ['secret'],
       enabled: true,
     });
     const allowed = screen.getByRole('textbox', { name: 'Echo allowed tools' });
-    const approval = screen.getByRole('textbox', { name: 'Echo approval-required tools' });
-    const denied = screen.getByRole('textbox', { name: 'Echo denied tools' });
     expect(allowed).toHaveValue('echo');
-    expect(approval).toHaveValue('danger');
-    expect(denied).toHaveValue('secret');
     await user.clear(allowed);
     await user.type(allowed, 'read, send');
-    await user.clear(approval);
-    await user.type(approval, 'send');
-    await user.clear(denied);
-    await user.type(denied, 'delete');
     await user.click(screen.getByRole('button', { name: 'Save Echo tool rules' }));
     await waitFor(() => expect(updateMcpBinding).toHaveBeenCalledTimes(2));
     expect(updateMcpBinding.mock.calls[1]?.[0]).toMatchObject({
       workspaceId: WORKSPACE_A.id,
       mcpId: 'echo',
       allowedTools: ['read', 'send'],
-      approvalRequiredTools: ['send'],
-      deniedTools: ['delete'],
       enabled: false,
       bindingRevision: 2,
       expectedRevision: 3,
@@ -3210,8 +3194,6 @@ describe('Agents actual Workers', () => {
                     {
                       id: 'github',
                       allowedTools: ['list_issues'],
-                      deniedTools: ['delete_repo'],
-                      approvalRequiredTools: ['create_issue'],
                     },
                   ],
                   filesystem: { default: 'deny', enforcement: 'openshell', ruleCount: 1 },
@@ -3237,8 +3219,6 @@ describe('Agents actual Workers', () => {
     await user.click(within(details).getByText('MCP and tool policy'));
     expect(within(details).getByText('github')).toBeInTheDocument();
     expect(within(details).getByText(/list_issues/)).toBeInTheDocument();
-    expect(within(details).getByText(/delete_repo/)).toBeInTheDocument();
-    expect(within(details).getByText(/create_issue/)).toBeInTheDocument();
     await user.click(within(details).getByText('Policy summary'));
     expect(
       within(details).getByText(/Filesystem: default deny, enforcement openshell, 1 rule/)
