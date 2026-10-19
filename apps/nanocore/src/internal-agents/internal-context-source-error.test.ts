@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import {
@@ -246,14 +246,18 @@ describe('Internal rolling context source failure classification', () => {
         privateOwnerUserId: allocateEntityId('usr'),
       });
     else if (fault === 'trace integrity')
-      writeFileSync(f.tracePath, JSON.stringify({ ...f.trace, schemaVersion: 999 }));
+      writeFileSync(
+        f.tracePath,
+        JSON.stringify(writeRetainedV1({ ...f.trace, traceId: allocateEntityId('krt') }))
+      );
     else {
       const trace = structuredClone(f.trace);
       if (fault === 'User identity')
         trace.queryContext.actor = { kind: 'user', id: allocateEntityId('usr') };
       else
         trace.sourceScope = trace.sourceScope.replace(/.$/, (last) => (last === '0' ? '1' : '0'));
-      writeFileSync(f.tracePath, JSON.stringify(trace));
+      // Keep the native envelope valid so identity faults reach their owning admission check.
+      writeFileSync(f.tracePath, JSON.stringify(writeRetainedV1(trace)));
     }
     await expectSourceUnavailable(
       f,
