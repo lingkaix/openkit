@@ -601,6 +601,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       'artifact.version-file-commit',
       'bootstrap.consume',
       'channel.discord.pair',
+      'knowledge.package.export',
+      'knowledge.package.import',
       'token.create',
       'token.rotate',
       'workspace.archive-download',

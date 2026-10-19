@@ -138,12 +138,45 @@ export function knowledgePackageArchive(
   const archive = pack();
   const produce = async () => {
     for (const path of ['manifest.json', ...manifest.contentInventory.map((entry) => entry.path)]) {
-      const file = createReadStream(join(directory, path), { highWaterMark: 65_536 });
       const { size } = await stat(join(directory, path));
-      await pipeline(file, archive.entry({ name: path, size, mode: 0o600, mtime: new Date(0) }));
+      if (archive.destroyed) return;
+      const file = createReadStream(join(directory, path), { highWaterMark: 65_536 });
+      try {
+        await pipeline(file, archive.entry({ name: path, size, mode: 0o600, mtime: new Date(0) }));
+      } finally {
+        file.destroy();
+      }
     }
     archive.finalize();
   };
   void produce().catch((error) => archive.destroy(error));
-  return Readable.from(archive, { objectMode: false, highWaterMark: 65_536 });
+  const chunks = async function* () {
+    // Tar headers and padding are small fragments. Bound disclosure checks to byte chunks,
+    // not framing fragments, without increasing the existing 64 KiB disclosure window.
+    let buffer = Buffer.allocUnsafe(65_536);
+    let length = 0;
+    try {
+      for await (const chunk of archive) {
+        let offset = 0;
+        while (offset < chunk.byteLength) {
+          const copied = Math.min(buffer.byteLength - length, chunk.byteLength - offset);
+          buffer.set(chunk.subarray(offset, offset + copied), length);
+          length += copied;
+          offset += copied;
+          if (length === buffer.byteLength) {
+            yield buffer;
+            buffer = Buffer.allocUnsafe(65_536);
+            length = 0;
+          }
+        }
+      }
+      if (length > 0) yield buffer.subarray(0, length);
+    } finally {
+      archive.destroy();
+    }
+  };
+  const result = Readable.from(chunks(), { objectMode: false, highWaterMark: 65_536 });
+  // Cancellation can precede the generator's first read, before its finally block exists.
+  result.once('close', () => archive.destroy());
+  return result;
 }
