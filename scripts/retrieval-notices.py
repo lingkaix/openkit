@@ -30,7 +30,7 @@ def collect(output: Path) -> None:
             shutil.copyfile(source, target)
         packages.append({key: package[key] for key in
                          ('name', 'version', 'license', 'license_file', 'repository', 'source')})
-    supplied = Path(__file__).resolve().parent.parent / 'apps/retrieval-kernel/notices'
+    supplied = Path(__file__).resolve().parent.parent / 'packages/retrieval-kernel/notices'
     for manifest, directory in [('UPSTREAM.json', 'upstream'), ('ELECTIONS.json', 'elected')]:
         records = json.loads((supplied / manifest).read_text())
         for record in records:

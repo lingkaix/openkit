@@ -172,7 +172,7 @@ export function readStorageLeaseAccess(input: {
   readonly kernel: PolicyDecision;
   readonly anchorCurrent: (anchor: z.infer<typeof PolicyContainerV1Schema>) => boolean;
   readonly now: number;
-}): StorageAccess | null {
+}): (StorageAccess & { readonly basis: 'lease' }) | null {
   if (input.kernel.effect !== 'allow' || !Number.isFinite(input.now)) return null;
   const subject = PolicySubjectV1Schema.parse(input.subject);
   if (
@@ -221,6 +221,7 @@ export function readStorageLeaseAccess(input: {
     throw error;
   }
   return {
+    basis: 'lease',
     grantId: statement.id,
     knowledgeBaseId: statement.grant.knowledgeBaseId,
     ownerScope: input.ownerScope,

@@ -24,7 +24,7 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'Workspace capability calls and Usage',
   'Pending Requests, Workspace receipts and Worker checkpoints',
   'Material content, revisions and Thread bindings',
-  'Artifact Review decisions, range feedback, independent candidate choices, judgements and apply lineage',
+  'Artifact Review decisions, range feedback, choices as judgements and apply lineage',
   'Goals, cards, immutable Plans and Task facts',
   'EvidenceBundle and normalized runtime evidence metadata',
   'Resolved Agent setup and MCP Tool-schema snapshots',

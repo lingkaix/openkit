@@ -1,6 +1,7 @@
 # Applications (`apps/`)
 
 This directory holds product applications (web apps, APIs, CLIs, agents, and similar).
+Each directory here is an independently installed and operated unit.
 
 ## Rules
 
