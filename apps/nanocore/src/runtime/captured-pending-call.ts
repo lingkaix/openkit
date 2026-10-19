@@ -270,9 +270,7 @@ export function evaluateCapturedPendingCall(input: {
     resolved = null;
   }
   if (!resolved || resolved.catalogDigest !== record.catalogRevision) return absent;
-  const allowed =
-    resolved.allowedTools.includes(record.toolName) &&
-    !resolved.deniedTools.includes(record.toolName);
+  const allowed = resolved.allowedTools.includes(record.toolName);
   const snapshot = readCurrentMcpToolSchemaSnapshot({
     catalogEntryId: record.serverId,
     pinnedSchemaSnapshotId: null,
@@ -303,7 +301,7 @@ export function evaluateCapturedPendingCall(input: {
     schemaCurrent,
     policyAllows: source
       ? Boolean(readCapturedMediationAllow(record, input.sqlite, source, input.prepared?.mediation))
-      : resolved.approvalRequiredTools.includes(record.toolName),
+      : false,
     credentialsValid:
       !input.prepared?.failed &&
       credentialsStillValid(input.coreDb, resolved, record, input.prepared),

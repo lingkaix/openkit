@@ -264,9 +264,7 @@ describe('worker MCP gateway', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'echo',
             pinnedSchemaSnapshotId: null,
@@ -337,9 +335,7 @@ describe('worker MCP gateway', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'echo',
             pinnedSchemaSnapshotId: null,
@@ -394,9 +390,7 @@ describe('worker MCP gateway', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'echo',
             pinnedSchemaSnapshotId: null,
@@ -1329,9 +1323,7 @@ describe('worker MCP gateway', () => {
         servers: [
           {
             allowedTools: ['echo', 'echo-page-2'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'paged',
             pinnedSchemaSnapshotId: null,
@@ -1368,9 +1360,7 @@ describe('worker MCP gateway', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'paged',
             pinnedSchemaSnapshotId: null,
@@ -1432,7 +1422,6 @@ describe('worker MCP gateway', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [
               {
                 sink: { kind: 'header', name: 'authorization' },
@@ -1445,7 +1434,6 @@ describe('worker MCP gateway', () => {
                 vaultGrantId: 'grant_00000000-0000-7f7a-bf26-88faf32ee63d',
               },
             ],
-            deniedTools: [],
             enabled: true,
             id: 'http-echo',
             pinnedSchemaSnapshotId: null,
@@ -1579,9 +1567,7 @@ describe('worker MCP gateway', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'http-echo',
             pinnedSchemaSnapshotId: null,
@@ -1658,9 +1644,7 @@ function stdioTestServer(timeoutMs: number) {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           id: 'echo',
           pinnedSchemaSnapshotId: null,
@@ -1687,9 +1671,7 @@ function httpTestServer(endpoint: string, timeoutMs: number) {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           id: 'echo',
           pinnedSchemaSnapshotId: null,

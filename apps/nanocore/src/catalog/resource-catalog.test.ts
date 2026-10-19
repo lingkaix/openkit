@@ -202,9 +202,7 @@ describe('workspace resource catalog', () => {
         expectedRevision: selected.revision,
         binding: {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           revision: 0,
           schemaPolicy: 'tracking',
@@ -603,8 +601,6 @@ describe('workspace resource catalog', () => {
                 id,
                 enabled: true,
                 allowedTools: ['echo'],
-                deniedTools: [],
-                approvalRequiredTools: [],
                 credentialBindings: [],
                 pinnedSchemaSnapshotId: null,
                 schemaPolicy: 'tracking',
@@ -655,11 +651,9 @@ describe('workspace resource catalog', () => {
       const raw = updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [
             { slot: credential.slot, vaultGrantId: credential.vaultGrantId, sink: credential.sink },
           ],
-          deniedTools: [],
           enabled: true,
           revision: 0,
           schemaPolicy: 'tracking',
@@ -788,9 +782,7 @@ describe('workspace resource catalog', () => {
       updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           revision: 0,
           schemaPolicy: 'tracking',
@@ -834,9 +826,7 @@ describe('workspace resource catalog', () => {
       const bound = updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           revision: 0,
           schemaPolicy: 'tracking',
@@ -1050,9 +1040,7 @@ describe('workspace resource catalog', () => {
       updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           pinnedSchemaSnapshotId: null,
           revision: 1,
@@ -1171,9 +1159,7 @@ describe('workspace resource catalog', () => {
       const bound = updateMcpBinding({
         binding: {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           revision: 0,
           schemaPolicy: 'tracking',

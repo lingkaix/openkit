@@ -326,8 +326,6 @@ export function createServerMcpOperationImplementations(
             expectedRevision: input.expectedRevision,
             binding: {
               allowedTools: input.allowedTools,
-              approvalRequiredTools: input.approvalRequiredTools,
-              deniedTools: input.deniedTools,
               credentialBindings: credentials,
               enabled: input.enabled,
               revision: input.bindingRevision,

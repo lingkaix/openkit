@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as audit from '../audit-events.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { PolicyInterception } from './interception.js';
 import {
   listExportableWorkspacePermissionDecisions,
@@ -428,8 +429,9 @@ describe('bounded native Policy pipeline', () => {
     });
   });
 
-  it('rechecks the existing catalog approval against the exact logical proposal and revisions', async () => {
-    const input = { ...fixture([]), requiresHumanApproval: true };
+  it('rechecks the current Policy approval against the exact logical proposal and revisions', async () => {
+    const base = fixture([]);
+    const input = { ...base, document: withHumanMcpApproval(base) };
     const pipeline = new PolicyInterception();
     const pending = await pipeline.decide(input);
     expect(pending.result).toBe('require_approval');

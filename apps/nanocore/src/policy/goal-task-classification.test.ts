@@ -13,6 +13,7 @@ import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { evaluateGoalTaskAccess, type GoalTaskAccessInput } from './goal-task-access.js';
 import { PolicyInterception } from './interception.js';
 import {
@@ -325,7 +326,7 @@ describe('Goal Task classification at the final Policy interception seam', () =>
     const input = fixture();
     const decision = await new PolicyInterception().decide({
       ...input,
-      requiresHumanApproval: true,
+      document: withHumanMcpApproval(input),
       finalKernel: () => evaluate(),
     });
     expect(decision.result).toBe('require_approval');

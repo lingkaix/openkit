@@ -79,6 +79,31 @@ for (const scenario of SCENARIOS)
     const row = r.rows.find((r) => r.scenario === scenario);
     assert.equal(row.mechanicalCode, 'P', JSON.stringify(row.failures));
   });
+test('MCP cutover admits read-only issue evidence without retired permission lists', () => {
+  const b = bundle();
+  delete b.binding.data.items[0].approvalRequiredTools;
+  delete b.binding.data.items[0].deniedTools;
+  b.binding.data.items[0].allowedTools = ['issue_read'];
+  const row = evaluate(b, parameters()).rows.find((r) => r.scenario === 'codex.B');
+  assert.equal(row.mechanicalCode, 'P', JSON.stringify(row.failures));
+});
+for (const tool of ['example_write', 'unclassified_effect'])
+  test(`MCP cutover refuses completed ${tool} in the read-only issue scenario`, () => {
+    const b = bundle();
+    delete b.binding.data.items[0].approvalRequiredTools;
+    delete b.binding.data.items[0].deniedTools;
+    b.binding.data.items[0].allowedTools = ['issue_read'];
+    const step = b.runtimes.codex.steps[1];
+    step.itemCoverage.items.push({
+      type: 'tool-call',
+      status: 'completed',
+      server: 'github',
+      tool,
+      turnId: step.turnId,
+    });
+    const row = evaluate(b, parameters()).rows.find((r) => r.scenario === 'codex.B');
+    assert.equal(row.mechanicalCode, 'N', JSON.stringify(row.failures));
+  });
 for (const [name, mutate] of [
   [
     'wrong Artifact origin Turn',
@@ -709,11 +734,10 @@ test('prepare records exact changed Worker inputs but still refuses changed Nano
 
 for (const [name, scenario, expected, mutate] of [
   [
-    '4 binding-declared GitHub write',
+    '4 completed GitHub write',
     'codex.B',
     'N',
     (b) => {
-      b.binding.data.items[0].approvalRequiredTools = ['example_write'];
       b.runtimes.codex.steps[1].itemCoverage.items.push({
         type: 'tool-call',
         status: 'completed',

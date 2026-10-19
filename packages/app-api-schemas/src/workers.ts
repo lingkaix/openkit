@@ -62,8 +62,6 @@ export const WorkspaceWorkerMcpServerSchema = z
   .object({
     id: z.string().min(1),
     allowedTools: z.array(z.string().min(1)),
-    deniedTools: z.array(z.string().min(1)),
-    approvalRequiredTools: z.array(z.string().min(1)),
   })
   .strict();
 

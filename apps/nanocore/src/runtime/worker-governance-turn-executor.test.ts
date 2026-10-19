@@ -10458,9 +10458,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             servers: [
               {
                 allowedTools: ['*'],
-                approvalRequiredTools: [],
                 credentialBindings: [],
-                deniedTools: [],
                 enabled: true,
                 id: 'github',
                 pinnedSchemaSnapshotId: null,

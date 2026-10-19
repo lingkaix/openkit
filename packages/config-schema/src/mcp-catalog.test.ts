@@ -33,7 +33,7 @@ describe('MCP credential presentation admission', () => {
     const catalog = parseWorkspaceMcpServerCatalog({ schemaVersion: 1, servers: [server] });
     expect(catalog.servers[0]!.credentialBindings).toEqual([binding]);
     expect(resolveWorkspaceMcpServer({ catalog, serverId: 'echo' }).catalogDigest).toBe(
-      'sha256:822279732d3a4eb33062c7ade755dbc87956c52d7eb587033f81f23c8ef1b188'
+      'sha256:395ed21496f3ffeb99bc4b56026828a206b359001c9872917591015aceba94e6'
     );
     expect(JSON.stringify(WorkspaceMcpCredentialBindingSchema.parse(binding))).toBe(
       JSON.stringify(binding)
@@ -188,9 +188,7 @@ describe('workspace MCP server catalog', () => {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           id: 'echo',
           pinnedSchemaSnapshotId: null,
@@ -231,7 +229,6 @@ describe('workspace MCP server catalog', () => {
         servers: [
           {
             allowedTools: ['search'],
-            approvalRequiredTools: ['search'],
             credentialBindings: [
               {
                 sink: { kind: 'header', name: 'Authorization' },
@@ -239,7 +236,6 @@ describe('workspace MCP server catalog', () => {
                 vaultGrantId: 'grant_00000000-0000-7b98-9098-fc1b5de5d7a7',
               },
             ],
-            deniedTools: [],
             enabled: true,
             id: 'search',
             schemaPolicy: 'pinned',
@@ -393,7 +389,6 @@ describe('workspace MCP server catalog', () => {
       },
       {
         allowedTools: ['echo'],
-        approvalRequiredTools: [],
         credentialBindings: [
           {
             sink: { kind: 'header', name: 'Authorization' },
@@ -401,7 +396,6 @@ describe('workspace MCP server catalog', () => {
             vaultGrantId: 'grant_00000000-0000-7c78-a264-4a45a0259439',
           },
         ],
-        deniedTools: [],
         enabled: true,
         id: 'echo',
         schemaPolicy: 'tracking',
@@ -439,9 +433,7 @@ describe('workspace MCP server catalog', () => {
       },
       {
         allowedTools: ['echo'],
-        approvalRequiredTools: [],
         credentialBindings: [],
-        deniedTools: [],
         enabled: true,
         id: 'echo',
         rawToken: 'not-allowed',
@@ -482,9 +474,7 @@ describe('workspace MCP server catalog', () => {
   it('includes packageRootDigest in the effective catalogDigest', () => {
     const server = {
       allowedTools: ['echo'],
-      approvalRequiredTools: [],
       credentialBindings: [],
-      deniedTools: [],
       enabled: true,
       id: 'echo',
       pinnedSchemaSnapshotId: null,

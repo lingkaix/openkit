@@ -335,8 +335,6 @@ function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run
   const { entry } = data;
   const selected = data.versions.find((version) => version.digest === entry.currentVersionDigest);
   const [allowed, setAllowed] = useState(entry.allowedTools.join(', '));
-  const [approval, setApproval] = useState(entry.approvalRequiredTools.join(', '));
-  const [deniedTools, setDeniedTools] = useState(entry.deniedTools.join(', '));
   const [schemaPolicy, setSchemaPolicy] = useState(entry.schemaPolicy ?? 'tracking');
   const [pin, setPin] = useState(data.pinnedSchemaSnapshotId ?? '');
   const [timeout, setTimeout] = useState(String(entry.timeoutMs ?? 60000));
@@ -372,8 +370,6 @@ function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run
       bindingRevision: entry.bindingRevision,
       requestId: createRequestId(),
       allowedTools: tools(allowed),
-      approvalRequiredTools: tools(approval),
-      deniedTools: tools(deniedTools),
       enabled,
       schemaPolicy: schemaPolicy as 'tracking' | 'pinned',
       timeoutMs: Number(timeout),
@@ -391,18 +387,6 @@ function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run
         label="Allowed tools"
         value={allowed}
         onChange={setAllowed}
-        isDisabled={unavailable}
-      />
-      <TextField
-        label="Approval-required tools"
-        value={approval}
-        onChange={setApproval}
-        isDisabled={unavailable}
-      />
-      <TextField
-        label="Denied tools"
-        value={deniedTools}
-        onChange={setDeniedTools}
         isDisabled={unavailable}
       />
       <TextField

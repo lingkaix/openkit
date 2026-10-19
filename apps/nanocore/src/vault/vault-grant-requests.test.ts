@@ -855,8 +855,6 @@ it.each([
       id: current.id,
       catalogDigest: current.catalogDigest,
       allowedTools: ['echo'],
-      deniedTools: [],
-      approvalRequiredTools: [],
       schemaPolicy: 'tracking',
       pinnedSchemaSnapshotId: null,
     });

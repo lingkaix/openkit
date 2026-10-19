@@ -51,3 +51,5 @@ The HTTP MCP fixture exposes server-observed header snapshots for exact bearer a
 `createAppWithLocalIdentity` supplies only the explicit local fixture identity when a test has no Core database. Tests of production runtime or configuration defaults use it without simulated-provider or environment injection. Existing Core and server authority remain caller-owned.
 
 `entity-ids.ts` allocates shared-codec IDs once for process-local fixture keys. Setup and assertions share those exact allocations. It declares no owner derivation and supplies no cross-process replay authority; process-boundary tests pass the recorded IDs explicitly.
+
+`mcp-tool-policy.ts` constructs explicit synthetic human Tool conditions for tests of the common Policy/Goal/agent pipeline. It neither admits production authority nor reads retired catalog permission lists.

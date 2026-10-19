@@ -913,9 +913,7 @@ export function createMcpConfig(input: {
           ...current.mcp.bindings,
           {
             allowedTools,
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: false,
             entryId: id,
             packageDataKey,
@@ -1451,9 +1449,7 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
     });
     bindings.push({
       allowedTools: [...server.allowedTools],
-      approvalRequiredTools: [...server.approvalRequiredTools],
       credentialBindings: [...server.credentialBindings],
-      deniedTools: [...server.deniedTools],
       enabled: server.enabled,
       entryId: server.id,
       packageDataKey,
@@ -1508,9 +1504,7 @@ function effectiveMcpServer(
   const transport = mcpTransportFromDeclaration(version.declaration);
   return {
     allowedTools: [...binding.allowedTools],
-    approvalRequiredTools: [...binding.approvalRequiredTools],
     credentialBindings: [...binding.credentialBindings],
-    deniedTools: [...binding.deniedTools],
     enabled: binding.enabled,
     id: binding.entryId,
     packageRootDigest: version.packageRootDigest,

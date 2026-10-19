@@ -381,9 +381,7 @@ describe('runtime config loading and reload planning', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'echo',
             schemaPolicy: 'tracking',

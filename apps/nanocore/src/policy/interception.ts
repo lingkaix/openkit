@@ -13,6 +13,7 @@ import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
 import type { GoalTaskAccessResult } from './goal-task-access.js';
+import { applyMcpToolProhibitions, selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   type RecordProductPermissionDecisionInput,
   readPolicyStatementUseCount,
@@ -59,8 +60,6 @@ export interface InterceptionInput {
   readonly authorizationRevision: string;
   /** Current finite grants used by the native mandatory Kernel adapter, not participant results. */
   readonly authorizationUses?: RecordProductPermissionDecisionInput['uses'];
-  /** Existing catalog condition, pinned by the proposal's catalog revision. */
-  readonly requiresHumanApproval?: boolean;
   /** Exact human response context supplied only by the existing captured approval owner. */
   readonly humanApproval?: {
     readonly requestId: string;
@@ -69,6 +68,8 @@ export interface InterceptionInput {
     readonly binding: z.infer<typeof PolicyApprovalBindingV1Schema>;
   };
   readonly authorCurrent: (userId: string) => boolean;
+  /** Tool conditions retain the current authority of their human Policy writer. */
+  readonly permissionAuthorCurrent?: (userId: string) => boolean;
   readonly anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
   /** Kernel-only participant admission: no bindings or investigative recursion. */
   readonly participantAuthorized: (binding: PolicyBindingV1) => boolean;
@@ -137,7 +138,15 @@ export class PolicyInterception {
       input.humanApproval.binding.proposalDigest === proposalDigest &&
       input.humanApproval.binding.policyRevision === policyRevision &&
       input.humanApproval.binding.authorizationRevision === input.authorizationRevision;
-    if (input.requiresHumanApproval && !humanApproved) results.push('require_approval');
+    const toolPermissions = selectMcpToolPermissions({
+      ...input,
+      authorCurrent: input.permissionAuthorCurrent ?? input.authorCurrent,
+    });
+    if (
+      toolPermissions.some((statement) => statement.effect === 'require_approval') &&
+      !humanApproved
+    )
+      results.push('require_approval');
     for (const mode of ['transform', 'advise', 'gate'] as const) {
       for (const binding of bindings.filter((value) => value.mode === mode)) {
         if (
@@ -185,14 +194,20 @@ export class PolicyInterception {
     try {
       const evaluated = input.finalKernel({ proposal: input.proposal, advice });
       const goal = 'kernel' in evaluated ? evaluated : undefined;
-      kernel = 'kernel' in evaluated ? evaluated.kernel : evaluated;
+      kernel = applyMcpToolProhibitions(
+        'kernel' in evaluated ? evaluated.kernel : evaluated,
+        selectMcpToolPermissions({
+          ...input,
+          authorCurrent: input.permissionAuthorCurrent ?? input.authorCurrent,
+        })
+      );
       if (
         kernel.reasons.some(({ code }) =>
           ['invalid-policy', 'invalid-request', 'missing-operation'].includes(code)
         )
       ) {
         results.push('error');
-      } else if (goal?.escalation) {
+      } else if (goal?.escalation && !kernel.reasons.some(({ code }) => code === 'restriction')) {
         if (
           !goal.inGoalEnvelope ||
           kernel.effect !== 'deny' ||

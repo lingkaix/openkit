@@ -248,9 +248,7 @@ export const McpEntryRecordSchema = z
 export const McpBindingRecordSchema = z
   .object({
     allowedTools: z.array(WorkspaceMcpToolNameSchema).min(1),
-    approvalRequiredTools: z.array(WorkspaceMcpToolNameSchema).default([]),
     credentialBindings: z.array(WorkspaceMcpCredentialBindingSchema).default([]),
-    deniedTools: z.array(WorkspaceMcpToolNameSchema).default([]),
     enabled: z.boolean(),
     entryId: ResourceCatalogIdSchema,
     packageDataKey: z.string().min(1),
@@ -405,7 +403,21 @@ export const ResourceCatalogDocumentReaderSchema = ResourceCatalogDocumentSchema
     .passthrough(),
   mcp: ResourceCatalogDocumentSchema.shape.mcp
     .safeExtend({
-      bindings: z.array(McpBindingRecordSchema.passthrough()).default([]),
+      bindings: z
+        .array(
+          McpBindingRecordSchema.passthrough().superRefine((binding, context) => {
+            // Retired authority is not descriptive extension content.
+            for (const field of ['approvalRequiredTools', 'deniedTools']) {
+              if (Object.hasOwn(binding, field))
+                context.addIssue({
+                  code: 'custom',
+                  path: [field],
+                  message: 'MCP permissions belong to Policy statements.',
+                });
+            }
+          })
+        )
+        .default([]),
       entries: z.array(McpEntryRecordSchema.passthrough()).default([]),
       versions: z.array(McpConfigVersionRecordReaderSchema).default([]),
     })

@@ -50,6 +50,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
+import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -823,11 +824,25 @@ describe('Server-shared MCP through governed Worker routes', () => {
       bindingRevision: binding.revision,
       enabled: true,
       allowedTools: ['echo'],
-      approvalRequiredTools: ['echo'],
       schemaPolicy: 'tracking',
     });
     const worker = await f.worker(f.workspaces[0]!.id);
     expect((await worker.list()).body).toMatchObject({ result: { tools: expect.any(Array) } });
+    const policy = admitTestMcpApproval({
+      coreDb: f.coreDb,
+      document: f.manager.current().openKitConfig.policy?.mediation,
+      workspaceId: worker.workspaceId,
+      serverId,
+      toolName: 'echo',
+      userId: FIXTURE_LOCAL_USER_ID,
+      threadId: worker.pkg.scope.threadId,
+      turnId: worker.pkg.scope.turnId,
+    });
+    // Preserve the fixture's in-memory Agent and Gateway supply while admitting this condition.
+    f.manager.current().openKitConfig.policy = {
+      ...f.manager.current().openKitConfig.policy,
+      mediation: policy,
+    };
     expect((await worker.call('approved-shared-message')).body).toMatchObject({
       result: { structuredContent: { status: 'pending-approval' } },
     });
@@ -851,7 +866,6 @@ describe('Server-shared MCP through governed Worker routes', () => {
         bindingRevision: currentBinding.revision,
         enabled: false,
         allowedTools: ['echo'],
-        approvalRequiredTools: ['echo'],
         schemaPolicy: 'tracking',
       });
     }

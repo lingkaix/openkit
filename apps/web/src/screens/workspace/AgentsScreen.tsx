@@ -410,8 +410,6 @@ function mcpPolicySummary(worker: WorkspaceWorkerRow) {
         <li key={server.id} className="min-w-0 break-words">
           <p className="font-bold text-fg">{server.id}</p>
           <p>Allowed: {namedList(server.allowedTools)}</p>
-          <p>Denied: {namedList(server.deniedTools)}</p>
-          <p>Approval required: {namedList(server.approvalRequiredTools)}</p>
         </li>
       ))}
     </ul>

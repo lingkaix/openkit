@@ -1,3 +1,4 @@
+import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -241,15 +242,13 @@ describe('worker MCP routes', () => {
       vaultReferenceId: referenceId,
       workspaceId,
     });
-    const catalog = {
+    const catalog = parseWorkspaceMcpServerCatalog({
       schemaVersion: 1 as const,
       servers: [
         {
           id: 'echo',
           enabled: true,
           allowedTools: ['echo'],
-          deniedTools: [],
-          approvalRequiredTools: [] as string[],
           credentialBindings: [
             {
               presentation: 'bearer' as const,
@@ -264,11 +263,10 @@ describe('worker MCP routes', () => {
           transport: { kind: 'http' as const, endpoint: 'https://i16.invalid/mcp' },
         },
       ],
-    };
+    });
     catalog.servers.push({
       ...catalog.servers[0]!,
       id: 'echo-approval',
-      approvalRequiredTools: ['echo'],
     });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
@@ -339,6 +337,7 @@ describe('worker MCP routes', () => {
       })),
     };
     let document = EMPTY_POLICY_DOCUMENT;
+    let conditions: typeof document.statements = [];
     const admit = (version = participantVersion, failure?: 'error') => {
       const prepared = preparePolicyDocument({
         current: document,
@@ -347,6 +346,7 @@ describe('worker MCP routes', () => {
         proposed: PolicyDocumentV1Schema.parse({
           schemaVersion: 1,
           statements: [
+            ...conditions,
             {
               id: 'i16-gate',
               kind: 'binding',
@@ -401,6 +401,33 @@ describe('worker MCP routes', () => {
       });
       document = prepared.document;
       expect(readAdmittedPolicyDocument(coreDb, document)).toEqual(document);
+    };
+    const condition = (effect: 'prohibit' | 'require_approval', serverId = 'echo') => {
+      conditions = [
+        {
+          id: 'human-mcp-condition',
+          kind: 'permission',
+          effect,
+          grant: { kind: 'ordinary' },
+          author: principal,
+          authority: { kind: 'human', userId },
+          authoredAt: new Date().toISOString(),
+          state: 'active',
+          scope: {
+            subjects: [principal],
+            actions: ['tool.use'],
+            resources: [{ kind: 'mcp-tool', workspaceId, serverId, toolName: 'echo' }],
+          },
+          lifetime: {
+            anchor: {
+              owner: { kind: 'workspace', workspaceId },
+              kind: 'workspace',
+              id: workspaceId,
+            },
+          },
+        },
+      ];
+      admit();
     };
     admit();
     const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
@@ -542,7 +569,32 @@ describe('worker MCP routes', () => {
       await client.connect(transport('echo'));
       await approvalClient.connect(transport('echo-approval'));
       await client.listTools();
-      await approvalClient.listTools();
+      const beforeDiscoveryPolicy = document;
+      let enteredCleanup!: () => void;
+      let releaseCleanup!: () => void;
+      const cleanupEntered = new Promise<void>((resolve) => {
+        enteredCleanup = resolve;
+      });
+      const cleanupHold = new Promise<void>((resolve) => {
+        releaseCleanup = resolve;
+      });
+      vi.mocked(gateway.closeServerIfIdle).mockImplementationOnce(async () => {
+        enteredCleanup();
+        await cleanupHold;
+      });
+      const firstApprovalDiscovery = approvalClient.listTools();
+      try {
+        await cleanupEntered;
+        condition('prohibit', 'echo-approval');
+        releaseCleanup();
+        const currentDiscovery = await firstApprovalDiscovery;
+        expect.soft(currentDiscovery.tools).toEqual([]);
+      } finally {
+        releaseCleanup();
+        conditions = [];
+        admit();
+      }
+      expect(document).toEqual(beforeDiscoveryPolicy);
       const seeded = workspaceDb.sqlite
         .prepare(
           "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo'"
@@ -560,6 +612,19 @@ describe('worker MCP routes', () => {
       assertRecords(0, 'allow', 'completed');
       expect(gateway.callTool).toHaveBeenCalledTimes(1);
       expect(credentialRead).toHaveBeenCalled();
+      // Baseline supply stays usable without an explicit allow statement.
+      condition('prohibit');
+      expect((await client.listTools()).tools).toEqual([]);
+      const prohibitedBoundary = boundaryCounts();
+      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+      expect(boundaryCounts()).toEqual(prohibitedBoundary);
+      expect(decisions().findLast((row) => row.mediation?.role === 'final')).toMatchObject({
+        result: 'deny',
+        mediation: { kernel: { effect: 'deny' } },
+      });
+      conditions = [];
+      admit();
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['echo']);
       const allowedBoundary = boundaryCounts();
       gate = 'deny';
       let start = decisions().length;
@@ -615,6 +680,7 @@ describe('worker MCP routes', () => {
       expect(invoke).toHaveBeenCalledTimes(invokedBeforeEvidenceFailure + 1);
       expect(decisions()).toHaveLength(start);
       expect(boundaryCounts()).toEqual(allowedBoundary);
+      condition('require_approval', 'echo-approval');
       gate = 'deny';
       start = decisions().length;
       await expect(approvalCall()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
@@ -629,26 +695,80 @@ describe('worker MCP routes', () => {
         isError: true,
         structuredContent: { status: 'pending-approval' },
       });
-      const catalogApproval = assertRecords(start, 'require_approval', 'completed', {
+      const policyApproval = assertRecords(start, 'require_approval', 'completed', {
         serverId: 'echo-approval',
         gateResult: 'allow',
       });
-      expect(catalogApproval.requiredApprovalKind).toBe('permission');
-      const afterCatalogApproval = listThreadPendingRequests(
+      expect(policyApproval.requiredApprovalKind).toBe('permission');
+      const afterPolicyApproval = listThreadPendingRequests(
         workspaceDb.sqlite,
         workspaceId,
         turn.threadId
       );
-      expect(afterCatalogApproval).toHaveLength(2);
+      expect(afterPolicyApproval).toHaveLength(2);
       expect(
-        afterCatalogApproval.find((request) => request.serverId === 'echo-approval')
+        afterPolicyApproval.find((request) => request.serverId === 'echo-approval')
       ).toMatchObject({
         state: 'pending',
-        policyDecisionId: catalogApproval.decisionId,
+        policyDecisionId: policyApproval.decisionId,
         schemaSnapshotId: approvalSchema.schema_snapshot_id,
         packageDigest: environmentPackage.snapshotId,
       });
       expect(boundaryCounts()).toEqual(allowedBoundary);
+      const originalApprovalPolicy = document;
+      const approvalOnlyConditions = conditions;
+      const originalPending = afterPolicyApproval.find(
+        (request) => request.serverId === 'echo-approval'
+      )!;
+      expect(await approvalCall()).toMatchObject({
+        isError: true,
+        structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
+      });
+      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+        afterPolicyApproval
+      );
+      const approvalCondition = approvalOnlyConditions.find(
+        (statement) => statement.kind === 'permission'
+      );
+      if (!approvalCondition) throw new Error('Expected the admitted approval condition.');
+      conditions = [
+        ...approvalOnlyConditions,
+        { ...approvalCondition, id: 'prohibit-existing-approval', effect: 'prohibit' },
+      ];
+      admit();
+      const beforeProhibitedDuplicate = boundaryCounts();
+      const beforeDuplicateDecisions = decisions().length;
+      // The SDK allocates a fresh protocol request id for identical qualified Tool arguments.
+      const prohibitedDuplicate = await approvalCall().then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
+      );
+      expect.soft(prohibitedDuplicate).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+      expect
+        .soft(
+          decisions()
+            .slice(beforeDuplicateDecisions)
+            .find((row) => row.mediation?.role === 'final')
+        )
+        .toMatchObject({
+          result: 'deny',
+          mediation: { kernel: { effect: 'deny' } },
+        });
+      expect(boundaryCounts()).toEqual(beforeProhibitedDuplicate);
+      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+        afterPolicyApproval
+      );
+      conditions = approvalOnlyConditions;
+      admit();
+      expect(document).toEqual(originalApprovalPolicy);
+      expect(await approvalCall()).toMatchObject({
+        isError: true,
+        structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
+      });
+      expect(boundaryCounts()).toEqual(allowedBoundary);
+      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+        afterPolicyApproval
+      );
       let release!: () => void;
       hold = new Promise<void>((resolve) => {
         release = resolve;
@@ -1021,6 +1141,80 @@ describe('worker MCP routes', () => {
       uncertainty: 'Fixture delivery only.',
     };
     const askKnowledge = vi.fn(async () => knowledgeAnswer);
+    let builtinPolicy = EMPTY_POLICY_DOCUMENT;
+    const builtinBaseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
+    const publishBuiltinCondition = (effect: 'prohibit' | 'require_approval' | null) => {
+      const userId = 'usr_00000000-0000-7000-8000-000000000001';
+      const principal = { kind: 'human' as const, id: userId };
+      const prepared = preparePolicyDocument({
+        current: builtinPolicy,
+        userId,
+        now: new Date().toISOString(),
+        proposed: PolicyDocumentV1Schema.parse({
+          schemaVersion: 1,
+          statements: effect
+            ? [
+                {
+                  id: 'builtin-human-condition',
+                  kind: 'permission',
+                  effect,
+                  grant: { kind: 'ordinary' },
+                  author: principal,
+                  authority: { kind: 'human', userId },
+                  authoredAt: new Date().toISOString(),
+                  state: 'active',
+                  scope: {
+                    subjects: [principal],
+                    actions: ['tool.use'],
+                    resources: [
+                      {
+                        kind: 'mcp-tool',
+                        workspaceId: workspaceIdForOwner(turn.owner),
+                        serverId: 'openkit-work',
+                        toolName: operationToolName('knowledge.ask'),
+                      },
+                      {
+                        kind: 'mcp-tool',
+                        workspaceId: workspaceIdForOwner(turn.owner),
+                        serverId: 'openkit-generative',
+                        toolName: 'kernel_apps_list',
+                      },
+                    ],
+                  },
+                  lifetime: {
+                    anchor: {
+                      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+                      kind: 'workspace',
+                      id: workspaceIdForOwner(turn.owner),
+                    },
+                  },
+                },
+              ]
+            : [],
+        }),
+      });
+      recordPolicyWriteDecision({
+        coreDb,
+        actor: { kind: 'local', userId },
+        candidate: {
+          artifactId: testEntityId('ar', 'builtin-human-condition'),
+          contentDigest: policyDigest(prepared.document),
+        },
+        proposal: {
+          schemaVersion: 1,
+          proposer: principal,
+          rationale: 'Govern exact built-in Tools.',
+          baseRevision: policyDigest(builtinPolicy),
+          proposed: prepared.document,
+          validation: 'valid',
+        },
+        requestId: randomUUID(),
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
+      builtinPolicy = prepared.document;
+      expect(readAdmittedPolicyDocument(coreDb, builtinPolicy)).toEqual(builtinPolicy);
+    };
     registerWorkerMcpRoutes({
       app,
       coreDb,
@@ -1029,6 +1223,10 @@ describe('worker MCP routes', () => {
         createInMemoryRuntimeConfigSnapshot({
           dataRoot,
           agentManifests: [],
+          openKitConfig: {
+            ...builtinBaseConfig.openKitConfig,
+            policy: { ...builtinBaseConfig.openKitConfig.policy, mediation: builtinPolicy },
+          },
           workspaceMcpServerCatalogs: [],
         }),
       store,
@@ -1128,6 +1326,117 @@ describe('worker MCP routes', () => {
         ]);
       } finally {
         knowledgeDb.sqlite.close();
+      }
+      const conditionDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
+      try {
+        const pendingBefore = conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all();
+        const selectedCalls = () =>
+          conditionDb.sqlite
+            .prepare(
+              'SELECT * FROM capability_calls WHERE capability_id IN (?, ?) ORDER BY call_id'
+            )
+            .all(
+              `mcp.call-tool.${operationToolName('knowledge.ask')}`,
+              'mcp.call-tool.kernel_apps_list'
+            );
+        const callsBefore = selectedCalls();
+        publishBuiltinCondition('prohibit');
+        expect((await workClient.listTools()).tools.map((tool) => tool.name)).not.toContain(
+          operationToolName('knowledge.ask')
+        );
+        expect((await statelessClient.listTools()).tools.map((tool) => tool.name)).not.toContain(
+          'kernel_apps_list'
+        );
+        await expect(
+          workClient.callTool({
+            name: operationToolName('knowledge.ask'),
+            arguments: { question: 'Prohibited question' },
+          })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        await expect(
+          statelessClient.callTool({ name: 'kernel_apps_list', arguments: {} })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(askKnowledge).toHaveBeenCalledTimes(1);
+        expect(selectedCalls()).toEqual(callsBefore);
+        publishBuiltinCondition('require_approval');
+        expect((await workClient.listTools()).tools.map((tool) => tool.name)).toContain(
+          operationToolName('knowledge.ask')
+        );
+        expect((await sessionClient.listTools()).tools.map((tool) => tool.name)).toContain(
+          'kernel_apps_list'
+        );
+        // Built-in human capture is unavailable, so approval requirements refuse before dispatch.
+        await expect(
+          workClient.callTool({
+            name: operationToolName('knowledge.ask'),
+            arguments: { question: 'Needs human approval' },
+          })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        await expect(
+          sessionClient.callTool({ name: 'kernel_apps_list', arguments: {} })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(askKnowledge).toHaveBeenCalledTimes(1);
+        expect(selectedCalls()).toEqual(callsBefore);
+        expect(conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toEqual(
+          pendingBefore
+        );
+        publishBuiltinCondition(null);
+        const ledgerBeforeHeldAsk = listWorkspaceCapabilityCalls(
+          conditionDb,
+          workspaceIdForOwner(turn.owner)
+        );
+        const previousCallIds = new Set(ledgerBeforeHeldAsk.map((call) => call.id));
+        const withheldAnswer = 'BUILTIN_POST_AWAIT_WITHHELD_ANSWER';
+        let releaseAsk!: () => void;
+        let enteredAsk!: () => void;
+        const askEntered = new Promise<void>((resolve) => {
+          enteredAsk = resolve;
+        });
+        const askHold = new Promise<void>((resolve) => {
+          releaseAsk = resolve;
+        });
+        askKnowledge.mockImplementationOnce(async () => {
+          enteredAsk();
+          await askHold;
+          return { ...knowledgeAnswer, answer: withheldAnswer };
+        });
+        const heldAsk = workClient.callTool({
+          name: operationToolName('knowledge.ask'),
+          arguments: { question: 'Hold this answer until current Policy is checked.' },
+        });
+        const withheld = expect(heldAsk).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        try {
+          await askEntered;
+          publishBuiltinCondition('prohibit');
+          releaseAsk();
+          await withheld;
+          expect(askKnowledge).toHaveBeenCalledTimes(2);
+          const ledgerAfterHeldAsk = listWorkspaceCapabilityCalls(
+            conditionDb,
+            workspaceIdForOwner(turn.owner)
+          );
+          expect(ledgerAfterHeldAsk.filter((call) => previousCallIds.has(call.id))).toEqual(
+            ledgerBeforeHeldAsk
+          );
+          const heldCalls = ledgerAfterHeldAsk.filter((call) => !previousCallIds.has(call.id));
+          expect(heldCalls).toHaveLength(1);
+          expect(heldCalls[0]).toMatchObject({
+            capabilityId: `mcp.call-tool.${operationToolName('knowledge.ask')}`,
+            completedAt: expect.any(String),
+          });
+          expect(heldCalls[0]!.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
+          expect(
+            JSON.stringify(store.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId))
+          ).not.toContain(withheldAnswer);
+          expect(conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toEqual(
+            pendingBefore
+          );
+        } finally {
+          releaseAsk();
+          publishBuiltinCondition(null);
+        }
+      } finally {
+        conditionDb.sqlite.close();
       }
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
@@ -2044,8 +2353,6 @@ describe('worker MCP routes', () => {
           id: 'echo',
           enabled: true,
           allowedTools: ['echo', 'review-echo'],
-          deniedTools: [],
-          approvalRequiredTools: ['review-echo'],
           credentialBindings: [],
           pinnedSchemaSnapshotId: null,
           schemaPolicy: 'tracking' as const,
@@ -2117,6 +2424,18 @@ describe('worker MCP routes', () => {
         },
       ],
     });
+    runtimeConfig.openKitConfig.policy = {
+      ...runtimeConfig.openKitConfig.policy,
+      mediation: admitTestMcpApproval({
+        coreDb,
+        workspaceId,
+        serverId: 'echo',
+        toolName: 'review-echo',
+        userId: actor.id,
+        threadId,
+        turnId: environmentPackage.scope.turnId,
+      }),
+    };
     const register = () => {
       const app = new Hono();
       registerWorkerMcpRoutes({
@@ -2329,9 +2648,7 @@ describe('worker MCP routes', () => {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           id: 'echo',
           pinnedSchemaSnapshotId: null,
@@ -2538,8 +2855,6 @@ describe('worker MCP routes', () => {
           id: 'echo',
           enabled: true,
           allowedTools: ['echo'],
-          deniedTools: [],
-          approvalRequiredTools: ['echo'],
           credentialBindings: [
             {
               sink: { kind: 'env' as const, name: 'PENDING_ECHO_SECRET' },
@@ -2605,6 +2920,18 @@ describe('worker MCP routes', () => {
         },
       ],
     });
+    snapshot.openKitConfig.policy = {
+      ...snapshot.openKitConfig.policy,
+      mediation: admitTestMcpApproval({
+        coreDb,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        serverId: 'echo',
+        toolName: 'echo',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
+        threadId: turn.threadId,
+        turnId: turn.id,
+      }),
+    };
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const originalCallTool = workerMcpGateway.callTool.bind(workerMcpGateway);
     const upstream = vi.spyOn(workerMcpGateway, 'callTool');
@@ -3107,7 +3434,6 @@ describe('worker MCP routes', () => {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: ['echo'],
           enabled: true,
           id: 'echo',
           schemaPolicy: 'tracking',
@@ -3123,13 +3449,25 @@ describe('worker MCP routes', () => {
         },
       ],
     });
+    const lifecyclePolicy = admitTestMcpApproval({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      serverId: 'echo',
+      toolName: 'echo',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: testEntityId('tu', 'lifecycle-policy'),
+    });
     const runtimeConfigManager = createRuntimeConfigManager({
       dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         agentManifests: [agentSetup.manifest],
         dataRoot,
         gatewayConfig: createTestGatewayConfig(),
-        openKitConfig: { defaults: { defaultAgentId: agentSetup.manifest.id } },
+        openKitConfig: {
+          defaults: { defaultAgentId: agentSetup.manifest.id },
+          policy: { mediation: lifecyclePolicy },
+        },
         providerRegistry: new ProviderRegistry([
           {
             displayName: 'Agent OpenRouter',
@@ -4007,9 +4345,7 @@ describe('worker MCP routes', () => {
     );
     const server = (id: string, schemaPolicy: 'pinned' | 'tracking' = 'tracking') => ({
       allowedTools: ['echo'],
-      approvalRequiredTools: [],
       credentialBindings: [],
-      deniedTools: [],
       enabled: true,
       id,
       pinnedSchemaSnapshotId: schemaPolicy === 'pinned' ? 'mcpsnap_expected' : null,
@@ -5072,7 +5408,6 @@ describe('worker MCP routes', () => {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [
             {
               presentation,
@@ -5081,7 +5416,6 @@ describe('worker MCP routes', () => {
               vaultGrantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
             },
           ],
-          deniedTools: [],
           enabled: true,
           id: 'http-echo',
           pinnedSchemaSnapshotId: null,
