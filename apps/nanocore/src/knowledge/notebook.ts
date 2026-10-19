@@ -172,6 +172,7 @@ export class KnowledgeNotebook {
   /** Establishes a fresh notebook once; a partial or initialized repository is never replaced. */
   initialize(input: {
     readonly files?: Readonly<Record<string, string>>;
+    readonly sourcePointers?: Readonly<Record<string, string>>;
     readonly metadata: NotebookCommitMetadata;
     readonly beforePublish?: (candidateRevision: string) => void;
   }): string {
@@ -189,7 +190,13 @@ export class KnowledgeNotebook {
         this.git(['hash-object', '-w', '--stdin'], content).trim(),
       ])
     );
-    const revision = this.createCommit(entries, metadata.data, null);
+    const sources = Object.fromEntries(
+      Object.entries(input.sourcePointers ?? {}).map(([id, content]) => {
+        KnowledgeSourceIdSchema.parse(id);
+        return [id, this.git(['hash-object', '-w', '--stdin'], content).trim()];
+      })
+    );
+    const revision = this.createCommit(entries, metadata.data, null, sources);
     // Native fresh-scope admission retains its Audit evidence after the exact commit exists and before its ref does.
     input.beforePublish?.(revision);
     this.git(['update-ref', PUBLISHED_REF, revision, '0'.repeat(revision.length)]);

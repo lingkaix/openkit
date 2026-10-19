@@ -69,23 +69,43 @@ export function parseSourcePointer(
   id: string,
   content: string
 ): SourcePointer {
+  return decodeSourcePointer({
+    ownerScope: owner.ownerScope,
+    knowledgeBaseId: readDefaultKnowledgeBaseId({
+      dataRoot: owner.dataRoot,
+      scope: owner.ownerScope,
+    }),
+    scopeSchemaText: readCanonicalTextFile(
+      join(sourceNotebookRoot(owner), 'schema', 'scope-schema.yaml')
+    ),
+    id,
+    content,
+  });
+}
+
+/** Validates verified import bytes against explicit scope and schema facts, without granting access. */
+export function decodeSourcePointer(input: {
+  readonly ownerScope: KnowledgeOwnerScope;
+  readonly knowledgeBaseId: string;
+  readonly scopeSchemaText: string;
+  readonly id: string;
+  readonly content: string;
+}): SourcePointer {
+  const { ownerScope, knowledgeBaseId, scopeSchemaText, id, content } = input;
   try {
     KnowledgeSourceIdSchema.parse(id);
     const parsed = parseOkfDocument({ path: `sources/${id}.md`, content });
     if (!parsed.ok || parsed.document.frontmatter.type !== 'SourceSummary')
       throw new NotebookError('recovery_required');
-    const schema = parseScopeKnowledgeSchema(
-      readCanonicalTextFile(join(sourceNotebookRoot(owner), 'schema', 'scope-schema.yaml'))
-    );
+    const schema = parseScopeKnowledgeSchema(scopeSchemaText);
     if (!schema.ok) throw new NotebookError('recovery_required');
-    const profile = validateScopeKnowledgeSchema(parsed.document, schema.schema, owner.ownerScope);
+    const profile = validateScopeKnowledgeSchema(parsed.document, schema.schema, ownerScope);
     if (profile.conformance !== 'scope-schema-valid' || profile.errors.length)
       throw new NotebookError('recovery_required');
     const fields = SourcePointerFieldsSchema.parse(parsed.document.frontmatter);
     if (
-      !isDeepStrictEqual(fields.contentRef.locator.ownerScope, owner.ownerScope) ||
-      fields.contentRef.knowledgeBaseId !==
-        readDefaultKnowledgeBaseId({ dataRoot: owner.dataRoot, scope: owner.ownerScope })
+      !isDeepStrictEqual(fields.contentRef.locator.ownerScope, ownerScope) ||
+      fields.contentRef.knowledgeBaseId !== knowledgeBaseId
     )
       throw new NotebookError('recovery_required');
     const source = SourceMetadataSchema.parse({

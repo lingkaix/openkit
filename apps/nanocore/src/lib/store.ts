@@ -1,13 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
@@ -618,38 +610,6 @@ export interface KnowledgeSourceRecord {
   createdAt: string;
   /** ISO timestamp for latest update. */
   updatedAt: string;
-}
-
-/**
- * Stored text material captured for one workspace knowledge source.
- */
-export interface KnowledgeSourceMaterialRecord {
-  /** Source id that owns the material. */
-  sourceId: string;
-  /** Captured source text content. */
-  content: string;
-}
-
-/** Derived text representation metadata for one knowledge source. */
-export interface KnowledgeSourceDerivedRepresentationRecord {
-  /** Stable representation id. */
-  id: string;
-  /** Workspace that owns the representation. */
-  workspaceId: string;
-  /** Source id this representation derives from. */
-  sourceId: string;
-  /** First-slice derived representation kind. */
-  kind: 'text';
-  /** Metadata path relative to the workspace root. */
-  path: string;
-  /** Source material path relative to the workspace root. */
-  materialPath: string;
-  /** Digest of the derived representation content. */
-  contentDigest: string;
-  /** Digest of the source content version used to derive this record. */
-  sourceContentDigest: string;
-  /** ISO timestamp when the representation was created. */
-  createdAt: string;
 }
 
 /** Input for appending one Knowledge Store conflict resolution row. */
@@ -1308,7 +1268,6 @@ export class FsStore {
   private artifactVersions = new Map<string, ArtifactVersionRecord[]>();
   private knowledgeProposals = new Map<string, KnowledgeProposalRecord>();
   private knowledgeProposalReviews = new Map<string, KnowledgeProposalReviewRecord[]>();
-  private knowledgeSources = new Map<string, KnowledgeSourceRecord>();
   private commandRequests = new Map<string, CommandRequestRecord>();
   private streams = new Map<string, TurnStreamState>();
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
@@ -1433,9 +1392,6 @@ export class FsStore {
           ...(this.knowledgeProposalReviews.get(review.proposalId) ?? []),
           review,
         ]);
-      }
-      for (const source of records.knowledgeSources) {
-        this.knowledgeSources.set(source.id, source);
       }
       for (const [turnId, events] of records.streamEvents) {
         this.streams.set(turnId, {
@@ -1662,6 +1618,7 @@ export class FsStore {
    * @param notebookInitialization Actual native creation attribution, required for file-backed publication.
    * @param initialNotebookFiles Exact admitted root tree; retained imports must not be regenerated from entry projections.
    * @param initialNotebookSchemaText Exact imported scope schema; fresh creation uses the default schema.
+   * @param initialNotebookSources Verified and reminted Source blobs in the same first Notebook tree.
    */
   private persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
@@ -1669,7 +1626,8 @@ export class FsStore {
     stageWorkspace?: (stage: ImportWorkspaceStage) => void,
     notebookInitialization?: NotebookInitialization,
     initialNotebookFiles?: Readonly<Record<string, string>>,
-    initialNotebookSchemaText?: string
+    initialNotebookSchemaText?: string,
+    initialNotebookSources?: Readonly<Record<string, string>>
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1723,6 +1681,9 @@ export class FsStore {
           workspaceDb,
           initialization: notebookInitialization,
           files: initialNotebookFiles ?? {},
+          ...(initialNotebookSources === undefined
+            ? {}
+            : { sourcePointers: initialNotebookSources }),
           revalidate: () => ({
             pageScopeId,
             scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -2452,7 +2413,7 @@ export class FsStore {
     agentSessions: readonly AgentSession[];
     turnEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
     knowledgeSources?: readonly KnowledgeSourceRecord[];
-    knowledgeSourceMaterials?: readonly KnowledgeSourceMaterialRecord[];
+    initialNotebookSources?: Readonly<Record<string, string>>;
     /** Actual importer/fixture creator; file-backed publication must not invent a responsible actor. */
     notebookInitialization?: NotebookInitialization;
     /** Exact admitted imported tree, including unknown OKF metadata and reserved navigation bytes. */
@@ -2515,21 +2476,6 @@ export class FsStore {
       }
     }
 
-    for (const source of history.knowledgeSources) {
-      if (this.knowledgeSources.has(source.id)) {
-        throw new Error(`Knowledge source already exists: ${source.id}`);
-      }
-    }
-
-    const importedSourceIds = new Set(history.knowledgeSources.map((source) => source.id));
-    for (const material of input.knowledgeSourceMaterials ?? []) {
-      if (!importedSourceIds.has(material.sourceId)) {
-        throw new Error(
-          `Knowledge source material references missing source: ${material.sourceId}`
-        );
-      }
-    }
-
     const workspace: WorkspaceRecord = {
       ...history.workspace,
       counts: {
@@ -2559,11 +2505,6 @@ export class FsStore {
       records,
       input.defaultKnowledgeBaseId ?? allocateEntityId('kb'),
       (stage) => {
-        this.writeKnowledgeSourceMaterialsToRoot(
-          stage.workspaceRoot,
-          input.knowledgeSourceMaterials ?? [],
-          history.knowledgeSources
-        );
         input.stageWorkspace?.(stage);
         const turns = new Map(history.turns.map((turn) => [turn.id, turn]));
         for (const artifact of history.artifacts) {
@@ -2575,7 +2516,8 @@ export class FsStore {
       },
       input.notebookInitialization,
       input.initialNotebookFiles,
-      input.initialNotebookSchemaText
+      input.initialNotebookSchemaText,
+      input.initialNotebookSources
     );
 
     this.workspaces.set(workspace.id, workspace);
@@ -2607,9 +2549,6 @@ export class FsStore {
         listeners: new Set(),
         timers: new Set(),
       });
-    }
-    for (const source of history.knowledgeSources) {
-      this.knowledgeSources.set(source.id, source);
     }
     if (this.dataRoot) {
       for (const approval of loadApprovalProjections(
@@ -2692,11 +2631,7 @@ export class FsStore {
         this.knowledgeProposalReviews.delete(proposalId);
       }
     }
-    for (const [sourceId, source] of this.knowledgeSources) {
-      if (source.workspaceId === workspaceId) {
-        this.knowledgeSources.delete(sourceId);
-      }
-    }
+
     for (const [approvalId, approval] of this.approvals) {
       if (approval.workspaceId === workspaceId) {
         this.approvals.delete(approvalId);
@@ -5149,60 +5084,6 @@ export class FsStore {
   }
 
   /**
-   * Creates one workspace source registry record.
-   *
-   * @param input Source identity record to store.
-   * @param materialContent Optional captured source text to write beside the registry record.
-   * @returns Stored source identity record.
-   * @throws OperationError for invalid source lineage or an id owned by another Workspace.
-   */
-  public createKnowledgeSource(
-    input: KnowledgeSourceRecord,
-    materialContent?: string
-  ): KnowledgeSourceRecord {
-    this.getWorkspace(input.workspaceId);
-    if (input.originatingThreadId !== null) {
-      this.getThread(input.workspaceId, input.originatingThreadId);
-    }
-    if (input.originatingTurnId !== null) {
-      if (input.originatingThreadId === null) {
-        throw new OperationError(
-          'knowledge_source_register_failed',
-          `Knowledge source turn requires a thread: ${input.id}`,
-          404
-        );
-      }
-      this.getTurn(input.workspaceId, input.originatingThreadId, input.originatingTurnId);
-    }
-
-    const previous = this.knowledgeSources.get(input.id);
-    if (previous && previous.workspaceId !== input.workspaceId) {
-      throw new OperationError(
-        'knowledge_source_register_failed',
-        `Knowledge source id belongs to another workspace: ${input.id}`,
-        404
-      );
-    }
-
-    try {
-      this.knowledgeSources.set(input.id, input);
-      if (materialContent !== undefined) {
-        this.writeKnowledgeSourceMaterial(input.workspaceId, input.id, materialContent);
-      }
-      this.persist(input.workspaceId);
-    } catch (error) {
-      if (previous) {
-        this.knowledgeSources.set(input.id, previous);
-      } else {
-        this.knowledgeSources.delete(input.id);
-      }
-      throw error;
-    }
-
-    return input;
-  }
-
-  /**
    * Appends one workspace Knowledge Store observation to the monthly JSONL ledger.
    *
    * @param input Observation row to append.
@@ -5430,181 +5311,6 @@ export class FsStore {
         ownerScope: { kind: 'workspace', workspaceId },
       }).values(),
     ].map(({ source }) => ({ ...source, workspaceId }));
-  }
-
-  /**
-   * Reads captured text material for one workspace source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose material should be returned.
-   * @returns Captured source text, or null when no material file exists.
-   */
-  public readKnowledgeSourceMaterial(workspaceId: string, sourceId: string): string | null {
-    this.getKnowledgeSource(workspaceId, sourceId);
-
-    if (!this.dataRoot) {
-      return null;
-    }
-
-    const path = this.knowledgeSourceMaterialPath(workspaceId, sourceId);
-
-    return lstatSync(path, { throwIfNoEntry: false }) ? readCanonicalTextFile(path) : null;
-  }
-
-  /**
-   * Lists captured text materials for all sources in one workspace.
-   *
-   * @param workspaceId Workspace that owns the source materials.
-   * @returns Captured source text materials.
-   */
-  public listKnowledgeSourceMaterials(workspaceId: string): KnowledgeSourceMaterialRecord[] {
-    return this.listKnowledgeSources(workspaceId)
-      .map((source) => ({
-        sourceId: source.id,
-        content: this.readKnowledgeSourceMaterial(workspaceId, source.id),
-      }))
-      .filter((material): material is KnowledgeSourceMaterialRecord => material.content !== null);
-  }
-
-  /**
-   * Lists derived representation metadata for one source or workspace.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Optional source id to filter.
-   * @returns Derived representation records.
-   */
-  public listKnowledgeSourceDerivedRepresentations(
-    workspaceId: string,
-    sourceId?: string
-  ): KnowledgeSourceDerivedRepresentationRecord[] {
-    const sources = sourceId
-      ? [this.getKnowledgeSource(workspaceId, sourceId)]
-      : this.listKnowledgeSources(workspaceId);
-
-    return sources.flatMap((source) => {
-      if (!this.dataRoot) {
-        return [];
-      }
-
-      const path = this.knowledgeSourceDerivedRepresentationPath(source.workspaceId, source.id);
-
-      return lstatSync(path, { throwIfNoEntry: false })
-        ? [JSON.parse(readCanonicalTextFile(path)) as KnowledgeSourceDerivedRepresentationRecord]
-        : [];
-    });
-  }
-
-  /**
-   * Writes captured text material for one workspace source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose material should be written.
-   * @param content Captured source text.
-   */
-  private writeKnowledgeSourceMaterial(
-    workspaceId: string,
-    sourceId: string,
-    content: string
-  ): void {
-    this.getKnowledgeSource(workspaceId, sourceId);
-
-    if (!this.dataRoot) {
-      return;
-    }
-
-    const path = this.knowledgeSourceMaterialPath(workspaceId, sourceId);
-    const source = this.getKnowledgeSource(workspaceId, sourceId);
-
-    mkdirSync(dirname(path), { recursive: true });
-    assertCanonicalDirectory(dirname(path));
-    writeFileSync(path, content);
-    this.writeKnowledgeSourceDerivedRepresentation(this.workspaceRootPath(workspaceId), source);
-  }
-
-  /**
-   * Writes imported captured text materials under a staged workspace root.
-   *
-   * @param workspaceRoot Staged workspace root.
-   * @param materials Captured source text materials to publish.
-   */
-  private writeKnowledgeSourceMaterialsToRoot(
-    workspaceRoot: string,
-    materials: readonly KnowledgeSourceMaterialRecord[],
-    sources: readonly KnowledgeSourceRecord[] = []
-  ): void {
-    const sourcesById = new Map(sources.map((source) => [source.id, source]));
-
-    for (const material of materials) {
-      assertSafeWorkspacePathSegment(material.sourceId, 'Knowledge source id');
-      const path = join(workspaceRoot, 'sources', 'materials', material.sourceId, 'content.txt');
-      const source = sourcesById.get(material.sourceId);
-
-      mkdirSync(dirname(path), { recursive: true });
-      assertCanonicalDirectory(dirname(path));
-      writeFileSync(path, material.content);
-      if (source) {
-        this.writeKnowledgeSourceDerivedRepresentation(workspaceRoot, source);
-      }
-    }
-  }
-
-  /**
-   * Returns the durable text material path for one workspace source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose material path should be returned.
-   * @returns Workspace-root-relative source material file path.
-   */
-  private knowledgeSourceMaterialPath(workspaceId: string, sourceId: string): string {
-    assertSafeWorkspacePathSegment(sourceId, 'Knowledge source id');
-    return join(
-      this.workspaceRootPath(workspaceId),
-      'sources',
-      'materials',
-      sourceId,
-      'content.txt'
-    );
-  }
-
-  /**
-   * Writes derived text representation metadata for one source.
-   *
-   * @param workspaceRoot Workspace root path.
-   * @param source Source identity record.
-   */
-  private writeKnowledgeSourceDerivedRepresentation(
-    workspaceRoot: string,
-    source: KnowledgeSourceRecord
-  ): void {
-    assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
-    const path = join(workspaceRoot, 'sources', 'derived', source.id, 'text.json');
-    const record: KnowledgeSourceDerivedRepresentationRecord = {
-      id: `${source.id}:text`,
-      workspaceId: source.workspaceId,
-      sourceId: source.id,
-      kind: 'text',
-      path: `sources/derived/${source.id}/text.json`,
-      materialPath: `sources/materials/${source.id}/content.txt`,
-      contentDigest: source.contentDigest,
-      sourceContentDigest: source.contentDigest,
-      createdAt: source.createdAt,
-    };
-
-    mkdirSync(dirname(path), { recursive: true });
-    assertCanonicalDirectory(dirname(path));
-    writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
-  }
-
-  /**
-   * Returns the durable derived text representation metadata path for one source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose derived metadata path should be returned.
-   * @returns Derived metadata path.
-   */
-  private knowledgeSourceDerivedRepresentationPath(workspaceId: string, sourceId: string): string {
-    assertSafeWorkspacePathSegment(sourceId, 'Knowledge source id');
-    return join(this.workspaceRootPath(workspaceId), 'sources', 'derived', sourceId, 'text.json');
   }
 
   /**

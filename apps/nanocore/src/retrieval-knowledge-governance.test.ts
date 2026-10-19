@@ -20,6 +20,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
+import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const NOW = '2026-10-15T00:00:00.000Z';
@@ -231,8 +232,11 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     );
     fixture.access.outputThreadId = destination.id;
     const material = 'source audience material';
-    const source = fixture.store.createKnowledgeSource(
-      {
+    const source = await captureWorkspaceSourceFixture({
+      ...fixture,
+      coreDb: fixture.access.coreDb!,
+      userId: fixture.userId,
+      source: {
         id: 'ks_00000000-0000-78f8-b8d2-1dd7a79cb16e',
         workspaceId: fixture.workspaceId,
         kind: 'document',
@@ -246,8 +250,8 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
         createdAt: NOW,
         updatedAt: NOW,
       },
-      material
-    );
+      content: material,
+    });
     const sourcePage = await createEntry(
       fixture,
       'Audience source page',

@@ -919,10 +919,7 @@ export function createKnowledgeOperationImplementations(
 
         const response = RegisterKnowledgeSourceResponseSchema.parse({
           source,
-          derivedRepresentations: store.listKnowledgeSourceDerivedRepresentations(
-            workspaceId,
-            source.id
-          ),
+          derivedRepresentations: [],
         });
         requireSourceAudience(workspaceId, source.id, context);
         return response;
@@ -942,10 +939,7 @@ export function createKnowledgeOperationImplementations(
         requireSourceAudience(workspaceId, sourceId, context);
         const response = ReadKnowledgeSourceResponseSchema.parse({
           source,
-          derivedRepresentations: store.listKnowledgeSourceDerivedRepresentations(
-            workspaceId,
-            sourceId
-          ),
+          derivedRepresentations: [],
         });
         recordKnowledgeGatewayUsage({
           authorityActor: actor,

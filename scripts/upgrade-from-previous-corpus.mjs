@@ -75,6 +75,12 @@ async function owners(appRoot) {
     notebookOwner: 'knowledge/scoped-notebook-owner.js',
     okf: 'knowledge/okf.js',
     sources: 'knowledge/scoped-knowledge-sources.js',
+    sourcePublisher: 'knowledge/source-publication.js',
+    sourcePointers: 'knowledge/source-pointers.js',
+    sourceReader: 'knowledge/source-reading.js',
+    notebookAdmission: 'knowledge/notebook-workspace-admission.js',
+    runtimeConfig: 'config/runtime-config.js',
+    mutationAdmission: 'workspace-mutation-admission.js',
     memory: 'knowledge/memory-maintenance.js',
     membership: 'workspace-membership.js',
     feedback: 'runtime/feedback.js',
@@ -324,8 +330,11 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       reservation.release();
     }
     selectors.sourceId = o.protocol.allocateEntityId('ks');
-    ctx.store.createKnowledgeSource(
-      {
+    const sourceDb = o.db.openWorkspaceDb(r.data, workspace.id);
+    try {
+      o.migrate.applyScopedMigrations(sourceDb);
+      const requestId = randomUUID();
+      const source = {
         id: selectors.sourceId,
         workspaceId: workspace.id,
         kind: 'document',
@@ -338,9 +347,53 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         capturedAt: FIXTURE.at,
         createdAt: FIXTURE.at,
         updatedAt: FIXTURE.at,
-      },
-      FIXTURE.text
-    );
+      };
+      const notebook = new o.notebook.KnowledgeNotebook({
+        repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+      });
+      const runtimeConfigManager = {
+        current: () => o.runtimeConfig.createInMemoryRuntimeConfigSnapshot({ dataRoot: r.data }),
+      };
+      const workspaceMutationAdmission = new o.mutationAdmission.WorkspaceMutationAdmission();
+      await o.sourcePublisher.publishCapturedSource(
+        {
+          owner: { dataRoot: r.data, ownerScope: { kind: 'workspace', workspaceId: workspace.id } },
+          database: { kind: 'workspace', workspaceDb: sourceDb },
+          access: {
+            store: ctx.store,
+            coreDb: ctx.coreDb,
+            actor: producer,
+            requestActor: ctx.actor,
+          },
+          producer,
+          requestId,
+          commandInput: source,
+          captureChannel: 'knowledge.source.register',
+          revalidatePublication: () =>
+            o.notebookAdmission.readWorkspaceNotebookAdmission({
+              store: ctx.store,
+              coreDb: ctx.coreDb,
+              workspaceDb: sourceDb,
+              actor: producer,
+              requestActor: ctx.actor,
+              notebook,
+              runtimeConfigManager,
+              workspaceMutationAdmission,
+              request: {
+                workspaceId: workspace.id,
+                requestId,
+                baseRevision: notebook.publishedRevision(),
+                changes: [],
+                summary: 'Capture public corpus evidence.',
+              },
+            }),
+        },
+        source,
+        Buffer.from(FIXTURE.text)
+      );
+    } finally {
+      sourceDb.sqlite.close();
+    }
     selectors.userSourceId = (
       await o.sources.registerUserKnowledgeSource(ctx, {
         requestId: randomUUID(),
@@ -790,26 +843,46 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
     record('Knowledge conflict ledger', ctx.store.listKnowledgeConflicts(selectors.workspaceId), [
       `${workspacePath}/knowledge/conflicts`,
     ]);
+    const sourceOwner = {
+      dataRoot: r.data,
+      ownerScope: { kind: 'workspace', workspaceId: selectors.workspaceId },
+    };
+    const workspaceSource = o.sourcePointers
+      .readSourcePointers(sourceOwner)
+      .get(selectors.sourceId);
+    if (!workspaceSource) throw new Error('Corpus Source pointer is unavailable.');
     record(
       'Workspace Source identity',
       [ctx.store.getKnowledgeSource(selectors.workspaceId, selectors.sourceId)],
-      [`${workspacePath}/sources/registry/${selectors.sourceId}.json`]
+      [`${workspacePath}/knowledge/notebook.git`]
     );
+    const sourceText = await o.sourceReader.readManagedSourceText({
+      owner: sourceOwner,
+      access: {
+        store: ctx.store,
+        coreDb: ctx.coreDb,
+        actor: { kind: 'user', id: selectors.userId },
+        requestActor: ctx.actor,
+      },
+      pointer: workspaceSource,
+    });
+    if (sourceText.status !== 'ok') throw new Error('Corpus Source original is unavailable.');
     record(
       'Workspace captured Source text',
-      [ctx.store.readKnowledgeSourceMaterial(selectors.workspaceId, selectors.sourceId)],
-      [`${workspacePath}/sources/materials/${selectors.sourceId}/content.txt`]
+      [sourceText.value],
+      [`${workspacePath}/knowledge/raw/${workspaceSource.fields.contentRef.locator.path}`]
     );
-    const userSource = o.sources.readUserKnowledgeSource(ctx, selectors.userSourceId);
+    const userSource = await o.sources.readUserKnowledgeSource(ctx, selectors.userSourceId);
+    if (!userSource) throw new Error('Corpus User Source is unavailable.');
     record(
       'User Source identity',
       [userSource.source],
-      [`users/${selectors.userId}/sources/registry/${selectors.userSourceId}.json`]
+      [`users/${selectors.userId}/memory/notebook.git`]
     );
     record(
       'User captured Source text',
       [userSource.content],
-      [`users/${selectors.userId}/sources/materials/${selectors.userSourceId}/content.txt`]
+      [`users/${selectors.userId}/memory/raw/sources/${selectors.userSourceId}/original`]
     );
     record(
       'Memory suppression',

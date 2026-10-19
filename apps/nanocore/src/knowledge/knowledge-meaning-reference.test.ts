@@ -12,6 +12,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -194,8 +195,11 @@ describe('exact governed Knowledge meaning receiver', () => {
     );
     f.access.outputThreadId = destination.id;
     const material = 'Admitted source.';
-    const source = f.store.createKnowledgeSource(
-      {
+    const source = await captureWorkspaceSourceFixture({
+      ...f,
+      coreDb: f.coreDb,
+      userId: f.userId,
+      source: {
         id: allocateEntityId('ks'),
         workspaceId: f.workspace.id,
         kind: 'document',
@@ -209,8 +213,8 @@ describe('exact governed Knowledge meaning receiver', () => {
         createdAt: NOW,
         updatedAt: NOW,
       },
-      material
-    );
+      content: material,
+    });
     const content = page(f.ownerScope, [`source:${source.id}@${digest(material)}`]);
     publish(f, f.notebook, content);
     const uri = reference(f, f.ownerScope, content);
