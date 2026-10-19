@@ -203,7 +203,7 @@ export class PolicyInterception {
           throw new Error('Goal escalation contradicts the current mandatory Kernel evaluation.');
         // A Task association gap cannot redirect a human-only condition or a
         // participant failure. Keep their existing result and destination.
-        if (results.every((value) => value === 'allow' || value === 'not_applicable')) {
+        if (!results.some((value) => value !== 'allow' && value !== 'not_applicable')) {
           results.push('require_escalation');
           escalation = goal.escalation;
         }
