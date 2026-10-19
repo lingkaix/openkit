@@ -16,7 +16,6 @@ import {
 } from '@openkit/protocol';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
-import { readSourcePointers } from '../knowledge/source-pointers.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
@@ -34,6 +33,7 @@ import {
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { OperationError } from '../operation-error.js';
 import {
   admitKnowledgeRetrieval,
@@ -2244,51 +2244,6 @@ function listDirectories(path: string): string[] {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
-}
-
-/**
- * Lists direct child files in stable order.
- *
- * @param path Parent directory path.
- * @returns File names.
- */
-function listFiles(path: string): string[] {
-  if (!lstatSync(path, { throwIfNoEntry: false })) {
-    return [];
-  }
-  assertCanonicalDirectory(path);
-
-  const entries = readdirSync(path, { withFileTypes: true });
-  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
-
-  if (linkedEntry) {
-    throw new Error(
-      `Canonical directory must not contain a symbolic link: ${join(path, linkedEntry.name)}.`
-    );
-  }
-
-  return entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .sort();
-}
-
-/**
- * Reads a required string field from a record.
- *
- * @param record Source record.
- * @param field Field name.
- * @returns String field value.
- * @throws Error when the field is missing or not a string.
- */
-function stringField(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
-
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Expected string field ${field}.`);
-  }
-
-  return value;
 }
 
 /**
