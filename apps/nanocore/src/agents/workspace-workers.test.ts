@@ -208,9 +208,7 @@ function recordWorkerPackage(
       mcpServers: [
         {
           allowedTools: ['list_issues'],
-          approvalRequiredTools: ['create_issue'],
           catalogDigest: digest,
-          deniedTools: ['delete_repo'],
           id: 'github',
           pinnedSchemaSnapshotId: null,
           schemaPolicy: 'pinned',
@@ -719,8 +717,6 @@ describe('worker.list operation', () => {
         mcpServers: [
           {
             allowedTools: ['list_issues'],
-            approvalRequiredTools: ['create_issue'],
-            deniedTools: ['delete_repo'],
             id: 'github',
           },
         ],

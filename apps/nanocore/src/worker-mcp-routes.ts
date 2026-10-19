@@ -58,13 +58,17 @@ import {
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
-import { readAdmittedPolicyDocument } from './policy/configuration.js';
+import { isCurrentServerPolicyAuthor, readAdmittedPolicyDocument } from './policy/configuration.js';
 import type { GoalTaskPolicyService } from './policy/goal-task-policy.js';
 import {
   type InterceptionDecision,
   type InterceptionInput,
   PolicyInterception,
 } from './policy/interception.js';
+import {
+  applyMcpToolProhibitions,
+  selectMcpToolPermissions,
+} from './policy/mcp-tool-permissions.js';
 import {
   type PolicyUseDecision,
   readPolicyStatementUseCount,
@@ -291,7 +295,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           return {
             health: 'ready' as const,
             id: selected.id,
-            toolNames: [...selected.allowedTools],
+            toolNames: selected.allowedTools.filter(
+              (name) =>
+                !currentWorkerMcpPermissions(input, environmentPackage, selected.id, name).some(
+                  (rule) => rule.effect === 'prohibit'
+                )
+            ),
             transport: 'stdio' as const,
           };
         }
@@ -321,7 +330,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               .filter(
                 (tool) =>
                   selected.allowedTools.includes(tool.name) &&
-                  !selected.deniedTools.includes(tool.name)
+                  !currentWorkerMcpPermissions(
+                    input,
+                    environmentPackage,
+                    selected.id,
+                    tool.name
+                  ).some((rule) => rule.effect === 'prohibit')
               )
               .map((tool) => tool.name) ?? [],
           transport: resolved.transport.kind,
@@ -397,7 +411,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               .filter(
                 (tool) =>
                   selected.allowedTools.includes(tool.name) &&
-                  !selected.deniedTools.includes(tool.name)
+                  !currentWorkerMcpPermissions(input, environmentPackage, serverId, tool.name).some(
+                    (rule) => rule.effect === 'prohibit'
+                  )
               )
               .map((tool) => ({
                 name: tool.name,
@@ -440,13 +456,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             try {
               requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
               requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
-              if (
-                !selected.allowedTools.includes(request.params.name) ||
-                selected.deniedTools.includes(request.params.name)
-              ) {
-                throw mcpDeniedError();
-              }
-              if (selected.approvalRequiredTools.includes(request.params.name)) {
+              if (!selected.allowedTools.includes(request.params.name)) {
                 throw mcpDeniedError();
               }
               if (
@@ -468,6 +478,29 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               );
               applyScopedMigrations(activeWorkspaceDb);
               requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
+              const toolConditions = currentWorkerMcpPermissions(
+                input,
+                environmentPackage,
+                serverId,
+                request.params.name,
+                activeWorkspaceDb
+              );
+              if (toolConditions.length > 0) {
+                const authority = currentMcpPolicyAuthority({
+                  input,
+                  environmentPackage,
+                  workspaceDb: activeWorkspaceDb,
+                  serverId,
+                  toolName: request.params.name,
+                });
+                const kernel = authority.kernel;
+                if (
+                  applyMcpToolProhibitions(kernel, toolConditions).effect !== 'allow' ||
+                  toolConditions.some((rule) => rule.effect === 'require_approval')
+                )
+                  throw mcpDeniedError();
+              }
+
               if (workBuiltin && request.params.name === 'work_input_request') {
                 try {
                   const duplicate = preflightWorkRequestInput(
@@ -723,7 +756,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 tools: current.tools.filter(
                   (tool) =>
                     selected.allowedTools.includes(tool.name) &&
-                    !selected.deniedTools.includes(tool.name)
+                    !currentWorkerMcpPermissions(
+                      input,
+                      environmentPackage,
+                      serverId,
+                      tool.name
+                    ).some((rule) => rule.effect === 'prohibit')
                 ),
               };
               finishCapabilityCall({
@@ -817,7 +855,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               releaseMutation();
             }
           };
-          const result = await (selected.approvalRequiredTools.includes(request.params.name)
+          const result = await (currentWorkerMcpPermissions(
+            input,
+            environmentPackage,
+            serverId,
+            request.params.name
+          ).some((rule) => rule.effect === 'require_approval')
             ? serializeMcpToolCall(
                 toolCallTails,
                 `${environmentPackage.scope.workspaceId}:${environmentPackage.scope.turnId}`,
@@ -1229,11 +1272,16 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       code: 'mcp-tool-not-found',
     });
   }
-  const available =
-    input.selected.allowedTools.includes(input.toolName) &&
-    !input.selected.deniedTools.includes(input.toolName);
+  const available = input.selected.allowedTools.includes(input.toolName);
   const approvalRequired =
-    available && input.selected.approvalRequiredTools.includes(input.toolName);
+    available &&
+    currentWorkerMcpPermissions(
+      input.input,
+      input.environmentPackage,
+      input.serverId,
+      input.toolName,
+      input.workspaceDb
+    ).some((rule) => rule.effect === 'require_approval');
   const currentSnapshot = approvalRequired
     ? (readTurnMcpToolSchemaSnapshot(input) ??
       readCurrentMcpToolSchemaSnapshot({
@@ -1892,8 +1940,66 @@ export async function reviewCapturedMcpPolicy(input: {
   };
 }
 
+/** Reads current exact Tool conditions without treating selected supply or accountability as a grant. */
+function currentWorkerMcpPermissions(
+  input: RegisterWorkerMcpRoutesInput,
+  environmentPackage: AgentEnvironmentPackage,
+  serverId: string,
+  toolName: string,
+  workspaceDb?: WorkspaceDb
+) {
+  const configured = input.runtimeConfig().openKitConfig.policy?.mediation;
+  if (
+    !configured?.statements.some(
+      (statement) =>
+        statement.kind === 'permission' &&
+        statement.state === 'active' &&
+        statement.authority.kind === 'human' &&
+        statement.grant.kind === 'ordinary' &&
+        statement.scope.resources.some(
+          (resource) =>
+            resource.kind === 'mcp-tool' &&
+            resource.workspaceId === environmentPackage.scope.workspaceId &&
+            resource.serverId === serverId &&
+            resource.toolName === toolName
+        )
+    )
+  )
+    return [];
+  const document = readAdmittedPolicyDocument(input.coreDb!, configured);
+  const db =
+    workspaceDb ?? openWorkspaceDb(input.coreDb!.dataRoot, environmentPackage.scope.workspaceId);
+  try {
+    const authority = currentMcpPolicyAuthority({
+      input,
+      environmentPackage,
+      serverId,
+      toolName,
+      workspaceDb: db,
+    });
+    return selectMcpToolPermissions({
+      document,
+      proposal: {
+        workspaceId: environmentPackage.scope.workspaceId,
+        serverId,
+        toolName,
+        subject: authority.subject,
+      },
+      authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.coreDb!, userId),
+    });
+  } finally {
+    if (!workspaceDb) db.sqlite.close();
+  }
+}
+
 /** Captures actual current Kernel facts through the existing Worker admission owner. */
-function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput, decision?: PolicyUseDecision) {
+function currentMcpPolicyAuthority(
+  input: Pick<
+    WorkerMcpToolCallInput,
+    'input' | 'environmentPackage' | 'workspaceDb' | 'serverId' | 'toolName'
+  >,
+  decision?: PolicyUseDecision
+) {
   let evaluated: { decision: PolicyDecision; facts: unknown } | null = null;
   currentWorkerLineageWorkspaceAuthority(
     input.input.coreDb!,
@@ -2064,10 +2170,19 @@ function mcpInterceptionInput(
     });
     return resolveWorkspaceMcpServer({ catalog, serverId: input.serverId }).catalogDigest;
   };
+  const permissionAuthorCurrent = (userId: string) =>
+    isCurrentServerPolicyAuthor(input.input.coreDb!, userId);
   const currentBindingRefs = () =>
-    selectPolicyBindings({ document, proposal, authorCurrent, anchorCurrent, now: Date.now() }).map(
-      (binding) => ({ id: binding.id, digest: policyDigest(binding) })
-    );
+    [
+      ...selectPolicyBindings({
+        document,
+        proposal,
+        authorCurrent,
+        anchorCurrent,
+        now: Date.now(),
+      }),
+      ...selectMcpToolPermissions({ document, proposal, authorCurrent: permissionAuthorCurrent }),
+    ].map((statement) => ({ id: statement.id, digest: policyDigest(statement) }));
   const participantAuthorized: InterceptionInput['participantAuthorized'] = (binding) => {
     if (binding.author.kind !== 'human' || !currentMcpBindingAuthor(input, binding.author.id, true))
       return false;
@@ -2145,8 +2260,8 @@ function mcpInterceptionInput(
         throw new Error('MCP dispatch requires an allowing decision.');
       ownDecision = decision;
     },
-    requiresHumanApproval: input.resolved.approvalRequiredTools.includes(input.toolName),
     authorCurrent,
+    permissionAuthorCurrent,
     anchorCurrent,
     participantAuthorized,
     finalKernel: () => currentMcpPolicyAuthority(input).kernel,
@@ -2456,7 +2571,13 @@ async function observeWorkerMcpTools(input: {
     visibleTools: snapshotTools.filter(
       (tool) =>
         input.selected.allowedTools.includes(tool.name) &&
-        !input.selected.deniedTools.includes(tool.name)
+        !currentWorkerMcpPermissions(
+          input.input,
+          input.environmentPackage,
+          input.serverId,
+          tool.name,
+          input.workspaceDb
+        ).some((rule) => rule.effect === 'prohibit')
     ),
   };
 }

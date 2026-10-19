@@ -274,8 +274,6 @@ export function createOpenkitWorkMcpSupply(): AgentEnvironmentPackage['supply'][
     id: OPENKIT_WORK_MCP_ID,
     catalogDigest: OPENKIT_WORK_CATALOG_DIGEST,
     allowedTools: OPENKIT_WORK_TOOLS.map((tool) => tool.name),
-    deniedTools: [],
-    approvalRequiredTools: [],
     schemaPolicy: 'pinned',
     pinnedSchemaSnapshotId: null,
   };

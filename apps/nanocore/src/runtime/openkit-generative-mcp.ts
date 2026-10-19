@@ -90,8 +90,6 @@ export function createOpenkitGenerativeMcpSupply(): AgentEnvironmentPackage['sup
     id: OPENKIT_GENERATIVE_MCP_ID,
     catalogDigest: OPENKIT_GENERATIVE_CATALOG_DIGEST,
     allowedTools: OPENKIT_GENERATIVE_TOOLS.map((tool) => tool.name),
-    deniedTools: [],
-    approvalRequiredTools: [],
     schemaPolicy: 'pinned',
     pinnedSchemaSnapshotId: null,
   };

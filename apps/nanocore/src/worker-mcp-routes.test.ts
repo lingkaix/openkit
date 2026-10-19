@@ -1,3 +1,4 @@
+import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -1061,6 +1062,80 @@ describe('worker MCP routes', () => {
       uncertainty: 'Fixture delivery only.',
     };
     const askKnowledge = vi.fn(async () => knowledgeAnswer);
+    let builtinPolicy = EMPTY_POLICY_DOCUMENT;
+    const builtinBaseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
+    const publishBuiltinCondition = (effect: 'prohibit' | 'require_approval' | null) => {
+      const userId = 'usr_00000000-0000-7000-8000-000000000001';
+      const principal = { kind: 'human' as const, id: userId };
+      const prepared = preparePolicyDocument({
+        current: builtinPolicy,
+        userId,
+        now: new Date().toISOString(),
+        proposed: PolicyDocumentV1Schema.parse({
+          schemaVersion: 1,
+          statements: effect
+            ? [
+                {
+                  id: 'builtin-human-condition',
+                  kind: 'permission',
+                  effect,
+                  grant: { kind: 'ordinary' },
+                  author: principal,
+                  authority: { kind: 'human', userId },
+                  authoredAt: new Date().toISOString(),
+                  state: 'active',
+                  scope: {
+                    subjects: [principal],
+                    actions: ['tool.use'],
+                    resources: [
+                      {
+                        kind: 'mcp-tool',
+                        workspaceId: turn.workspaceId,
+                        serverId: 'openkit-work',
+                        toolName: operationToolName('knowledge.ask'),
+                      },
+                      {
+                        kind: 'mcp-tool',
+                        workspaceId: turn.workspaceId,
+                        serverId: 'openkit-generative',
+                        toolName: 'kernel_apps_list',
+                      },
+                    ],
+                  },
+                  lifetime: {
+                    anchor: {
+                      owner: { kind: 'workspace', workspaceId: turn.workspaceId },
+                      kind: 'workspace',
+                      id: turn.workspaceId,
+                    },
+                  },
+                },
+              ]
+            : [],
+        }),
+      });
+      recordPolicyWriteDecision({
+        coreDb,
+        actor: { kind: 'local', userId },
+        candidate: {
+          artifactId: testEntityId('ar', 'builtin-human-condition'),
+          contentDigest: policyDigest(prepared.document),
+        },
+        proposal: {
+          schemaVersion: 1,
+          proposer: principal,
+          rationale: 'Govern exact built-in Tools.',
+          baseRevision: policyDigest(builtinPolicy),
+          proposed: prepared.document,
+          validation: 'valid',
+        },
+        requestId: randomUUID(),
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
+      builtinPolicy = prepared.document;
+      expect(readAdmittedPolicyDocument(coreDb, builtinPolicy)).toEqual(builtinPolicy);
+    };
     registerWorkerMcpRoutes({
       app,
       coreDb,
@@ -1069,6 +1144,10 @@ describe('worker MCP routes', () => {
         createInMemoryRuntimeConfigSnapshot({
           dataRoot,
           agentManifests: [],
+          openKitConfig: {
+            ...builtinBaseConfig.openKitConfig,
+            policy: { ...builtinBaseConfig.openKitConfig.policy, mediation: builtinPolicy },
+          },
           workspaceMcpServerCatalogs: [],
         }),
       store,
@@ -1167,6 +1246,63 @@ describe('worker MCP routes', () => {
         ]);
       } finally {
         knowledgeDb.sqlite.close();
+      }
+      const conditionDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      try {
+        const pendingBefore = conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all();
+        const selectedCalls = () =>
+          conditionDb.sqlite
+            .prepare(
+              'SELECT * FROM capability_calls WHERE capability_id IN (?, ?) ORDER BY call_id'
+            )
+            .all(
+              `mcp.call-tool.${operationToolName('knowledge.ask')}`,
+              'mcp.call-tool.kernel_apps_list'
+            );
+        const callsBefore = selectedCalls();
+        publishBuiltinCondition('prohibit');
+        expect((await workClient.listTools()).tools.map((tool) => tool.name)).not.toContain(
+          operationToolName('knowledge.ask')
+        );
+        expect((await statelessClient.listTools()).tools.map((tool) => tool.name)).not.toContain(
+          'kernel_apps_list'
+        );
+        await expect(
+          workClient.callTool({
+            name: operationToolName('knowledge.ask'),
+            arguments: { question: 'Prohibited question' },
+          })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        await expect(
+          statelessClient.callTool({ name: 'kernel_apps_list', arguments: {} })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(askKnowledge).toHaveBeenCalledTimes(1);
+        expect(selectedCalls()).toEqual(callsBefore);
+        publishBuiltinCondition('require_approval');
+        expect((await workClient.listTools()).tools.map((tool) => tool.name)).toContain(
+          operationToolName('knowledge.ask')
+        );
+        expect((await sessionClient.listTools()).tools.map((tool) => tool.name)).toContain(
+          'kernel_apps_list'
+        );
+        // Built-in human capture is unavailable, so approval requirements refuse before dispatch.
+        await expect(
+          workClient.callTool({
+            name: operationToolName('knowledge.ask'),
+            arguments: { question: 'Needs human approval' },
+          })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        await expect(
+          sessionClient.callTool({ name: 'kernel_apps_list', arguments: {} })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(askKnowledge).toHaveBeenCalledTimes(1);
+        expect(selectedCalls()).toEqual(callsBefore);
+        expect(conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toEqual(
+          pendingBefore
+        );
+        publishBuiltinCondition(null);
+      } finally {
+        conditionDb.sqlite.close();
       }
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
@@ -2077,8 +2213,6 @@ describe('worker MCP routes', () => {
           id: 'echo',
           enabled: true,
           allowedTools: ['echo', 'review-echo'],
-          deniedTools: [],
-          approvalRequiredTools: ['review-echo'],
           credentialBindings: [],
           pinnedSchemaSnapshotId: null,
           schemaPolicy: 'tracking' as const,
@@ -2150,6 +2284,18 @@ describe('worker MCP routes', () => {
         },
       ],
     });
+    runtimeConfig.openKitConfig.policy = {
+      ...runtimeConfig.openKitConfig.policy,
+      mediation: admitTestMcpApproval({
+        coreDb,
+        workspaceId,
+        serverId: 'echo',
+        toolName: 'review-echo',
+        userId: actor.id,
+        threadId,
+        turnId: environmentPackage.scope.turnId,
+      }),
+    };
     const register = () => {
       const app = new Hono();
       registerWorkerMcpRoutes({
@@ -2362,9 +2508,7 @@ describe('worker MCP routes', () => {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [],
-          deniedTools: [],
           enabled: true,
           id: 'echo',
           pinnedSchemaSnapshotId: null,
@@ -2571,8 +2715,6 @@ describe('worker MCP routes', () => {
           id: 'echo',
           enabled: true,
           allowedTools: ['echo'],
-          deniedTools: [],
-          approvalRequiredTools: ['echo'],
           credentialBindings: [
             {
               sink: { kind: 'env' as const, name: 'PENDING_ECHO_SECRET' },
@@ -2638,6 +2780,18 @@ describe('worker MCP routes', () => {
         },
       ],
     });
+    snapshot.openKitConfig.policy = {
+      ...snapshot.openKitConfig.policy,
+      mediation: admitTestMcpApproval({
+        coreDb,
+        workspaceId: turn.workspaceId,
+        serverId: 'echo',
+        toolName: 'echo',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
+        threadId: turn.threadId,
+        turnId: turn.id,
+      }),
+    };
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const originalCallTool = workerMcpGateway.callTool.bind(workerMcpGateway);
     const upstream = vi.spyOn(workerMcpGateway, 'callTool');
@@ -3140,7 +3294,6 @@ describe('worker MCP routes', () => {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: ['echo'],
           enabled: true,
           id: 'echo',
           schemaPolicy: 'tracking',
@@ -3156,13 +3309,25 @@ describe('worker MCP routes', () => {
         },
       ],
     });
+    const lifecyclePolicy = admitTestMcpApproval({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      serverId: 'echo',
+      toolName: 'echo',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: testEntityId('tu', 'lifecycle-policy'),
+    });
     const runtimeConfigManager = createRuntimeConfigManager({
       dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         agentManifests: [agentSetup.manifest],
         dataRoot,
         gatewayConfig: createTestGatewayConfig(),
-        openKitConfig: { defaults: { defaultAgentId: agentSetup.manifest.id } },
+        openKitConfig: {
+          defaults: { defaultAgentId: agentSetup.manifest.id },
+          policy: { mediation: lifecyclePolicy },
+        },
         providerRegistry: new ProviderRegistry([
           {
             displayName: 'Agent OpenRouter',
@@ -4037,9 +4202,7 @@ describe('worker MCP routes', () => {
     );
     const server = (id: string, schemaPolicy: 'pinned' | 'tracking' = 'tracking') => ({
       allowedTools: ['echo'],
-      approvalRequiredTools: [],
       credentialBindings: [],
-      deniedTools: [],
       enabled: true,
       id,
       pinnedSchemaSnapshotId: schemaPolicy === 'pinned' ? 'mcpsnap_expected' : null,
@@ -5102,7 +5265,6 @@ describe('worker MCP routes', () => {
       servers: [
         {
           allowedTools: ['echo'],
-          approvalRequiredTools: [],
           credentialBindings: [
             {
               presentation,
@@ -5111,7 +5273,6 @@ describe('worker MCP routes', () => {
               vaultGrantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
             },
           ],
-          deniedTools: [],
           enabled: true,
           id: 'http-echo',
           pinnedSchemaSnapshotId: null,

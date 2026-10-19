@@ -1293,9 +1293,7 @@ describe('agent environment package resolver', () => {
         servers: [
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             credentialBindings: [],
-            deniedTools: [],
             enabled: true,
             id: 'github',
             pinnedSchemaSnapshotId: null,

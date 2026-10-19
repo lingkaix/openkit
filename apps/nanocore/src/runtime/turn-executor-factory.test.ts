@@ -4370,9 +4370,7 @@ describe('createConfiguredTurnExecutor', () => {
           ...environmentPackage.supply.mcpServers,
           {
             allowedTools: ['echo'],
-            approvalRequiredTools: [],
             catalogDigest: `sha256:${'b'.repeat(64)}`,
-            deniedTools: [],
             id: 'added-mcp',
             pinnedSchemaSnapshotId: null,
             schemaPolicy: 'tracking',

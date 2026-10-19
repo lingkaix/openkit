@@ -101,9 +101,12 @@ afterEach(() => {
 function fixture(
   schemaPolicy: 'tracking' | 'pinned' = 'tracking',
   credentialRequired = false,
-  mediated = false,
+  mediated?: boolean,
   sourceResult: 'require_approval' | 'require_escalation' = 'require_escalation'
 ) {
+  const reviewByDefault = mediated === undefined;
+  mediated ??= true;
+  let policyCurrent = true;
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-captured-schema-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -131,8 +134,6 @@ function fixture(
         id: 'echo-server',
         enabled: true,
         allowedTools: ['echo', 'allowed-other'],
-        deniedTools: ['excluded-other'],
-        approvalRequiredTools: mediated && sourceResult !== 'require_approval' ? [] : ['echo'],
         credentialBindings: credentialRequired
           ? [
               {
@@ -293,6 +294,32 @@ function fixture(
     closeWorkspace: vi.fn().mockResolvedValue(undefined),
     getServerHealth: () => 'ready',
   };
+  const fixtureReview =
+    (current: () => boolean = () => policyCurrent, changes: Partial<PolicyDecisionV1> = {}) =>
+    async () => {
+      const decisionId = allocateEntityId('pd');
+      const mediation = { ...sourceMediation, ...changes };
+      recordProductPermissionDecision({
+        ...decisionBase,
+        policySnapshotId: digest,
+        decisionId,
+        result: 'allow',
+        mediation,
+        contextSummary: {
+          humanApprovalRequestId: record.requestId,
+          approvalSourceDecisionId: sourceDecisionId,
+          humanApprovalDeciderId: 'usr_00000000-0000-7000-8000-000000000001',
+          capabilityCallId: executionCallIdForRequest(record.requestId),
+          threadId: record.threadId,
+          turnId: record.raisingTurnId,
+        },
+        ...(mediation.consumedStatements.length
+          ? { uses: mediation.consumedStatements.map((statement) => ({ statement, limit: 1 })) }
+          : {}),
+      });
+      return { decisionId, current };
+    };
+
   const grant = (
     afterPreparation?: () => void | Promise<void>,
     reviewPolicy?: Parameters<typeof prepareCapturedPendingCall>[0]['reviewPolicy']
@@ -313,7 +340,11 @@ function fixture(
       prepare: async () => {
         prepared = await prepareCapturedPendingCall({
           actor: { userId: 'usr_00000000-0000-7000-8000-000000000001' },
-          ...(reviewPolicy ? { reviewPolicy } : {}),
+          ...(reviewPolicy
+            ? { reviewPolicy }
+            : reviewByDefault
+              ? { reviewPolicy: fixtureReview() }
+              : {}),
           record,
           catalog,
           coreDb,
@@ -365,31 +396,10 @@ function fixture(
     callTool,
     sourceDecisionId,
     sourceMediation,
-    reviewPolicy:
-      (current: () => boolean = () => true, changes: Partial<PolicyDecisionV1> = {}) =>
-      async () => {
-        const decisionId = allocateEntityId('pd');
-        const mediation = { ...sourceMediation, ...changes };
-        recordProductPermissionDecision({
-          ...decisionBase,
-          policySnapshotId: digest,
-          decisionId,
-          result: 'allow',
-          mediation,
-          contextSummary: {
-            humanApprovalRequestId: record.requestId,
-            approvalSourceDecisionId: sourceDecisionId,
-            humanApprovalDeciderId: 'usr_00000000-0000-7000-8000-000000000001',
-            capabilityCallId: executionCallIdForRequest(record.requestId),
-            threadId: record.threadId,
-            turnId: record.raisingTurnId,
-          },
-          ...(mediation.consumedStatements.length
-            ? { uses: mediation.consumedStatements.map((statement) => ({ statement, limit: 1 })) }
-            : {}),
-        });
-        return { decisionId, current };
-      },
+    reviewPolicy: fixtureReview,
+    invalidatePolicy: () => {
+      policyCurrent = false;
+    },
     setCatalog: (next: WorkspaceMcpServerCatalog) => {
       catalog = next;
     },
@@ -1063,7 +1073,8 @@ describe('captured pending MCP schema identity at grant', () => {
             "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
           )
           .run(new Date().toISOString());
-      if (guard === 'catalog' || guard === 'eligibility' || guard === 'policy') {
+      if (guard === 'policy') f.invalidatePolicy();
+      if (guard === 'catalog' || guard === 'eligibility') {
         const catalog = f.catalog();
         f.setCatalog({
           ...catalog,
@@ -1071,7 +1082,6 @@ describe('captured pending MCP schema identity at grant', () => {
             ...server,
             ...(guard === 'catalog' ? { timeoutMs: server.timeoutMs + 1 } : {}),
             ...(guard === 'eligibility' ? { allowedTools: ['allowed-other'] } : {}),
-            ...(guard === 'policy' ? { approvalRequiredTools: [] } : {}),
           })),
         });
       }

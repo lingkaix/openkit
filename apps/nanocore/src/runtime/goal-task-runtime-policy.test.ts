@@ -37,6 +37,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { admitTestMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -336,8 +337,6 @@ async function fixture(
           enabled: true,
           credentialBindings: [],
           allowedTools: ['read'],
-          deniedTools: [],
-          approvalRequiredTools: options.approval ? ['read'] : [],
           schemaPolicy: 'tracking' as const,
           pinnedSchemaSnapshotId: null,
           timeoutMs: 2000,
@@ -577,6 +576,27 @@ async function fixture(
       closeWorkspace: vi.fn(async () => {}),
       getServerHealth: () => 'ready',
     };
+    if (options.approval) {
+      const policy = admitTestMcpApproval({
+        coreDb,
+        document: manager.current().openKitConfig.policy?.mediation,
+        workspaceId: workspace.id,
+        serverId: 'issues',
+        toolName: 'read',
+        userId,
+        principal: { kind: 'agent', id: agentId },
+        threadId: thread.id,
+        turnId: turn.id,
+      });
+      writeFileSync(
+        join(dataRoot, 'config/server.jsonc'),
+        JSON.stringify({
+          ...manager.current().openKitConfig,
+          policy: { ...manager.current().openKitConfig.policy, mediation: policy },
+        })
+      );
+      manager.reload({ mode: 'safe', dryRun: false });
+    }
     const app = new Hono<{ Variables: AuthVariables }>();
     const interception = new PolicyInterception();
     const routes = {

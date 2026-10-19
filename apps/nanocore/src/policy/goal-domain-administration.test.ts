@@ -28,6 +28,7 @@ import {
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService } from './goal-domains.js';
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
@@ -669,7 +670,7 @@ describe('bounded native Goal-domain administration', () => {
     expect(f.tasks.evaluateTask({ ...f.effect, humanKernel })!.kernel).toEqual(humanKernel);
     const decision = await new PolicyInterception().decide({
       ...f.pipeline(),
-      requiresHumanApproval: true,
+      document: withHumanMcpApproval(f.pipeline()),
     });
     expect(decision.result).toBe('require_approval');
     expect(f.tasks.evaluateTask(f.effect)!.kernel.effect).toBe('allow');
@@ -685,7 +686,7 @@ describe('bounded native Goal-domain administration', () => {
     expect(evaluation.authorizationUses).toContainEqual({ statement: reference, limit: 1 });
     const pending = await new PolicyInterception().decide({
       ...f.pipeline(),
-      requiresHumanApproval: true,
+      document: withHumanMcpApproval(f.pipeline()),
     });
     expect(pending.result).toBe('require_approval');
     expect(readPolicyStatementUseCount(f.db, reference)).toBe(0);

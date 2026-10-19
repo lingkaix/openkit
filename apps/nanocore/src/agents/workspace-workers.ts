@@ -206,8 +206,6 @@ function projectPackageDetails(
     mcpServers: packageRecord.snapshot.supply.mcpServers.map((server) => ({
       id: server.id,
       allowedTools: server.allowedTools,
-      deniedTools: server.deniedTools,
-      approvalRequiredTools: server.approvalRequiredTools,
     })),
     network: projectPolicyDimension(packageRecord.snapshot.policy.network),
     preferredLogicalModelId,

@@ -823,7 +823,6 @@ describe('Server-shared MCP through governed Worker routes', () => {
       bindingRevision: binding.revision,
       enabled: true,
       allowedTools: ['echo'],
-      approvalRequiredTools: ['echo'],
       schemaPolicy: 'tracking',
     });
     const worker = await f.worker(f.workspaces[0]!.id);
@@ -851,7 +850,6 @@ describe('Server-shared MCP through governed Worker routes', () => {
         bindingRevision: currentBinding.revision,
         enabled: false,
         allowedTools: ['echo'],
-        approvalRequiredTools: ['echo'],
         schemaPolicy: 'tracking',
       });
     }

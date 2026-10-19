@@ -3858,9 +3858,7 @@ function mcpCatalog(tool: string) {
     servers: [
       {
         allowedTools: [tool],
-        approvalRequiredTools: [],
         credentialBindings: [],
-        deniedTools: [],
         enabled: true,
         id: 'echo',
         pinnedSchemaSnapshotId: null,
