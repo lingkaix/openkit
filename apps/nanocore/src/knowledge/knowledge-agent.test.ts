@@ -694,9 +694,13 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
         pageId: `openkit:${f.workspaceScope}/launch-evidence`,
       });
     }
-    expect(toolOutput(request, 'knowledge.page.read')).toContain(
-      'The Tool failed without a safe result.'
-    );
+    const refused = toolOutput(request, 'knowledge.page.read');
+    expect(refused).toContain('This pageId is not an admitted candidate.');
+    expect(refused).toContain('Copy its exact pageId');
+    expect(refused).not.toContain('launch-evidence');
+    expect(refused).not.toContain('cobalt gate');
+    expect(refused).not.toContain(f.sourceReference);
+    expect(refused).not.toContain(f.userId);
     return message(
       'No evidence is available to this shared Task.',
       [],
@@ -759,7 +763,8 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
     expect.objectContaining({
       type: 'tool-call',
       tool: 'knowledge.page.read',
-      result: expect.stringContaining('The Tool failed without a safe result.'),
+      status: 'failed',
+      result: expect.stringContaining('This pageId is not an admitted candidate.'),
     })
   );
   const traces = readTurnRetrievalTraces(
@@ -1050,6 +1055,112 @@ it('repairs an unsearched absence by indexing the pinned notebook, reading the u
       .map((item) => item.status)
   ).toEqual(['failed', 'completed']);
   expect(f.createResponses).toHaveBeenCalledTimes(4);
+}, 120_000);
+
+it('repairs wildcard selection and an unselected malformed read before accepting absence for a published fact', async () => {
+  const f = await fixture(false, true);
+  const pageId = formatReferenceUri({ scopeId: f.workspaceScope, objectId: 'launch-evidence' });
+  let step = 0;
+  f.createResponses.mockImplementation(async (_provider, request) => {
+    if (++step === 1)
+      return call('knowledge.retrieval', {
+        query: 'heliotrope cobalt',
+        types: ['*'],
+        appliesTo: ['*'],
+      });
+    if (step === 2)
+      return call('knowledge.page.read', { pageId: `${f.workspaceScope}/launch-evidence` });
+    if (step === 3)
+      return message('No evidence found.', [], 'The attempted page read was unavailable.');
+    if (step === 4)
+      return call('knowledge.retrieval', { query: 'heliotrope cobalt' }, 'corrected-search');
+    if (step === 5) {
+      const search = JSON.parse(toolOutput(request, 'knowledge.retrieval', 'corrected-search'));
+      expect(search.sources[0].selected).toMatchObject([{ pageId }]);
+      return call(
+        'knowledge.page.read',
+        { pageId: search.sources[0].selected[0].pageId },
+        'selected-read'
+      );
+    }
+    const selected = JSON.parse(toolOutput(request, 'knowledge.page.read', 'selected-read'));
+    expect(selected.content).toBe(f.page);
+    return message('The heliotrope launch uses the cobalt gate.', [selected.pageId]);
+  });
+  const answer = await f.ask();
+  expect(answer).toMatchObject({
+    answer: 'The heliotrope launch uses the cobalt gate.',
+    citations: [
+      {
+        reference: formatReferenceUri(
+          { scopeId: f.workspaceScope, objectId: 'launch-evidence' },
+          f.contentDigest
+        ),
+        revision: f.revision,
+        contentDigest: f.contentDigest,
+        sourceReferences: [f.sourceReference],
+      },
+    ],
+  });
+  expect(f.createResponses).toHaveBeenCalledTimes(6);
+  const failedRead = toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.page.read');
+  expect(failedRead).not.toContain('heliotrope launch uses the cobalt gate');
+  expect(failedRead).not.toContain(f.sourceReference);
+  const turn = f.store.getTurnById(answer.turnId);
+  expect(turn.status).toBe('completed');
+  expect(
+    turn.items
+      .filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
+      .map((item) => item.status)
+  ).toEqual(['failed', 'completed']);
+  const traces = readTurnRetrievalTraces(
+    join(f.dataRoot, 'workspaces', f.workspace.id),
+    f.workspace.id,
+    f.thread.id,
+    f.turn.id
+  );
+  const corrected = traces.find(
+    ({ trace }) =>
+      'sourceScope' in trace &&
+      trace.selected.some((entry) => entry.reference.objectId === 'launch-evidence')
+  );
+  expect(corrected).toBeDefined();
+  expect(corrected?.trace.retrievalParameters).not.toHaveProperty('types');
+  expect(corrected?.trace.retrievalParameters).not.toHaveProperty('appliesTo');
+}, 120_000);
+
+it('refuses repeated wildcard-only absence after one bounded repair without delivering an answer', async () => {
+  const f = await fixture(false, true);
+  let step = 0;
+  f.createResponses.mockImplementation(async () => {
+    ++step;
+    return step % 2 === 1
+      ? call(
+          'knowledge.retrieval',
+          { query: 'heliotrope cobalt', types: ['*'], appliesTo: ['*'] },
+          `wildcard-${step}`
+        )
+      : message('No evidence.', [], 'Only wildcard selectors were attempted.');
+  });
+  const error = await f.ask().catch((error: unknown) => error);
+  expect(error).toMatchObject({
+    code: 'knowledge_query_failed',
+    status: 422,
+    details: { threadId: expect.any(String), turnId: expect.any(String) },
+  });
+  expect(f.createResponses).toHaveBeenCalledTimes(4);
+  const turn = f.store.getTurnById(error.details.turnId);
+  expect(turn.status).toBe('failed');
+  expect(
+    turn.items
+      .filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
+      .map((item) => item.status)
+  ).toEqual(['failed', 'failed']);
+  expect(
+    listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id).find(
+      (call) => call.id === f.askingCall.id
+    )?.extensions?.['openkit.knowledge/delivery']
+  ).toBeUndefined();
 }, 120_000);
 
 it('refuses a second unsearched absence after one bounded repair with retained work and no delivery', async () => {

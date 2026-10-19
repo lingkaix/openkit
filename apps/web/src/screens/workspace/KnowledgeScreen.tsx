@@ -80,6 +80,7 @@ const EXCLUSION_REASON_LABEL = {
   sensitive_content: 'Sensitive content',
   lower_conformance: 'Lower conformance',
   policy_excluded: 'Policy excluded',
+  selector_mismatch: 'Selector mismatch',
   freshness_expired: 'Out of date',
   budget_exceeded: 'Over budget',
   source_unavailable: 'Source unavailable',
