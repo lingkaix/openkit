@@ -4533,6 +4533,20 @@ describe('#144 real Assistant command wiring', () => {
         )
       );
     try {
+      expect(f.thread).toMatchObject({
+        visibility: 'private',
+        privateOwnerUserId: f.actorUserId,
+      });
+      const notebookPath = join(f.dataRoot, 'users', f.actorUserId, 'memory', 'notebook.git');
+      expect(fs.existsSync(notebookPath)).toBe(false);
+      // The first tell starts from fresh Memory; the identity lookup must leave it absent.
+      expect(() =>
+        readDefaultKnowledgeBaseId({
+          dataRoot: f.dataRoot,
+          scope: { kind: 'user', userId: f.actorUserId },
+        })
+      ).toThrow('Notebook recovery required.');
+      expect(fs.existsSync(notebookPath)).toBe(false);
       const response = await f.submit();
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());

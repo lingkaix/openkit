@@ -1,7 +1,12 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
+import {
+  createAssistantMessageEventStream,
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+} from '@earendil-works/pi-ai';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
@@ -1679,6 +1684,109 @@ describe('slice 1d internal logical call', () => {
 });
 
 describe('slice 1d round 2 internal lifecycle', () => {
+  it('settles a deadline-cancelled call before owned capture closes and ignores late completion', async () => {
+    const capture = captureBinding();
+    const faux = fauxProvider({
+      api: 'openai-responses',
+      provider: 'provider',
+      models: [{ id: 'model' }],
+    });
+    const events = createAssistantMessageEventStream();
+    // Only the upstream stream is uncooperative; all OpenKit cancellation and ledger owners run.
+    const stream = vi.fn(() => events);
+    Object.assign(faux.provider, { stream });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const onDispatch = vi.fn();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      // Omit workspaceDb so capture owns the same connection lifetime as production role entry.
+      const pending = withTurnModelCapture(
+        { store: capture.store, turn: capture.turn },
+        (admitted) => {
+          const provider = createInternalAgentGatewayProvider({
+            capture: admitted,
+            logicalModel,
+            resolveLogicalModel: () => logicalModel,
+            dispatcher: new LLMGatewayProviderDispatcher({
+              piAiClient: new PiAiGatewayClient({ models }),
+            }),
+            resolveGatewayProvider: () => ({
+              id: 'provider',
+              displayName: 'Provider',
+              adapterId: 'provider',
+              apiKey: 'synthetic',
+              baseUrl: null,
+              models: ['model'],
+              requiresApiKey: true,
+              gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+              modelMetadata: {
+                model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+              },
+            }),
+            promptCacheScope: {
+              sessionId: capture.threadId,
+              workspaceId: capture.turn.workspaceId,
+            },
+            usageEndpoint: 'responses',
+            onDispatch,
+            callContext: {
+              workspaceId: capture.turn.workspaceId,
+              authorityActor: capture.turn.triggerActor,
+              family: 'llm',
+              operation: 'knowledge.run',
+              capabilityId: 'inference.local.knowledge-manager',
+              redactionClass: 'metadata-only',
+            },
+          });
+          return runInternalAgentLoop(
+            {
+              ...request(),
+              tools: [],
+              limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 1_000 },
+            },
+            provider
+          );
+        }
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stream).toHaveBeenCalledOnce();
+      const read = () => ({
+        calls: listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId),
+        usage: listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId),
+      });
+      expect(read().calls).toEqual([expect.objectContaining({ status: 'running' })]);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await pending;
+      expect(result).toMatchObject({ kind: 'limit_reached', limit: 'deadline' });
+      const settled = read();
+      expect(settled.calls).toEqual([
+        expect.objectContaining({
+          status: expect.stringMatching(/^(failed|aborted)$/),
+          threadId: capture.threadId,
+          turnId: capture.turnId,
+        }),
+      ]);
+      expect(settled.usage).toEqual([]);
+
+      const late = fauxAssistantMessage('Late answer.');
+      late.usage = { ...late.usage, input: 9, output: 3, totalTokens: 12 };
+      events.push({ type: 'done', reason: 'stop', message: late });
+      events.end(late);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read()).toEqual(settled);
+      expect(result.messages).toEqual(request().messages);
+      expect(stream).toHaveBeenCalledOnce();
+      expect(onDispatch).not.toHaveBeenCalled();
+    } finally {
+      events.end(fauxAssistantMessage('Released fixture.'));
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+  });
+
   for (const failed of [false, true])
     it(`ignores late usage after ${failed ? 'failed' : 'successful'} closeout`, async () => {
       const capture = captureBinding();
