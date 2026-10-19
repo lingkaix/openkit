@@ -109,6 +109,12 @@ export function remintPortableWorkspaceNotebookPages(input: {
   readonly sourceKnowledgeBaseId: string;
   readonly targetKnowledgeBaseId: string;
   readonly rewriteReferences: (references: readonly string[]) => readonly string[];
+  /** Standalone package embeds must be rewritten before their referring page receives its new digest. */
+  readonly rewritePage?: (
+    path: string,
+    content: string,
+    rewriteReference: (reference: string) => string
+  ) => string;
 }): {
   readonly pages: ReadonlyMap<string, string>;
   readonly referenceReplacements: ReadonlyMap<string, string>;
@@ -123,23 +129,22 @@ export function remintPortableWorkspaceNotebookPages(input: {
     if (retained !== undefined) return retained;
     if (active.has(path)) throw new Error('Portable Knowledge Page pins contain a cycle.');
     active.add(path);
-    const content = remintPortableWorkspaceNotebookPage({
+    const rewriteReference = (reference: string): string => {
+      const pageId = pinnedNotebookPage(reference, files, sourceScope);
+      return pageId === null
+        ? input.rewriteReferences([reference])[0]!
+        : formatReferenceUri(
+            { scopeId: targetScope, objectId: pageId },
+            pageDigest(remint(`${pageId}.md`))
+          );
+    };
+    let content = remintPortableWorkspaceNotebookPage({
       ...input,
       path,
       content: files[path]!,
-      rewriteReferences: (references) => {
-        const rewritten = input.rewriteReferences(references);
-        return references.map((reference, index) => {
-          const pageId = pinnedNotebookPage(reference, files, sourceScope);
-          return pageId === null
-            ? rewritten[index]!
-            : formatReferenceUri(
-                { scopeId: targetScope, objectId: pageId },
-                pageDigest(remint(`${pageId}.md`))
-              );
-        });
-      },
+      rewriteReferences: (references) => references.map(rewriteReference),
     });
+    if (input.rewritePage) content = input.rewritePage(path, content, rewriteReference);
     reminted.set(path, content);
     active.delete(path);
     return content;

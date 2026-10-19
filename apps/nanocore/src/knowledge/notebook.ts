@@ -328,6 +328,8 @@ export class KnowledgeNotebook {
     readonly baseRevision: string;
     readonly changes: Readonly<Record<string, string | null>>;
     readonly metadata: NotebookCommitMetadata;
+    /** Native package admission supplies already-validated Source pointers for the same commit. */
+    readonly sourcePointers?: Readonly<Record<string, string>>;
   }): string {
     if (Object.keys(input.changes).length > 256) throw new NotebookError('invalid_request');
     const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
@@ -348,7 +350,14 @@ export class KnowledgeNotebook {
       else entries[path] = this.git(['hash-object', '-w', '--stdin'], value).trim();
     }
     if (!Object.hasOwn(entries, 'index.md')) throw new NotebookError('invalid_request');
-    return this.createCommit(entries, metadata.data, input.baseRevision);
+    const sources = { ...this.sourceObjects(input.baseRevision) };
+    for (const [id, content] of Object.entries(input.sourcePointers ?? {})) {
+      KnowledgeSourceIdSchema.parse(id);
+      if (Object.hasOwn(sources, id) || Buffer.byteLength(content) > FILE_BYTES)
+        throw new NotebookError('invalid_request');
+      sources[id] = this.git(['hash-object', '-w', '--stdin'], content).trim();
+    }
+    return this.createCommit(entries, metadata.data, input.baseRevision, sources);
   }
 
   /** Compares and sets the sole publication ref after the caller's final admission and Audit boundary. */

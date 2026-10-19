@@ -380,6 +380,54 @@ function operationPaths() {
   };
 }
 
+/** Projects only package framing; the operation registry owns permission and logical metadata. */
+function knowledgePackageOperation<
+  const Id extends 'knowledge.package.export' | 'knowledge.package.import',
+>(id: Id) {
+  return {
+    operationId: id,
+    tags: ['knowledge'],
+    summary: OPERATION_DEFINITIONS[id].description,
+    security: DEPLOYMENT_ADMIN_SECURITY,
+    parameters: [
+      {
+        name: 'workspaceId',
+        in: 'query',
+        required: true,
+        schema: { $ref: '#/components/schemas/WorkspaceId' },
+      },
+      ...(id === 'knowledge.package.import' ? [REQUEST_ID_HEADER] : []),
+    ],
+    ...(id === 'knowledge.package.import'
+      ? {
+          requestBody: {
+            required: true,
+            content: {
+              'application/x-tar': { schema: { type: 'string', format: 'binary' } },
+            },
+          },
+        }
+      : {}),
+    responses: {
+      '200': {
+        description: 'Knowledge package transfer completed.',
+        content:
+          id === 'knowledge.package.export'
+            ? { 'application/x-tar': { schema: { type: 'string', format: 'binary' } } }
+            : {
+                'application/json': {
+                  schema: toJsonSchema(OPERATION_DEFINITIONS[id].outputSchema),
+                },
+              },
+      },
+      default: {
+        description: 'Protocol error envelope.',
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } },
+      },
+    },
+  };
+}
+
 /**
  * Creates the current App API OpenAPI projection from shared Zod schemas.
  *
@@ -396,6 +444,12 @@ export function createAppOpenApiDocument() {
     },
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
+      '/api/app/operations/knowledge.package.export': {
+        post: knowledgePackageOperation('knowledge.package.export'),
+      },
+      '/api/app/operations/knowledge.package.import': {
+        post: knowledgePackageOperation('knowledge.package.import'),
+      },
       ...operationPaths(),
       '/api/app/operations/artifact.version-file-commit': {
         post: {
