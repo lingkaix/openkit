@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
@@ -35,6 +36,7 @@ describe('raw Workspace configuration Policy edits', () => {
           },
         },
       };
+      expect(WorkspaceConfigSchema.safeParse(source).success).toBe(true);
       const configPath = join(dataRoot, 'workspaces', workspace.id, 'config', 'workspace.jsonc');
       writeFileSync(configPath, JSON.stringify(source));
       const app = createApp({ dataRoot, coreDb, store });
