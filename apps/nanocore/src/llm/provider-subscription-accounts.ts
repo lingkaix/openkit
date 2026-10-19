@@ -599,10 +599,16 @@ export class ProviderSubscriptionAccountManager {
     const handle = await this.getPairHandle(exactPair);
     const version = await handle.getCredentialVersion();
     const observedAt = this.canonicalNow();
-    const cached = this.codexQuotas.get(pairKey(exactPair));
-    const age = cached ? Date.parse(observedAt) - Date.parse(cached.observedAt) : Infinity;
-    if (!fresh && version !== undefined && cached?.version === version && age >= 0 && age <= 60_000)
-      return cached;
+    /** Rechecks the existing projection at consumption time, including overlapping successful reads. */
+    const cachedObservation = (): CodexAccountQuota | undefined => {
+      if (fresh || version === undefined) return undefined;
+      const cached = this.codexQuotas.get(pairKey(exactPair));
+      if (!cached || cached.version !== version) return undefined;
+      const age = Date.parse(this.canonicalNow()) - Date.parse(cached.observedAt);
+      return age >= 0 && age <= 60_000 ? cached : undefined;
+    };
+    const cached = cachedObservation();
+    if (cached) return cached;
     const quota = await readCodexQuota(
       handle.credentials,
       async () => version !== undefined && (await handle.getCredentialVersion()) === version,
@@ -615,7 +621,8 @@ export class ProviderSubscriptionAccountManager {
       this.codexQuotas.set(pairKey(exactPair), observation);
       await handle.observeQuota(version, quota.availability, true, signal);
     }
-    return { observedAt, quota };
+    // A failed overlapping read cannot erase another call's fresh full-window proof.
+    return quota === null ? (cachedObservation() ?? { observedAt, quota }) : { observedAt, quota };
   }
 
   /** A failed or stale quota read never establishes a credits-off refusal. */
