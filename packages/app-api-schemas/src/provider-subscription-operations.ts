@@ -7,14 +7,18 @@ import {
   ProviderSubscriptionAccountsResponseSchema,
   ProviderSubscriptionAutoTopupSchema,
   ProviderSubscriptionQuotaSchema,
+  ProviderSubscriptionResetResponseSchema,
   ProviderSubscriptionsResponseSchema,
   StartProviderSubscriptionAccountLoginRequestSchema,
   UpdateProviderSubscriptionAccountRequestSchema,
+  UpdateProviderSubscriptionCodexSettingsRequestSchema,
+  UseProviderSubscriptionResetRequestSchema,
 } from './provider-subscriptions.js';
 
 // Selector validity stays with the account owner so unsupported providers retain 404 and malformed slots retain their specific 400.
 const providerSelector = { subscriptionProviderId: z.string() };
 const pairSelector = { ...providerSelector, accountSlotId: z.string() };
+const codexPairSelector = { ...pairSelector, subscriptionProviderId: z.literal('openai-codex') };
 
 /** Generic provider-slot operations join the existing subscription account and observation owners. */
 export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
@@ -61,6 +65,32 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     description: 'Update one provider-subscription account slot.',
     inputSchema: UpdateProviderSubscriptionAccountRequestSchema.extend(pairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,
+    credentials: ['local-user', 'user-session', 'deployment-administrator'],
+    scope: { kind: 'server' },
+    target: { kind: 'server' },
+    policyOperation: 'api.call',
+    mutating: true,
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+  },
+  'provider-subscription.account-update-codex-settings': {
+    description: 'Update one Codex subscription account’s reset and credit settings.',
+    inputSchema: UpdateProviderSubscriptionCodexSettingsRequestSchema.extend(codexPairSelector),
+    outputSchema: ProviderSubscriptionAccountSchema,
+    credentials: ['local-user', 'user-session', 'deployment-administrator'],
+    scope: { kind: 'server' },
+    target: { kind: 'server' },
+    policyOperation: 'api.call',
+    mutating: true,
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+  },
+  'provider-subscription.account-use-reset': {
+    description: 'Use one available Codex reset with an explicit request identity.',
+    inputSchema: UseProviderSubscriptionResetRequestSchema.extend(codexPairSelector),
+    outputSchema: ProviderSubscriptionResetResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },
     target: { kind: 'server' },

@@ -73,6 +73,10 @@ const AccountBaseShape = {
   accountLabel: z.string().min(1).optional(),
   planLabel: z.string().min(1).optional(),
   inferenceObservation: InferenceObservationSchema.optional(),
+  // Absence preserves the Codex defaults: false, false, true. Readers do not materialize them.
+  codexAutoUseWeeklyReset: z.boolean().optional(),
+  codexAutoUseExpiringReset: z.boolean().optional(),
+  codexUseCredits: z.boolean().optional(),
 };
 const LoginInteractionSchema = z
   .object({
@@ -99,6 +103,37 @@ export const UpdateProviderSubscriptionAccountRequestSchema = z
   })
   .strict();
 
+/** Partial Codex-only account settings; omitted fields leave existing values unchanged. */
+export const CodexSubscriptionSettingsSchema = z
+  .object({
+    codexAutoUseWeeklyReset: z.boolean().optional(),
+    codexAutoUseExpiringReset: z.boolean().optional(),
+    codexUseCredits: z.boolean().optional(),
+  })
+  .strict();
+
+/** Strict request body for updating Codex account settings, separate from display-name updates. */
+export const UpdateProviderSubscriptionCodexSettingsRequestSchema = z
+  .object({ settings: CodexSubscriptionSettingsSchema })
+  .strict();
+
+/** Strict request body identifying one manual Codex reset attempt, not its selected credit. */
+export const UseProviderSubscriptionResetRequestSchema = z
+  .object({ redeemRequestId: z.uuidv4() })
+  .strict();
+
+/** Sanitized Codex reset result; unknown does not assert whether the external effect occurred. */
+export const ProviderSubscriptionResetResponseSchema = z
+  .object({
+    subscriptionProviderId: z.literal('openai-codex'),
+    accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+    redeemRequestId: z.uuidv4(),
+    outcome: z.enum(['reset', 'nothing_to_reset', 'no_credit', 'already_redeemed', 'unknown']),
+    creditId: z.string().min(1).optional(),
+    windowsReset: z.boolean().optional(),
+  })
+  .strict();
+
 /** Strict device-code request body for starting provider-subscription login. */
 export const StartProviderSubscriptionAccountLoginRequestSchema = z
   .object({
@@ -121,31 +156,40 @@ export const ProviderSubscriptionsResponseSchema = z
   .strict();
 
 /** Sanitized provider-subscription account and status projection. */
-export const ProviderSubscriptionAccountSchema = z.discriminatedUnion('status', [
-  z.object({ ...AccountBaseShape, status: z.literal('logged_out') }).strict(),
-  z.object({ ...AccountBaseShape, status: z.literal('logged_in') }).strict(),
-  z
-    .object({
-      ...AccountBaseShape,
-      status: z.literal('pending'),
-      interaction: LoginInteractionSchema,
-    })
-    .strict(),
-  z
-    .object({
-      ...AccountBaseShape,
-      status: z.literal('unavailable'),
-      message: z.string().min(1),
-    })
-    .strict(),
-  z
-    .object({
-      ...AccountBaseShape,
-      status: z.literal('error'),
-      message: z.string().min(1),
-    })
-    .strict(),
-]);
+export const ProviderSubscriptionAccountSchema = z
+  .discriminatedUnion('status', [
+    z.object({ ...AccountBaseShape, status: z.literal('logged_out') }).strict(),
+    z.object({ ...AccountBaseShape, status: z.literal('logged_in') }).strict(),
+    z
+      .object({
+        ...AccountBaseShape,
+        status: z.literal('pending'),
+        interaction: LoginInteractionSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...AccountBaseShape,
+        status: z.literal('unavailable'),
+        message: z.string().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        ...AccountBaseShape,
+        status: z.literal('error'),
+        message: z.string().min(1),
+      })
+      .strict(),
+  ])
+  .refine(
+    (account) =>
+      account.subscriptionProviderId === 'openai-codex' ||
+      (account.codexAutoUseWeeklyReset === undefined &&
+        account.codexAutoUseExpiringReset === undefined &&
+        account.codexUseCredits === undefined),
+    'Codex settings are not supported for xAI accounts.'
+  );
 
 /** Lexicographically ordered provider-subscription account list response. */
 export const ProviderSubscriptionAccountsResponseSchema = z
@@ -172,6 +216,7 @@ const SubscriptionAccountObservationShape = {
 const QuotaWindowSchema = z
   .object({
     id: z.string().min(1),
+    label: z.string().min(1).optional(),
     limitWindowSeconds: z.number().int().positive().optional(),
     usedPercent: z.number().finite().min(0).max(100).optional(),
     remainingPercent: z.number().finite().min(0).max(100).optional(),
@@ -190,38 +235,84 @@ const QuotaBillingSchema = z
   })
   .strict();
 
+const CodexQuotaObservationShape = {
+  credits: z
+    .object({
+      hasCredits: z.boolean(),
+      unlimited: z.boolean(),
+      balance: z
+        .string()
+        .regex(/^-?\d+(?:\.\d+)?$/)
+        .optional(),
+    })
+    .strict()
+    .optional(),
+  resetCredits: z
+    .object({
+      availableCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      available: z.array(
+        z
+          .object({
+            id: z.string().min(1),
+            resetType: z.string().min(1),
+            expiresAt: TimestampSchema.nullable(),
+          })
+          .strict()
+      ),
+      soonestExpiresAt: TimestampSchema.optional(),
+    })
+    .strict()
+    .optional(),
+  heldReason: z
+    .enum(['spend_control_reached', 'overage_limit_reached', 'rate_limit_reached', 'not_allowed'])
+    .optional(),
+  activeUntil: TimestampSchema.optional(),
+};
+
 /** Strict bounded quota projection for supported provider subscriptions. */
-export const ProviderSubscriptionQuotaSchema = z.discriminatedUnion('availability', [
-  z
-    .object({
-      subscriptionProviderId: SubscriptionProviderIdSchema,
-      accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
-      availability: z.literal('available'),
-      observedAt: TimestampSchema,
-      ...SubscriptionAccountObservationShape,
-      windows: z.array(QuotaWindowSchema),
-      billing: QuotaBillingSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      subscriptionProviderId: SubscriptionProviderIdSchema,
-      accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
-      availability: z.literal('temporarily_unavailable'),
-      observedAt: TimestampSchema,
-      ...SubscriptionAccountObservationShape,
-      retryAfter: TimestampSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      subscriptionProviderId: SubscriptionProviderIdSchema,
-      accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
-      availability: z.literal('authentication_required'),
-      observedAt: TimestampSchema,
-    })
-    .strict(),
-]);
+export const ProviderSubscriptionQuotaSchema = z
+  .discriminatedUnion('availability', [
+    z
+      .object({
+        subscriptionProviderId: SubscriptionProviderIdSchema,
+        accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+        availability: z.literal('available'),
+        observedAt: TimestampSchema,
+        ...SubscriptionAccountObservationShape,
+        windows: z.array(QuotaWindowSchema),
+        ...CodexQuotaObservationShape,
+        billing: QuotaBillingSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        subscriptionProviderId: SubscriptionProviderIdSchema,
+        accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+        availability: z.literal('temporarily_unavailable'),
+        observedAt: TimestampSchema,
+        ...SubscriptionAccountObservationShape,
+        retryAfter: TimestampSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        subscriptionProviderId: SubscriptionProviderIdSchema,
+        accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+        availability: z.literal('authentication_required'),
+        observedAt: TimestampSchema,
+      })
+      .strict(),
+  ])
+  .refine(
+    (quota) =>
+      quota.subscriptionProviderId === 'openai-codex' ||
+      quota.availability !== 'available' ||
+      (quota.credits === undefined &&
+        quota.resetCredits === undefined &&
+        quota.heldReason === undefined &&
+        quota.activeUntil === undefined),
+    'Codex quota details are not supported for xAI accounts.'
+  );
 
 /** Strict xAI-only auto-top-up observation. */
 export const ProviderSubscriptionAutoTopupSchema = z.discriminatedUnion('availability', [
@@ -263,6 +354,20 @@ export type StartProviderSubscriptionAccountLoginRequest = z.infer<
 /** Request body for cancelling one provider-subscription login interaction. */
 export type CancelProviderSubscriptionAccountLoginRequest = z.infer<
   typeof CancelProviderSubscriptionAccountLoginRequestSchema
+>;
+/** Partial Codex account settings with absence-preserving defaults. */
+export type CodexSubscriptionSettings = z.infer<typeof CodexSubscriptionSettingsSchema>;
+/** Request body for updating Codex account settings. */
+export type UpdateProviderSubscriptionCodexSettingsRequest = z.infer<
+  typeof UpdateProviderSubscriptionCodexSettingsRequestSchema
+>;
+/** Request body identifying a manual Codex reset attempt. */
+export type UseProviderSubscriptionResetRequest = z.infer<
+  typeof UseProviderSubscriptionResetRequestSchema
+>;
+/** Sanitized result of a Codex reset attempt. */
+export type ProviderSubscriptionResetResponse = z.infer<
+  typeof ProviderSubscriptionResetResponseSchema
 >;
 /** Fixed supported provider-subscription inventory response. */
 export type ProviderSubscriptionsResponse = z.infer<typeof ProviderSubscriptionsResponseSchema>;
