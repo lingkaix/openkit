@@ -59,6 +59,10 @@ The initial commit changed 16 Markdown files: 4 Core owners, 9 specifications in
 
 Initial self-review inspected the actual Core/bootstrap diff and document bytes, corrected source paths and retained all 27 dispositions. The correction round adds no production tests: the named crash cases are implementation acceptance obligations, not executed proofs. The phase-marker decision is absent from this branch; its exact filename and integration requirement remain explicit, while existing peer owners have resolvable links. The coordinator must integrate and link that decision, without a placeholder or validator bypass here.
 
+## SQLite Scale And Lifetime Ruling
+
+The engineer accepted the [write/space budget](../../specs/20261019-durable_execution_and_control_store.md#write-and-space-budget) and [deferred Thread cold tier](../../specs/20261019-durable_execution_and_control_store.md#deferred-thread-cold-tier). First-release creation/deletion/Thread-partitioning rules make later archive support additive; Light App databases are included in OpenKit's SQLite settings, opaque MCP databases are not. Load measurements select limits, not this documentation. Thread-database partitioning remains an unbuilt escape hatch; archive implementation remains after `v0.1.0`, estimated at 3–5 engineer-days. The replacement inventory is unchanged. This ruling adds no implementation or measured performance claim.
+
 ## Review Correction And Compression Transfer
 
 | Previous section or finding | Receiving criterion |

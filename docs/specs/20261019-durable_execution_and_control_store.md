@@ -50,6 +50,22 @@ Server configuration stays server-owned; AEP pins revisions/digests, distinct fr
 
 Vault and host-owned Worker volumes retain their owners.
 
+### Write And Space Budget
+
+Core serializes each Workspace database through one in-process writer queue in WAL mode; group ready transitions into one transaction, preserving individual conditions/atomicity, acknowledging only committed groups.
+
+Bound read transactions; enforce tested WAL size/age limits through checkpoints/backpressure.
+
+At creation, including the authorized reset, set `auto_vacuum=INCREMENTAL` for all OpenKit-owned databases, including server, Workspace, user and Light App `data.sqlite`; opaque MCP databases remain app-owned.
+
+Run bounded `incremental_vacuum`; enforce `secure_delete=ON` per connection because FAST can leave freelist remnants; checkpoint/truncate after deletion obligations, retrying blocked checkpoints without device-erasure guarantees.
+
+Use `VACUUM INTO` only on common-cut static snapshots under durable capture protection.
+
+Content deletion removes unheld blobs through reachability GC; backups expire under retention.
+
+Thread-owned rows carry Thread identity directly or through their owner, permitting transactional separation; stable cross-Thread references, including Knowledge provenance/Task links, resolve archived/purged states truthfully.
+
 ### Workspace Authorities Outside The Control Database
 
 | Existing owner | Target commit and complete-snapshot boundary |
@@ -290,6 +306,16 @@ Outside capture, GC roots include live references, retained history and legal ho
 
 Quarantine forbids sweeping unreadable roots; failed GC preserves bytes and reports pressure.
 
+### Deferred Thread Cold Tier
+
+After `v0.1.0` (estimated 3–5 engineer-days), archive only terminal Threads with closed executions and no queued/open work: seal rows into one immutable digest-addressed Workspace object using [backup/move closure](20260704-workspace_backup_export_import.md), rooting referenced blobs, then one transaction conditionally replaces unchanged hot rows with an archive pointer.
+
+Restore imports under current authority; purge retains a purged stub and deletes unheld archives.
+
+Creation-time reclamation, secure deletion and Thread-keyed stable references make this additive.
+
+If load tests fail, per-Thread hot-append databases are an unbuilt escape hatch; Workspace control remains centralized.
+
 ## Retained Work Data And Cost
 
 Retention owns records, privacy exclusions and default-on capture; steps reference IDs/digests.
@@ -308,7 +334,7 @@ Share lossless messages/parts, prompts and tool definitions by digest within aut
 
 Immutable request roots share content rather than repeatedly storing conversation prefixes; the retention owner chooses representation.
 
-Stream bounded chunks with verified ordered references; incomplete prefixes remain incomplete.
+Stream bounded immutable chunks, one verified ordered SQL reference per chunk boundary, never per-delta rows; prefixes remain explicitly incomplete.
 
 Cost follows unique retained bytes plus references/journal metadata; expiry leaves truthful unavailable references and respects holds.
 
@@ -421,7 +447,7 @@ Remove obsolete responsibilities with replacements; move tests without weakening
 | Order | Increment | Gates to extend |
 | --- | --- | --- |
 | 1 | Workspace quarantine and stock Host backoff | Startup/layout/readiness and service/installer faults; healthy siblings serve, corrupt server refuses boot. |
-| 2 | Immutable handoff and product/control SQL | Canonical-write-capacity, observation-recovery, pending-publication faults; crash before/after sync/commit, no dangling acknowledged reference/cache. |
+| 2 | Immutable handoff and product/control SQL | Canonical-write-capacity/observation-recovery/pending-publication faults before/after sync/commit: no dangling references/cache. Many concurrent Turns within one Workspace plus several Workspaces measure commit-latency p99/WAL peak/age to select limits. |
 | 3 | Engine/journal/signals/timers/deadlines | First-release/restart/pending/recurring/shim faults; open intent survives, ended steps skip, later-Turn delivery, no replay. |
 | 4 | Global index/handles/reservations | Both commit gaps; absent-key cancel then delayed reserve; refusal then fresh admission; restored tombstone; missing Workspace/cache eviction. |
 | 5 | Retention placement, snapshot closure, ablations | Observation/export/snapshot-chain faults; exact shared content/prefix coverage; capture crash and explicit abandonment; Storage GC and Git prune/repack remain excluded. |
