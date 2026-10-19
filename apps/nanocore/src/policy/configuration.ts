@@ -1,13 +1,21 @@
 import { OpenKitConfigSchema } from '@openkit/config-schema';
+import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   allocateEntityId,
+  type KnowledgeOwnerScope,
+  type PolicyContainerV1Schema,
   type PolicyDocumentV1,
   PolicyDocumentV1Schema,
+  PolicySubjectV1Schema,
   PolicyWriteProposalV1Schema,
 } from '@openkit/protocol';
+import type { StorageAccess } from '@openkit/storage';
 import type { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import {
+  DeploymentAdminRequiredError,
+  requireCurrentDeploymentAdmin,
+} from '../auth/operation-authorizer.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
@@ -144,6 +152,84 @@ export function readAdmittedPolicyDocument(coreDb: CoreDb, input: unknown): Poli
   // The current authored collection, anchor and human authority remain the grant.
   // A historical decision alone never makes an absent statement active.
   return document;
+}
+
+/**
+ * Projects a current admitted human lease after the caller's mandatory credential/Kernel check.
+ *
+ * The native caller supplies the current loaded collection, owning Knowledge Base binding and
+ * container facts on every Storage operation. A prior projection is not current authority.
+ * Invalid Policy or storage failures stay errors; absent or expired authority returns null.
+ */
+export function readStorageLeaseAccess(input: {
+  readonly coreDb: CoreDb;
+  readonly policy: unknown;
+  readonly statementId: string;
+  readonly subject: z.infer<typeof PolicySubjectV1Schema>;
+  readonly ownerScope: KnowledgeOwnerScope;
+  readonly knowledgeBaseId: string;
+  readonly action: 'knowledge.read' | 'knowledge.write';
+  readonly kernel: PolicyDecision;
+  readonly anchorCurrent: (anchor: z.infer<typeof PolicyContainerV1Schema>) => boolean;
+  readonly now: number;
+}): StorageAccess | null {
+  if (input.kernel.effect !== 'allow' || !Number.isFinite(input.now)) return null;
+  const subject = PolicySubjectV1Schema.parse(input.subject);
+  if (
+    subject.principal.kind !== 'human' ||
+    subject.onBehalfOf !== null ||
+    subject.actor.kind !== 'user' ||
+    subject.actor.id !== subject.principal.id ||
+    subject.responsibleHumanId !== subject.principal.id ||
+    subject.credentialKind === 'worker-package'
+  )
+    return null;
+  const document = readAdmittedPolicyDocument(input.coreDb, input.policy);
+  const statement = document.statements.find(({ id }) => id === input.statementId);
+  if (
+    !statement ||
+    statement.kind !== 'permission' ||
+    statement.state !== 'active' ||
+    statement.effect !== 'allow' ||
+    statement.grant.kind !== 'storage-lease' ||
+    statement.author.kind !== 'human' ||
+    !statement.lifetime.notAfter ||
+    Date.parse(statement.lifetime.notAfter) <= input.now ||
+    statement.grant.knowledgeBaseId !== input.knowledgeBaseId ||
+    !statement.scope.actions.includes(input.action) ||
+    !statement.scope.subjects.some(
+      (principal) => policyDigest(principal) === policyDigest(subject.principal)
+    ) ||
+    policyDigest(statement.lifetime.anchor.owner) !== policyDigest(input.ownerScope) ||
+    !input.anchorCurrent(statement.lifetime.anchor)
+  )
+    return null;
+  // Local authority belongs only to the actual local User. Other human authors
+  // must still hold current administrator authority through the existing Token owner.
+  const author = input.coreDb.sqlite
+    .prepare('SELECT kind FROM users WHERE id = ?')
+    .get(statement.author.id) as { kind: 'local' | 'human' } | undefined;
+  if (!author) return null;
+  try {
+    requireCurrentDeploymentAdmin(
+      input.coreDb,
+      { kind: author.kind === 'local' ? 'local' : 'session', userId: statement.author.id },
+      new Date(input.now)
+    );
+  } catch (error) {
+    if (error instanceof DeploymentAdminRequiredError) return null;
+    throw error;
+  }
+  return {
+    grantId: statement.id,
+    knowledgeBaseId: statement.grant.knowledgeBaseId,
+    ownerScope: input.ownerScope,
+    mount: statement.grant.mount,
+    pathPrefix: statement.grant.pathPrefix,
+    mode: statement.grant.mode,
+    expiresAt: statement.lifetime.notAfter,
+    revoked: false,
+  };
 }
 
 /** Records the current human admission before the existing file writer can persist Policy. */
