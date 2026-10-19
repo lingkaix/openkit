@@ -1,6 +1,12 @@
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
-import { DeploymentIdSchema, KnowledgeBaseIdSchema, UserIdSchema } from '@openkit/protocol';
+import {
+  DeploymentIdSchema,
+  KnowledgeBaseIdSchema,
+  PolicyDocumentV1Schema,
+  RETAINED_FORMAT_VERSION,
+  UserIdSchema,
+} from '@openkit/protocol';
 
 import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -341,6 +347,7 @@ export const OpenKitConfigSchema = z
     mode: CoreModeSchema.optional(),
     policy: z
       .object({
+        mediation: PolicyDocumentV1Schema.optional(),
         workerGitReadMaintenance: z
           .array(WorkerGitReadMaintenanceAssignmentSchema)
           .refine(
@@ -374,7 +381,7 @@ export const OpenKitConfigSchema = z
       .optional(),
     nanohost: OpenKitNanoHostConfigSchema.optional(),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
-    schemaVersion: z.literal(1).optional(),
+    schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
     server: OpenKitServerRuntimeSchema.optional(),
     vault: OpenKitVaultConfigSchema.optional(),
   })

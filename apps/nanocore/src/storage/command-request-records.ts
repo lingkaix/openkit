@@ -13,6 +13,7 @@ import {
   MaterialRevisionIdSchema,
   PresentationIdSchema,
   ResourceCandidateIdSchema,
+  readRetainedV1,
   ThreadIdSchema,
   TurnIdSchema,
   UserIdSchema,
@@ -20,6 +21,7 @@ import {
   VaultReferenceIdSchema,
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
@@ -47,6 +49,7 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
 /** Raw SQLite row for one command idempotency request. */
 type CommandRequestRow = {
+  readonly schemaVersion?: number;
   readonly key: string;
   readonly command: CommandRequestName;
   readonly requestId: string;
@@ -69,8 +72,8 @@ type CommandRequestOwner =
   | { readonly scope: 'workspace'; readonly workspaceId: string }
   | { readonly scope: 'app'; readonly workspaceId: string; readonly appId: string };
 
-/** Closed schema for the sole extra metadata allowed on a command receipt. */
-const ConversationCommandReceiptMetadataSchema = z
+/** Fixed v1 payload for the sole extra metadata allowed on a retained command receipt. */
+const StoredConversationMetadataV1Schema = z
   .object({
     targetRef: z.string().min(1),
     logicalModelId: z.string().min(1).nullable(),
@@ -104,15 +107,14 @@ const ConversationCommandReceiptMetadataSchema = z
   .strict();
 
 /** Retained descriptive metadata is normalized without relaxing current receipt emission. */
-const ConversationCommandReceiptMetadataReaderSchema =
-  ConversationCommandReceiptMetadataSchema.extend({
-    downstream: z
-      .discriminatedUnion('kind', [
-        ConversationCommandReceiptMetadataSchema.shape.downstream.unwrap().options[0].strip(),
-        ConversationCommandReceiptMetadataSchema.shape.downstream.unwrap().options[1].strip(),
-      ])
-      .nullable(),
-  }).strip();
+const StoredConversationMetadataV1ReaderSchema = StoredConversationMetadataV1Schema.extend({
+  downstream: z
+    .discriminatedUnion('kind', [
+      StoredConversationMetadataV1Schema.shape.downstream.unwrap().options[0].strip(),
+      StoredConversationMetadataV1Schema.shape.downstream.unwrap().options[1].strip(),
+    ])
+    .nullable(),
+}).strip();
 
 /** The response discriminator selects its declared entity owner; other owners keep opaque keys. */
 const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<string> | null> = {
@@ -161,7 +163,7 @@ const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<
   vault_grant: VaultGrantIdSchema,
 };
 
-const COMMAND_REQUEST_SELECT = `SELECT
+const APP_COMMAND_REQUEST_SELECT = `SELECT
   request_key AS key,
   command_name AS command,
   request_id AS requestId,
@@ -173,6 +175,20 @@ const COMMAND_REQUEST_SELECT = `SELECT
   created_at AS createdAt,
   expires_at AS expiresAt
 FROM idempotency_requests`;
+
+/** App receipts retain the existing native Kernel format; Core/User/Workspace version their JSON row. */
+const COMMAND_REQUEST_SELECT = APP_COMMAND_REQUEST_SELECT.replace(
+  'SELECT\n',
+  'SELECT\n  schema_version AS schemaVersion,\n'
+);
+
+/** The owning database selects the versioned Core row or the separately versioned native App row. */
+function commandRequestSelect(db: CommandRequestDb): string {
+  return db.scope === 'app' ? APP_COMMAND_REQUEST_SELECT : COMMAND_REQUEST_SELECT;
+}
+
+/** Fixed retained scope payload; resolving the exact database owner remains a separate existing check. */
+const StoredCommandScopeV1Schema = z.record(z.string(), z.string());
 
 /**
  * Validates kind-named response pointers, rejects unsupported fields and validates bounded Chat metadata.
@@ -199,7 +215,7 @@ export function normalizeCommandRequestResponse(
   if (command !== 'conversation.submit') {
     throw new Error('Only conversation.submit may store extra command receipt metadata.');
   }
-  const parsed = ConversationCommandReceiptMetadataSchema.safeParse(response.conversationMetadata);
+  const parsed = StoredConversationMetadataV1Schema.safeParse(response.conversationMetadata);
   if (!parsed.success) {
     throw new Error('conversation.submit command receipt metadata is invalid.');
   }
@@ -244,10 +260,12 @@ export function recordCommandRequestRecordInDb(
   record: CommandRequestRecord
 ): void {
   assertCommandRequestDbOwner(db, record.scope);
+  const scope = StoredCommandScopeV1Schema.parse(record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
   const previous = db.sqlite
-    .prepare(`${COMMAND_REQUEST_SELECT} WHERE request_key = ?`)
+    .prepare(`${commandRequestSelect(db)} WHERE request_key = ?`)
     .get(record.key) as CommandRequestRow | undefined;
+  if (previous && db.scope !== 'app') readRetainedV1(previous, () => undefined);
   let responseJson =
     response.conversationMetadata === undefined
       ? null
@@ -256,17 +274,19 @@ export function recordCommandRequestRecordInDb(
     previous?.responseJson &&
     previous.command === record.command &&
     previous.inputHash === record.inputHash &&
-    previous.scopeJson === JSON.stringify(record.scope) &&
+    previous.scopeJson === JSON.stringify(scope) &&
     previous.responseKind === response.kind &&
     previous.responseId === response.id
   ) {
-    const retained = mapCommandRequestRow(previous);
+    const retained =
+      db.scope === 'app' ? decodeCommandRequestPayloadV1(previous) : mapCommandRequestRow(previous);
     if (JSON.stringify(retained.response) === JSON.stringify(response))
       responseJson = previous.responseJson;
   }
   db.sqlite
     .prepare(
       `INSERT OR REPLACE INTO idempotency_requests (
+        ${db.scope === 'app' ? '' : 'schema_version,'}
         request_key,
         command_name,
         request_id,
@@ -277,13 +297,14 @@ export function recordCommandRequestRecordInDb(
         response_json,
         created_at,
         expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (${db.scope === 'app' ? '' : '?,'} ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      ...(db.scope === 'app' ? [] : [writeRetainedV1({}).schemaVersion]),
       record.key,
       record.command,
       record.requestId,
-      JSON.stringify(record.scope),
+      JSON.stringify(scope),
       record.inputHash,
       response.kind,
       response.id,
@@ -371,7 +392,7 @@ export function getCommandRequestRecordFromDb(
   referenceTime: string
 ): CommandRequestRecord | null {
   pruneCommandRequestRecords(db, referenceTime);
-  const row = db.sqlite.prepare(`${COMMAND_REQUEST_SELECT} WHERE request_key = ?`).get(key) as
+  const row = db.sqlite.prepare(`${commandRequestSelect(db)} WHERE request_key = ?`).get(key) as
     | CommandRequestRow
     | undefined;
 
@@ -379,7 +400,8 @@ export function getCommandRequestRecordFromDb(
     return null;
   }
 
-  const record = mapCommandRequestRow(row);
+  const record =
+    db.scope === 'app' ? decodeCommandRequestPayloadV1(row) : mapCommandRequestRow(row);
   assertCommandRequestDbOwner(db, record.scope);
   if (db.scope === 'app' && record.expiresAt <= referenceTime) {
     throw new KernelCommandError(
@@ -672,11 +694,16 @@ function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string)
  * @returns Command request record.
  */
 function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
+  return readRetainedV1(row, () => decodeCommandRequestPayloadV1(row));
+}
+
+/** Decodes the fixed receipt payload after its SQL row or native App format has been admitted. */
+function decodeCommandRequestPayloadV1(row: CommandRequestRow): CommandRequestRecord {
   return {
     key: row.key,
     command: row.command,
     requestId: row.requestId,
-    scope: JSON.parse(row.scopeJson) as CommandRequestScope,
+    scope: StoredCommandScopeV1Schema.parse(JSON.parse(row.scopeJson)),
     inputHash: row.inputHash,
     response: normalizeCommandRequestResponse(row.command, {
       kind: row.responseKind,
@@ -692,7 +719,7 @@ function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
 
 /** Reads only the retained metadata core before exact response-pointer validation. */
 function readConversationMetadata(json: string): ConversationCommandReceiptMetadata {
-  const result = ConversationCommandReceiptMetadataReaderSchema.safeParse(JSON.parse(json));
+  const result = StoredConversationMetadataV1ReaderSchema.safeParse(JSON.parse(json));
   if (!result.success) throw new Error('conversation.submit command receipt metadata is invalid.');
   return result.data;
 }

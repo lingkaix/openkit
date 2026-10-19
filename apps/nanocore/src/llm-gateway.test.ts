@@ -3885,7 +3885,7 @@ it('the API-key path restores the same member on next resolve without reload', a
   mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
   writeFileSync(
     join(dataRoot, 'config', 'providers', 'openai.provider.jsonc'),
-    JSON.stringify(profile)
+    JSON.stringify({ ...profile, schemaVersion: 1 })
   );
   const options = createProviderOptions(profile);
   const manager = createRuntimeConfigManager({

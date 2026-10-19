@@ -10,7 +10,7 @@ import {
   validateAgentEnvironmentPackageForBackend,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import { readRetainedV1, responsibleUserIdForActor } from '@openkit/protocol';
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   WorkerRuntimeRawStreamManifestSchema,
@@ -23,9 +23,9 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { isThreadVisible } from '../auth/thread-visibility.js';
+import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
+import { ArtifactAuthorityError, FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
@@ -339,7 +339,8 @@ function createNanoHostWorkerLifecycleRuntime(
     nanoHostSessionDispatch,
     workerControlGateway,
     vaultBackend,
-    readRuntimeConfig
+    readRuntimeConfig,
+    sharedStore
   );
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
@@ -663,6 +664,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * @param workerControlGateway Optional existing semantic worker-control owner.
    * @param collectionVaultBackend Existing Vault owner for private release snapshots.
    * @param readRuntimeConfig Current authored Sandbox capacity configuration.
+   * @param sharedStore Existing AgentSession authority for already-completed proof handoff.
    */
   public constructor(
     private readonly coreDb: CoreDb,
@@ -674,7 +676,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly sessionDispatch?: NanoHostSessionDispatch,
     private readonly workerControlGateway?: WorkerControlGateway,
     private readonly collectionVaultBackend?: () => VaultBackend,
-    private readonly readRuntimeConfig?: () => PublicNetworkConfiguration
+    private readonly readRuntimeConfig?: () => PublicNetworkConfiguration,
+    private readonly sharedStore?: FsStore
   ) {}
 
   /** Reads the authored aggregate bound; invalid current configuration fails closed. */
@@ -1369,7 +1372,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               input.environmentPackage,
               input.workerStorageChoice,
               responsibleUserId,
-              currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
+              currentWorkerStorageAudienceAuthorizer(
+                this.coreDb,
+                input.environmentPackage,
+                this.readRuntimeConfig
+              )
             )
           );
           if (released && input.workerStorageChoice?.kind === 'selected')
@@ -1434,7 +1441,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           input.environmentPackage,
           input.workerStorageChoice,
           responsibleUserId,
-          currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
+          currentWorkerStorageAudienceAuthorizer(
+            this.coreDb,
+            input.environmentPackage,
+            this.readRuntimeConfig
+          )
         )
       );
       return releasedBinding && input.workerStorageChoice?.kind === 'selected'
@@ -1478,7 +1489,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           environmentPackage,
           input.workerStorageChoice,
           responsibleUserId,
-          currentWorkerStorageAudienceAuthorizer(this.coreDb, environmentPackage)
+          currentWorkerStorageAudienceAuthorizer(
+            this.coreDb,
+            environmentPackage,
+            this.readRuntimeConfig
+          )
         )!
       );
     }
@@ -2147,7 +2162,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
     if (eviction === 'capacity-saturated') return 'capacity-saturated';
     for (const binding of eviction?.bindings ?? []) {
-      this.handoffDurableAgentSessionProof(binding);
+      this.handoffDurableAgentSessionProof(binding, undefined, eviction!);
     }
     return 'available';
   }
@@ -2517,7 +2532,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         // Every row removed by whole-Sandbox retirement must settle proof before drain.
         for (const binding of eviction.bindings) {
-          this.handoffDurableAgentSessionProof(binding);
+          this.handoffDurableAgentSessionProof(binding, undefined, eviction);
         }
         const timestamp = new Date().toISOString();
         const physicalAbsentFlag = Number(eviction.physicalAbsent);
@@ -2730,7 +2745,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const choice = context.workerStorageChoice;
     const authorizeContributor = currentWorkerStorageAudienceAuthorizer(
       this.coreDb,
-      environmentPackage
+      environmentPackage,
+      this.readRuntimeConfig
     );
     const replacementSelection = this.workerStorageReplacementSelection(
       environmentPackage,
@@ -3303,6 +3319,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: new Date().toISOString(),
         workspaceId: session.environmentPackage.scope.workspaceId,
       });
+      const retainedBinding = this.coreDb.sqlite
+        .prepare(
+          'SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        )
+        .get(session.agentSessionRuntimeBindingId);
+      if (retainedBinding) readRetainedV1(retainedBinding, () => retainedBinding);
       this.coreDb.sqlite
         .prepare(
           'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
@@ -3988,9 +4010,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Record<string, string> {
     const row = this.coreDb.sqlite
       .prepare(
-        'SELECT runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
       )
-      .get(session.agentSessionRuntimeBindingId) as { versions: string | null } | undefined;
+      .get(session.agentSessionRuntimeBindingId) as
+      | { schemaVersion: unknown; versions: string | null }
+      | undefined;
+    if (row) readRetainedV1(row, () => row);
     try {
       const versions = JSON.parse(row?.versions ?? 'null') as Array<{
         targetEnvVarName: string;
@@ -4882,15 +4907,77 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return this.requireSession(environmentPackage.snapshotId);
   }
 
+  /** Recognizes completed handoff from existing authorities without admitting the historical package. */
+  private hasRecordedRetiringProof(
+    inspection: NanoHostAgentSessionContinuityInspection,
+    retirement: NanoHostIdleSandboxEviction
+  ): boolean {
+    if (!this.sharedStore || !inspection.nativeHandleDigest) return false;
+    let session: ReturnType<FsStore['getAgentSession']>;
+    try {
+      session = this.sharedStore.getAgentSession(inspection.agentSessionId);
+    } catch (error) {
+      if (error instanceof StoreRecordNotFoundError) return false;
+      throw error;
+    }
+    if (session.nativeHandleDigest !== inspection.nativeHandleDigest || !session.retainedStorage)
+      return false;
+    const latest = this.coreDb.sqlite
+      .prepare(`
+      SELECT workspace_id AS workspaceId, thread_id AS threadId,
+        package_snapshot_id AS packageSnapshotId, sandbox_binding_ref AS sandboxBindingRef,
+        runtime_target_id AS runtimeTargetId, origin_physical_epoch AS originPhysicalEpoch
+      FROM worker_backend_sessions WHERE agent_session_id = ?
+      ORDER BY created_at DESC, attempt_id DESC LIMIT 1
+    `)
+      .get(inspection.agentSessionId) as
+      | {
+          workspaceId: string;
+          threadId: string;
+          packageSnapshotId: string;
+          sandboxBindingRef: string;
+          runtimeTargetId: string;
+          originPhysicalEpoch: string;
+        }
+      | undefined;
+    if (
+      !latest ||
+      session.environmentPackageSnapshotId !== latest.packageSnapshotId ||
+      session.workspaceId !== latest.workspaceId ||
+      session.threadId !== latest.threadId ||
+      latest.sandboxBindingRef !== retirement.sandboxBindingRef ||
+      latest.originPhysicalEpoch !== retirement.originPhysicalEpoch
+    )
+      return false;
+    const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
+      sandboxBindingRef: retirement.sandboxBindingRef,
+    });
+    return (
+      storage !== null &&
+      storage.runtimeTargetId === latest.runtimeTargetId &&
+      storage.storageRef === session.retainedStorage.storageRef &&
+      storage.workspaceId === session.workspaceId &&
+      storage.contributors.some(
+        (contributor) =>
+          contributor.workSlotRef === session.retainedStorage!.workSlotRef &&
+          contributor.threadId === session.threadId &&
+          contributor.workspaceId === session.workspaceId
+      )
+    );
+  }
+
   /**
    * Joins accepted proof to original persisted identities and compatibility keys reproduced from digest-verified retained JSON before normalization. Proof-only inspection needs no Turn handle or live Harness, including in an old physical Epoch. A recorder refusal leaves the binding and its cleanup ownership untouched.
    */
   private handoffDurableAgentSessionProof(
     inspection: NanoHostAgentSessionContinuityInspection,
-    record?: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void
+    record?: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void,
+    retirement?: NanoHostIdleSandboxEviction
   ): void {
     const digest = inspection.nativeHandleDigest;
     if (!digest) return;
+    // Physical retirement is not executable admission. Keep the accepted historical proof and bytes.
+    if (retirement?.physicalAbsent && this.hasRecordedRetiringProof(inspection, retirement)) return;
     const liveSession = [...this.sessions.values()].find(
       (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
     );
@@ -5256,7 +5343,8 @@ function requireAttachedWorkerStorageBinding(
 /** Rechecks exact live Worker authority and every retained contributor's current Thread audience. */
 function currentWorkerStorageAudienceAuthorizer(
   coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackagePreview
+  environmentPackage: AgentEnvironmentPackagePreview,
+  readRuntimeConfig: (() => PublicNetworkConfiguration) | undefined
 ): (contributor: WorkerStorageContributor) => boolean {
   const { scope } = environmentPackage;
   const requesterUserId = responsibleUserIdForActor(scope.triggerActor);
@@ -5310,11 +5398,29 @@ function currentWorkerStorageAudienceAuthorizer(
       (records) => records.workspace.id === scope.workspaceId
     );
     const thread = records?.threads.find((thread) => thread.id === contributor.threadId);
+    if (!records || !thread || thread.workspaceId !== scope.workspaceId) return false;
+    const audienceOwner = {
+      getWorkspace: () => records.workspace,
+      getWorkspaceResourceAccess: (workspaceId: string) => {
+        if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');
+        return (
+          readRuntimeConfig().workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)
+            ?.config.workspace.policy?.resourceAccess ?? []
+        );
+      },
+    };
     return (
-      !!records &&
-      !!thread &&
-      thread.workspaceId === scope.workspaceId &&
-      isThreadVisible({ getWorkspace: () => records.workspace }, thread, requesterUserId)
+      isThreadVisible(audienceOwner, thread, requesterUserId, false, 'thread.read', {
+        kind: 'agent',
+        userId: requesterUserId,
+        agentId: environmentPackage.agent.agentId,
+        processId: scope.agentSessionId,
+      }) &&
+      canDiscloseThreadToAudience(
+        audienceOwner,
+        thread,
+        records.threads.find((candidate) => candidate.id === scope.threadId) ?? null
+      )
     );
   };
 }

@@ -418,6 +418,8 @@ Artifact entries should include:
 
 Artifacts remain artifacts; including them in context does not convert them into knowledge.
 
+An explicit Artifact selector resolves its retained exact version through the Artifact owner, even when a newer head exists. Current source visibility, lifecycle eligibility and receiving audience still apply. Admission and repeated source checks compare the selected immutable version and digest; they do not replace it with the current head. Missing or invalid retained originals block admission.
+
 ## Workspace File Handling
 
 Workspace files included as context should use workspace-relative paths and digests.

@@ -2,8 +2,12 @@ import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
   ActorRefSchema,
+  AutomationIdSchema,
   type ReasoningEffort,
   ReasoningEffortSchema,
+  readRetainedV1,
+  UserIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { commandInputHash } from './runtime/idempotent-command.js';
@@ -12,6 +16,48 @@ import type {
   SchedulerAdmissionDenialReason,
   SchedulerAdmissionStatus,
 } from './storage/schema/index.js';
+
+// The SQL row owns one marker for these fixed payloads. Wire changes cannot change retained v1.
+const StoredSchedulerActorV1Schema = z.union([
+  z.object({ kind: z.literal('user'), id: UserIdSchema }).strip(),
+  z
+    .object({
+      kind: z.enum(['agent', 'integration', 'system']),
+      id: z.string().min(1),
+      responsibleUserId: UserIdSchema.nullable(),
+    })
+    .strip(),
+  z
+    .object({
+      kind: z.literal('automation'),
+      id: AutomationIdSchema,
+      responsibleUserId: UserIdSchema.nullable(),
+    })
+    .strip(),
+]);
+
+const StoredSchedulerWorkspaceRootV1Schema = z.discriminatedUnion('sourceKind', [
+  z
+    .object({
+      id: z.string().min(1),
+      sourceKind: z.enum(['host-dir', 'materialized-dir']),
+      sourcePath: z.string().min(1),
+      sourceCommit: z.string().optional(),
+      workerPath: z.string().min(1),
+      access: z.enum(['read-only', 'read-write']),
+    })
+    .strip(),
+  z
+    .object({
+      id: z.string().min(1),
+      sourceKind: z.literal('remote-git'),
+      // The native remote locator producer admits this exact immutable commit form.
+      sourceCommit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+      workerPath: z.string().min(1),
+      access: z.enum(['read-only', 'read-write']),
+    })
+    .strip(),
+]);
 /** Known scheduler admission transition refusal; the admission family owns its projection. */
 export class SchedulerAdmissionTransitionError extends Error {
   /** Definite refusal classified by the existing admission owner. */
@@ -87,6 +133,7 @@ export interface SchedulerAdmissionEntryRecord {
 
 /** Raw scheduler admission row. */
 interface SchedulerAdmissionEntryRow {
+  readonly schemaVersion: unknown;
   readonly backend_id: string;
   readonly input_hash: string;
   readonly queue_entry_id: string;
@@ -243,11 +290,12 @@ export function createSchedulerAdmissionEntry(
       ORDER BY rowid LIMIT 1`)
         .get(input.queueEntryId, input.turnId) as SchedulerAdmissionEntryRow | undefined;
       if (existing) {
-        if (existing.queue_entry_id !== input.queueEntryId || existing.input_hash !== inputHash)
+        const entry = mapSchedulerAdmissionEntryRow(existing);
+        if (entry.queueEntryId !== input.queueEntryId || entry.inputHash !== inputHash)
           throw new SchedulerAdmissionTransitionError(
             'Scheduler admission request conflicts with its retained input.'
           );
-        return mapSchedulerAdmissionEntryRow(existing);
+        return entry;
       }
       const queued = coreDb.sqlite
         .prepare(
@@ -264,8 +312,8 @@ export function createSchedulerAdmissionEntry(
       queue_entry_id, backend_id, input_hash, request_id, workspace_id, thread_id, turn_id, turn_input,
       worker_storage_choice_json, requested_agent_id, profile_ref, model_id, reasoning_effort,
       enqueued_at, status, denial_reason, trigger_actor_json,
-      server_admin_token_id, workspace_cwd, workspace_roots_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      server_admin_token_id, workspace_cwd, workspace_roots_json, schema_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           input.queueEntryId,
           input.backendId,
@@ -288,7 +336,8 @@ export function createSchedulerAdmissionEntry(
           JSON.stringify(triggerActor),
           input.serverAdminTokenId ?? null,
           input.workspaceCwd ?? null,
-          JSON.stringify(input.workspaceRoots ?? [])
+          JSON.stringify(input.workspaceRoots ?? []),
+          writeRetainedV1({}).schemaVersion
         );
       return requireSchedulerAdmissionEntry(coreDb, input.queueEntryId);
     })
@@ -505,6 +554,7 @@ export function requireSchedulerAdmissionEntry(
  */
 function schedulerAdmissionSelectSql(): string {
   return `SELECT
+    schema_version AS schemaVersion,
     queue_entry_id,
     backend_id,
     input_hash,
@@ -537,15 +587,17 @@ function schedulerAdmissionSelectSql(): string {
 function mapSchedulerAdmissionEntryRow(
   row: SchedulerAdmissionEntryRow
 ): SchedulerAdmissionEntryRecord {
-  return {
+  return readRetainedV1(row, () => ({
     queueEntryId: row.queue_entry_id,
     backendId: row.backend_id,
     inputHash: row.input_hash,
     requestId: row.request_id,
-    triggerActor: ActorRefSchema.parse(JSON.parse(row.trigger_actor_json)),
+    triggerActor: StoredSchedulerActorV1Schema.parse(JSON.parse(row.trigger_actor_json)),
     serverAdminTokenId: row.server_admin_token_id,
     workspaceCwd: row.workspace_cwd,
-    workspaceRoots: JSON.parse(row.workspace_roots_json) as MaterializedWorkspaceRoot[],
+    workspaceRoots: z
+      .array(StoredSchedulerWorkspaceRootV1Schema)
+      .parse(JSON.parse(row.workspace_roots_json)),
     workspaceId: row.workspace_id,
     threadId: row.thread_id,
     turnId: row.turn_id,
@@ -565,7 +617,7 @@ function mapSchedulerAdmissionEntryRow(
       .enum(['queue-full', 'authority-denied', 'invalid-request'])
       .nullable()
       .parse(row.denial_reason),
-  };
+  }));
 }
 
 /** Parses storage selection exactly for fresh commands and drops only descriptive additions from retained reads. */
@@ -713,7 +765,8 @@ export function findSchedulerAdmissionForWorkerLineage(
   'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
 > | null {
   const rows = coreDb.sqlite
-    .prepare(`SELECT admission.* FROM scheduler_execution_attempts attempt
+    .prepare(`SELECT admission.*, admission.schema_version AS schemaVersion
+    FROM scheduler_execution_attempts attempt
     JOIN scheduler_admission_entries admission ON admission.queue_entry_id = attempt.queue_entry_id
     WHERE attempt.workspace_id = ? AND attempt.thread_id = ? AND attempt.turn_id = ?
       AND attempt.agent_session_id = ? AND attempt.input_ref = ?
@@ -735,7 +788,8 @@ export function requireSchedulerExecutionAttemptAdmissionContext(
   attemptId: string
 ): SchedulerAdmissionEntryRecord {
   const row = coreDb.sqlite
-    .prepare(`SELECT admission.* FROM scheduler_execution_attempts attempt
+    .prepare(`SELECT admission.*, admission.schema_version AS schemaVersion
+    FROM scheduler_execution_attempts attempt
     JOIN scheduler_admission_entries admission ON admission.queue_entry_id = attempt.queue_entry_id
     WHERE attempt.attempt_id = ? AND admission.workspace_id = attempt.workspace_id
       AND admission.thread_id = attempt.thread_id AND admission.turn_id = attempt.turn_id`)

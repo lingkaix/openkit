@@ -1,6 +1,6 @@
+import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
 import type { CoreDb } from './storage/db.js';
 import type { VaultInjectionReceiptRevocationStatus } from './storage/schema/index.js';
-import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
 import { getVaultInjectionPlan, type VaultInjectionPlanRecord } from './vault-injection-plans.js';
 
 /** Durable non-secret injection receipt record. */
@@ -267,7 +267,7 @@ function assertReceiptActor(
     ['mcp-gateway:http', 'mcp-gateway:stdio'].includes(plan.backendCapabilityRequirement)
   ) {
     const event = coreDb.sqlite
-      .prepare(`SELECT actor_json FROM audit_events
+      .prepare(`SELECT * FROM audit_events
       WHERE audit_event_id = ? AND action = 'administration.mcp-discovery-preview.delivery'
       AND outcome = 'succeeded' AND vault_grant_id = ? AND resource = ?
       AND request_id IS NOT NULL`)
@@ -275,8 +275,8 @@ function assertReceiptActor(
       | { actor_json: string }
       | undefined;
     if (event) {
-      const actor = ActorRefReaderSchema.safeParse(JSON.parse(event.actor_json));
-      if (actor.success && actor.data.kind === 'user') return;
+      const actor = readAuditEventRowV1(event).actor;
+      if (actor?.kind === 'user') return;
     }
   }
   throw new Error('Injection receipts require agentSessionId or capabilityCallId.');

@@ -63,7 +63,7 @@ import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 
-/** First explicit save owns fresh scope creation; existing or lost notebooks are never initialized again. */
+/** First explicit save retains its default KB before Notebook publication; existing or lost notebooks are never initialized again. */
 function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {
   const owner = admitMemoryContext(writer);
   const path = `${input.pageId}.md`;

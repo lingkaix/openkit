@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
+import { applyEdits, modify } from 'jsonc-parser';
 import { expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { parseJsoncObject } from '../config/jsonc.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
@@ -92,23 +92,33 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   const directory = join(dataRoot, 'workspaces', workspace.id, 'config');
   mkdirSync(directory, { recursive: true });
   const configure = (enabled: boolean) => {
-    const configPath = join(directory, 'workspace.jsonc');
-    const config = parseJsoncObject(readFileSync(configPath, 'utf8'));
+    const path = join(directory, 'workspace.jsonc');
+    // Change policy without replacing the established Knowledge Base binding or other settings.
+    const currentConfig = readFileSync(path, 'utf8');
+    const configuredRole = applyEdits(
+      currentConfig,
+      modify(
+        currentConfig,
+        ['workspace', 'internalRoles'],
+        [{ roleId: 'knowledge-manager', profileId: 'missing-knowledge-profile' }],
+        {}
+      )
+    );
     writeFileSync(
-      configPath,
-      JSON.stringify({
-        ...config,
-        workspace: {
-          ...(config.workspace as Record<string, unknown>),
-          name: workspace.name,
-          internalRoles: [{ roleId: 'knowledge-manager', profileId: 'missing-knowledge-profile' }],
-          knowledgeMaintenance: {
+      path,
+      applyEdits(
+        configuredRole,
+        modify(
+          configuredRole,
+          ['workspace', 'knowledgeMaintenance'],
+          {
             enabled: false,
             reviewRequiredPageIds: [],
             ...(enabled ? { schedule: { enabled: true } } : {}),
           },
-        },
-      })
+          {}
+        )
+      )
     );
   };
   let scan!: (instant: string) => void;

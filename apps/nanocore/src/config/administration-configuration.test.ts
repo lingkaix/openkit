@@ -2,10 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, writeRetainedV1 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
+import { listServerAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -14,6 +15,9 @@ import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { readAdmittedPolicyDocument } from '../policy/configuration.js';
+import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
+import { policyDigest } from '../policy/statements.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -87,7 +91,7 @@ function fixture() {
   mkdirSync(join(dataRoot, 'config/providers'), { recursive: true });
   writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
   const providerPath = join(dataRoot, 'config/providers/catalog.provider.jsonc');
-  writeFileSync(providerPath, JSON.stringify(provider));
+  writeFileSync(providerPath, JSON.stringify(writeRetainedV1(provider)));
   const logicalModel = {
     id: 'reasoning',
     displayName: 'Reasoning',
@@ -162,6 +166,111 @@ function fixture() {
 }
 
 describe('administration catalog configuration', () => {
+  it('retains inactive Policy forms through the exact human candidate and records actual activation', async () => {
+    const f = fixture();
+    const principal = { kind: 'human' as const, id: f.actor.userId };
+    const fields = {
+      author: principal,
+      authority: { kind: 'human' as const, userId: f.actor.userId },
+      authoredAt: '2026-10-18T00:00:00Z',
+      state: 'inactive' as const,
+      scope: {
+        subjects: [principal],
+        actions: ['tool.use'],
+        resources: [
+          {
+            kind: 'mcp-tool' as const,
+            workspaceId: f.workspaceId,
+            serverId: 'issues',
+            toolName: 'read',
+          },
+        ],
+      },
+      lifetime: {
+        anchor: {
+          owner: { kind: 'workspace' as const, workspaceId: f.workspaceId },
+          kind: 'workspace',
+          id: f.workspaceId,
+        },
+        uses: 1,
+      },
+    };
+    const proposed = {
+      schemaVersion: 1 as const,
+      statements: [
+        {
+          ...fields,
+          id: 'tool-rule',
+          kind: 'permission' as const,
+          effect: 'require_approval' as const,
+          grant: { kind: 'gateway-tool-rule' as const, toolNames: ['issues.read'] },
+        },
+      ],
+    };
+    const serverPath = join(f.dataRoot, 'config/server.jsonc');
+    const original = readFileSync(serverPath, 'utf8');
+    const proposal = f.service.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed,
+          rationale: 'Retain inactive native declarations for their later consumers.',
+        },
+      },
+      f.home
+    );
+    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+    const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
+    if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
+    const candidate = JSON.parse(artifact.content.body);
+    expect(candidate.policyProposal).toMatchObject({
+      proposer: principal,
+      validation: 'valid',
+    });
+    expect(candidate.policyProposal).not.toHaveProperty('classification');
+    expect(candidate.policyProposal).not.toHaveProperty('diff');
+    expect(
+      candidate.after.statements.every(
+        (statement: { state: string }) => statement.state === 'inactive'
+      )
+    ).toBe(true);
+    const confirmed = f.confirm(proposal);
+    const result = await f.service.apply(confirmed);
+    expect(result).toMatchObject({ persisted: true, reload: 'applied' });
+    const loaded = readAdmittedPolicyDocument(
+      f.coreDb,
+      f.manager.current().openKitConfig.policy?.mediation
+    );
+    expect(loaded).toEqual(candidate.after);
+    const decision = listServerPermissionDecisions(f.coreDb).find(
+      (row) => row.mediation?.operation === 'policy.write'
+    );
+    expect(decision).toMatchObject({
+      result: 'allow',
+      enforcementPoint: 'policy.write@decide',
+      mediation: {
+        role: 'final',
+        kernel: { effect: 'allow' },
+        proposalDigest: proposal.candidate.contentDigest,
+        subject: { principal, process: null, responsibleHumanId: f.actor.userId },
+      },
+    });
+    const audit = listServerAuditEvents(f.coreDb).find((row) => row.action === 'policy.write');
+    expect(audit).toMatchObject({
+      permissionDecisionId: decision?.decisionId,
+      outcome: 'succeeded',
+      policyWriteOutcome: {
+        persistedRevision: policyDigest(candidate.after),
+        activeRevision: policyDigest(loaded),
+        outcome: 'active',
+      },
+    });
+    expect(await f.service.apply(confirmed)).toEqual(result);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+  });
+
   it('publishes only editable schema fields while preserving their constraints', () => {
     const f = fixture();
     const provider = f.service.schema('provider').schema;
@@ -330,32 +439,62 @@ describe('administration catalog configuration', () => {
     const f = fixture();
     const proposal = f.service.propose(f.request, f.home);
     const request = f.confirm(proposal);
-    const result = await f.service.apply(request);
-    const outcome = f.store
-      .listArtifacts(f.workspaceId)
-      .find(
-        (artifact) =>
-          artifact.id ===
-          deriveEntityId('ar', ['configuration_result', { userId: f.actor.userId, request }])
-      )!;
-    const root = join(f.dataRoot, 'workspaces', f.workspaceId, 'artifacts', outcome.id);
-    const body = {
+    const outcomeId = deriveEntityId('ar', [
+      'configuration_result',
+      { userId: f.actor.userId, request },
+    ]);
+    const publish = f.store.createArtifact.bind(f.store);
+    // Author descriptive additions before the real immutable v1 publisher receives its bytes.
+    const publication = vi
+      .spyOn(f.store, 'createArtifact')
+      .mockImplementation((artifact, payload) => {
+        if (artifact.id !== outcomeId || artifact.content.format !== 'json')
+          return publish(artifact, payload);
+        const result = JSON.parse(artifact.content.body);
+        const bytes = JSON.stringify({
+          ...result,
+          annotation: 'outcome',
+          candidate: { ...result.candidate, annotation: 'reference' },
+        });
+        return publish(
+          {
+            ...artifact,
+            content: { format: 'json', body: bytes },
+            contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          },
+          payload
+        );
+      });
+    const result = await f.service.apply(request).finally(() => publication.mockRestore());
+    const outcome = f.store.getArtifact(f.workspaceId, outcomeId);
+    expect(outcome.content.format).toBe('json');
+    if (outcome.content.format !== 'json') throw new Error('Expected the published JSON outcome.');
+    const bytes = outcome.content.body;
+    expect(JSON.parse(bytes)).toEqual({
       ...result,
       annotation: 'outcome',
       candidate: { ...result.candidate, annotation: 'reference' },
-    };
-    const bytes = JSON.stringify(body);
-    const metadataPath = join(root, 'artifact.json');
-    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
-    metadata.contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    writeFileSync(join(root, 'files/content.json'), bytes);
-    writeFileSync(metadataPath, JSON.stringify(metadata));
+    });
+    const root = join(f.dataRoot, 'workspaces', f.workspaceId, 'artifacts', outcome.id);
+    const versionRoot = join(root, 'versions', '1');
+    const original = readFileSync(join(versionRoot, 'payload'));
+    const descriptor = readFileSync(join(versionRoot, 'version-record.json'));
+    expect(original.toString('utf8')).toBe(bytes);
+    expect(f.store.listArtifactVersions(f.workspaceId, outcome.id)).toMatchObject([
+      { artifactVersion: 1, parentVersion: null, contentDigest: outcome.contentDigest },
+    ]);
     const reopened = new FsStore({ dataRoot: f.dataRoot });
     const service = createAdministrationConfiguration({ ...f, store: reopened });
     expect(await service.apply(request)).toEqual(result);
     expect(f.reload).toHaveBeenCalledTimes(1);
-    expect(readFileSync(join(root, 'files/content.json'), 'utf8')).toBe(bytes);
+    expect(reopened.getArtifactVersion(f.workspaceId, outcome.id, 1).artifact.content).toEqual({
+      format: 'json',
+      body: bytes,
+    });
     expect(await service.apply(request)).toEqual(result);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(versionRoot, 'payload'))).toEqual(original);
+    expect(readFileSync(join(versionRoot, 'version-record.json'))).toEqual(descriptor);
   });
 
   it('retains persisted bytes and reports reload failure without repeating the effect', async () => {

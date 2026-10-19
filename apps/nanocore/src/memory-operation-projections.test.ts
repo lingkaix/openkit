@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
+
 import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
@@ -133,6 +134,13 @@ describe('public explicit self Memory', () => {
     };
     const first = await f.call('memory.create', input);
     expect(first.status).toBe(200);
+    const knowledgeBaseOwner = {
+      dataRoot: f.dataRoot,
+      scope: { kind: 'user' as const, userId: f.userId },
+    };
+    const knowledgeBaseId = readDefaultKnowledgeBaseId(knowledgeBaseOwner);
+    const configPath = join(f.dataRoot, 'users', f.userId, 'config', 'user.jsonc');
+    const configBytes = readFileSync(configPath);
     const corrected = f.content('Corrected preference.');
     const update = await f.call('memory.update', {
       requestId: randomUUID(),
@@ -143,12 +151,16 @@ describe('public explicit self Memory', () => {
     });
     expect(update.status).toBe(200);
     expect(await f.call('memory.create', input)).toEqual(first);
+    expect(readDefaultKnowledgeBaseId(knowledgeBaseOwner)).toBe(knowledgeBaseId);
+    expect(readFileSync(configPath)).toEqual(configBytes);
     expect((await f.call('memory.read', { pageId: 'preferences' })).body.page.content).toBe(
       corrected
     );
     rmSync(userMemoryRoot(f.dataRoot, f.userId), { recursive: true });
     const refused = await f.call('memory.create', { ...input, requestId: randomUUID() });
     expect(refused).toMatchObject({ status: 503, body: { code: 'recovery_required' } });
+    expect(readDefaultKnowledgeBaseId(knowledgeBaseOwner)).toBe(knowledgeBaseId);
+    expect(readFileSync(configPath)).toEqual(configBytes);
   });
 
   it('rejects caller-selected owners and unsupported source-bearing content without publication', async () => {

@@ -34,6 +34,10 @@ describe('descriptive canonical history extensions', () => {
       (record) => record.workspace.id === workspace.id
     )!;
     const body = 'Knowledge candidate.\n';
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: workspace.id },
+    });
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(root, 'knowledge', 'notebook.git'),
     });
@@ -68,7 +72,7 @@ describe('descriptive canonical history extensions', () => {
     notebook.publish({ baseRevision: initialRevision, candidateRevision: baseRevision });
     const sourceReference = formatReferenceUri(
       {
-        scopeId: `page/workspace/${workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId: workspace.id } })}`,
+        scopeId: `page/workspace/${workspace.id}/${knowledgeBaseId}`,
         objectId: 'source',
       },
       `sha256:${createHash('sha256').update(sourceBytes).digest('hex')}`

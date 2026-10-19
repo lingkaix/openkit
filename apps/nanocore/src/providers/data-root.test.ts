@@ -26,6 +26,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
     writeFileSync(
       join(providersRoot, 'core-openrouter.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: 1,
         baseUrl: 'https://openrouter.ai/api/v1',
         defaultModel: 'openai/gpt-5.1',
         displayName: 'Core OpenRouter',
@@ -53,6 +54,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
     writeFileSync(
       join(providersRoot, 'openai-codex.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: 1,
         displayName: 'OpenAI Codex',
         extensions: { openkit: { subscriptionAccount: { accountSlotId: 'default' } } },
         id: 'openai_codex',
@@ -79,6 +81,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
       writeFileSync(
         join(providersRoot, 'core-openrouter.provider.jsonc'),
         JSON.stringify({
+          schemaVersion: 1,
           baseUrl: 'https://openrouter.ai/api/v1',
           defaultModel: 'openai/gpt-5.1',
           displayName: 'Core OpenRouter',

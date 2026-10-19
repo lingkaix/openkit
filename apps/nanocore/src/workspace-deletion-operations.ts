@@ -16,6 +16,7 @@ import {
   WorkspaceDeletionResponseSchema,
   type WorkspaceDeletionState,
 } from '@openkit/app-api-schemas';
+import { readRetainedV1 } from '@openkit/protocol';
 import {
   listServerAuditEvents,
   listSqliteAuditEvents,
@@ -783,8 +784,9 @@ function requireTerminalWorkspaceStorage(
 
 function requireWorkspaceRootIdentity(root: string, workspaceId: string): void {
   assertCanonicalDirectory(root);
-  const record = WorkspaceSystemRecordSchema.parse(
-    JSON.parse(readCanonicalTextFile(join(root, 'workspace-record.json')))
+  const record = readRetainedV1(
+    JSON.parse(readCanonicalTextFile(join(root, 'workspace-record.json'))),
+    WorkspaceSystemRecordSchema.parse
   );
   if (record.id !== workspaceId) {
     throw recoveryRequired();
@@ -866,6 +868,15 @@ function hasActiveWorkspaceRuntime(input: {
   }
   const workspaceDb = input.repositoryWorkspaceDb(input.workspaceId);
   try {
+    // Unreadable Plan or Result meaning cannot authorize destructive cleanup.
+    for (const row of workspaceDb.sqlite
+      .prepare(`
+      SELECT schema_version AS schemaVersion FROM workspace_apply_plans WHERE workspace_id=?
+      UNION ALL
+      SELECT schema_version AS schemaVersion FROM workspace_apply_results WHERE workspace_id=?
+    `)
+      .all(input.workspaceId, input.workspaceId))
+      readRetainedV1(row, () => undefined);
     return Boolean(
       workspaceDb.sqlite
         .prepare(

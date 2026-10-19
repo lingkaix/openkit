@@ -142,25 +142,28 @@ async function projections(f: ReturnType<typeof fixture>, token?: string, operat
   const { operationCatalog } = await import(
     new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
   );
-  const binary = operationId === 'artifact.import' || operationId === 'artifact.download';
+  const binary =
+    operationId !== undefined &&
+    schemas.OPERATION_DEFINITIONS[operationId as keyof typeof schemas.OPERATION_DEFINITIONS]
+      ?.binding === 'streaming';
   return {
     http: async (id: string, input: Record<string, unknown>) => {
       const { requestId, ...body } = input;
-      const streaming = id === 'artifact.import' || id === 'artifact.download';
+      const upload = id === 'artifact.import' || id === 'artifact.version-file-commit';
+      const streaming = upload || id === 'artifact.download';
       const query = streaming
-        ? `?${new URLSearchParams(Object.entries(body).map(([key, value]) => [key, String(value)]))}`
+        ? `?${new URLSearchParams(Object.entries(body).map(([key, value]) => [key, key === 'summary' ? JSON.stringify(value) : String(value)]))}`
         : '';
       const response = await app.request(`/api/app/operations/${id}${query}`, {
         method: id === 'artifact.download' ? 'GET' : 'POST',
         headers: {
           ...headers,
-          'content-type':
-            id === 'artifact.import' ? 'application/octet-stream' : 'application/json',
+          'content-type': upload ? 'application/octet-stream' : 'application/json',
           ...(requestId ? { 'x-openkit-request-id': String(requestId) } : {}),
         },
         ...(id === 'artifact.download'
           ? {}
-          : { body: id === 'artifact.import' ? originalBytes : JSON.stringify(body) }),
+          : { body: upload ? originalBytes : JSON.stringify(body) }),
       });
       if (id === 'artifact.download' && response.ok) {
         expect(response.status).toBe(200);
@@ -182,7 +185,8 @@ async function projections(f: ReturnType<typeof fixture>, token?: string, operat
       }
       if (!response.ok) throw { ...(result as object), status: response.status };
       expect(response.status, id).toBe(
-        id === 'artifact.import' || id === 'artifact.introduce' ? 201 : 200
+        schemas.OPERATION_DEFINITIONS[id as keyof typeof schemas.OPERATION_DEFINITIONS]
+          .successStatus
       );
       return result;
     },
@@ -190,6 +194,11 @@ async function projections(f: ReturnType<typeof fixture>, token?: string, operat
       if (id === 'artifact.import')
         return client.artifactFiles.import(
           input as Parameters<typeof client.artifactFiles.import>[0],
+          originalBytes
+        );
+      if (id === 'artifact.version-file-commit')
+        return client.artifactFiles.commitVersion(
+          input as Parameters<typeof client.artifactFiles.commitVersion>[0],
           originalBytes
         );
       if (id === 'artifact.download') {
@@ -228,6 +237,31 @@ const originalBytes = Buffer.from(original.patternHex.repeat(original.repeats), 
 const inputs = {
   'artifact.list': {},
   'artifact.read': { artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f' },
+  'artifact.version-list': { artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f' },
+  'artifact.version-read': {
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    artifactVersion: 1,
+  },
+  'artifact.version-commit': {
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    expectedArtifactVersion: 1,
+    requestId: 'commit-inline-projection',
+    title: 'Revised output',
+    summary: null,
+    content: { format: 'text', body: 'Exact revised text.\r\n' },
+  },
+  'artifact.version-file-commit': {
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    expectedArtifactVersion: 2,
+    requestId: 'commit-file-projection',
+    title: 'Revised binary',
+    summary: null,
+    mediaType: 'application/octet-stream',
+    byteLength: original.size,
+    contentDigest: original.sha256,
+  },
   'artifact.import': {
     title: 'Import',
     mediaType: 'application/octet-stream',
@@ -459,7 +493,7 @@ describe('Artifact definition projections', () => {
     }
   });
 
-  it('declares the ten Artifact operations without handwritten JSON projection catalogs', () => {
+  it('declares the fourteen Artifact operations without handwritten JSON projection catalogs', () => {
     const table = (schemas as unknown as Record<string, Record<string, unknown>>)
       .ARTIFACT_OPERATION_DEFINITIONS;
     expect(Object.keys(table ?? {}).sort()).toEqual(
@@ -473,7 +507,8 @@ describe('Artifact definition projections', () => {
       const source = readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
       for (const id of [
         ...Object.keys(inputs).filter(
-          (id) => !['artifact.import', 'artifact.download'].includes(id)
+          (id) =>
+            !['artifact.import', 'artifact.download', 'artifact.version-file-commit'].includes(id)
         ),
         'artifact.review-decide',
       ])
@@ -488,16 +523,23 @@ describe('Artifact definition projections', () => {
     const { operationCatalog } = await import(
       new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
     );
-    for (const id of ['artifact.import', 'artifact.download'] as const) {
+    for (const [id, method] of [
+      ['artifact.import', 'artifactFiles.import'],
+      ['artifact.download', 'artifactFiles.download'],
+      ['artifact.version-file-commit', 'artifactFiles.commitVersion'],
+    ] as const) {
       expect(schemas.OPERATION_DEFINITIONS[id].binding).toBe('streaming');
       expect(Object.hasOwn(client.operations, id)).toBe(false);
       expect(
         operationCatalog.find((operation: { id: string }) => operation.id === id)?.clientMethod
-      ).toBe(id === 'artifact.import' ? 'artifactFiles.import' : 'artifactFiles.download');
+      ).toBe(method);
     }
     for (const id of [
       'artifact.list',
       'artifact.read',
+      'artifact.version-list',
+      'artifact.version-read',
+      'artifact.version-commit',
       'artifact.introduce',
       'artifact.review-list',
       'artifact.review.decide',
@@ -543,11 +585,16 @@ describe('Artifact definition projections', () => {
       }).secret;
       async function compare(id: string, input: Record<string, unknown>) {
         let expected: unknown;
-        for (const project of Object.values(await projections(f, token, id))) {
-          const result = await project(id, {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            ...input,
-          });
+        for (const [projection, project] of Object.entries(await projections(f, token, id))) {
+          let result: unknown;
+          try {
+            result = await project(id, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              ...input,
+            });
+          } catch (error) {
+            throw new Error(`${authority}: ${projection}: ${id}`, { cause: error });
+          }
           if (expected === undefined) expected = result;
           expect(result, id).toEqual(expected);
         }
@@ -596,6 +643,33 @@ describe('Artifact definition projections', () => {
         f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId).origin
           .kind
       ).toBe('imported');
+      await compare('artifact.version-list', { artifactId: imported.artifactId });
+      await compare('artifact.version-read', {
+        artifactId: imported.artifactId,
+        artifactVersion: 1,
+      });
+      await compare('artifact.version-commit', {
+        ...inputs['artifact.version-commit'],
+        artifactId: imported.artifactId,
+      });
+      await compare('artifact.version-file-commit', {
+        ...inputs['artifact.version-file-commit'],
+        artifactId: imported.artifactId,
+      });
+      expect(
+        await compare('artifact.version-read', {
+          artifactId: imported.artifactId,
+          artifactVersion: 1,
+        })
+      ).toMatchObject({
+        artifact: { version: 1, contentDigest: original.sha256 },
+        version: { parentVersion: null },
+      });
+      expect(
+        await compare('artifact.version-list', { artifactId: imported.artifactId })
+      ).toMatchObject({
+        items: [{ artifactVersion: 1 }, { artifactVersion: 2 }, { artifactVersion: 3 }],
+      });
       await compare('artifact.review.decide', inputs['artifact.review.decide']);
       const reviews = await compare('artifact.review-list', inputs['artifact.review-list']);
       const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -879,6 +953,8 @@ describe('Artifact definition projections', () => {
     Object.entries(inputs).filter(([id]) =>
       [
         'artifact.import',
+        'artifact.version-commit',
+        'artifact.version-file-commit',
         'artifact.introduce',
         'artifact.review.decide',
         'artifact.review.select',
@@ -932,6 +1008,8 @@ describe('Artifact definition projections', () => {
     Object.entries(inputs).filter(([id]) =>
       [
         'artifact.import',
+        'artifact.version-commit',
+        'artifact.version-file-commit',
         'artifact.introduce',
         'artifact.review.decide',
         'artifact.review.select',

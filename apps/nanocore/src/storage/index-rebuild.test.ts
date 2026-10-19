@@ -31,6 +31,7 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
+import { readRetrievalTrace } from './retrieval-traces.js';
 import { serializeUserAuthoredKnowledgePage } from './workspace-file-records.js';
 
 const fixtureRoots: string[] = [];
@@ -504,7 +505,10 @@ describe('workspace derived index rebuild', () => {
       'retrieval-traces',
       `${traceId}.json`
     );
-    const row = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(tracePath, 'utf8')));
+    expect(JSON.parse(readFileSync(tracePath, 'utf8')).schemaVersion).toBe(1);
+    const row = KnowledgeRetrievalTraceSchema.parse(
+      readRetrievalTrace(workspaceRoot, trace.retrievalTraceRef!)
+    );
     expect(row).toEqual({
       traceId,
       queryContext: {
@@ -744,14 +748,8 @@ describe('workspace derived index rebuild', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval trace recovery', notebookInitialization());
     const thread = store.createThread(workspace.id, 'Retrieval owner');
-    const traceRoot = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'retrieval-traces'
-    );
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+    const traceRoot = join(workspaceRoot, 'threads', thread.id, 'retrieval-traces');
     mkdirSync(traceRoot, { recursive: true });
     const interruptedPath = join(traceRoot, '.krt_00000000-0000-7b84-9036-54ad1961c1f0.tmp');
     writeFileSync(interruptedPath, '{"interrupted":true');
@@ -768,8 +766,11 @@ describe('workspace derived index rebuild', () => {
     const first = await retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
     const tracePath = join(traceRoot, `${firstTraceId}.json`);
     expect(
-      KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(tracePath, 'utf8')))
+      KnowledgeRetrievalTraceSchema.parse(
+        readRetrievalTrace(workspaceRoot, first.retrievalTraceRef!)
+      )
     ).toEqual(expect.objectContaining({ traceId: firstTraceId }));
+    expect(JSON.parse(readFileSync(tracePath, 'utf8')).schemaVersion).toBe(1);
     expect(first.retrievalTraceRef).toEqual({
       scopeId: `retrieval-trace/thread/${workspace.id}/${thread.id}`,
       objectId: firstTraceId,

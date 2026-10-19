@@ -271,6 +271,8 @@ Set `OPENKIT_DATA_ROOT` to persist canonical Workspace records under `temp/nanoc
 
 ## Remote Git Sources And Goal Mode
 
+Goal Plan proposals capture typed Policy bounds beside the exact immutable Plan in one Pending Request. The complete preview contains both; native capture fixes the Coordinator and Plan source. Plan and card records carry no new authority fields. Policy publication and current admitted readback remain separate from the committed Plan outcome; see the [runtime guide](src/runtime/README.md).
+
 Configuration file creation and update refuse unsupported work-slot source selections before storage with `workspace_data_source_blocked`; authored non-Git configuration remains loadable, unselected catalog registration remains available, and work without a source input still runs.
 
 NanoCore host repository resources, host Git publication, host inspection, and the Repositories screen are removed. Remote Git sources use catalog URL/commit pins and Sandbox-reported baselines; hosted writes use selected vendor MCP through the Gateway.
@@ -603,5 +605,7 @@ The built-in Work source Tools resolve exact selected owner/version references u
 The existing version-owned Artifact Review accepts optional exact Material-base range feedback on `artifact.review.decide` and attributable exact candidate choices through `artifact.review.select`. Review-owned fields and the existing Workspace command transaction retain these facts. A choice starts no Turn and does not decide or apply a proposal. Existing pinned conversation inputs and Context Package provenance own later explicit use. The [Work Resource owner](../../docs/specs/20260713-work_resource_interaction_model.md#grounded-feedback-and-candidate-choice) defines range units, current access, stale/conflict and replay semantics; the ordinary Workspace migration adds no second durable owner.
 
 The Gateway adapts xAI Responses custom and namespace tools to function declarations while preserving public callable identity and history. Rejection diagnostics retain only bounded sanitized typed error fields; [the LLM guide](src/llm/README.md) describes the stock transport boundary and focused checks.
+
+Artifact version publication uses `artifact.version-commit` or streamed `artifact.version-file-commit`, with an expected current version and an idle authorized Thread. Immutable history, exact reads/downloads and selected Context inputs retain older originals. Workspace transfer preserves all admitted versions; see [Work Resource Interaction](../../docs/specs/20260713-work_resource_interaction_model.md#artifact-and-item-lineage).
 
 Primary product admission intersects current identity and scope eligibility with the Policy Kernel for User, Server and Workspace requests, including administrator requests without Workspace membership. Native invocation and retained Workspace authorization consume the same boundaries; denied or failed policy evaluation stops domain handlers. The existing bootstrap-secret exception, exact audience/lifecycle checks and owner effect checks remain separate. The [Policy guide](src/policy/README.md#primary-admission) describes the baseline and its verification.

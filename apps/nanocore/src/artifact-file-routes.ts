@@ -3,12 +3,13 @@ import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 import { apiErrorPayload } from './api-errors.js';
 import { importArtifactFile } from './artifact-file-commands.js';
+import { commitArtifactVersionCommand } from './artifact-versions.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
-import { isArtifactVisible } from './auth/thread-visibility.js';
+import { isArtifactVisible, isThreadIdVisible } from './auth/thread-visibility.js';
 import { ArtifactAuthorityError, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { OperationError, projectOperationError } from './operation-error.js';
@@ -39,6 +40,111 @@ export function registerArtifactFileRoutes(
   }
 ): void {
   const { app } = dependencies;
+  registerAppApiRoute(app, 'artifact.version-file-commit', async (context) => {
+    context.header('Cache-Control', 'no-store');
+    let release: (() => void) | undefined;
+    let workspaceDb: WorkspaceDb | undefined;
+    try {
+      const definition = OPERATION_DEFINITIONS['artifact.version-file-commit'];
+      if (Buffer.byteLength(new URL(context.req.url).search, 'utf8') > 8_192)
+        throw new OperationError('invalid_request', 'File metadata is too large.', 400);
+      const byteLength = context.req.query('byteLength');
+      const expectedVersion = context.req.query('expectedArtifactVersion');
+      if (
+        !byteLength ||
+        !/^(0|[1-9][0-9]*)$/.test(byteLength) ||
+        !expectedVersion ||
+        !/^[1-9][0-9]*$/.test(expectedVersion)
+      )
+        throw new OperationError(
+          'invalid_request',
+          'Artifact version file metadata is invalid.',
+          400
+        );
+      if (Number(byteLength) > MAX_ARTIFACT_FILE_BYTES)
+        throw new FileAdmissionError('file_too_large');
+      let summary: unknown;
+      try {
+        summary = JSON.parse(context.req.query('summary') ?? '');
+      } catch {
+        throw new OperationError('invalid_request', 'Artifact summary metadata is invalid.', 400);
+      }
+      const store = dependencies.requestStore(context);
+      const admitted = admitOperation(
+        definition,
+        {
+          ...context.req.query(),
+          summary,
+          requestId: context.req.header('x-openkit-request-id'),
+          byteLength: Number(byteLength),
+          expectedArtifactVersion: Number(expectedVersion),
+        },
+        { kind: 'public', actor: context.get('actor'), signal: context.req.raw.signal },
+        { ...dependencies, store }
+      );
+      release = admitted.release;
+      if (!('actorRef' in admitted.context) || !dependencies.dataRoot)
+        throw new OperationError(
+          'operation_storage_unavailable',
+          'File storage is unavailable.',
+          503
+        );
+      const metadata = definition.inputSchema.parse(admitted.input);
+      const assertAuthorized = () => {
+        const administrator = dependencies.coreDb
+          ? isCurrentDeploymentAdministrator(dependencies.coreDb, context.get('actor'))
+          : false;
+        if (
+          !dependencies.coreDb ||
+          !isWorkspaceOperationAuthorized(
+            dependencies.coreDb,
+            context.get('actor'),
+            metadata.workspaceId,
+            definition
+          )
+        )
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        if (
+          !isArtifactVisible(
+            store,
+            store.getArtifact(metadata.workspaceId, metadata.artifactId),
+            context.get('actor').userId,
+            administrator
+          ) ||
+          !isThreadIdVisible(
+            store,
+            metadata.workspaceId,
+            metadata.threadId,
+            context.get('actor').userId,
+            administrator
+          )
+        )
+          throw new OperationError('not_found', 'The Artifact version target is unavailable.', 404);
+      };
+      workspaceDb = dependencies.repositoryWorkspaceDb(metadata.workspaceId);
+      const result = await commitArtifactVersionCommand({
+        store,
+        workspaceDb,
+        inflightCommands: dependencies.inflightCommands,
+        context: admitted.context,
+        command: 'artifact.version-file-commit',
+        metadata,
+        assertAuthorized,
+        file: {
+          admission: dependencies.fileAdmission,
+          source: context.req.raw.body
+            ? Readable.fromWeb(context.req.raw.body as never)
+            : Readable.from([]),
+        },
+      });
+      return context.json(result, 201);
+    } catch (error) {
+      return fileRouteError(error);
+    } finally {
+      workspaceDb?.sqlite.close();
+      release?.();
+    }
+  });
   registerAppApiRoute(app, 'artifact.import', async (context) => {
     context.header('Cache-Control', 'no-store');
     let release: (() => void) | undefined;
@@ -135,16 +241,18 @@ export function registerArtifactFileRoutes(
       );
       release = admitted.release;
       const input = definition.inputSchema.parse(admitted.input);
-      const artifact = store.getArtifact(input.workspaceId, input.artifactId);
+      const current = store.getArtifact(input.workspaceId, input.artifactId);
       const administrator = dependencies.coreDb
         ? isCurrentDeploymentAdministrator(dependencies.coreDb, context.get('actor'))
         : false;
-      if (
-        !isArtifactVisible(store, artifact, context.get('actor').userId, administrator) ||
-        artifact.version !== input.artifactVersion
-      ) {
+      if (!isArtifactVisible(store, current, context.get('actor').userId, administrator)) {
         throw new OperationError('not_found', 'The Artifact version is unavailable.', 404);
       }
+      const artifact = store.getArtifactVersion(
+        input.workspaceId,
+        input.artifactId,
+        input.artifactVersion
+      ).artifact;
       const content = artifact.content;
       const byteLength =
         content.format === 'file' ? content.byteLength : Buffer.byteLength(content.body, 'utf8');

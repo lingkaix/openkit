@@ -9,7 +9,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-import { AgentSessionSchema, deriveEntityId, RequestIdSchema } from '@openkit/protocol';
+import {
+  AgentSessionSchema,
+  deriveEntityId,
+  RequestIdSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { uuidv5 } from '../generative-kernel/uuid.js';
@@ -676,12 +681,15 @@ describe('FsStore persistence', () => {
 
     writeFileSync(
       join(turnRoot, 'items.jsonl'),
-      `${JSON.stringify(firstReference)}\n${JSON.stringify(duplicate)}\n`
+      `${JSON.stringify(writeRetainedV1(firstReference))}\n${JSON.stringify(writeRetainedV1(duplicate))}\n`
     );
 
     expect(() => new FsStore({ dataRoot })).toThrow(/duplicate artifact-reference Items for Turn/);
 
-    writeFileSync(join(turnRoot, 'items.jsonl'), `${JSON.stringify(firstReference)}\n`);
+    writeFileSync(
+      join(turnRoot, 'items.jsonl'),
+      `${JSON.stringify(writeRetainedV1(firstReference))}\n`
+    );
     expect(() => new FsStore({ dataRoot })).not.toThrow();
   });
 
@@ -888,10 +896,12 @@ describe('FsStore persistence', () => {
     );
     const restarted = new FsStore({ dataRoot });
 
-    expect(JSON.parse(readFileSync(artifactProjectionPath, 'utf8'))).toEqual({
-      ...artifact,
-      content: { format: artifact.content.format },
-    });
+    expect(JSON.parse(readFileSync(artifactProjectionPath, 'utf8'))).toEqual(
+      writeRetainedV1({
+        ...artifact,
+        content: { format: artifact.content.format },
+      })
+    );
     expect(readFileSync(artifactContentPath, 'utf8')).toBe('History survived restart.');
     expect(existsSync(knowledgeProjectionPath)).toBe(false);
     const notebook = new KnowledgeNotebook({
@@ -904,7 +914,9 @@ describe('FsStore persistence', () => {
       knowledgeSource
     );
     expect(readFileSync(knowledgeSourceMaterialPath, 'utf8')).toBe(knowledgeSourceContent);
-    expect(JSON.parse(readFileSync(agentSessionProjectionPath, 'utf8'))).toEqual(agentSession);
+    expect(JSON.parse(readFileSync(agentSessionProjectionPath, 'utf8'))).toEqual(
+      writeRetainedV1(agentSession)
+    );
     expect(
       restarted.listThreads('ws_00000000-0000-7000-8000-000000000001').map((item) => item.id)
     ).toContain(thread.id);

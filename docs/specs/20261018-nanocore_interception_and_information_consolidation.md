@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: "2026-10-18"
 ---
@@ -168,14 +168,37 @@ Phase F lands before the v0.1.0 retained-data freeze. MIGRATION means a changed 
 | C06 trace edges | ADDITIVE; each producer, F | L-GA Policy/Audit, L-AK KM/Skill, L-GO app/Goal, L-AW Artifact/context, L-RT calls/AEP retain actual missing references. |
 | C07 capture origin | ADDITIVE; L-CH + L-AK + L-GO, F | Trusted capture channel/actor and trigger provenance; reuse existing Discord event/request and recurring occurrence edges. |
 | C08 Decision Trace | ADDITIVE; L-GA with record owners, L | Read-only authorized traversal with explicit missing links; no graph authority. |
-| C09 agent Policy | Retained formats in the reset RC; L-GA with L-CH/L-GO/L-AK, F / L adapters | Statement scope/lifetime and principal/process shapes, Goal domain/delegation and shadow state freeze before v0.1.0; policy.write review is in scope. Agent activation and adapters need their own qualification. |
+| C09 agent Policy | Existing decision/Audit formats in the reset RC; new families ADDITIVE with consumers; L-GA with L-CH/L-GO/L-AK, F / L adapters | Scope/lifetime and principal/process semantics freeze before v0.1.0. Goal delegation, agent declarations and leases arrive with activation before the format freeze; policy.write review remains in scope. |
 | C10 shared Policy base | Retained formats and I16 pilot in the reset RC; L-CH + L-GA, F | Freeze operation@stage, statement/revision and PermissionDecision envelope with their writer and validator; the I16 pilot proves the formats. Complete policy.write review and the shared pipeline before v0.1.0; behavior that writes no new shape may follow the reset RC. Other rows route later without another gate or store. |
 | C11 transform references | ADDITIVE; producing owner, U | Safe before/after versions resolve through existing owners, with no raw-secret retention. |
 | C12 optional providers | ADDITIVE contracts, implementation-only adapters; table lanes, L | Inject a provider behind the contract; absent rows gain capability only when separately implemented and authorized. |
 
 The store dispositions are: TS1 Claim -> OKF Claim; TS2 reusable observations -> OKF Observation; TS3 reusable conflicts -> OKF Observation with conflict state; TS4 Sources stay evidence; TS5 proposals stay candidates; TS6 live app and TS7 template reusable meaning -> Entity/Topic/Rule or Skill while records/structure stay; TS8 presentations stay projections; TS9 has no production instruction-body store and future procedures use Skills; TS10 plugin descriptions stay discovery metadata. These are classifications, not a claim that live private content was inspected or moved.
 
-The merged base, registry extension, Policy statement/revision, scope/lifetime and Goal domain formats, enriched PermissionDecision and policy.write are Not Started. Existing specialized mechanisms and the landed channel-origin addition do not establish that implementation. Changed retained meaning/layout joins the coordinator-owned reset RC only after the pre-reset cut announcement; additive changes require no conversion. The reset RC requires final retained shapes, writers and validators; behavior that writes no new shape may follow additively before v0.1.0. Other row routing, impact simulation, adaptive/cached review, external adapters and react remain later work.
+The native reset slice below implements the shared retained formats and I16 pilot. Goal-domain activation, Task-resource intersection, agent-principal authority and automatic Policy review remain Not Started. The landed channel-origin addition supplies capture provenance only. Changed retained meaning/layout joins the coordinator-owned reset RC only after the pre-reset cut announcement; additive changes require no conversion. The reset RC requires final retained shapes, writers and validators; behavior that writes no new shape may follow additively before v0.1.0. Other row routing, impact simulation, adaptive/cached review, external adapters and react remain later work.
+
+### Native Reset Slice: Implementation Projection
+
+Needed to distinguish retained format proof from later authority consumers.
+
+Protocol owns schema-only version-one contracts. The existing Server configuration owner retains the Policy collection and admits human changes through its candidate Artifact, confirmation and compare-and-set writer. PermissionDecision and Audit remain the only evaluation and invocation record owners. Their readers check the retained version before decoding content. This reset slice adds no converter or predecessor reader.
+
+The existing operation registry includes native `mcp.call-tool` and `policy.write`; registration creates no public endpoint. I16 pins a schema-independent Tool summary, exact argument digest, admitted package, current Policy and current authorization facts. The specialized Tool schema, current credential, supply and dispatch checks remain mandatory. An escalation uses the existing captured Pending Request. Response-time evaluation checks the same logical proposal and revisions before credential preparation and claim. The execution attempt keeps its existing distinct call identity.
+
+The pilot activates human-authored gate and observe bindings with exact Workspace Tool selectors and Workspace or Turn anchors. Shadow gates retain evidence without changing the final result. Advice and transform cannot activate, including in shadow, until an existing content owner retains a safe output and the invocation links its reference. Finite-use observations remain inactive because completion supplies no atomic authorization-consumption boundary. These limits do not remove the accepted pre-v0.1.0 behavior from the remaining additive work.
+
+| Element | Writer and reader | Ablation: required behavior lost without it |
+| --- | --- | --- |
+| Shared statement collection and exact content revisions | Native Policy candidate/apply; configuration and I16 readers | Bindings and grants could use different or reused revisions. |
+| Scope, disclosure, authority and lifetime | Typed candidate; native activation, current-authority selection and final-use transaction | A participant could receive unrelated input or retain expired authority. |
+| New agent, Goal and lease families deferred with their consumers | Additive native authority writers and closed validators, before the format freeze | No existing retained family needs these inactive declarations to remain readable. |
+| Operation/stage, subject and proposal pins | Registry and admitted native context; decision and current-commit validators; point is derived | A response could authorize a different operation, actor or input. |
+| Gate/final decisions and safe invocation evidence | Existing PermissionDecision/Audit writers and frozen readers | Participant approval could conceal Kernel refusal or unavailable evaluation. |
+| Bounded deadline and binding-local circuit | Native executor; invocation outcome reader | A held or repeatedly unavailable participant could block every dispatch. |
+| Human Policy review and activation outcome | Existing candidate, apply and Audit owners | Saving a file could be confused with activating its authority. |
+| I16 and captured-response integration | Existing MCP and Pending Request owners | Formats would lack a production effect boundary and current-response proof. |
+
+Unsupported permission activation remains refused. New lease, agent and delegation declarations are absent from the reset shape cohort and land additively with their authority consumers. Plan and typed delegation share one human approval request; a Plan reference alone does not create a domain. The current candidate requires explicit human confirmation for every change; automatic narrowing review, agent approvers and later operation migrations remain additive work. The semantic conflict list stays in lane evidence, and other owners receive fixes through the coordinator.
 
 MCP list filtering and call enforcement share constraints but keep separate disclosure/effect checks. Retrieval eligibility and package budgeting retain distinct owners. Reuse PermissionDecision/Audit across boot, Gateway, MCP and ordinary governed effects; reuse Pending Request across approvals, questions, Plans and channel responses. Confidentiality checks at separate storage/dispatch stages remain mandatory. Result ingress lacks a general vendor-result adviser/transformer; output disclosure lacks a generic Turn-output interceptor. Add those later only at actual owned boundaries. The transient Workspace resolver stays Kernel-only with no per-request ledger. Report actual producer coverage before claiming complete invocation evidence for routed rows.
 

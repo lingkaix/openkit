@@ -1,6 +1,12 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { openWorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
 import type { ResolvedLogicalModel } from './logical-models.js';
 
@@ -33,6 +39,52 @@ function unavailablePrimary(autoFailover: boolean): ResolvedLogicalModel {
 }
 
 describe('dispatchLogicalModel member selection', () => {
+  it('passes the admitted consuming actor and durable call lineage to credential resolution', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-gateway-consumer-'));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      applyScopedMigrations(workspaceDb);
+      const authorityActor = {
+        kind: 'agent',
+        id: 'agent_builder',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      } as const;
+      const agentSessionId = 'as_00000000-0000-7000-8000-000000000001';
+      const call = startCapabilityCall({
+        authorityActor,
+        agentSessionId,
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses',
+        redactionClass: 'metadata-only',
+        workspaceDb,
+        workspaceId,
+      });
+      const resolveGatewayProvider = vi.fn(
+        (id: string) => ({ id, models: ['model'] }) as ResolvedLLMProviderConfig
+      );
+      await expect(
+        dispatchLogicalModel({
+          ledger: { workspaceDb, call },
+          logicalModel: unavailablePrimary(true),
+          signal: new AbortController().signal,
+          resolveGatewayProvider,
+          attempt: async () => 'done',
+        })
+      ).resolves.toBe('done');
+      expect(resolveGatewayProvider).toHaveBeenCalledExactlyOnceWith('ready', 'model', {
+        actor: authorityActor,
+        agentSessionId,
+        capabilityCallId: call.id,
+        consumerWorkspaceId: workspaceId,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     [undefined, { context: 20000, output: 1000 }, 'missing'],
     [{ context: 200000, output: 8000 }, { context: 20000, output: 1000 }, 'ready'],
@@ -91,7 +143,7 @@ describe('dispatchLogicalModel member selection', () => {
     });
     if (autoFailover) {
       await expect(dispatched).resolves.toBe('backup-result');
-      expect(resolveGatewayProvider).toHaveBeenCalledExactlyOnceWith('ready', 'model');
+      expect(resolveGatewayProvider).toHaveBeenCalledExactlyOnceWith('ready', 'model', undefined);
       expect(attempt).toHaveBeenCalledTimes(1);
     } else {
       await expect(dispatched).rejects.toMatchObject({ code: 'gateway_logical_model_unavailable' });

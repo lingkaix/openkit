@@ -1127,7 +1127,7 @@ describe('conversation.submit worker storage choice', () => {
 });
 
 describe('conversation.submit worker acceptance wait', () => {
-  it('accepts the durable running Worker tuple before Worker completion is released', async () => {
+  it('accepts the durable running Worker tuple with a historical pinned Artifact before completion', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-accept-before-complete-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -1156,6 +1156,20 @@ describe('conversation.submit worker acceptance wait', () => {
     });
     const artifactRefs = [{ artifactId: artifact.id, artifactVersion: artifact.version }];
 
+    const publicationThread = store.createThread(artifact.workspaceId, 'Advance selected Artifact');
+    store.commitArtifactVersion({
+      workspaceId: artifact.workspaceId,
+      threadId: publicationThread.id,
+      artifactId: artifact.id,
+      expectedArtifactVersion: 1,
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      requestId: '0190f4c8-0000-7000-8000-000000000502',
+      recordedAt: new Date().toISOString(),
+      title: 'Later context',
+      summary: null,
+      content: { format: 'text', body: 'This newer version must not replace selected v1.' },
+    });
+
     const pending = app.request(
       ...operationRequest(
         'conversation.submit',
@@ -1179,7 +1193,15 @@ describe('conversation.submit worker acceptance wait', () => {
     let workerTurnId: string | undefined;
 
     try {
-      await executor.launched.promise;
+      await Promise.race([
+        executor.launched.promise,
+        pending.then(async (response) => {
+          if (response.status === 202) return executor.launched.promise;
+          throw new Error(
+            `Submission returned before Worker launch: ${response.status} ${await response.text()}`
+          );
+        }),
+      ]);
       const receivingThreads = store
         .listThreads('ws_00000000-0000-7000-8000-000000000001')
         .filter((thread) => thread.parentThreadId === 'th_00000000-0000-7000-8000-000000000001');
@@ -2189,6 +2211,7 @@ describe('Task durable admission response', () => {
     }
   });
 
+  // The held completion proves admission ordering; this budget covers real fixture setup.
   it.each([
     ...(['direct', 'assistant', 'remote-mcp', 'closeout-failure'] as const).map((entry) => ({
       entry,
@@ -2652,7 +2675,7 @@ describe('Task durable admission response', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     }
-  });
+  }, 60_000);
 });
 
 describe('Task terminal replay closeout ownership', () => {
@@ -5016,6 +5039,7 @@ describe('#144 real Assistant command wiring', () => {
             .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
             .all(call.id)
         ).toEqual([
+          expect.objectContaining({ action: 'capability.admit', request_id: f.requestId }),
           expect.objectContaining({
             action: 'capability.finish',
             capability_call_id: call.id,

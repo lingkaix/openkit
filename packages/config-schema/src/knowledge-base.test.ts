@@ -1,3 +1,4 @@
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { OpenKitConfigSchema } from './server.js';
 import { UserConfigSchema } from './user.js';
@@ -10,12 +11,15 @@ describe('retained default Knowledge Base configuration', () => {
     expect(
       UserConfigSchema.parse({ schemaVersion: 1, defaultKnowledgeBaseId: knowledgeBaseId })
     ).toHaveProperty('defaultKnowledgeBaseId', knowledgeBaseId);
-    expect(OpenKitConfigSchema.parse({ defaultKnowledgeBaseId: knowledgeBaseId })).toHaveProperty(
-      'defaultKnowledgeBaseId',
-      knowledgeBaseId
-    );
+    expect(
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        defaultKnowledgeBaseId: knowledgeBaseId,
+      })
+    ).toHaveProperty('defaultKnowledgeBaseId', knowledgeBaseId);
     expect(
       WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: { name: 'Work', defaultKnowledgeBaseId: knowledgeBaseId },
       }).workspace
     ).toHaveProperty('defaultKnowledgeBaseId', knowledgeBaseId);
@@ -33,9 +37,15 @@ describe('retained default Knowledge Base configuration', () => {
     expect(
       UserConfigSchema.safeParse({ schemaVersion: 1, defaultKnowledgeBaseId: id }).success
     ).toBe(false);
-    expect(OpenKitConfigSchema.safeParse({ defaultKnowledgeBaseId: id }).success).toBe(false);
+    expect(
+      OpenKitConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        defaultKnowledgeBaseId: id,
+      }).success
+    ).toBe(false);
     expect(
       WorkspaceConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: { name: 'Work', defaultKnowledgeBaseId: id },
       }).success
     ).toBe(false);
@@ -43,8 +53,8 @@ describe('retained default Knowledge Base configuration', () => {
 
   it('does not allocate or insert an omitted binding while parsing an uncreated scope', () => {
     const user = { schemaVersion: 1 };
-    const server = {};
-    const workspace = { workspace: { name: 'Work' } };
+    const server = { schemaVersion: RETAINED_FORMAT_VERSION };
+    const workspace = { schemaVersion: RETAINED_FORMAT_VERSION, workspace: { name: 'Work' } };
     for (let attempt = 0; attempt < 2; attempt += 1) {
       expect(UserConfigSchema.parse(user)).not.toHaveProperty('defaultKnowledgeBaseId');
       expect(OpenKitConfigSchema.parse(server)).not.toHaveProperty('defaultKnowledgeBaseId');
@@ -53,7 +63,10 @@ describe('retained default Knowledge Base configuration', () => {
       );
     }
     expect(user).toEqual({ schemaVersion: 1 });
-    expect(server).toEqual({});
-    expect(workspace).toEqual({ workspace: { name: 'Work' } });
+    expect(server).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
+    expect(workspace).toEqual({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      workspace: { name: 'Work' },
+    });
   });
 });

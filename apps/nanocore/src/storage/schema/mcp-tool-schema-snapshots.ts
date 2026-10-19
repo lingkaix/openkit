@@ -1,4 +1,5 @@
-import { index, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable workspace-scoped MCP tool schema snapshot source. */
 export type McpToolSchemaSnapshotSource = 'aep' | 'live';
@@ -7,6 +8,8 @@ export type McpToolSchemaSnapshotSource = 'aep' | 'live';
 export const mcpToolSchemaSnapshots = sqliteTable(
   'mcp_tool_schema_snapshots',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable schema snapshot id used by worker capability responses. */
     snapshotId: text('snapshot_id').primaryKey().notNull(),
     /** Workspace that owns the snapshot. */

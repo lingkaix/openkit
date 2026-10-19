@@ -1,10 +1,12 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  type ProviderProfile as AuthoredProviderProfile,
+  AuthoredProviderProfileSchema,
+  type ProviderProfile as LogicalProviderProfile,
   type ModelCatalog,
   ProviderProfileSchema,
 } from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import { parseJsoncObject } from './jsonc.js';
 import { extendProviderModelMetadata, loadModelCatalog } from './model-catalog.js';
@@ -14,7 +16,7 @@ import { type UnknownConfigKey, unknownConfigKeys } from './unknown-config-keys.
 export type ModelMetadataSource = 'upstream-snapshot' | 'deployment-extension' | 'profile-override';
 
 /** Loaded profile with non-authoring provenance retained alongside composed metadata. */
-export type ProviderProfile = AuthoredProviderProfile & {
+export type ProviderProfile = LogicalProviderProfile & {
   /** Exact model/leaf provenance for deployment and profile inputs; never persisted. */
   modelMetadataSources?: Record<string, Record<string, ModelMetadataSource>>;
 };
@@ -77,7 +79,21 @@ export function loadProviderProfiles(
 
     const path = join(providersRoot, fileName);
     const parsed = parseJsoncObject(readFileSync(path, 'utf8'), path);
-    const profileResult = ProviderProfileSchema.safeParse(parsed);
+    let profileResult: ReturnType<typeof AuthoredProviderProfileSchema.safeParse>;
+    try {
+      profileResult = readRetainedV1(parsed, (record) =>
+        AuthoredProviderProfileSchema.safeParse(record)
+      );
+    } catch {
+      result.diagnostics.push({
+        code: 'provider.invalid_profile',
+        message: 'Unsupported retained record format.',
+        path,
+        profileId: readProfileId(parsed),
+        severity: 'error',
+      });
+      continue;
+    }
 
     if (!profileResult.success) {
       result.diagnostics.push({
@@ -94,7 +110,11 @@ export function loadProviderProfiles(
       reportUnknownKey?.(key, path);
     }
 
-    const profile = applyRequiredExtensionDiagnostics(profileResult.data, path, result.diagnostics);
+    const profile = applyRequiredExtensionDiagnostics(
+      ProviderProfileSchema.parse(profileResult.data),
+      path,
+      result.diagnostics
+    );
 
     const existingIndex = result.profiles.findIndex((candidate) => candidate.id === profile.id);
     if (existingIndex >= 0) {

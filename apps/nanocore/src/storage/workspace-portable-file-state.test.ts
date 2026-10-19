@@ -514,11 +514,13 @@ describe('workspace portable file state', () => {
     expect(verified.fileContents.get('workspace-files/config/workspace.jsonc')).toBe(
       workspaceConfig
     );
-    readWorkspaceImportSnapshot({
-      verified,
-      targetWorkspaceId: new FsStore().createWorkspace('Import validation').id,
-      targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
-    });
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified,
+        targetWorkspaceId: new FsStore().createWorkspace('Import validation').id,
+        targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      })
+    ).not.toThrow();
     for (const [name, alter] of [
       ['missing', (files: Map<string, string>) => files.delete(acceptedExportPath)],
       [

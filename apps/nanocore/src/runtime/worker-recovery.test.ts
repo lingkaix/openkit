@@ -805,6 +805,7 @@ describe('worker recovery materialization', () => {
     }
   });
 
+  // Real recovery setup shares gate CPU; exact retained identities and disposition are the oracle.
   it.each([
     'failed',
     'completed',
@@ -838,7 +839,7 @@ describe('worker recovery materialization', () => {
       vi.restoreAllMocks();
       f.close();
     }
-  });
+  }, 60_000);
 
   it.each([
     'failed',

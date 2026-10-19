@@ -356,7 +356,8 @@ function makeClient(
   overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
 ): CoreClient {
   const artifacts = [...artifactsFor(WORKSPACE.id), ...artifactsFor(WORKSPACE_B.id)];
-  return {
+  const exactDetails = new Map<string, ReturnType<typeof ArtifactSchema.parse>>();
+  const client = {
     core: {
       meta: vi.fn().mockResolvedValue({}),
 
@@ -402,6 +403,34 @@ function makeClient(
               : Promise.reject(new Error(`Artifact not found: ${artifactId}`));
           }
         ),
+      'artifact.version-list': vi
+        .fn()
+        .mockImplementation(({ artifactId }: { artifactId: string }) => {
+          const artifact = exactDetails.get(artifactId);
+          return Promise.resolve({
+            items: artifact
+              ? [
+                  {
+                    workspaceId: artifact.workspaceId,
+                    artifactId: artifact.id,
+                    artifactVersion: artifact.version,
+                    parentVersion: artifact.version === 1 ? null : artifact.version - 1,
+                    title: artifact.title,
+                    summary: artifact.summary,
+                    contentDigest: artifact.contentDigest,
+                    actor:
+                      artifact.origin.kind === 'imported'
+                        ? artifact.origin.actor
+                        : { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+                    threadId: artifact.threadId,
+                    turnId: artifact.turnId,
+                    requestId: artifact.lastMutationRequestId,
+                    recordedAt: artifact.updatedAt,
+                  },
+                ]
+              : [],
+          });
+        }),
       'artifact.introduce': vi.fn().mockResolvedValue(INTRODUCE_MUTATION),
       'turn.read': vi.fn(),
       ...overrides.operations,
@@ -436,6 +465,18 @@ function makeClient(
         ),
     },
   } as unknown as CoreClient;
+  const readArtifact = client.operations['artifact.read'];
+  return {
+    ...client,
+    operations: {
+      ...client.operations,
+      'artifact.read': vi.fn().mockImplementation(async (input) => {
+        const artifact = await readArtifact(input);
+        exactDetails.set(artifact.id, artifact);
+        return artifact;
+      }),
+    },
+  };
 }
 
 function renderApp(path: string, client: CoreClient) {
@@ -1354,8 +1395,10 @@ describe('Artifacts', () => {
     expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(IMPORT_TITLE_V2)).toBeInTheDocument();
     expect(await screen.findByText(IMPORT_SUMMARY_V2)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
+    await user.click(await screen.findByRole('button', { name: 'View version 2' }));
     expect(await screen.findByText(/revised edition/i)).toBeInTheDocument();
-    expect(await screen.findByText(/version 2/i)).toBeInTheDocument();
+    expect(screen.getByText('Current head: version 2')).toBeInTheDocument();
     expect(screen.queryByText(IMPORT_CONTENT, { exact: true })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /add to conversation/i }));
 

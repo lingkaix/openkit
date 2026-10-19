@@ -35,12 +35,12 @@ import {
   RuntimeConfigValidationResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
+  AuthoredProviderProfileSchema,
   GatewayConfigSchema,
   getConfigSchemaCatalog,
   InternalRoleProfilesConfigSchema,
   ModelCatalogSchema,
   OpenKitConfigSchema,
-  ProviderProfileSchema,
   parseResourceCatalogDocument,
   parseWorkspaceDataSourceCatalog,
   requireCredentialFreeHttpsGitLocator,
@@ -50,10 +50,11 @@ import {
   type WorkspaceDataSourceCatalog,
   WorkspaceDataSourceCatalogSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import { policyDigest } from '../policy/statements.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
@@ -200,6 +201,7 @@ export class RuntimeConfigFileService {
 
   /**
    * Reads one supported runtime config file with a revision bound to the returned content.
+   * Raw inspection grants no configuration admission; family decoding checks the retained header.
    *
    * @param id Runtime config file id.
    * @returns Runtime config file content response.
@@ -280,9 +282,13 @@ export class RuntimeConfigFileService {
    * Updates one supported runtime config file using optimistic revision checking.
    *
    * @param input Update request.
+   * @param admission Internal Policy-owner admission after the current human decision; transports cannot supply it.
    * @returns Write response with the updated file summary.
    */
-  public updateFile(input: RuntimeConfigFileWriteInput): RuntimeConfigFileWriteResponse {
+  public updateFile(
+    input: RuntimeConfigFileWriteInput,
+    admission?: { readonly policyWrite: true }
+  ): RuntimeConfigFileWriteResponse {
     if (input.content === undefined) {
       throw new RuntimeConfigFileServiceError(
         'config_file_content_required',
@@ -314,6 +320,22 @@ export class RuntimeConfigFileService {
       ? readFileSync(spec.absolutePath, 'utf8')
       : null;
 
+    if (spec.kind === 'server' && !admission?.policyWrite) {
+      const previous = currentContent
+        ? (parse(currentContent) as { policy?: { mediation?: unknown } })
+        : null;
+      const next = parse(input.content) as { policy?: { mediation?: unknown } };
+      if (
+        policyDigest(previous?.policy?.mediation ?? null) !==
+        policyDigest(next?.policy?.mediation ?? null)
+      ) {
+        throw new RuntimeConfigFileServiceError(
+          'policy_write_required',
+          'Policy statements require the governed Policy candidate and human application path.',
+          403
+        );
+      }
+    }
     this.assertSupportedWorkspaceMaterialization(spec, input.content);
     this.writeFileAtomically(spec, input.content);
     this.auditCatalogAuthorityChanges(spec, currentContent, input.content);
@@ -350,7 +372,9 @@ export class RuntimeConfigFileService {
     const content = readFileSync(spec.absolutePath, 'utf8');
     const diagnostics = this.validateSingleFile(spec, content);
     if (hasBlockingDiagnostics(diagnostics)) throw invalidConfigContentError(diagnostics);
-    const profile = ProviderProfileSchema.parse(parse(content));
+    const profile = readRetainedV1(parse(content), (record) =>
+      AuthoredProviderProfileSchema.parse(record)
+    );
     if (profile.secretRef) {
       if (!this.revokeProviderSecret) {
         throw new RuntimeConfigFileServiceError(
@@ -592,6 +616,7 @@ export class RuntimeConfigFileService {
 
   /**
    * Validates one JSONC source document and Workspace Skill references against current catalog authority.
+   * Retained headers are checked before family decoding, without repairing or rewriting authored bytes.
    *
    * @param spec Resolved file spec.
    * @param content Source content.
@@ -663,7 +688,25 @@ export class RuntimeConfigFileService {
             }
           })
         : schemaForKind(spec.kind);
-    const result = schema.safeParse(parsed);
+    let result: ReturnType<typeof schema.safeParse>;
+    try {
+      result =
+        spec.kind === 'server' || spec.kind === 'workspace' || spec.kind === 'provider'
+          ? readRetainedV1(parsed, (record) => schema.safeParse(record))
+          : schema.safeParse(parsed);
+    } catch (error) {
+      return [
+        {
+          fileId: spec.relativePath,
+          severity: 'error',
+          code: `invalid_${spec.kind}_config`,
+          message: error instanceof Error ? error.message : 'Unsupported retained record format.',
+          source: spec.relativePath,
+          jsonPath: '$.schemaVersion',
+          range: null,
+        },
+      ];
+    }
 
     if (result.success) {
       if (spec.kind === 'server' || spec.kind === 'user' || spec.kind === 'workspace') {
@@ -676,7 +719,27 @@ export class RuntimeConfigFileService {
             ? (owner as Record<string, unknown>).defaultKnowledgeBaseId
             : undefined;
         };
-        if (binding(retained) !== binding(parsed as Record<string, unknown>)) {
+        let retainedBinding: unknown;
+        try {
+          retainedBinding =
+            existsSync(spec.absolutePath) && (spec.kind === 'server' || spec.kind === 'workspace')
+              ? readRetainedV1(retained, (record) => binding(record as Record<string, unknown>))
+              : binding(retained);
+        } catch (error) {
+          return [
+            {
+              fileId: spec.relativePath,
+              severity: 'error',
+              code: `invalid_${spec.kind}_config`,
+              message:
+                error instanceof Error ? error.message : 'Unsupported retained record format.',
+              source: spec.relativePath,
+              jsonPath: '$.schemaVersion',
+              range: null,
+            },
+          ];
+        }
+        if (retainedBinding !== binding(parsed as Record<string, unknown>)) {
           return [
             {
               fileId: spec.relativePath,
@@ -768,7 +831,11 @@ export class RuntimeConfigFileService {
         409
       );
     if (spec.kind === 'workspace') {
-      if (WorkspaceConfigSchema.parse(parse(content)).workspace.roots.length > 0) throw blocked();
+      if (
+        readRetainedV1(parse(content), (record) => WorkspaceConfigSchema.parse(record)).workspace
+          .roots.length > 0
+      )
+        throw blocked();
       return;
     }
     if (spec.kind !== 'agent' && spec.kind !== 'data-source') return;
@@ -948,15 +1015,14 @@ export class RuntimeConfigFileService {
         : basename(spec.relativePath, '.agent.jsonc');
 
     if (spec.kind === 'workspace') {
-      return `{
-  "schemaVersion": 1,
-  "workspace": {
-    "name": "${titleFromId(spec.workspaceId ?? 'workspace')}",
-    "roots": []
-  },
-  "extensions": {}
-}
-`;
+      return `${JSON.stringify(
+        writeRetainedV1({
+          workspace: { name: titleFromId(spec.workspaceId ?? 'workspace'), roots: [] },
+          extensions: {},
+        }),
+        null,
+        2
+      )}\n`;
     }
 
     if (spec.kind === 'data-source') {
@@ -998,16 +1064,19 @@ export class RuntimeConfigFileService {
     }
 
     if (spec.kind === 'provider') {
-      return `{
-  "id": "${id}",
-  "displayName": "${titleFromId(id)}",
-  "kind": "custom",
-  "baseUrl": "https://openrouter.ai/api/v1",
-  "models": ["openai/gpt-5.1"],
-  "defaultModel": "openai/gpt-5.1",
-  "secretRef": "vault://${allocateEntityId('vault')}"
-}
-`;
+      return `${JSON.stringify(
+        writeRetainedV1({
+          id,
+          displayName: titleFromId(id),
+          kind: 'custom',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          models: ['openai/gpt-5.1'],
+          defaultModel: 'openai/gpt-5.1',
+          secretRef: `vault://${allocateEntityId('vault')}`,
+        }),
+        null,
+        2
+      )}\n`;
     }
 
     return `{
@@ -1415,7 +1484,7 @@ function schemaForKind(kind: RuntimeConfigFileKind): z.ZodType {
   }
 
   if (kind === 'provider') {
-    return ProviderProfileSchema;
+    return AuthoredProviderProfileSchema;
   }
 
   if (kind === 'model-catalog') return ModelCatalogSchema;

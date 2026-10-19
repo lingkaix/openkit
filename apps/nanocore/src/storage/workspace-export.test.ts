@@ -1,14 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
+  ArtifactVersionRecordSchema,
+  AuditEventSchema,
+  allocateEntityId,
   deriveEntityId,
   isEntityId,
   KnowledgeBaseIdSchema,
   PROTOCOL_VERSION,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { applyEdits, modify } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
@@ -34,6 +38,7 @@ import {
   saveWorkspaceMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { publishArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
@@ -59,7 +64,6 @@ import {
 const timestamp = '2026-07-05T00:00:00.000Z';
 const localActor = { kind: 'user', id: LOCAL_USER_ID } as const;
 const workspaceKnowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
-const serverKnowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000002';
 
 /** Export fixture input with empty Material owner families supplied by the local writer wrapper. */
 type WorkspaceExportTestInput = Omit<
@@ -226,6 +230,59 @@ function writeExportTree(
 }
 
 describe('workspace export verifier', () => {
+  it('carries non-secret authenticated credential identity through verified export and import', () => {
+    const root = freshExportRoot('audit-auth-export-');
+    const workspaceId = testEntityId('ws', 'audit-auth-export');
+    const authentication = {
+      credentialKind: 'session' as const,
+      credentialId: testEntityId('auth', 'source-credential'),
+    };
+    const event = AuditEventSchema.parse({
+      id: testEntityId('aud', 'audit-auth-export'),
+      workspaceId,
+      actor: { kind: 'user', id: testEntityId('usr', 'source-actor') },
+      authentication,
+      action: 'catalog.mcp-create',
+      resource: 'mcp:stub',
+      outcome: 'succeeded',
+      summary: 'MCP created.',
+      createdAt: timestamp,
+      occurredAt: timestamp,
+    });
+    try {
+      writeWorkspaceExportTree({
+        exportRoot: root,
+        exportId: testEntityId('wsexp', 'audit-auth-export'),
+        sourceDeploymentId: testEntityId('dep', 'audit-auth-export'),
+        createdAt: timestamp,
+        workspace: {
+          id: workspaceId,
+          name: 'Audit',
+          kind: 'code',
+          status: 'active',
+          counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        threads: [],
+        turns: [],
+        itemRevisions: [],
+        artifacts: [],
+        artifactReviews: [],
+        agentSessions: [],
+        turnEvents: [],
+        knowledge: [],
+        auditEvents: [event],
+      });
+      const targetWorkspaceId = testEntityId('ws', 'audit-auth-import');
+      const imported = readImportSnapshot(root, targetWorkspaceId);
+      expect(imported.auditEvents).toEqual([{ ...event, workspaceId: targetWorkspaceId }]);
+      expect(imported.auditEvents[0]?.authentication).toEqual(authentication);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('always exports all three empty recurring families with their required feature', () => {
     const root = freshExportRoot('recurring-empty-export-');
     const verified = writeWorkspaceExportTree({
@@ -778,7 +835,23 @@ describe('workspace export verifier', () => {
         },
       },
     };
+    const sourceWorkspaceRoot = join(dirname(root), 'source');
+    publishArtifactVersionRecord({
+      workspaceRoot: sourceWorkspaceRoot,
+      record: ArtifactVersionRecordSchema.parse({
+        artifact,
+        version: {
+          parentVersion: null,
+          actor: turn.triggerActor,
+          threadId: artifact.threadId,
+          turnId: artifact.turnId,
+          requestId: artifact.lastMutationRequestId,
+          recordedAt: artifact.updatedAt,
+        },
+      }),
+    });
     const exportInput = {
+      sourceWorkspaceRoot,
       exportRoot: root,
       exportId: 'wsexp_00000000-0000-743a-9531-8ebe42619a57',
       sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
@@ -813,10 +886,12 @@ describe('workspace export verifier', () => {
     expect
       .soft(exported.checkedFiles)
       .toContain('artifacts/ar_00000000-0000-7e0d-8050-96f36ec9a01f/files/content.md');
-    expect.soft(artifactMetadata).toEqual({
-      ...artifact,
-      content: { format: artifact.content.format },
-    });
+    expect.soft(artifactMetadata).toEqual(
+      writeRetainedV1({
+        ...artifact,
+        content: { format: artifact.content.format },
+      })
+    );
     expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
     expect.soft(readFileSync(artifactBodyPath, 'utf8')).toBe(artifact.content.body);
     expect.soft(verifyWorkspaceExportTree({ exportRoot: root })).toEqual(exported);
@@ -1575,6 +1650,7 @@ describe('workspace export verifier', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     } as const;
+    const serverPageScope = `page/server/${allocateEntityId('kb')}`;
     const traceId = 'krt_00000000-0000-77c6-84f7-ac86ac6632b2';
     const requestDigest = `sha256:${'8'.repeat(64)}`;
     const sourcePortableRoot = mkdtempSync(
@@ -1595,7 +1671,7 @@ describe('workspace export verifier', () => {
         },
         threadId: thread.id,
       },
-      sourceScope: `page/server/${serverKnowledgeBaseId}`,
+      sourceScope: serverPageScope,
       notebookRevision: null,
       caller: 'app-api',
       requestDigest,
@@ -1608,7 +1684,7 @@ describe('workspace export verifier', () => {
       },
       selected: [
         {
-          reference: { scopeId: `page/server/${serverKnowledgeBaseId}`, objectId: 'same-path' },
+          reference: { scopeId: serverPageScope, objectId: 'same-path' },
           revision: `sha256:${'9'.repeat(64)}`,
           contentDigest: `sha256:${'9'.repeat(64)}`,
           sourceReferences: [],
@@ -1637,7 +1713,7 @@ describe('workspace export verifier', () => {
     mkdirSync(join(sourcePortableRoot, 'threads', thread.id, 'retrieval-traces'), {
       recursive: true,
     });
-    const sourceTraceText = `${JSON.stringify(sourceTrace)}\n`;
+    const sourceTraceText = `${JSON.stringify(writeRetainedV1(sourceTrace))}\n`;
     writeFileSync(join(sourcePortableRoot, sourceTracePath), sourceTraceText);
     // The codec reads the current canonical content owner even for a trace-only Workspace.
     new KnowledgeNotebook({
@@ -1719,10 +1795,10 @@ describe('workspace export verifier', () => {
         workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636',
         threadId: imported.threads[0]?.id,
       },
-      sourceScope: `page/server/${serverKnowledgeBaseId}`,
+      sourceScope: serverPageScope,
       selected: [
         expect.objectContaining({
-          reference: { scopeId: `page/server/${serverKnowledgeBaseId}`, objectId: 'same-path' },
+          reference: { scopeId: serverPageScope, objectId: 'same-path' },
         }),
       ],
     });

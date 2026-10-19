@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { writeRetainedV1 } from '@openkit/protocol';
 
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createWorkerContextPackageFiles } from '../context/worker-context-package.js';
@@ -199,7 +200,7 @@ function writePortableFixture(root: string): void {
     `${retrieval.traceId}.json`
   );
   mkdirSync(dirname(retrievalPath), { recursive: true });
-  writeFileSync(retrievalPath, `${JSON.stringify(retrieval)}\n`);
+  writeFileSync(retrievalPath, `${JSON.stringify(writeRetainedV1(retrieval))}\n`);
   const threadRetrieval = {
     ...retrieval,
     traceId: 'krt_00000000-0000-7afe-9d7a-6a1fdf1c3d36',
@@ -216,7 +217,7 @@ function writePortableFixture(root: string): void {
     `${threadRetrieval.traceId}.json`
   );
   mkdirSync(dirname(threadRetrievalPath), { recursive: true });
-  writeFileSync(threadRetrievalPath, `${JSON.stringify(threadRetrieval)}\n`);
+  writeFileSync(threadRetrievalPath, `${JSON.stringify(writeRetainedV1(threadRetrieval))}\n`);
 
   mkdirSync(join(root, 'config'), { recursive: true });
   writeFileSync(

@@ -1,4 +1,7 @@
 import {
+  type CommitArtifactFileVersionRequest,
+  type CommitArtifactVersionResponse,
+  CommitArtifactVersionResponseSchema,
   type ImportWorkspaceArtifactRequest,
   ImportWorkspaceArtifactResponseSchema,
   OPERATION_DEFINITIONS,
@@ -17,6 +20,15 @@ export interface ArtifactFileDownload {
 
 /** Streaming Artifact bindings, separate from definition-derived JSON operations. */
 export interface ArtifactFileClient {
+  /** Streams one exact next version while retaining the same request across uncertain outcomes. */
+  commitVersion(
+    input: CommitArtifactFileVersionRequest & {
+      readonly workspaceId: string;
+      readonly artifactId: string;
+      readonly threadId: string;
+    },
+    body: BodyInit
+  ): Promise<CommitArtifactVersionResponse>;
   /** Uploads raw bytes with bounded metadata and the caller's retained request identity. */
   import(
     input: ImportWorkspaceArtifactRequest & { readonly workspaceId: string },
@@ -47,6 +59,23 @@ export function createArtifactFileClient(transport: ClientTransport): ArtifactFi
   };
   return {
     browserDownloadUrl,
+    commitVersion: (input, body) => {
+      const metadata =
+        OPERATION_DEFINITIONS['artifact.version-file-commit'].inputSchema.parse(input);
+      const { requestId, summary, ...queryMetadata } = metadata;
+      const query = new URLSearchParams([
+        ...Object.entries(queryMetadata).map(([key, value]) => [key, String(value)]),
+        ['summary', JSON.stringify(summary)],
+      ]);
+      if (new TextEncoder().encode(`?${query}`).byteLength > 8_192)
+        throw invalidFileResponse('File metadata is too large.');
+      return transport.postStream(
+        `${operationHttpPath('artifact.version-file-commit')}?${query}`,
+        body,
+        { 'content-type': metadata.mediaType, 'x-openkit-request-id': requestId },
+        CommitArtifactVersionResponseSchema
+      );
+    },
     import: (input, body) => {
       const metadata = OPERATION_DEFINITIONS['artifact.import'].inputSchema.parse(input);
       const { requestId, ...queryMetadata } = metadata;

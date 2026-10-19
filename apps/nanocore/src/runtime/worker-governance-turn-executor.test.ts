@@ -53,6 +53,7 @@ import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/
 import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -61,6 +62,9 @@ import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
@@ -830,7 +834,10 @@ function createWorkspaceChangeIngressFixture(name: string, strategy: 'git' | 'fi
     now: () => timestamp,
   });
   const environmentPackage = {
+    agent: { agentId: turn.agentId },
     scope: {
+      agentSessionId: testEntityId('as', `as_ingress_${name}`),
+      triggerActor: turn.triggerActor,
       requestId,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -1321,6 +1328,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const workspaceRoots = materializeWorkspaceRoots({
       config: {
+        schemaVersion: 1,
         id: 'ws_00000000-0000-7000-8000-000000000001',
         name: 'Demo',
         workspace: {
@@ -1945,6 +1953,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'backend',
     'typed-preview',
     'native-proof',
+    'retained-aep',
   ] as const)('retains safe capacity inspection cause and request correlation: %s', async (scenario) => {
     const store = createDemoStore();
     const turn = createAssignedTurn(
@@ -1965,9 +1974,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
               originPhysicalEpoch: 'a'.repeat(64),
               attachmentPhysicalEpoch: 'b'.repeat(64),
             })
-          : Object.assign(new Error('credential-canary /private/package-path received=secret'), {
-              name: 'secret-error-name',
-            });
+          : scenario === 'retained-aep'
+            ? new snapshotLedger.AgentEnvironmentSnapshotReadError(
+                new Error('credential-canary /private/package-path received=secret')
+              )
+            : Object.assign(new Error('credential-canary /private/package-path received=secret'), {
+                name: 'secret-error-name',
+              });
     if (cause instanceof WorkerNativeProofValidationError && cause.diagnostic) {
       Object.assign(cause.diagnostic, { packageBytes: 'credential-canary /private/package-path' });
     }
@@ -2045,7 +2058,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
             ? 'WorkerNativeProofValidationError'
             : scenario === 'typed-preview'
               ? 'TurnStartValidationError'
-              : 'Error',
+              : scenario === 'retained-aep'
+                ? 'AgentEnvironmentSnapshotReadError'
+                : 'Error',
+        ...(scenario === 'retained-aep'
+          ? { causeMessage: 'The retained record could not be read.' }
+          : {}),
         message:
           scenario === 'native-proof'
             ? 'Retained native-session proof disagrees with its original binding and package provenance.'
@@ -6659,6 +6677,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }),
       ]);
       expect(listWorkspaceChangeSets(fixture.workspaceDb, fixture.workspaceId)).toHaveLength(1);
+      expect(listWorkspaceAuditEvents(fixture.workspaceDb, fixture.workspaceId)).toEqual([
+        expect.objectContaining({
+          action: 'workspace.review.stage',
+          actor: {
+            kind: 'agent',
+            id: fixture.environmentPackage.agent.agentId,
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          },
+          agentId: fixture.environmentPackage.agent.agentId,
+          agentSessionId: fixture.environmentPackage.scope.agentSessionId,
+          requestId: fixture.environmentPackage.scope.requestId,
+          threadId: fixture.environmentPackage.scope.threadId,
+          turnId: fixture.environmentPackage.scope.turnId,
+        }),
+      ]);
     } finally {
       fixture.workspaceDb.sqlite.close();
     }
@@ -7064,6 +7097,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  // Real package preparation shares gate CPU; policy values, not elapsed time, are the oracle.
   it('passes user-declared sandbox access into the resolved worker package', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-sandbox-access-')));
 
@@ -7140,7 +7174,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
 
     coreDb.sqlite.close();
-  });
+  }, 60_000);
 
   it.each([
     false,
@@ -8080,6 +8114,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
+  // Real native handoff setup shares gate CPU; assertions check exact source authority, not latency.
   it.each([
     'source',
     'cursor',
@@ -8292,7 +8327,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     workspaceDb.sqlite.close();
     launchGate.mockRestore();
     coreDb.sqlite.close();
-  });
+  }, 60_000);
 
   it.each([
     'validation',
@@ -11642,6 +11677,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
+    readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
     env: {},
     workerControlGateway: new WorkerControlGateway(),
     nanoHostSessionDispatch: {
@@ -11795,9 +11831,9 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
       if (fault === 'foreign-thread')
         db.sqlite
           .prepare(
-            "UPDATE workspace_snapshot_cursors SET baseline_identity_json=json_set(baseline_identity_json, '$.threadId', 'foreign-thread')"
+            "UPDATE workspace_snapshot_cursors SET baseline_identity_json=json_set(baseline_identity_json, '$.threadId', ?)"
           )
-          .run();
+          .run(testEntityId('th', 'foreign-thread'));
       if (fault === 'foreign-slot')
         db.sqlite.prepare("UPDATE workspace_snapshot_cursors SET work_slot='foreign-slot'").run();
       if (fault === 'corrupt-cursor')

@@ -5,6 +5,7 @@ import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
@@ -16,6 +17,7 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
@@ -169,6 +171,34 @@ export function createCatalogOperationImplementations(
       workspaceDb: dependencies.repositoryWorkspaceDb(workspaceId),
     };
   };
+  /** Opens the existing Audit home before any file-backed catalog mutation. */
+  const mutationAuditDb = (workspaceId: string) => {
+    if (!dependencies.repositoryWorkspaceDb)
+      throw new CatalogIntegrityError('Catalog Audit storage is unavailable.');
+    return dependencies.repositoryWorkspaceDb(workspaceId);
+  };
+  /** Retains the actual caller and selected resource, without executable declarations or binding contents. */
+  const auditMutation = (
+    workspaceDb: WorkspaceDb,
+    input: { workspaceId: string; requestId: string },
+    context: AdmittedOperationContext,
+    action: string,
+    resource: string,
+    resourceRevision: number
+  ) =>
+    recordWorkspaceAuditEvent({
+      workspaceDb,
+      workspaceId: input.workspaceId,
+      requestId: input.requestId,
+      actor: context.actorRef,
+      authentication: auditAuthenticationFromActor(publicOperationActor(context)),
+      action,
+      resource,
+      resourceRevision,
+      category: 'command',
+      outcome: 'succeeded',
+      summary: 'Catalog mutation completed.',
+    });
   const readArtifact = (
     selection: SkillCandidateArtifactSelection,
     context: AdmittedOperationContext
@@ -229,9 +259,10 @@ export function createCatalogOperationImplementations(
   ) => {
     const admitted = workspaceDb.sqlite
       .prepare(
-        'SELECT actor_json AS actor FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ?'
+        'SELECT *, actor_json AS actor FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ?'
       )
       .all(input.workspaceId, input.requestId, `${operation}.admit`) as { actor: string | null }[];
+    for (const row of admitted) readAuditEventRowV1(row);
     if (
       loadWorkspaceResourceCatalog(root(), input.workspaceId).revision !== input.expectedRevision
     ) {
@@ -691,6 +722,7 @@ export function createCatalogOperationImplementations(
       }
     },
     'catalog.mcp-create': (input, context) => {
+      const workspaceDb = mutationAuditDb(input.workspaceId);
       try {
         const result = createMcpConfig({
           allowedTools: input.allowedTools,
@@ -704,6 +736,14 @@ export function createCatalogOperationImplementations(
           stdioHostAuthorized: administrator(context),
           owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
+        auditMutation(
+          workspaceDb,
+          input,
+          context,
+          'catalog.mcp-create',
+          `mcp:${result.version.entryId}@${result.version.digest}`,
+          result.catalog.revision
+        );
         afterMutation(input.workspaceId);
         return {
           entry: mcpEntries(result.catalog).find((item) => item.id === result.version.entryId)!,
@@ -712,9 +752,12 @@ export function createCatalogOperationImplementations(
         };
       } catch (error) {
         catalogFailure(error, 'mcp_create_failed');
+      } finally {
+        workspaceDb.sqlite.close();
       }
     },
     'catalog.mcp-select': (input, context) => {
+      const workspaceDb = mutationAuditDb(input.workspaceId);
       try {
         const catalog = selectMcpVersion({
           dataRoot: root(),
@@ -724,13 +767,24 @@ export function createCatalogOperationImplementations(
           stdioHostAuthorized: administrator(context),
           owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
+        auditMutation(
+          workspaceDb,
+          input,
+          context,
+          'catalog.mcp-select',
+          `mcp:${input.mcpId}@${input.digest}`,
+          catalog.revision
+        );
         afterMutation(input.workspaceId);
         return { revision: catalog.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_select_failed');
+      } finally {
+        workspaceDb.sqlite.close();
       }
     },
     'catalog.mcp-binding': (input, context) => {
+      const workspaceDb = mutationAuditDb(input.workspaceId);
       try {
         const catalog = loadWorkspaceResourceCatalog(root(), input.workspaceId);
         const entryId = input.mcpId;
@@ -766,10 +820,20 @@ export function createCatalogOperationImplementations(
           expectedRevision: input.expectedRevision,
           owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
+        auditMutation(
+          workspaceDb,
+          input,
+          context,
+          'catalog.mcp-binding',
+          `mcp:${input.mcpId}`,
+          next.revision
+        );
         afterMutation(input.workspaceId);
         return { revision: next.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_binding_failed');
+      } finally {
+        workspaceDb.sqlite.close();
       }
     },
     'catalog.plugin-list': (input) => {
@@ -781,7 +845,9 @@ export function createCatalogOperationImplementations(
     },
     'catalog.plugin-import': (input, context) => {
       const staging = mkdtempSync(join(tmpdir(), 'openkit-plugin-upload-'));
+      let workspaceDb: WorkspaceDb | undefined;
       try {
+        workspaceDb = mutationAuditDb(input.workspaceId);
         materializeCatalogTree(staging, catalogTree(input.tree), {
           maxBytes: 64 * 1024 * 1024,
           maxEntries: 4_096,
@@ -796,6 +862,14 @@ export function createCatalogOperationImplementations(
           treeRoot: staging,
           workspaceId: input.workspaceId,
         });
+        auditMutation(
+          workspaceDb,
+          input,
+          context,
+          'catalog.plugin-import',
+          `plugin:${result.version.entryId}@${result.version.digest}`,
+          result.catalog.revision
+        );
         afterMutation(input.workspaceId);
         return {
           entry: pluginEntries(result.catalog).find((item) => item.id === result.version.entryId)!,
@@ -805,6 +879,7 @@ export function createCatalogOperationImplementations(
       } catch (error) {
         catalogFailure(error, 'plugin_import_failed');
       } finally {
+        workspaceDb?.sqlite.close();
         rmSync(staging, { force: true, recursive: true });
       }
     },

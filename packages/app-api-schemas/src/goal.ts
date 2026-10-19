@@ -1,5 +1,6 @@
 import {
   AccessTokenIdSchema,
+  PolicyDelegationV1Schema,
   RequestIdSchema,
   ThreadIdSchema,
   UserIdSchema,
@@ -12,6 +13,14 @@ import type { OperationDefinition } from './operation-contract.js';
 const id = z.string().min(1).max(160);
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const text = z.string().trim().min(1).max(16_000);
+/** Authored domain bounds; native Goal capture supplies attribution, delegate and exact source. */
+export const GoalDomainProposalSchema = z
+  .object({
+    id: PolicyDelegationV1Schema.shape.id,
+    scope: PolicyDelegationV1Schema.shape.scope,
+    lifetime: PolicyDelegationV1Schema.shape.lifetime,
+  })
+  .strict();
 /** The exact authorizing commitment; these historical revisions are not current-state fences. */
 export const GoalCommitmentSchema = z.object({
   intentBasis: z.object({ revision, intent: text }),
@@ -225,9 +234,14 @@ export const GOAL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     ...write,
-    description: 'Propose exact immutable Plan bytes and raise their Pending Request.',
+    description: 'Propose exact immutable Plan bytes and a typed domain in one Pending Request.',
     inputSchema: z
-      .object({ ...command, expectedRevision: revision, commitment: GoalCommitmentSchema })
+      .object({
+        ...command,
+        expectedRevision: revision,
+        commitment: GoalCommitmentSchema,
+        goalDomain: GoalDomainProposalSchema,
+      })
       .strict(),
   },
   'goal.plan.approve': {

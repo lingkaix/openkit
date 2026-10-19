@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -11,13 +10,8 @@ import {
 } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 
-import { AgentEnvironmentPackageSnapshotRecordSchema } from '@openkit/app-api-schemas';
-import {
-  AgentEnvironmentPackageSchema,
-  redactAgentEnvironmentPackageSnapshot,
-  WorkspaceConfigSchema,
-} from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
@@ -151,13 +145,13 @@ interface WorkspaceMigrationFileMapping {
   readonly target: Omit<RegularFileInventoryEntry, 'path'> | null;
 }
 
-/** One migration-only AEP snapshot content-digest rewrite. */
+/** Existing report evidence shape for historical AEP content-digest mappings. */
 interface AepSnapshotDigestMapping {
   /** Canonical successor path relative to the data root. */
   readonly path: string;
-  /** V1 enclosing snapshot-record content digest. */
+  /** Recorded predecessor snapshot content digest. */
   readonly sourceContentDigest: string;
-  /** V4 enclosing snapshot-record content digest. */
+  /** Recorded successor snapshot content digest. */
   readonly targetContentDigest: string;
 }
 
@@ -175,7 +169,7 @@ interface WorkspaceMigrationReportEntry {
 
 /** Evidence-only report written after a verified predecessor backup exists. */
 interface WorkspaceStorageMigrationReport {
-  /** Deterministic V1-to-V4 AEP snapshot digest rewrites. */
+  /** Existing mapping field; current-only layout migration preserves packages without rewrites. */
   readonly aepSnapshots: AepSnapshotDigestMapping[];
   /** Verified predecessor backup identity and digest. */
   readonly backup: {
@@ -212,7 +206,7 @@ interface WorkspaceStorageMigrationReport {
 
 /** Input used to build one success or failure evidence report. */
 interface CreateMigrationReportInput {
-  /** Deterministic V1-to-V4 AEP snapshot digest rewrites. */
+  /** Existing mapping field; current-only layout migration preserves packages without rewrites. */
   readonly aepSnapshots: AepSnapshotDigestMapping[];
   /** Verified predecessor cold backup. */
   readonly backup: VerifiedDataRootBackupManifest;
@@ -350,7 +344,7 @@ export function migrateWorkspaceStorage(
         migrateStagedWorkspaceMetadata(stagedWorkspaceRoot, source.workspaceId);
         applyScopedMigrations(workspaceDb);
         stage = 'aep-snapshots';
-        aepSnapshots.push(...migrateStagedAepSnapshots(stagedWorkspaceRoot, source.targetPath));
+        // Layout movement preserves current package evidence; the native ledger rejects unsupported versions.
         listExportableAgentEnvironmentPackageSnapshots(workspaceDb, source.workspaceId);
       } finally {
         workspaceDb.sqlite.close();
@@ -460,13 +454,13 @@ function migrateStagedWorkspaceMetadata(workspaceRoot: string, workspaceId: stri
   const configPath = join(workspaceRoot, 'config', 'workspace.jsonc');
   const hasCurrentConfig = existsSync(configPath);
   // Current configuration already owns editable values and its fixed base; validate without rewriting it.
-  const config = WorkspaceConfigSchema.parse(
-    hasCurrentConfig
-      ? parseJsoncObject(readFileSync(configPath, 'utf8'))
-      : { schemaVersion: 1, workspace: { name, defaultAgentId } }
-  );
+  const config = hasCurrentConfig
+    ? readRetainedV1(parseJsoncObject(readFileSync(configPath, 'utf8')), (value) =>
+        WorkspaceConfigSchema.parse(value)
+      )
+    : WorkspaceConfigSchema.parse({ schemaVersion: 1, workspace: { name, defaultAgentId } });
 
-  writeJsonAtomically(join(workspaceRoot, 'workspace-record.json'), record);
+  writeJsonAtomically(join(workspaceRoot, 'workspace-record.json'), writeRetainedV1(record));
   if (!hasCurrentConfig) writeJsonAtomically(configPath, config);
   rmSync(predecessorPath);
 }
@@ -792,241 +786,6 @@ function createMigrationSources(dataRoot: string): WorkspaceMigrationSource[] {
       workspaceId: root.workspaceId,
     }))
     .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
-}
-
-/**
- * Transforms migration-only V1 AEP snapshot records under one staged Workspace.
- *
- * @param workspaceRoot Staged Workspace root.
- * @param targetWorkspacePath Canonical successor Workspace path relative to the data root.
- * @returns Stable predecessor-to-successor snapshot digest mappings.
- * @throws Error when a snapshot path or V1 identity cannot become an exact V2 record.
- */
-function migrateStagedAepSnapshots(
-  workspaceRoot: string,
-  targetWorkspacePath: string
-): AepSnapshotDigestMapping[] {
-  const sessionsRoot = join(workspaceRoot, 'runtime', 'agent-sessions');
-  if (!existsSync(sessionsRoot)) {
-    return [];
-  }
-
-  const mappings: AepSnapshotDigestMapping[] = [];
-  for (const sessionEntry of readdirSync(sessionsRoot, { withFileTypes: true }).sort(
-    (left, right) => left.name.localeCompare(right.name)
-  )) {
-    if (sessionEntry.isSymbolicLink()) {
-      throw new Error('AEP migration session path must not be symbolic.');
-    }
-    if (!sessionEntry.isDirectory()) {
-      continue;
-    }
-
-    const snapshotsRoot = join(sessionsRoot, sessionEntry.name, 'aep-snapshots');
-    if (!existsSync(snapshotsRoot)) {
-      continue;
-    }
-    const snapshotsMetadata = lstatSync(snapshotsRoot);
-    if (snapshotsMetadata.isSymbolicLink() || !snapshotsMetadata.isDirectory()) {
-      throw new Error('AEP migration snapshot root must be a real directory.');
-    }
-
-    for (const snapshotEntry of readdirSync(snapshotsRoot, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name)
-    )) {
-      if (snapshotEntry.isSymbolicLink()) {
-        throw new Error('AEP migration snapshot path must not be symbolic.');
-      }
-      if (!snapshotEntry.isFile() || !snapshotEntry.name.endsWith('.json')) {
-        continue;
-      }
-
-      const path = join(snapshotsRoot, snapshotEntry.name);
-      const value = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-      const snapshot =
-        typeof value === 'object' && value !== null && 'snapshot' in value
-          ? value.snapshot
-          : undefined;
-      const schemaVersion =
-        typeof snapshot === 'object' && snapshot !== null && 'schemaVersion' in snapshot
-          ? snapshot.schemaVersion
-          : undefined;
-
-      if (schemaVersion === 4) {
-        continue;
-      }
-      if (schemaVersion !== 1) {
-        throw new Error('AEP migration encountered an unsupported snapshot schema version.');
-      }
-
-      mappings.push(
-        migrateLegacyAepSnapshotRecord(
-          path,
-          `${targetWorkspacePath}/${toReportPath(workspaceRoot, path)}`,
-          value
-        )
-      );
-    }
-  }
-
-  return mappings;
-}
-
-/**
- * Rewrites one V1 AEP snapshot record into the exact redacted V4 schema.
- *
- * @param path Staged snapshot record path.
- * @param reportPath Canonical successor path relative to the data root.
- * @param value Parsed V1 snapshot record.
- * @returns Predecessor and successor record-content digests.
- * @throws Error when V1 lineage, identity, digest, or final V4 validation fails.
- */
-function migrateLegacyAepSnapshotRecord(
-  path: string,
-  reportPath: string,
-  value: unknown
-): AepSnapshotDigestMapping {
-  const record = AgentEnvironmentPackageSnapshotRecordSchema.parse(value);
-  const legacySnapshot = record.snapshot as Record<string, unknown>;
-  const { providers: _retiredProviders, ...successorPackage } = legacySnapshot;
-  const legacyScope = legacySnapshot.scope;
-  if (
-    legacySnapshot.schemaVersion !== 1 ||
-    typeof legacyScope !== 'object' ||
-    legacyScope === null ||
-    Array.isArray(legacyScope)
-  ) {
-    throw new Error('AEP migration requires one valid V1 scope object.');
-  }
-
-  const sourceContentDigest = digestJson(legacySnapshot);
-  if (record.contentDigest !== sourceContentDigest) {
-    throw new Error('AEP migration V1 snapshot content digest does not match its record.');
-  }
-
-  const successorScope: Record<string, unknown> = {
-    ...(legacyScope as Record<string, unknown>),
-    triggerActor: legacyAepTriggerActor(legacyScope as Record<string, unknown>),
-  };
-  delete successorScope.userId;
-  delete successorScope.automationId;
-  delete successorScope.organizationId;
-
-  const legacyRuntime = legacySnapshot.runtime as Record<string, unknown>;
-  const legacyImage = legacyRuntime.image as Record<string, unknown>;
-  const legacyControl = legacySnapshot.control as Record<string, unknown>;
-  const legacyAdapter = legacyControl.adapter as Record<string, unknown>;
-  const successorAdapter = { ...legacyAdapter };
-  delete successorAdapter.targetTransport;
-  const successorControl: Record<string, unknown> = {
-    ...legacyControl,
-    adapter: successorAdapter,
-    bindings: {
-      capabilities: {
-        pathPrefix: '/capabilities/',
-        tokenRef: 'runtime://openkit/capability-token',
-      },
-      inference: {
-        pathPrefix: '/inference/',
-        tokenRef: 'runtime://openkit/inference-token',
-      },
-      workerControl: {
-        pathPrefix: '/worker-control/',
-        tokenRef: 'runtime://openkit/worker-control-token',
-      },
-    },
-    mode: 'sandbox-integration',
-  };
-  delete successorControl.endpoint;
-  delete successorControl.auth;
-
-  const snapshot = AgentEnvironmentPackageSchema.parse({
-    ...successorPackage,
-    control: successorControl,
-    runtime: {
-      ...legacyRuntime,
-      image:
-        legacyImage.kind === 'reference'
-          ? legacyImage
-          : {
-              kind: 'reference',
-              pullPolicy: legacyImage.pullPolicy,
-              ref: legacyImage.ref,
-            },
-    },
-    schemaVersion: 4,
-    scope: successorScope,
-  });
-  const redactedSnapshot = AgentEnvironmentPackageSchema.parse(
-    redactAgentEnvironmentPackageSnapshot(snapshot)
-  );
-  if (JSON.stringify(snapshot) !== JSON.stringify(redactedSnapshot)) {
-    throw new Error('AEP migration V1 snapshot is not a redacted durable V4 record.');
-  }
-
-  const targetContentDigest = digestJson(snapshot);
-  const successorRecord = AgentEnvironmentPackageSnapshotRecordSchema.parse({
-    ...record,
-    contentDigest: targetContentDigest,
-    snapshot,
-  });
-  writeJsonAtomically(path, successorRecord);
-
-  return { path: reportPath, sourceContentDigest, targetContentDigest };
-}
-
-/**
- * Maps legacy AEP identity fields to one exact V4 trigger actor.
- *
- * @param scope Parsed V1 scope object.
- * @returns Deterministic V4 trigger actor.
- * @throws Error when legacy identity is ambiguous, malformed, or absent.
- */
-function legacyAepTriggerActor(scope: Record<string, unknown>):
-  | { readonly id: string; readonly kind: 'user' }
-  | {
-      readonly id: string;
-      readonly kind: 'automation';
-      readonly responsibleUserId: string | null;
-    } {
-  if ('triggerActor' in scope) {
-    throw new Error('AEP migration V1 scope must not contain triggerActor.');
-  }
-  for (const field of ['userId', 'automationId', 'organizationId'] as const) {
-    const value = scope[field];
-    if (
-      value !== undefined &&
-      value !== null &&
-      (typeof value !== 'string' || value.length === 0)
-    ) {
-      throw new Error(`AEP migration V1 scope contains an invalid ${field}.`);
-    }
-  }
-
-  const automationId = scope.automationId;
-  const userId = scope.userId;
-  if (typeof automationId === 'string') {
-    return {
-      kind: 'automation',
-      id: automationId,
-      responsibleUserId: typeof userId === 'string' ? userId : null,
-    };
-  }
-  if (typeof userId === 'string') {
-    return { kind: 'user', id: userId };
-  }
-
-  throw new Error('AEP migration V1 scope has no supported triggering identity.');
-}
-
-/**
- * Hashes one parsed JSON value using the durable AEP snapshot digest format.
- *
- * @param value Parsed JSON value.
- * @returns Lowercase unprefixed SHA-256 digest.
- */
-function digestJson(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 /**

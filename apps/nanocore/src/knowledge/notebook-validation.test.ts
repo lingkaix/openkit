@@ -81,7 +81,7 @@ describe('Notebook final immutable tree validation', () => {
 
   it('rejects foreign-base and legacy source references despite a matching local path', () => {
     for (const reference of [
-      `openkit:${pageScopeId.replace('000000000001', '000000000002')}/b`,
+      `openkit:page/workspace/${ownerScope.workspaceId}/kb_00000000-0000-7000-8000-000000000002/b`,
       'knowledge:b',
     ]) {
       const referrer = page('a').replace('source_refs: []', `source_refs: ["${reference}"]`);

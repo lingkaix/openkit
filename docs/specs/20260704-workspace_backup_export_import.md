@@ -204,6 +204,12 @@ A later target action may select verified independent Skill versions through cur
 
 Complete data-root backup and same-deployment restore retain canonical catalogs, Skill snapshots, restricted original Plugin roots, and mutable MCP data under the existing backup rules. Portable export is not a replacement for that complete backup. The catalog owners retain all resource mutation, removal, and retention authority; this projection adds no candidate lifecycle, registry, background reconciliation, or cross-deployment activation mechanism.
 
+### Named Resource Privacy Restrictions
+
+Workspace `config/workspace.jsonc` carries the current `workspace.policy.resourceAccess` assignments, prohibitions and managed-boundary facts defined by [Named Workspace Resource Access](20260703-policy_enforcement_mapping.md#named-workspace-resource-access-r033). These portable Workspace privacy restrictions are distinct from the deployment-local membership, credential and historical approval records excluded below. Each exported managed Thread retains its applicable boundary and restrictions; export audience filtering must not convert it into an unmanaged Thread.
+
+Import validates the authority-bearing configuration and its required feature before target publication, uses the existing identity maps to rewrite Workspace-local resource family/id references, and retains the boundary even after the last positive association was revoked. Source principal references do not grant target membership or bind a target User or Agent merely because an identifier matches. Mandatory restrictions and target principal bindings must validate under current target authority; otherwise import rejects before publication through its existing failure path, with the boundary still present in the source archive. It must not drop unsupported Policy or publish content under the full-member baseline. Successful import keeps the restrictions effective before the first content read. Current Workspace or deployment administrators use the existing Pending Request, confirmation and configuration contract for later changes; no import-specific grant store or workflow is introduced.
+
 ### Non-Portable And Redacted State
 
 - System-managed Vault material, provider credentials, session cookies, access tokens, runtime credentials, and backend secrets MUST NOT appear in an export.
@@ -420,7 +426,7 @@ V3 replaces V1 without compatibility obligations. Existing V1 exports and intern
 
 The completed Material and Artifact Review portability implementation adds the three Material JSONL families, replaces the Artifact-id-only Review portable schema with the version-keyed row, extends the Workspace SQLite coverage guard, and validates both the source graph and reminted target graph in the same change. Context Package and workspace-handoff references are rewritten in that implementation; no later repair pass or compatibility reader exists.
 
-The multi-user implementation change MUST update V3 coverage and import tests in the same slice that moves Workspaces to the owner-independent root. It MUST prove that access records never travel in a portable export and that ordinary portable import grants access only to the importing user. Deleted-Workspace recovery grants the reminted membership to the tombstone's original owner and records the actual recovery caller as actor. No second export version is required unless the portable byte contract itself changes.
+The multi-user implementation change MUST update V3 coverage and import tests in the same slice that moves Workspaces to the owner-independent root. It MUST prove that deployment-local membership, invitation and credential records never travel in a portable export and that ordinary portable import creates membership only for the importing user. Workspace-authored resource privacy restrictions travel under Named Resource Privacy Restrictions above; they do not create membership. Deleted-Workspace recovery grants the reminted membership to the tombstone's original owner and records the actual recovery caller as actor. No second export version is required unless the portable byte contract itself changes.
 
 ## Testing Strategy / Acceptance Criteria
 

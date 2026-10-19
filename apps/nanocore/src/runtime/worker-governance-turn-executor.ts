@@ -27,7 +27,11 @@ import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
-import { isArtifactVisible, isThreadVisible } from '../auth/thread-visibility.js';
+import {
+  canDiscloseThreadToAudience,
+  isArtifactVisible,
+  isThreadVisible,
+} from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import { openBoundedSourceView } from '../context/bounded-source-view.js';
@@ -90,6 +94,7 @@ import {
 } from '../workspace-materials.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
+  AgentEnvironmentSnapshotReadError,
   findNamedAgentEnvironmentPackageSnapshot,
   recordAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
@@ -377,6 +382,20 @@ export async function prepareWorkerTurnContextPackage(
     : null;
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
+  if (!responsibleUserId || !turn.agentId)
+    throw new TurnStartValidationError(
+      'source_unavailable',
+      'Current Worker resource identity is unavailable.',
+      503
+    );
+  const resourcePolicyActor = {
+    kind: 'agent' as const,
+    userId: responsibleUserId,
+    agentId: turn.agentId,
+    processId: input.agentSessionId,
+  };
+
   const sourceAdmission = coreDb ? findSchedulerAdmissionForTurn(coreDb, input) : null;
   const serverKnowledgeActor =
     sourceAdmission?.serverAdminTokenId && sourceAdmission.triggerActor.kind === 'user'
@@ -492,6 +511,7 @@ export async function prepareWorkerTurnContextPackage(
           actor: store.getTurnById(input.turnId).triggerActor,
           outputThreadId: input.threadId,
           outputTurnId: input.turnId,
+          resourcePolicyActor,
         },
         retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
         workspaceId: input.workspaceId,
@@ -528,7 +548,12 @@ export async function prepareWorkerTurnContextPackage(
   for (const reference of artifactRefs) {
     let artifact: ReturnType<FsStore['getArtifact']>;
     try {
-      artifact = store.getArtifact(input.workspaceId, reference.artifactId);
+      const current = store.getArtifact(input.workspaceId, reference.artifactId);
+      artifact = store.getArtifactVersion(
+        input.workspaceId,
+        reference.artifactId,
+        reference.artifactVersion ?? current.version
+      ).artifact;
     } catch {
       throw new TurnStartValidationError(
         'source_unavailable',
@@ -536,13 +561,7 @@ export async function prepareWorkerTurnContextPackage(
         503
       );
     }
-    if (reference.artifactVersion !== undefined && reference.artifactVersion !== artifact.version)
-      throw new TurnStartValidationError(
-        'source_unavailable',
-        'Selected Artifact version is unavailable.',
-        503
-      );
-    selectedArtifacts.set(artifact.id, structuredClone(artifact));
+    selectedArtifacts.set(`${artifact.id}/${artifact.version}`, structuredClone(artifact));
   }
   const assertCurrentKnowledgeOverview = () => {
     try {
@@ -575,7 +594,9 @@ export async function prepareWorkerTurnContextPackage(
         store,
         store.getThread(input.workspaceId, input.threadId),
         responsibleUserIdForActor(admission.triggerActor) ?? undefined,
-        admission.serverAdminTokenId !== null
+        admission.serverAdminTokenId !== null,
+        'thread.read',
+        resourcePolicyActor
       )
     )
       throw new TurnStartValidationError(
@@ -595,16 +616,18 @@ export async function prepareWorkerTurnContextPackage(
         : store.getThread(input.workspaceId, current.origin.threadId);
     if (
       current.status !== 'ready' ||
-      !isDeepStrictEqual(current, artifact) ||
+      !isDeepStrictEqual(
+        store.getArtifactVersion(input.workspaceId, artifact.id, artifact.version).artifact,
+        artifact
+      ) ||
       !isArtifactVisible(
         store,
         current,
         responsibleUserIdForActor(sourceAdmission.triggerActor) ?? undefined,
-        sourceAdmission.serverAdminTokenId !== null
+        sourceAdmission.serverAdminTokenId !== null,
+        resourcePolicyActor
       ) ||
-      (sourceThread?.visibility === 'private' &&
-        (destination.visibility !== 'private' ||
-          destination.privateOwnerUserId !== sourceThread.privateOwnerUserId))
+      (sourceThread !== null && !canDiscloseThreadToAudience(store, sourceThread, destination))
     )
       throw new TurnStartValidationError(
         'source_unavailable',
@@ -674,6 +697,7 @@ export async function prepareWorkerTurnContextPackage(
         actor: turn.triggerActor,
         outputThreadId: input.threadId,
         outputTurnId: input.turnId,
+        resourcePolicyActor,
       },
       retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
       workspaceId: input.workspaceId,
@@ -1665,6 +1689,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                 attachmentPhysicalEpoch: cause.diagnostic.attachmentPhysicalEpoch,
               }
             : {}),
+          // The nominal ledger message is fixed; its private decoder cause remains excluded.
+          ...(cause instanceof AgentEnvironmentSnapshotReadError
+            ? { causeMessage: cause.message }
+            : {}),
           errorClass:
             cause instanceof WorkerNativeProofValidationError
               ? 'WorkerNativeProofValidationError'
@@ -1674,9 +1702,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                   ? 'TypeError'
                   : cause instanceof SyntaxError
                     ? 'SyntaxError'
-                    : cause instanceof Error
-                      ? 'Error'
-                      : 'UnknownError',
+                    : cause instanceof AgentEnvironmentSnapshotReadError
+                      ? 'AgentEnvironmentSnapshotReadError'
+                      : cause instanceof Error
+                        ? 'Error'
+                        : 'UnknownError',
           message:
             cause instanceof WorkerNativeProofValidationError
               ? 'Retained native-session proof disagrees with its original binding and package provenance.'
@@ -3459,7 +3489,23 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             });
           }
           if (workspaceDb && !gitSource) {
-            recordWorkspaceSyncReview(workspaceDb, { item: stagedItem });
+            recordWorkspaceSyncReview(workspaceDb, {
+              item: stagedItem,
+              producer: {
+                actor: {
+                  kind: 'agent',
+                  id: environmentPackage.agent.agentId,
+                  responsibleUserId: responsibleUserIdForActor(
+                    environmentPackage.scope.triggerActor
+                  ),
+                },
+                agentId: environmentPackage.agent.agentId,
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                requestId: artifactRequestId,
+                threadId: environmentPackage.scope.threadId,
+                turnId: environmentPackage.scope.turnId,
+              },
+            });
           }
           if (existingArtifact) {
             if (!isDeepStrictEqual(existingArtifact, artifact)) {
