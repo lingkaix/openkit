@@ -17,10 +17,11 @@ import {
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import type { MiddlewareHandler } from 'hono';
+import { createLocalTraceExporter } from './telemetry-local-exporter.js';
 
 /** Nested process.telemetry flags describing local configuration only. */
 export interface TelemetryConfiguration {
-  /** True when export is admitted and no unsupported header env is set. */
+  /** True when private SDK capture is configured; it does not claim destination delivery. */
   readonly enabled: boolean;
   /** True when OTEL_EXPORTER_OTLP_ENDPOINT is an admitted absolute HTTP(S) URL. */
   readonly exportConfigured: boolean;
@@ -57,7 +58,7 @@ export function resolveTelemetryConfiguration(
   const sdkDisabled = env.OTEL_SDK_DISABLED?.toLowerCase() === 'true';
   return {
     exportConfigured,
-    enabled: exportConfigured && !sdkDisabled && unsupportedExporterHeaderName(env) === undefined,
+    enabled: !sdkDisabled,
   };
 }
 
@@ -72,25 +73,22 @@ export function tracesExportUrl(endpoint: string): string {
 }
 
 /**
- * Starts the optional stock OpenTelemetry lifecycle when export is admitted.
+ * Starts private SDK capture, independently attaching local and optional external destinations.
  *
- * Malformed endpoints or unsupported header env disable export with one product-safe
- * diagnostic. Injected exporters are used only when configuration is enabled.
- * The provider is not registered globally; only this module's tracer exports.
- * Exporter construction failure does not prevent product boot.
- *
- * @param options Existing boot id, optional env override, and test exporter.
- * @returns The resolved process.telemetry configuration.
+ * Only explicit product instrumentation uses this provider. Local I/O is asynchronous and disposable; invalid external settings never disable admitted local capture.
+ * @param options Existing boot/log identity, live reserve reader, and optional test exporter.
+ * @returns Configuration intent, never successful delivery.
  */
 export function startTelemetry(options: {
   bootId: string;
+  logDirectory?: string;
+  readReserveBytes?: () => number;
+  serviceVersion?: string | undefined;
+  deploymentEnvironment?: 'local' | 'server' | 'test' | undefined;
   env?: NodeJS.ProcessEnv;
   exporter?: SpanExporter;
 }): TelemetryConfiguration {
-  if (activeProvider) {
-    throw new Error('Telemetry is already started.');
-  }
-
+  if (activeProvider) throw new Error('Telemetry is already started.');
   const env = options.env ?? process.env;
   const configuration = resolveTelemetryConfiguration(env);
   const rawEndpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT;
@@ -100,32 +98,60 @@ export function startTelemetry(options: {
   } else if (
     configuration.exportConfigured &&
     unsupportedHeader !== undefined &&
-    env.OTEL_SDK_DISABLED?.toLowerCase() !== 'true'
+    configuration.enabled
   ) {
     console.warn(`Telemetry export is disabled because ${unsupportedHeader} is unsupported.`);
   }
-  if (!configuration.enabled || !hasPresentEndpoint(rawEndpoint) || rawEndpoint === undefined) {
-    return configuration;
-  }
+  if (!configuration.enabled) return configuration;
 
+  const processors: (SimpleSpanProcessor | BatchSpanProcessor)[] = [];
+  if (options.logDirectory && options.readReserveBytes) {
+    const local = createLocalTraceExporter({
+      logDirectory: options.logDirectory,
+      readReserveBytes: options.readReserveBytes,
+      env,
+    });
+    if (local)
+      processors.push(
+        options.exporter
+          ? new SimpleSpanProcessor(local)
+          : new BatchSpanProcessor(local, {
+              maxQueueSize: MAX_QUEUE_SIZE,
+              exportTimeoutMillis: EXPORT_TIMEOUT_MS,
+            })
+      );
+  }
+  if (
+    configuration.exportConfigured &&
+    unsupportedHeader === undefined &&
+    rawEndpoint !== undefined
+  ) {
+    try {
+      const exporter =
+        options.exporter ?? new OTLPTraceExporter({ url: tracesExportUrl(rawEndpoint) });
+      processors.push(
+        options.exporter
+          ? new SimpleSpanProcessor(exporter)
+          : new BatchSpanProcessor(exporter, {
+              maxQueueSize: MAX_QUEUE_SIZE,
+              exportTimeoutMillis: EXPORT_TIMEOUT_MS,
+            })
+      );
+    } catch {
+      console.warn(START_FAILURE_DIAGNOSTIC);
+    }
+  }
   try {
-    const exporter =
-      options.exporter ??
-      new OTLPTraceExporter({
-        url: tracesExportUrl(rawEndpoint),
-      });
-    const processor = options.exporter
-      ? new SimpleSpanProcessor(exporter)
-      : new BatchSpanProcessor(exporter, {
-          maxQueueSize: MAX_QUEUE_SIZE,
-          exportTimeoutMillis: EXPORT_TIMEOUT_MS,
-        });
     const provider = new NodeTracerProvider({
       resource: resourceFromAttributes({
         'service.name': SERVICE_NAME,
         'service.instance.id': options.bootId,
+        ...(options.serviceVersion ? { 'service.version': options.serviceVersion } : {}),
+        ...(options.deploymentEnvironment
+          ? { 'deployment.environment.name': options.deploymentEnvironment }
+          : {}),
       }),
-      spanProcessors: [processor],
+      spanProcessors: processors,
     });
     activeContextManager = new AsyncLocalStorageContextManager().enable();
     activeProvider = provider;
@@ -145,12 +171,23 @@ export async function shutdownTelemetry(): Promise<void> {
   activeProvider = null;
   activeContextManager = null;
   contextManager?.disable();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (provider) {
-      await provider.shutdown();
+      await Promise.race([
+        provider.shutdown(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            console.warn('Telemetry shutdown flush timed out; product shutdown continues.');
+            resolve();
+          }, EXPORT_TIMEOUT_MS);
+        }),
+      ]);
     }
   } catch {
     console.warn('Telemetry shutdown flush failed; product shutdown continues.');
+  } finally {
+    clearTimeout(timer);
   }
 }
 

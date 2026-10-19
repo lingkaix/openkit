@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  effectiveCodexSubscriptionSettings,
   overlayConnectedAppAccount,
   overlayConnectedAppQuota,
   type ProviderSubscriptionAccountsPayload,
@@ -41,6 +42,16 @@ const quota: ProviderSubscriptionQuotaPayload = {
     },
   ],
 };
+const absentCodexQuota = {
+  creditsHasCredits: null,
+  creditsUnlimited: null,
+  creditsBalance: null,
+  resetAvailableCount: null,
+  resetSoonestExpiresAt: null,
+  resetEntries: null,
+  heldReason: null,
+  activeUntil: null,
+};
 const absentQuota = {
   quotaAvailability: null,
   quotaPlanType: null,
@@ -50,6 +61,7 @@ const absentQuota = {
   quotaRetryAfter: null,
   quotaWindows: [],
   quotaBilling: null,
+  quotaCodex: absentCodexQuota,
 };
 
 /** Public non-connected snapshots for the two reported lifecycle transitions. */
@@ -123,6 +135,71 @@ describe('subscription quota lifecycle projection', () => {
           resetsAt: '2026-10-15T00:00:00.000Z',
         },
       ],
+    });
+  });
+
+  it('projects Codex quota extensions without inventing zero for absent counts', () => {
+    const sparse: ProviderSubscriptionQuotaPayload = {
+      ...quota,
+      windows: [{ id: 'primary', periodType: 'weekly' }],
+    };
+    const row = projectConnectedApps(provider, { accounts: [account] }, [sparse]).accounts[0]!;
+    expect(row.quotaCodex).toEqual(absentCodexQuota);
+    expect(row.quotaWindows[0]).toMatchObject({
+      id: 'primary',
+      periodType: 'weekly',
+      usedPercent: null,
+      remainingPercent: null,
+    });
+  });
+
+  it('copies supplied Codex reset and credit fields when present', () => {
+    const rich: ProviderSubscriptionQuotaPayload = {
+      ...quota,
+      credits: { hasCredits: true, unlimited: false, balance: '12.5' },
+      resetCredits: {
+        availableCount: 2,
+        available: [
+          { id: 'credit-1', resetType: 'weekly', expiresAt: null },
+          {
+            id: 'credit-2',
+            resetType: 'promo',
+            expiresAt: '2026-10-20T00:00:00.000Z',
+          },
+        ],
+        soonestExpiresAt: '2026-10-20T00:00:00.000Z',
+      },
+      heldReason: 'rate_limit_reached',
+      activeUntil: '2026-10-21T00:00:00.000Z',
+    };
+    const row = projectConnectedApps(provider, { accounts: [account] }, [rich]).accounts[0]!;
+    expect(row.quotaCodex).toMatchObject({
+      creditsHasCredits: true,
+      creditsUnlimited: false,
+      creditsBalance: '12.5',
+      resetAvailableCount: 2,
+      resetSoonestExpiresAt: '2026-10-20T00:00:00.000Z',
+      heldReason: 'rate_limit_reached',
+      activeUntil: '2026-10-21T00:00:00.000Z',
+    });
+    expect(row.quotaCodex.resetEntries).toHaveLength(2);
+  });
+
+  it('derives effective Codex settings from stored absence', () => {
+    expect(effectiveCodexSubscriptionSettings(undefined)).toEqual({
+      codexAutoUseWeeklyReset: true,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: false,
+    });
+    expect(
+      effectiveCodexSubscriptionSettings({
+        codexAutoUseWeeklyReset: false,
+        codexUseCredits: true,
+      })
+    ).toEqual({
+      codexAutoUseWeeklyReset: false,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: true,
     });
   });
 });

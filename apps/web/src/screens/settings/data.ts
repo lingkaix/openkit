@@ -68,6 +68,55 @@ export interface ConnectedAppBilling {
   sharedAllowance: boolean | null;
 }
 
+/** Codex-only held posture copied from a bounded quota observation. */
+export type ConnectedAppCodexHeldReason =
+  | 'spend_control_reached'
+  | 'overage_limit_reached'
+  | 'rate_limit_reached'
+  | 'not_allowed';
+
+/** One banked Codex reset credit entry when the provider supplied the list. */
+export interface ConnectedAppResetCreditEntry {
+  id: string;
+  resetType: string;
+  expiresAt: string | null;
+}
+
+/** Codex-only quota details; absent fields stay unknown rather than zero. */
+export interface ConnectedAppCodexQuotaDetails {
+  creditsHasCredits: boolean | null;
+  creditsUnlimited: boolean | null;
+  creditsBalance: string | null;
+  resetAvailableCount: number | null;
+  resetSoonestExpiresAt: string | null;
+  resetEntries: ConnectedAppResetCreditEntry[] | null;
+  heldReason: ConnectedAppCodexHeldReason | null;
+  activeUntil: string | null;
+}
+
+/** Stored Codex settings before effective defaults; omitted on xAI rows. */
+export interface ConnectedAppCodexSettingsStored {
+  codexAutoUseWeeklyReset?: boolean;
+  codexAutoUseExpiringReset?: boolean;
+  codexUseCredits?: boolean;
+}
+
+/**
+ * Projects effective Codex account settings using the same absence defaults as account reads.
+ *
+ * @param account Stored optional booleans from an account projection, if any.
+ * @returns Effective weekly, expiring and credit-use settings.
+ */
+export function effectiveCodexSubscriptionSettings(
+  account: ConnectedAppCodexSettingsStored | undefined
+): Required<ConnectedAppCodexSettingsStored> {
+  return {
+    codexAutoUseWeeklyReset: account?.codexAutoUseWeeklyReset ?? true,
+    codexAutoUseExpiringReset: account?.codexAutoUseExpiringReset ?? true,
+    codexUseCredits: account?.codexUseCredits ?? false,
+  };
+}
+
 /** Safe connected-app row for the AI interface surface. */
 export interface ConnectedAppRow {
   identity: string;
@@ -87,6 +136,10 @@ export interface ConnectedAppRow {
   quotaRetryAfter: string | null;
   quotaWindows: ConnectedAppQuotaWindow[];
   quotaBilling: ConnectedAppBilling | null;
+  quotaCodex: ConnectedAppCodexQuotaDetails;
+  codexAutoUseWeeklyReset?: boolean;
+  codexAutoUseExpiringReset?: boolean;
+  codexUseCredits?: boolean;
   verificationUrl: string | null;
   userCode: string | null;
   interactionId: string | null;
@@ -507,6 +560,52 @@ export function projectWorkspace(workspace: WorkspaceRecord): WorkspaceRecord {
  * @param quota Bounded quota result, or null when no server observation was read.
  * @returns Availability, same-call account metadata, observation times, windows, and billing.
  */
+function absentCodexQuotaDetails(): ConnectedAppCodexQuotaDetails {
+  return {
+    creditsHasCredits: null,
+    creditsUnlimited: null,
+    creditsBalance: null,
+    resetAvailableCount: null,
+    resetSoonestExpiresAt: null,
+    resetEntries: null,
+    heldReason: null,
+    activeUntil: null,
+  };
+}
+
+/** Copies Codex-only quota extensions without inventing zero for missing counts. */
+function projectCodexQuotaDetails(
+  quota: ProviderSubscriptionQuotaPayload
+): ConnectedAppCodexQuotaDetails {
+  if (quota.subscriptionProviderId !== 'openai-codex' || quota.availability !== 'available') {
+    return absentCodexQuotaDetails();
+  }
+  const credits = quota.credits;
+  const resetCredits = quota.resetCredits;
+  return {
+    creditsHasCredits: credits ? credits.hasCredits : null,
+    creditsUnlimited: credits ? credits.unlimited : null,
+    creditsBalance:
+      credits?.balance !== undefined ? (projectSafeValue(credits.balance) as string) : null,
+    resetAvailableCount: resetCredits ? resetCredits.availableCount : null,
+    resetSoonestExpiresAt:
+      resetCredits?.soonestExpiresAt !== undefined
+        ? (projectSafeValue(resetCredits.soonestExpiresAt) as string)
+        : null,
+    resetEntries: resetCredits
+      ? resetCredits.available.map((entry) => ({
+          id: projectSafeValue(entry.id) as string,
+          resetType: projectSafeValue(entry.resetType) as string,
+          expiresAt:
+            entry.expiresAt === null ? null : (projectSafeValue(entry.expiresAt) as string),
+        }))
+      : null,
+    heldReason: quota.heldReason ?? null,
+    activeUntil:
+      quota.activeUntil !== undefined ? (projectSafeValue(quota.activeUntil) as string) : null,
+  };
+}
+
 function projectQuotaObservation(
   quota: ProviderSubscriptionQuotaPayload | null
 ): Pick<
@@ -519,6 +618,7 @@ function projectQuotaObservation(
   | 'quotaRetryAfter'
   | 'quotaWindows'
   | 'quotaBilling'
+  | 'quotaCodex'
 > {
   if (quota === null) {
     return absentQuotaObservation();
@@ -549,6 +649,7 @@ function projectQuotaObservation(
       quotaRetryAfter: null,
       quotaWindows: quota.windows.map(projectQuotaWindow),
       quotaBilling: projectQuotaBilling(quota.billing),
+      quotaCodex: projectCodexQuotaDetails(quota),
     };
   }
   return {
@@ -561,6 +662,7 @@ function projectQuotaObservation(
         : null,
     quotaWindows: [],
     quotaBilling: null,
+    quotaCodex: projectCodexQuotaDetails(quota),
   };
 }
 
@@ -575,6 +677,7 @@ function absentQuotaObservation(): Pick<
   | 'quotaRetryAfter'
   | 'quotaWindows'
   | 'quotaBilling'
+  | 'quotaCodex'
 > {
   return {
     quotaAvailability: null,
@@ -585,6 +688,25 @@ function absentQuotaObservation(): Pick<
     quotaRetryAfter: null,
     quotaWindows: [],
     quotaBilling: null,
+    quotaCodex: absentCodexQuotaDetails(),
+  };
+}
+
+/** Copies stored Codex settings from one account record when present. */
+function projectCodexSettingsFromAccount(
+  account: ProviderSubscriptionAccountsPayload['accounts'][number]
+): ConnectedAppCodexSettingsStored {
+  if (account.subscriptionProviderId !== 'openai-codex') {
+    return {};
+  }
+  return {
+    ...(account.codexAutoUseWeeklyReset !== undefined
+      ? { codexAutoUseWeeklyReset: account.codexAutoUseWeeklyReset }
+      : {}),
+    ...(account.codexAutoUseExpiringReset !== undefined
+      ? { codexAutoUseExpiringReset: account.codexAutoUseExpiringReset }
+      : {}),
+    ...(account.codexUseCredits !== undefined ? { codexUseCredits: account.codexUseCredits } : {}),
   };
 }
 
@@ -722,6 +844,7 @@ export function projectConnectedApps(
         ...projectQuotaObservation(
           account.status === 'pending' || account.status === 'logged_out' ? null : quota
         ),
+        ...projectCodexSettingsFromAccount(account),
         verificationUrl: interaction?.verificationUrl
           ? (projectSafeValue(interaction.verificationUrl) as string)
           : null,
@@ -769,6 +892,7 @@ export function overlayConnectedAppAccount(
     inferenceObservation: projectSafeValue(
       snapshot.inferenceObservation
     ) as ConnectedAppRow['inferenceObservation'],
+    ...projectCodexSettingsFromAccount(snapshot),
     verificationUrl: interaction?.verificationUrl
       ? (projectSafeValue(interaction.verificationUrl) as string)
       : null,
