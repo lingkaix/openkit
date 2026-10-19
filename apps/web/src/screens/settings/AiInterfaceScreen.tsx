@@ -1172,7 +1172,7 @@ function CodexQuotaExtensions({
             {entry.resetType} · {entry.id}
           </p>
           {entry.expiresAt === null ? (
-            <p className="text-wrap text-xs text-fg-muted">Expires no expiry</p>
+            <p className="text-wrap text-xs text-fg-muted">No expiry</p>
           ) : (
             <QuotaInstant label="Expires" value={entry.expiresAt} />
           )}
