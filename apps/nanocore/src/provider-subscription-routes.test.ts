@@ -11,6 +11,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { BetterAuthServer } from './auth/middleware.js';
 import {
   ProviderSubscriptionAccountError,
   ProviderSubscriptionAccountManager,
@@ -560,6 +561,118 @@ function expectNoProviderStateIo(fixture: ReturnType<typeof createFixture>): voi
   }
   expect(fixture.vaultBackendAccess).not.toHaveBeenCalled();
 }
+
+describe('Codex management HTTP authority and projection', () => {
+  it('denies both reset and settings operations to a signed-in non-admin before provider I/O', async () => {
+    const fixture = createFixture();
+    const userId = 'usr_00000000-0000-7691-add4-fc1fc8769319';
+    fixture.coreDb.sqlite
+      .prepare(
+        'INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES (?, ?, ?, false, ?, ?, ?)'
+      )
+      .run(userId, 'Session User', 'session@example.invalid', Date.now(), Date.now(), 'human');
+    const auth: BetterAuthServer = {
+      api: {
+        getSession: async () => ({ session: { id: 'synthetic-session' }, user: { id: userId } }),
+      },
+      handler: async () => Response.json({ status: 'auth-ok' }),
+    };
+    const app = createApp({
+      mode: 'server',
+      auth,
+      coreDb: fixture.coreDb,
+      dataRoot: fixture.dataRoot,
+      providerSubscriptionAccountManager: fixture.manager,
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('No provider I/O is authorized.'));
+    try {
+      for (const [operation, input] of [
+        ['account-use-reset', { redeemRequestId: 'd98c622b-90e0-4f0e-b526-c03fdc8e5312' }],
+        ['account-update-codex-settings', { settings: { codexUseCredits: false } }],
+      ] as const) {
+        const response = await app.request(
+          `/api/app/operations/provider-subscription.${operation}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              subscriptionProviderId: 'openai-codex',
+              accountSlotId: 'default',
+              ...input,
+            }),
+          }
+        );
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ code: 'deployment_admin_required' });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expectNoProviderStateIo(fixture);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('rejects Codex settings on xAI before account or credential access', async () => {
+    const fixture = createFixture();
+    const response = await fixture.app.request(
+      '/api/app/operations/provider-subscription.account-update-codex-settings',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+          settings: { codexUseCredits: false },
+        }),
+      }
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+    expectNoProviderStateIo(fixture);
+  });
+
+  it('projects rich quota through the real reader and public operation without credential detail', async () => {
+    const fixture = createFixture();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        ...CODEX_USAGE,
+        credits: {
+          has_credits: true,
+          unlimited: false,
+          balance: '9007199254740993.000000000000000001',
+        },
+        rate_limit_reset_credits: { available_count: 0 },
+      })
+    );
+    try {
+      const response = await fixture.app.request(
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
+      );
+      expect(response.status).toBe(200);
+      const body = ProviderSubscriptionQuotaSchema.parse(await response.json());
+      expect(body).toMatchObject({
+        credits: {
+          hasCredits: true,
+          unlimited: false,
+          balance: '9007199254740993.000000000000000001',
+        },
+        resetCredits: { availableCount: 0, available: [] },
+        observedAt: OBSERVED_AT,
+      });
+      for (const secret of [CODEX_ACCESS_CANARY, CODEX_ACCOUNT_CANARY, 'raw-quota-canary']) {
+        expect(JSON.stringify(body)).not.toContain(secret);
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
 
 describe('provider-subscription app API', () => {
   it('registers the eleven provider-neutral operations and returns fixed inventory without state I/O', async () => {

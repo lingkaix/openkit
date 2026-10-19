@@ -97,6 +97,137 @@ async function timers<T>(operation: () => Promise<T>): Promise<T> {
   return outcome.result;
 }
 
+/** Agreed optional hook; the existing callable executor can expose its absence as an assertion RED. */
+type QuotaRecoveryInput = Parameters<typeof executeGatewayPlan<string>>[0] & {
+  recoverSettledQuota?: (
+    selection: (typeof selections)[number],
+    context: { signal: AbortSignal; deadline: number }
+  ) => Promise<boolean>;
+};
+
+describe('Gateway settled quota recovery', () => {
+  it('tries every failover target before one confirmed-reset retry under the original deadline', async () => {
+    const events: string[] = [];
+    const deadlines: number[] = [];
+    let recovered = false;
+    const input: QuotaRecoveryInput = {
+      selections,
+      autoFailover: true,
+      signal: new AbortController().signal,
+      attempt: async ({ route }, context) => {
+        events.push(route.id);
+        deadlines.push(context.deadline);
+        if (!recovered) throw failed({ kind: 'quota_exhausted', settled: true });
+        return 'recovered';
+      },
+      recoverSettledQuota: async ({ route }, context) => {
+        events.push(`reset:${route.id}`);
+        deadlines.push(context.deadline);
+        recovered = true;
+        return true;
+      },
+    };
+    await expect(executeGatewayPlan(input)).resolves.toBe('recovered');
+    expect(events).toEqual(['primary', 'backup', 'reset:backup', 'backup']);
+    expect(new Set(deadlines).size).toBe(1);
+  });
+
+  it('never spends a reset when a failover target serves the request', async () => {
+    const recoverSettledQuota = vi.fn(async () => true);
+    const input: QuotaRecoveryInput = {
+      selections,
+      autoFailover: true,
+      signal: new AbortController().signal,
+      attempt: async ({ route }) => {
+        if (route.id === 'primary') throw failed({ kind: 'quota_exhausted', settled: true });
+        return 'served';
+      },
+      recoverSettledQuota,
+    };
+    await expect(executeGatewayPlan(input)).resolves.toBe('served');
+    expect(recoverSettledQuota).not.toHaveBeenCalled();
+  });
+
+  it('does not retry an unknown or refused reset result', async () => {
+    const recoverSettledQuota = vi.fn(async () => false);
+    const attempt = vi.fn(async () => {
+      throw failed({ kind: 'quota_exhausted', settled: true });
+    });
+    const input: QuotaRecoveryInput = {
+      selections: selections.slice(0, 1),
+      autoFailover: true,
+      signal: new AbortController().signal,
+      attempt,
+      recoverSettledQuota,
+    };
+    await expect(executeGatewayPlan(input)).rejects.toMatchObject({ cause: 'quota_exhausted' });
+    expect(recoverSettledQuota).toHaveBeenCalledTimes(1);
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('permits only one reset callback and one retry when quota remains exhausted', async () => {
+    const recoverSettledQuota = vi.fn(async () => true);
+    const attempt = vi.fn(async () => {
+      throw failed({ kind: 'quota_exhausted', settled: true });
+    });
+    const input: QuotaRecoveryInput = {
+      selections: selections.slice(0, 1),
+      autoFailover: true,
+      signal: new AbortController().signal,
+      attempt,
+      recoverSettledQuota,
+    };
+    await expect(executeGatewayPlan(input)).rejects.toMatchObject({ cause: 'quota_exhausted' });
+    expect(recoverSettledQuota).toHaveBeenCalledTimes(1);
+    expect(attempt).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not attempt quota recovery for an unsettled provider failure', async () => {
+    const recoverSettledQuota = vi.fn(async () => true);
+    const attempt = vi.fn(async () => {
+      throw failed({ kind: 'quota_exhausted', settled: false });
+    });
+    const input: QuotaRecoveryInput = {
+      selections,
+      autoFailover: true,
+      signal: new AbortController().signal,
+      attempt,
+      recoverSettledQuota,
+    };
+    await expect(executeGatewayPlan(input)).rejects.toMatchObject({ failure: { settled: false } });
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(recoverSettledQuota).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'cancel',
+    'deadline',
+  ] as const)('does not retry after %s during reset recovery', async (stop) => {
+    const controller = new AbortController();
+    let now = 0;
+    const clock: GatewayClock = { ...clockFixture().clock, now: () => now };
+    const attempt = vi.fn(async () => {
+      throw failed({ kind: 'quota_exhausted', settled: true });
+    });
+    const recoverSettledQuota = vi.fn(async () => {
+      if (stop === 'cancel') controller.abort(new Error('synthetic cancellation'));
+      else now = GATEWAY_PRECOMMIT_DEADLINE_MS;
+      return true;
+    });
+    const input: QuotaRecoveryInput = {
+      selections: selections.slice(0, 1),
+      autoFailover: true,
+      signal: controller.signal,
+      clock,
+      attempt,
+      recoverSettledQuota,
+    };
+    await expect(executeGatewayPlan(input)).rejects.toBeInstanceOf(Error);
+    expect(recoverSettledQuota).toHaveBeenCalledTimes(1);
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Gateway executor deadline, replay certainty and retry waits', () => {
   it('performs precisely three exponential retries before backup and resets primary on the next request', async () => {
     vi.useFakeTimers();
