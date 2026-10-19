@@ -26,6 +26,12 @@ Ablation: reuse peer record, publication and format owners rather than duplicate
 - [Knowledge Store](20260703-knowledge_store_implementation.md), [Notebook](20260909-knowledge_notebook_editing.md), [Context](20260703-worker_context_package.md), [Session Materialization](20260704-session_static_workspace_materialization.md).
 - [Retrieval Kernel](20261014-retrieval_kernel.md), [Backup/Export](20260704-workspace_backup_export_import.md), [Work Data Retention](20260921-work_data_retention_format.md).
 
+## Control-Store Integration
+
+The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) reuses this Storage Service, local backend and content references for immutable execution/work content. It introduces no second blob service, attachment identity or access authority. The Draft [Workspace authority inventory](20261019-durable_execution_and_control_store.md#workspace-authorities-outside-the-control-database) moves mutable configuration/catalog and Notebook publication heads into their scope database. Immutable Git content/history, canonical Knowledge paths, Source semantics, package format and reference-only retention remain owned here and by Notebook.
+
+For the replacement, database publication of an already synchronized immutable Notebook revision supersedes mutable Git-ref authority wherever the layout below says Notebook Git is the publication authority. Git retains content/history authority; its mutable refs become projections. Existing package import/export remains a domain operation and follows that publication boundary rather than creating its own head. Snapshot consistency of remaining app databases and opaque process data belongs to their declared writer boundaries, not Storage guessing a file format.
+
 ## Layers And Shared References
 
 Ablation: content identity, location and interpretation must remain distinct when bytes move or disappear.

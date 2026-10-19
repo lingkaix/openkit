@@ -270,8 +270,25 @@ describe('worker Context Package read projection', () => {
       chmodSync(manifestPath, 0o600);
       writeFileSync(manifestPath, Buffer.concat([originalBytes, Buffer.from('\n')]));
       expect(() => projectThreadMaterialContext(input)).toThrow(
-        'Worker Context Package authority is inconsistent.'
+        'Worker Context Package verification failed: owner=worker-context-projection; check=readPortableWorkerContextPackageTrace; stage=thread-material-read.'
       );
+      // A failure at an earlier owner must name that observed check, not the later reader.
+      vi.mocked(createWorkerContextPackageAuthorityReader).mockImplementation(() => {
+        throw new Error('Private authority failure at /private/source with source-content.');
+      });
+      let refusal: unknown;
+      try {
+        projectThreadMaterialContext(input);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toMatchObject({
+        code: 'recovery_required',
+        status: 409,
+        message:
+          'Worker Context Package verification failed: owner=worker-context-projection; check=createWorkerContextPackageAuthorityReader; stage=thread-material-read.',
+      });
+      expect(String(refusal)).not.toMatch(/private|source-content/);
     } finally {
       vi.mocked(createWorkerContextPackageAuthorityReader).mockRestore();
       workspaceDb.sqlite.close();
