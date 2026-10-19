@@ -2,16 +2,18 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-updated: 2026-10-03
+updated: 2026-10-19
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V3
 
-## Current Product Boundary And Deferred Redesign
+## Current Product Boundary
 
-Workspace export is for use outside OpenKit, including analysis, evaluation, audit, and ingestion into external analytical software. Lossless re-import into an OpenKit Workspace is not an export acceptance requirement. Workspace and whole-server backup / restore are a separate mechanism whose detailed design is deferred. These scope decisions override contrary round-trip requirements below; existing import and recovery descriptions remain the historical implementation baseline, not a mandate to extend export into backup. This clarification does not authorize deleting existing import behavior or weakening its regression tests.
+Workspace export serves external analysis, evaluation, audit, and other external use. Lossless re-import into OpenKit is not its acceptance requirement. Existing analytical import behavior and regression obligations remain; they do not define operational recovery.
 
-The predecessor Goal tables and the two Goal steering tables leave both the portable inventory and the excluded inventory with the one-way Goal removal. The current records of [Goal](20261002-goal.md), its cards, its immutable Plan versions with their bytes and digests, its Goal Task links and the Task terminal facts that wake it are portable work data ([decision](../decisions/20261003-current_goal_records_are_portable.md)); import restores no approval authority, and a Goal Task link or Task terminal fact whose Task is missing from the archive stays unresolved evidence, not dangling required lineage. Filesystem backup to S3-compatible storage or cloud drives and possible later Litestream use are candidate directions only; no backend, snapshot protocol, or restore guarantee is selected here. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). The export-versus-backup separation in that decision stays.
+Before `v0.1.0`, each Workspace MUST support local hot backup, verified same-deployment restore, and an operator-driven offline move. [The operational decision](../decisions/20261019-workspace_backup_restore_move.md) activates the previously deferred detailed design. Copy/remint, remote synchronization, optional native-volume continuity, and whole-server hot-backup changes remain deferred. Backup And Restore and Workspace Move below own these operations.
+
+The predecessor Goal tables and the two Goal steering tables leave both the portable inventory and the excluded inventory with the one-way Goal removal. The current records of [Goal](20261002-goal.md), its cards, its immutable Plan versions with their bytes and digests, its Goal Task links and the Task terminal facts that wake it are portable work data ([decision](../decisions/20261003-current_goal_records_are_portable.md)); import restores no approval authority, and a Goal Task link or Task terminal fact whose Task is missing from the archive stays unresolved evidence, not dangling required lineage. S3-compatible storage, cloud drives, and Litestream remain later options, not selected backends. Local Workspace recovery now has the snapshot and restore contract below. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). The export-versus-backup separation in that decision stays.
 
 ## Knowledge Packages And File-Preserving Backup
 
@@ -34,14 +36,15 @@ Backup copies the same canonical Knowledge Base files unchanged within its decla
 - Workspace id collision handling, subordinate identity reminting, and `importedFrom` lineage rules on import.
 - Portable row and reference rewriting for Workspace Material identity, immutable inline revisions, Thread bindings, and version-keyed Artifact Review history.
 - Portable-export exclusion and import reconstruction rules for Workspace ownership, membership, invitations, and actor lineage.
-- The cold and hot backup procedures for a NanoCore data root and the restore procedure.
+- Per-Workspace hot backup, verification, sealing, same-deployment restore, and offline identity-preserving move.
+- The existing cold and hot whole-data-root procedures and stopped-server restore, separately from Workspace operations.
 - Data-root migration rules for moving a data root to a new path or host, including deployment id lineage.
 - The interaction contract between workspace deletion, retention classes, and the sealed audit closure export.
 - The export-time compaction allowance for item-log segments.
 
 ## Does Not Own
 
-- The physical storage layout and record ownership tree. `docs/specs/20260703-storage_layout_record_ownership.md` owns those.
+- Physical layout, control commits, execution settlement, and garbage collection. [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#portability-snapshot-closure-and-garbage-collection) owns the target map; [Storage Layout](20260703-storage_layout_record_ownership.md) owns other physical placement.
 - General schema evolution rules, the record envelope, or required-feature registry mechanics. `docs/specs/20260703-schema_evolution_record_envelope.md` owns those.
 - Vault backend mechanics, secret material storage, or re-binding UX. `docs/specs/20260704-vault_backend_implementation.md` owns those.
 - Audit, usage, and evidence record schemas or retention class definitions. `docs/specs/20260703-audit_usage_evidence_records.md` owns those.
@@ -67,11 +70,12 @@ Backup copies the same canonical Knowledge Base files unchanged within its decla
 
 ## Summary
 
-The primary export unit is one workspace. Workspace export format V3 is a self-describing, offline-verifiable directory tree whose manifest commits to the exact portable file set and bytes consumed by import. Imports consume only those verified bytes, enforce required features fail-closed, preserve or remint the workspace id with recorded lineage, remint collision-prone target identities and references, and coordinate staged files with transactional Core replay and synchronous compensation on failure. A portable Workspace export carries product truth and actor lineage but no deployment-local access grants. Ordinary portable import records the authenticated importing user as the new canonical owner and only active member. Deleted-Workspace recovery follows the owner distinction in Verification And Import. Backup is data-root-level: a cold copy is the baseline, and a hot backup captures the file tree first and individual SQLite snapshots second. Data-root migration is a config repoint validated at boot. System-managed Vault, provider, and runtime secrets never enter workspace exports; exports carry only non-secret vault reference metadata that lands `unbound`. User-authored portable content is not a sanitized or DLP-scanned channel.
+The primary export unit is one workspace. Workspace export format V3 is a self-describing, offline-verifiable directory tree whose manifest commits to the exact portable file set and bytes consumed by import. Imports consume only those verified bytes, enforce required features fail-closed, preserve or remint the workspace id with recorded lineage, remint collision-prone target identities and references, and coordinate staged files with transactional Core replay and synchronous compensation on failure. A portable Workspace export carries product truth and actor lineage but no deployment-local access grants. Ordinary portable import records the authenticated importing user as the new canonical owner and only active member. Deleted-Workspace recovery follows the owner distinction in Verification And Import. Operational backup captures one Workspace's consistent static databases and reachable immutable content. Restore preserves its identity; move uses the same bundle and leaves a moved-out source tombstone. Whole-server recovery retains its separate boundary. Data-root migration is a config repoint validated at boot. System-managed Vault, provider, and runtime secrets never enter workspace exports; exports carry only non-secret vault reference metadata that lands `unbound`. User-authored portable content is not a sanitized or DLP-scanned channel.
 
 ## Goals
 
-- Make a workspace portable across deployments without a binary database dependency.
+- Keep analytical Workspace export independent of a binary database format.
+- Recover or move one Workspace without restoring the source server.
 - Make every export verifiable offline against its own manifest.
 - Preserve complete authoritative workspace history and file-backed knowledge state.
 - Keep imports safe: fail closed on unknown semantics or incomplete lineage, leave no partial state after a caught synchronous failure, and document the remaining process-crash window explicitly.
@@ -92,11 +96,11 @@ The primary export unit is one workspace. Workspace export format V3 is a self-d
 
 ## Personal Data And Audience Coverage
 
-Ordinary Workspace export carries shared eligible Threads, Items, Artifacts, Workspace Knowledge and sources. An ordinary caller MUST exclude User Memory, Server Knowledge and other users' private project Threads, including their raw bytes, previews and derived files. Directory membership is not an export permission. A currently usable administrator credential's export of a Workspace includes that Workspace's private project Threads and private-derived content under the administrator eligibility rule in [Core Permissions](../core/permissions.md). User Memory and Server Knowledge remain non-portable record families for this Workspace bundle. `20260909-thread_visibility_and_sharing.md` owns explicit current-user private-history export and reminted private import; `20260909-personal_memory_and_knowledge_learning.md` owns separate Memory/Server Knowledge OKF export. Backup recovery remains a separately authorized whole-root operational effect and does not confer ordinary content access. Existing portable coverage guards must classify these exclusions when implementation adds the records. Imported pages do not import another user's review authority, automatic capture settings or source grants.
+Ordinary Workspace export carries shared eligible Threads, Items, Artifacts, Workspace Knowledge and sources. An ordinary caller MUST exclude User Memory, Server Knowledge and other users' private project Threads, including their raw bytes, previews and derived files. Directory membership is not an export permission. A currently usable administrator credential's export of a Workspace includes that Workspace's private project Threads and private-derived content under the administrator eligibility rule in [Core Permissions](../core/permissions.md). User Memory and Server Knowledge remain non-portable record families for this Workspace bundle. `20260909-thread_visibility_and_sharing.md` owns explicit current-user private-history export and reminted private import; `20260909-personal_memory_and_knowledge_learning.md` owns separate Memory/Server Knowledge OKF export. Workspace backup and restore require current deployment-administrator authority. They cover all retained Workspace audiences, including private Threads, without conferring ordinary content access. User Memory and live Server Knowledge remain outside this operational bundle. Existing portable coverage guards must classify these exclusions when implementation adds the records. Imported pages do not import another user's review authority, automatic capture settings or source grants.
 
 ## Decision
 
-The export unit is one workspace, serialized as a plain V3 directory tree with an envelope-wrapped manifest and per-file digests. The canonical transported form is that exact tree streamed as `.openkit-workspace.tar.zst`; transport introduces no second manifest or server archive registry. SQLite never travels inside an export: portable source-of-truth rows are dumped as line-oriented records, and derived indexes are omitted so their existing owner can rebuild them at boot or on demand. Import is manifest-verified, fail-closed on unknown required features or incomplete lineage, and coordinated through same-filesystem staging, one Core transaction, and synchronous compensating rollback. This does not create a transaction spanning the filesystem and SQLite across a process crash. V1 and V2 are intentionally incompatible and rejected rather than migrated. Backup operates on the whole data root, cold by default, hot with an ordered file-tree-then-SQLite-snapshot procedure. Data-root migration is supported by repointing server config and letting boot verification validate the moved tree.
+The export unit is one workspace, serialized as a plain V3 directory tree with an envelope-wrapped manifest and per-file digests. The canonical transported form is that exact tree streamed as `.openkit-workspace.tar.zst`; transport introduces no second manifest or server archive registry. SQLite never travels inside an export: portable source-of-truth rows are dumped as line-oriented records, and derived indexes are omitted so their existing owner can rebuild them at boot or on demand. Import is manifest-verified, fail-closed on unknown required features or incomplete lineage, and coordinated through same-filesystem staging, one Core transaction, and synchronous compensating rollback. This does not create a transaction spanning the filesystem and SQLite across a process crash. V1 and V2 are intentionally incompatible and rejected rather than migrated. Operational Workspace backup instead uses the control-store snapshot and immutable-content closure. Offline move preserves identities, closes the source, and requires fresh target authority. The existing whole-server procedures remain distinct. Data-root migration is supported by repointing server config and letting boot verification validate the moved tree.
 
 ## Contract / Expected Behavior
 
@@ -318,13 +322,108 @@ Keep current authorization, inert historical requests and authority, native iden
 
 ### Backup And Restore
 
+#### Workspace Bundle And Authority
+
+A Workspace backup is an independently verifiable local directory containing consistent static database snapshots and their complete locally retained content closure. An archive transports that same directory without changing its inventory. It is not analytical export V3 or Knowledge interchange.
+
+The [control-store snapshot map](20261019-durable_execution_and_control_store.md#portability-snapshot-closure-and-garbage-collection) owns placement and snapshot roots. Every mutable authority inside the Workspace directory MUST be captured consistently under quiescence or its owner's snapshot rule. This includes Notebook heads/history, Light App databases and recovery copies, authored configuration revisions, and mutable catalog process data. No live WAL file copy qualifies as a snapshot. Unknown or uncovered canonical families refuse complete backup rather than disappear from its inventory.
+
+Include retained Threads, Turns, Items, Materials, Artifacts, Knowledge/Sources, local Light Apps, catalog payloads, work observations, restricted bodies, Pending Requests, and their existing history/coverage. Retained model I/O message/part blobs and native transcripts belong to the Workspace's immutable content store and MUST enter the bundle closure under the retention owner. Preserve exact bytes, identities, restrictions, suppression, and holds. A valid reference-only external Source may remain unavailable; required local bytes may not. Omit disposable projections and indexes explicitly.
+
+Exclude Vault material/keys, authentication credentials, User Memory, live Server Knowledge/configuration, and physical execution bindings. Workspace-owned captured server excerpts and pinned AEP/configuration snapshots remain evidence, not imported server authority. Worker volumes are excluded by default and listed separately. This backup does not inspect or sanitize user-authored content for secrets.
+
+Creation, verification, restore, move, and reactivation require a current deployment-administrator credential and the existing per-effect authority checks. Backup possession grants no product access. Use private staging, confined regular-file paths, existing capacity limits, and no overwrite of an unrelated destination. Backup deletion uses existing retention and legal-hold rules; no new retention class is introduced.
+
+Each capture allocates one existing backup identity before copying or publishing staging. Reuse the shared backup ID generator; do not derive identity from timestamps or deployment IDs. Retries of that capture retain its identity and request fingerprint. Changed inputs conflict; a new capture uses a new identity. Allocation or validation failure leaves source authority unchanged.
+
+The versioned manifest has the following closed core. Unknown descriptive additions are ignored; unknown core values and unsupported required semantics refuse admission.
+
+| Manifest fact | Required meaning |
+| --- | --- |
+| Format and purpose | Workspace-backup format version 1, distinct from export V3; purpose `backup` or `move`. |
+| Identity and lineage | Backup, Workspace, source deployment, and established Knowledge Base identities; prior move lineage and captured Workspace revision. Reading never allocates an absent Knowledge Base. |
+| Release and features | Exact release/build identity, database format markers, and all required features. Source and restore/import target MUST run the same exact release. |
+| Capture and consistency | Start/end times; `workspace-consistent` for a hot local cut, or `quiescent` for a move. Neither class proves an external effect completed. |
+| Inventory | Every admitted snapshot/content file exactly once, with confined relative path, byte length, raw SHA-256, and file modes required by its owner. Include database snapshots and transitive manifests; exclude the root manifest and completion seal to avoid a digest cycle. |
+| Inventory digest | SHA-256 over the exact serialized inventory; verify this digest independently of individual file digests. |
+| Coverage | Included authorities, snapshot roots, omitted projections/volumes, and typed external dependencies with availability. Capture absence remains distinct from non-occurrence. |
+| Account provenance | Source owner/member account IDs and private-audience references for explicit target mapping; no credentials, invitations, or transferable grants. |
+
+A versioned seal binds the backup identity, purpose, and exact manifest digest. It is a completion marker, not a signature or source-authentication proof. Transfer confidentiality and authenticity remain the administrator's responsibility. A directory without a valid seal is incomplete and MUST NOT restore or import.
+
+#### Local Hot Capture
+
+1. Admit the request and protect the selected Workspace's complete snapshot roots from garbage collection before snapshot selection. Protection covers transitive manifests, Notebook history, definitions, prompts, message parts, and other required blobs.
+2. Hold the Workspace's mutation boundary while selecting committed heads and taking each SQLite backup-API snapshot. Capture other mutable authorities under the same quiescence or their owner's consistent snapshot rule. Unrelated Workspaces remain usable. Do not independently copy a live database and WAL.
+3. Once snapshots and immutable roots are fixed, release the capture pause, not the content protection. Copy the referenced immutable bytes through the Storage owner. Concurrent new content is outside this cut; later deletion cannot remove protected members.
+4. Write the manifest, verify its inventory digest and exact file set, and validate database integrity, identities, required features, and complete reference closure. Light App schema/native-table inventories and definition/presentation digests retain their existing checks.
+5. For purpose `backup`, synchronize the completed bundle and manifest before publishing its seal. Report success only after the seal is durable. Release content protection only after verified independent copies exist. Purpose `move` stops after verification and uses Source Seal And Moved-Out State below; it MUST NOT publish a backup seal first.
+
+A failed copy or verification never publishes a seal. Preserve source data and report the failing authority. A process exit or expired clock cannot release snapshot protection. Restart inspects the same capture identity; an administrator may finish the verified capture or explicitly abandon it before releasing protection. Do not add an automatic repair or retry service.
+
+#### Same-Deployment Restore
+
+Restore requires the same source deployment and Workspace identity, current administrator authority, and proved absence of affected writers. Fence dependent execution hosts through their existing owner. Refuse an identity mismatch or a moved-out Workspace; reactivation is a separate operation. Keep current server users, ownership, membership, and physical registry authority, not a historical server database from the bundle.
+
+1. Verify the seal, exact release/features, paths, inventory/digests, SQLite integrity, and complete owned graphs before changing live authority. Reject duplicate, missing, unlisted, linked, or unsafe entries; only the root manifest and seal are exempt from the content inventory. Parse or copy only verified bytes. Never execute packaged content or contact an external mount during verification.
+2. Stage on the destination filesystem. Preserve the predecessor separately. Reverify staged bytes and open staged databases without creating replacements. Do not expose staged data through discovery, indexes, or execution.
+3. Apply current safety constraints through their owners before publication. Restore MUST NOT undo newer revocations, suppression, deletion blocks, or holds. Apply current retention expiry; restored bytes do not extend a retention window. If current safety authority cannot be established, keep the Workspace quarantined.
+4. Treat captured nonterminal executions and unknown effects under the control-store interruption rules. Do not replay a Turn, claimed external effect, or old request merely because its snapshot precedes completion. Do not automatically restart captured queues, timers, or schedule catch-up. Later work requires fresh admission under its owner. Revalidate Pending Requests and current authorization before any later decision or delivery.
+5. Publish the complete verified Workspace through the existing staged-placement boundary, then admit it only after its authoritative open succeeds. Retain the predecessor until publication and required integrity checks finish. Rebuild only disposable projections.
+
+A failure before publication leaves prior readable authority unchanged. An interrupted or uncertain publication fences and quarantines only the affected Workspace, preserves candidate/predecessor bytes, and exposes an inspectable outcome. Restart never serves a partial candidate, fabricates empty authority, or automatically rolls back an external effect. Healthy Workspaces can boot. Corrupt server authority still refuses server boot; uncertain shared writer containment blocks its actual effect domain.
+
+#### Existing Whole-Server Recovery Boundary
+
+The rules in this subsection apply only to whole-data-root recovery. They do not limit the new per-Workspace guarantee.
+
 Each new data-root backup uses one independent `drb` UUIDv7 from the shared [Core Protocol generator](../core/protocol.md#ids). Allocate it before backup copy, snapshot or staging publication, including backups for the physical Epoch and Workspace storage conversions. Retain that same ID in the manifest, verification result and migration report. Deployment identity and capture times remain separate manifest facts; they do not derive backup identity. If allocation fails, preserve the predecessor and publish no backup or migration staging. Backup writers validate supplied backup and deployment IDs against their named kinds before copy, snapshot or manifest publication. Malformed or wrong-kind values fail before target mutation. Existing locks, fences, inventory verification, conversion transactions and repeat-conversion refusal remain unchanged.
 
-- Cold backup is the baseline. When a deployment must restore to a data root that boot accepts, the operator uses the cold backup. With NanoCore stopped, a byte copy of the entire data root is a complete, clean backup. Its manifest records `consistency: clean`.
-- A full data-root backup includes the Core database and therefore preserves canonical users, Workspace owners, memberships, invitations, and token metadata for restoration as the same deployment. This is intentionally different from a portable Workspace export.
-- Hot backup MUST hold one continuous Core capture pause from the file-tree copy through every SQLite backup API snapshot, definition checks and manifest verification. Core callbacks cannot publish canonical file or SQLite mutations between these captures; pending writers resume after capture and retain their later live changes. The manifest retains `consistency: crash-consistent`. This pause does not create a transaction with external systems or asynchronous staging and does not add automatic reconciliation or recovery. The product does not claim that boot accepts a data root restored from a hot backup.
-- A backup MUST carry a manifest with capture timestamps, source deployment id, mode, consistency, exact file inventory, and per-file digests. The implemented offline verifier rejects links, extra or absent files, unsafe paths, digest mismatches, and unsupported required features. Its implemented integrity boundary is the parsed manifest plus the verified per-file inventory; unlike workspace V3 verification, it does not separately recompute the manifest `contentDigest` from that inventory or independently authenticate the manifest.
-- Restore MUST verify before mutation, replace the target data root through same-filesystem staging and rename, then reuse boot-time SQLite integrity recovery, migrations, derived-index rebuild, and runtime restart recovery. Restore remains a stopped-server operator operation rather than a live App API or operation-catalog mutation.
+- Cold backup is the baseline for whole-server recovery. With NanoCore stopped, a complete data-root byte copy has `consistency: clean` and is the supported bootable recovery input.
+- Full data-root backup includes canonical users, Workspace owners, memberships, invitations, and token metadata through the Core database. Workspace bundles do not replace that server authority.
+- Existing whole-server hot backup holds one continuous Core capture pause across tree copy, all SQLite backup snapshots, definition checks, and manifest verification. Pending writers then resume with their later changes. It retains `consistency: crash-consistent`, excludes cross-system atomicity and automatic reconciliation, and does not promise a bootable restored root.
+- Its manifest retains capture times, source deployment, mode/consistency, exact inventory, and per-file digests. Verification rejects links, extra/missing files, unsafe paths, digest mismatch, and unsupported features. Unlike the new Workspace bundle, its current verifier does not independently recompute the inventory digest or authenticate the manifest.
+- Whole-server restore verifies first, replaces the root through same-filesystem staging/rename, and invokes existing boot-time SQLite integrity recovery, migrations, derived-index rebuild, and runtime restart recovery. It remains a stopped-server operation, not a live App API mutation. Whole-server hot-backup changes are deferred.
+
+### Workspace Move
+
+Move transfers one Workspace between two deployments of the same exact release. It preserves the Workspace, Knowledge Base, and all in-Workspace history identities. The target MUST refuse Workspace identity collisions in its registry, final paths, staged imports, or retained tombstones. Other owner-defined global identity collisions also refuse admission. It MUST NOT silently remint. Analytical import's existing preserve-or-remint policy remains separate; operational COPY is deferred.
+
+#### Source Seal And Moved-Out State
+
+1. Close Workspace admission. Through the execution owner, settle product executions or truthfully interrupt them, inspect unknown effects, and fence all writers. Withdraw outstanding Pending Requests through their owner before capture; retain requests, decisions, and withdrawal history. No source request becomes live target authority.
+2. Capture and verify a `quiescent` bundle through steps 1-4 of Local Hot Capture. Synchronize the complete bundle and manifest before the source seal transaction. Keep admission closed throughout. No Worker process, queue, capacity reservation, physical attachment, or live session authority travels.
+3. In one source-local control transaction, commit the successful move seal fact and the Workspace's `moved-out` lifecycle disposition. Bind both to the same backup identity and manifest digest. Record source deployment and lineage under the existing Workspace lifecycle/Audit owners.
+4. Publish the bundle's durable completion marker only after that transaction commits. This is one local sealing step, not an atomic filesystem/SQLite transaction. A crash before commit leaves no transferable seal; a crash afterward leaves the source read-only even if marker publication failed. Inspection of that same committed fact may finish marker publication without reactivating or re-executing work. After the marker is durable, release capture protection, not ordinary retention or legal holds.
+5. Return the sealed bundle for operator transfer. Keep the source as an inspectable, read-only tombstone with its backup identity and lineage. Runtime callbacks, schedules, triggers, and ordinary mutations cannot reopen it. Retain source bytes and holds; moving is not deletion.
+
+Before sealing commits, a failure keeps admission closed until the existing operation is cancelled or retried under current fence checks. Once moved-out commits, only explicit reactivation may reopen admission.
+
+There is no target acknowledgement, distributed lock, or cross-server rollback protocol. Failed or abandoned delivery does not automatically reactivate the source. An explicit administrator `reactivate` uses the exact moved-out revision, records the decision and lineage, and passes current authority/fence checks. The administrator must establish that no target is active, or fence it first, and retire transferable copies before reactivation. Offline copies cannot be remotely revoked. Local source fencing and target collision refusal do not prove global single activation; [the decision](../decisions/20261019-workspace_backup_restore_move.md) records this operator boundary.
+
+#### Target Admission And Rebinding
+
+The importing administrator supplies the target owner, defaulting to themself, and may supply an exact source-account-to-target-account member map. Every supplied target account MUST exist and be active. A missing owner refuses import before publication. Unmapped members are dropped and listed in the report; never infer accounts from names, contact addresses, or matching deployment-local IDs. The owner receives active membership under the existing identity owner. Mapped members receive only target-admitted membership, not source roles or Policy decisions. Source grants, invitations, tokens, and administrator eligibility never travel.
+
+Preserve historical ActorRef values as source-qualified attribution. Rebind private audience access only through explicit admitted mappings. Unmapped private audiences remain unavailable, not shared with the Workspace. Current administrator eligibility retains its separately owned inspection authority. Removed memberships and historical request responsibility cannot create a target grant.
+
+| Dependency | Target disposition |
+| --- | --- |
+| Agent and configuration references | Preserve pinned AEP/configuration bytes as history. New execution resolves the target's current Agent/configuration; absent supply blocks that execution, not local history inspection. |
+| Vault | Preserve redacted reference/history only; mark references unbound. Re-provide material through the target Vault and obtain fresh grants. No old plan or receipt authorizes injection. |
+| Worker volumes and native sessions | Report excluded volumes and unavailable native continuity. Allocate target resources normally for new work; a session ID is not resume proof. |
+| Server Knowledge and external Sources | Keep source-qualified provenance and explicit unavailable outcomes. Separate current target admission may establish a new authorized reference; equal names/IDs do not rebind history. |
+| Light Apps | Preserve complete local business data, schema/definition history, recovery copies, and immutable presentations. Validate all app-local authorities before publication; rendered views are never recovery inputs. |
+| Skills/catalog and mutable process data | Preserve retained Workspace payloads and historical references. Disable executable catalog bindings, including Plugin/MCP launch bindings, until target-authorized configuration and credentials exist. Opaque process data grants no authority. |
+| Schedules, external triggers, and channel bindings | Import disabled, with no catch-up, queued dispatch, or automatic reconnection. Re-enable explicitly under current target authority; preserve historical event keys without replay. |
+| Pending Requests and execution records | Import historical decisions/withdrawals and ended work only. Do not enqueue old signals, reissue approvals, reuse source receipts as target effect authority, or replay source execution. |
+
+1. Verify the sealed bundle and source graph before target mutation. Share restore integrity/staging checks, not its same-deployment selector. Reject a non-move bundle for move admission. Check all target collisions and owner/member inputs before placement.
+2. Stage the verified bytes privately and apply target-specific current bindings through ordinary control transactions. Preserve original immutable evidence/digests; do not run the clone/remint transformer. Interpret source-server IDs and receipts as historical provenance, not live target foreign keys or duplicate-admission authority. Record source deployment, backup identity, manifest digest, and predecessor lineage in the target's existing import provenance.
+3. Synchronize and place the complete staged Workspace while it remains unpublished. In one target server transaction, register it with the admitted owner/members and import result. Product admission requires both committed registration and a valid final Workspace. Directory discovery MUST NOT fabricate missing registration or ownership.
+4. Activate only the registered, validated Workspace. Missing Vault, optional external data, or Agent supply blocks the dependent effect truthfully. Imported automation and executable bindings remain disabled. Return exact inventory/count results, lineage, dropped members, exclusions, and unresolved dependencies.
+
+A caught pre-publication failure changes no target Workspace or membership. An interruption between placement and registration leaves an unregistered candidate, not an active Workspace. Restart preserves it for inspection and quarantines only that identity. A registration with unreadable/missing authority is also quarantined. Retry reads the same request/result; it never allocates another Workspace or replays execution. Completion means local target admission, not a cross-server acknowledgement.
 
 ### Generative App And Presentation Coverage
 
@@ -349,7 +448,7 @@ Presentation graph validation preserves interrupted publication: a presentation 
 
 App-local and Workspace command receipts remain non-portable under the existing idempotency classification. Creator/request lineage and AuditEvents are history, not target replay authority. Imported presentations set their active `requestId` to null, retaining source `originRequestId ?? requestId` as non-authorizing `originRequestId` with the existing Workspace imported-history provenance; they do not participate in target duplicate-admission lookup. Credentials, active grants, selected MCP execution bindings and deployment handles are excluded. Preserve external system/instance identities as data without inventing account access. No new saved-view, Plugin byte, MCP declaration or Skill package family is admitted by this native profile. App-scoped schema/resource package export/import remains deferred to this owner's later explicit package contract.
 
-Cold backup includes every app directory and Workspace presentation store under the existing full-data-root contract. Hot backup inventories all app databases, including apps created after startup, captures each with an SQLite-consistent snapshot, and reads every required definition revision/digest from that captured database, not from the live current pointer. If the earlier file-tree copy lacks matching immutable definition bytes, copy those exact digest-addressed bytes into the capture and verify them there. Missing/corrupt bytes fail capture before success; restore validation independently repeats the check. Capture inventories app directories before and after database capture; an app created or an unavailable authority discovered during capture makes that attempt fail explicitly rather than claim completeness. The unchanged individual-snapshot qualification applies: hot backup is not one cross-store point-in-time transaction. App-local receipts and audits are preserved in full deployment backup.
+The following capture rules apply to existing whole-server recovery; Workspace bundles instead use Backup And Restore's complete snapshot closure. Cold backup includes every app directory and Workspace presentation store under the existing full-data-root contract. Hot backup inventories all app databases, including apps created after startup, captures each with an SQLite-consistent snapshot, and reads every required definition revision/digest from that captured database, not from the live current pointer. If the earlier file-tree copy lacks matching immutable definition bytes, copy those exact digest-addressed bytes into the capture and verify them there. Missing/corrupt bytes fail capture before success; restore validation independently repeats the check. Capture inventories app directories before and after database capture; an app created or an unavailable authority discovered during capture makes that attempt fail explicitly rather than claim completeness. The unchanged individual-snapshot qualification applies: hot backup is not one cross-store point-in-time transaction. App-local receipts and audits are preserved in full deployment backup.
 
 Restore checks app/Workspace identity, SQLite integrity, schema/data/native-table inventory, each referenced definition digest, and every retained presentation/Item reference. Missing authority is preserved for inspection and is never reconstructed from a view or empty default database. The current exporter/backup/import runtime does not yet implement these families; its implementation must extend the existing inventory, required-feature registry, identity rewriting and coverage checks before publishing these capabilities.
 
@@ -374,7 +473,7 @@ A compacted export MAY omit item-log segments superseded by such snapshots only 
 
 ## Accepted Design
 
-The exporter reads canonical source records, validates the complete workspace graph, writes the portable V3 tree into a newly owned root, computes the exact content inventory, writes the manifest last, and immediately verifies the result. Material canonical content remains inline in its revision rows, and Artifact Review remains keyed to the exact exported Artifact version. The importer verifies once, parses the verified bytes, validates the source and target graphs, remints only identities that require target ownership, rewrites every Material, Review, and Context Package reference, writes target files and the workspace database through same-filesystem staging, and coordinates publication with transactional Core replay and synchronous compensation. Derived indexes stay absent until their boot or on-demand owner rebuilds them. Backup and migration tooling remain thin procedures over the data root and reuse existing boot integrity and rebuild behavior without claiming cross-authority reconciliation.
+The exporter reads canonical source records, validates the complete workspace graph, writes the portable V3 tree into a newly owned root, computes the exact content inventory, writes the manifest last, and immediately verifies the result. Material canonical content remains inline in its revision rows, and Artifact Review remains keyed to the exact exported Artifact version. The importer verifies once, parses the verified bytes, validates the source and target graphs, remints only identities that require target ownership, rewrites every Material, Review, and Context Package reference, writes target files and the workspace database through same-filesystem staging, and coordinates publication with transactional Core replay and synchronous compensation. Derived indexes stay absent until their boot or on-demand owner rebuilds them. Workspace recovery uses consistent static snapshots, protected immutable closure, and staged existing-only opens under the control-store design. Offline move adds source-local sealing/tombstone publication and explicit target admission, not a cross-server protocol. Whole-server recovery and data-root migration remain separate thin procedures.
 
 ## File Payload And Representation Coverage
 
@@ -384,7 +483,9 @@ V2 classifies every retained Turn input as portable Turn-owned file state, inclu
 
 Current source and destination-audience checks cover payloads, names, digests, previews, snippets, counts, and diagnostics. Derived sidecars retain original/processor/locator/coverage provenance when included; omitted rebuildable caches are declared and never claimed as original evidence. Source deletion, suppression, holds, and private-origin export rules remain binding. This adds no archive handle or restore workflow. The ZIP source-extraction limits in Work Resource Interaction do not replace this owner's separate portable archive transport limits.
 
-## Current Implementation
+## Current Implementation Projection
+
+Per-Workspace operational backup, restore, and identity-preserving offline move are design requirements, not implemented capabilities. The following descriptions concern the existing analytical transfer and whole-data-root tooling. They do not establish the new operational acceptance predicates.
 
 The recurring projection uses the three required JSONL families and the deployment-safe whitelist. Its native accepted occurrence must resolve the exact current canonical Turn before portable export. A missing or contradictory Turn refuses export for inspection: current file absence cannot prove that no Turn ever existed, and the accepted no-repair lifecycle retains no durable publication-phase field that could prove that historical absence. The conditional unmaterialized-Turn allowance therefore supplies no exception for current native accepted occurrences. Complete same-deployment backup and restricted deletion closure retain their exact damaged Core history under their separate recovery owners. Inert recurring import uses the shared identifier producers and invocation-local remap maps for definitions, occurrences, ranges and exact recurring Audit subjects. It preserves source origins and creates no live schedule, queue, AutomationIdentity or absent Turn.
 
@@ -406,11 +507,28 @@ The public App API, Core Client, transport-neutral operation catalog and adminis
 
 Catalog portability is implemented on V3: every export from this change includes required feature `agent.resource-catalog.v1` and `records/agent-resource-catalog.json`, even when empty. Retained Skill trees travel as `skill-payloads/<skillId>/<digestHex>.json`. Import reconstructs Skill entries without a current default or pin, records Plugin membership metadata without installing a package, and records MCP entry identity without runnable declarations, bindings, or package data. Original plugin roots and `catalog/mcp-data/` remain non-portable. Full data-root backup continues to preserve same-deployment catalog snapshots.
 
+### Operational Implementation Increments
+
+These estimates count touched production files/modules and focused test suites, not new services. Shared layout primitives are prerequisites, not duplicated work. Counts overlap across increments.
+
+| Increment | Release | Work and dependency | Rough additional size |
+| --- | --- | --- | --- |
+| 1. Local hot backup, verify, seal | Before `v0.1.0` | Reuse control snapshots, Storage protection and existing inventory/archive primitives; finish the complete authority map. | 3-4 production files/modules, 3-5 suites; 2-3 engineer-days after shared primitives exist. |
+| 2. Same-deployment restore | Before `v0.1.0` | Reuse staged existing-only open, canonical placement, writer fences, and scoped quarantine. | 3-5 production files/modules, 4-6 suites; 2-4 days. |
+| 3. Offline MOVE | Before `v0.1.0` | Reuse execution settlement, source-local lifecycle commits, target registration, and current account admission. Add explicit mappings/report and disabled activation. | 4-6 production files/modules, 4-6 suites; 3-5 days. |
+| 4. Combined acceptance | Before `v0.1.0` | Extend the existing two-deployment operator fixture with identity-preserving move and the bounded fault set. | 2-3 test/support files; 1-2 days, with lower-layer cases in increments 1-3. |
+
+The incremental operational estimate is about 8-14 engineer-days after shared primitives exist. It is not a standalone estimate for the control-store replacement. The deciding fact is that snapshot protection, staged open, and quarantine already belong to that layout. Ship all four increments before the first stable release; deferred extensions are not included.
+
+Implementation reuse is specific: `storage/workspace-archive.ts` supplies confined archive paths and private bounded staging; `storage/workspace-export.ts` supplies exact-set/inventory-digest verification rules. `storage/data-root-backup.ts` supplies inventory and the public SQLite backup-API pattern; canonical publication helpers supply durable placement. Adapt these primitives for the distinct Workspace-backup manifest rather than pass a backup to the V3 parser.
+
+Retire the global synchronous tree-copy pause and whole-root replacement from the new Workspace path, not from separately owned whole-server recovery. Replace the operational equivalent of `storage/workspace-transfer-routes.ts`'s synchronous cross-store compensation with staged placement plus complete registration/quarantine. Keep `storage/workspace-import.ts`'s exact remint maps for existing analytical import and deferred COPY; MOVE must not call that remint transformer. Existing whole-server and analytical regression obligations remain.
+
 ## Alternatives Considered
 
-- SQLite-native single-file export. Rejected because it inverts the file-system-first model, makes exports opaque, and creates a binary format dependency.
+- SQLite-only analytical export. Rejected because external consumers need inspectable records without a binary database dependency. Operational recovery deliberately carries consistent SQLite snapshots and their content closure.
 - A V1 compatibility reader or V1-to-V3 upgrader. Rejected because the project is internal, V1 omitted authoritative state, and accepting it would falsely imply a complete portable workspace.
-- Incremental or differential backup. Deferred because full cold and hot backups cover the current deployment posture without another change-tracking model.
+- Incremental remote backup. Deferred because the first release needs one local verified bundle, not another change-tracking or synchronization service. Immutable content and sealed inventories preserve later incremental feasibility.
 - Live replication between deployments. Deferred because continuous synchronization needs a separate consistency model.
 
 ## Consequences
@@ -424,6 +542,8 @@ Catalog portability is implemented on V3: every export from this change includes
 
 ## Rollout / Migration Plan
 
+Local Workspace backup/restore and offline MOVE MUST ship before `v0.1.0`, together with their control-store dependencies. Extend the existing operator tool and native owners; add no transfer daemon, acknowledgement protocol, generic runner, or COPY surface. Same-release mismatch refuses admission; no pre-`v0.1.0` converter is provided. Analytical export remains independently usable.
+
 V3 replaces V1 without compatibility obligations. Existing V1 exports and internal V3 exports carrying the removed `workspace.json` path MUST be rejected and regenerated from their source workspaces. Future workspace-owned authoritative families MUST join export and import coverage in the same change that introduces their storage ownership; derived or server-local families MUST be explicitly classified non-portable.
 
 The completed Material and Artifact Review portability implementation adds the three Material JSONL families, replaces the Artifact-id-only Review portable schema with the version-keyed row, extends the Workspace SQLite coverage guard, and validates both the source graph and reminted target graph in the same change. Context Package and workspace-handoff references are rewritten in that implementation; no later repair pass or compatibility reader exists.
@@ -432,7 +552,23 @@ The multi-user implementation change MUST update V3 coverage and import tests in
 
 ## Testing Strategy / Acceptance Criteria
 
-The required acceptance path maps to the L0-L6 model in `docs/specs/20260529-test_strategy.md`:
+### Operational Recovery Before v0.1.0
+
+The [test strategy](20260529-test_strategy.md) owns test layers. Unit and boundary tests prove snapshot/GC ordering, exact seal publication, identity preservation, request idempotence, and staged admission. One process-level fixture proves the complete operator path below. A mechanical transfer is L3 coverage, not agent-first L6 acceptance.
+
+Create a realistic Workspace on one deployment with shared/private Threads, multiple Turns/Items, binary Artifacts, Materials/Reviews, Knowledge pages/Notebook history, local and unavailable external Sources, Light App rows/definitions/presentations, retained Skill payloads, work observations, model I/O message blobs, native transcripts, restricted bodies, capture gaps, and Pending Requests. Record the exact object/file counts, identities, local content digests, scope restrictions, and external omissions before capture. Do not compare mutable deployment bindings as immutable evidence.
+
+While the source serves unrelated work, take a hot backup with concurrent mutation and garbage collection. Restore it on the same deployment under the restore fence. Verify the declared cut, exact closure, current safety constraints, and truthful interruption of captured work. Then quiesce a move fixture, withdraw its Pending Requests, seal its bundle and source tombstone, and transfer the bundle offline to a fresh same-release deployment.
+
+Supply an active owner and an explicit partial member map. Compare every retained identity, immutable digest, and family count against the sealed source inventory. Verify dropped members, unavailable unmapped private audiences, preserved restrictions/coverage, complete Light App state, and recorded lineage. New target-specific bindings may differ only as declared in Target Admission And Rebinding.
+
+Boot the target, inspect history, re-provide required Vault material, admit current target Agent/configuration, and execute one new authorized Turn. Prove that no source execution, schedule, request, trigger, or channel reconnect ran automatically. The source must show its read-only moved-out tombstone and the same lineage/manifest digest. For an abandoned transfer, prove explicit source reactivation only after the operator prerequisite and current fence checks.
+
+The bounded negative set is mandatory: corrupt/missing/extra bytes; release/required-feature mismatch; identity collision; absent/disabled owner; interruption during seal; interruption during import placement/registration; and restart at these boundaries. Assert no valid seal before source moved-out commit, no active target before complete registration, unchanged prior authority before publication, and preserved inspectable bytes after uncertain publication. Unrelated healthy Workspaces must still boot and operate. Captured/external work must never replay. These checks exercise actual persistence boundaries, not only schema validation.
+
+### Existing Analytical Portability
+
+The following acceptance path retains the existing analytical and whole-server boundaries and maps to the same L0-L6 model:
 
 - L0 requires static repository, documentation lifecycle, type, lint, and boundary checks.
 - L1 requires package and NanoCore unit coverage for manifest versions, exact inventory verification, graph validation, path and link rejection, remint and stable-id behavior, context reconstruction, workspace SQLite coverage, and staged cleanup.
@@ -468,7 +604,9 @@ Current V3 acceptance requires deterministic round-trip equivalence, exact-byte 
 - Risk: reminting changes a stable identity or leaves a target-owned source identity or stale digest. Mitigation: validate source and target graphs, preserve explicitly stable workspace-scoped identities, and recompute identity-dependent context and manifest digests.
 - Risk: import fails after writing one storage surface. Mitigation: same-filesystem staging, one Core transaction, and synchronous rollback tests across staged, published, live-store, and Core state. A process crash inside the cross-resource publication window remains a separate recovery gap.
 - Risk: users treat an export as a secret-complete or secret-sanitized clone. Mitigation: exclude system-managed secrets and host bindings, import Vault references as `unbound`, expose explicit re-binding, and state that user-authored portable content is not DLP-scanned.
-- Risk: hot backup captures a torn append or a newer database snapshot than its copied files. Mitigation: mark the result crash-consistent and verify the captured file inventory. A stopped-server restore of that hot backup reuses the existing boot checks, and those checks can reject the data root. Canonical item and turn-event JSONL readers can discard a syntactically incomplete final fragment; other authoritative ledgers fail closed, and no general cross-authority reconciliation is currently claimed.
+- Risk: Workspace capture races mutation or garbage collection. Mitigation: snapshot every mutable authority under its owner's consistent boundary, protect transitive roots before selection, and verify the complete closure before sealing.
+- Risk: existing whole-server hot backup captures a torn append or a newer database snapshot than its copied files. Its crash-consistent label and boot checks retain their current limits; boot can reject that restored root. Canonical Item/event readers may discard an incomplete final fragment; other authoritative ledgers fail closed. This is not the new Workspace guarantee.
+- Risk: reactivation leaves an offline move bundle available elsewhere. Mitigation: require operator-confirmed target absence/fencing and retirement of transferable copies. No global revocation or cross-server exclusivity claim is made.
 
 ## Resolved Decisions
 
@@ -476,13 +614,15 @@ The accepted workspace export version is V3. The canonical archived extension re
 
 ## Deferred / Future Work
 
-- Incremental and differential backup.
+- Operational COPY with reminting. Reuse the existing exact owner/reference maps, verify before reminting, and recompute affected proofs. Never turn a colliding MOVE into COPY or change the sealed original evidence.
+- Remote incremental/differential synchronization to S3-compatible storage or cloud drives. Synchronize immutable objects and publish a verified seal last; preserve snapshot protection, required features, retention, confidentiality, and incomplete-upload refusal. No backend or Litestream dependency is adopted now.
+- Optional native-volume continuity. Require explicitly authorized whole-volume coverage, quiescent fenced writers, exact inventories/digests, preserved audience, checked target storage association, compatible runtime/layout, fresh credentials, and independent native-resume proof. Missing proof preserves bytes and refuses resume; no live process transfers.
+- Whole-server hot-backup changes. Preserve its current limitations until a separate accepted design covers all server/user/Workspace authorities; per-Workspace consistency implies no whole-server transaction.
 - Live replication and multi-deployment synchronization.
 - Deep compaction beyond item-log snapshot elision.
 - User- and server-scope export units, including whole-deployment archival export.
 - Web UI surfaces for export and import progress.
-- Durable recovery for a process crash inside the workspace-filesystem-to-Core publication window.
-- Concurrent-write hot-backup restore validation and any cross-authority reconciliation it proves necessary.
+- Durable recovery for a process crash inside the existing analytical import's filesystem-to-Core publication window. New operational restore/move already require interruption containment and complete publication before admission.
 - Browser-level portability acceptance and optional agent-first L6 continuation beyond the fixed two-runner mechanical proof.
 
 ## Links
