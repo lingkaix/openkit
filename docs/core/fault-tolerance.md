@@ -19,6 +19,12 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 **Report only what the evidence establishes.** A timeout, disconnect or crash establishes that a result is unavailable, not that an effect did not happen. Unknown is a valid, visible outcome. A later attempt keeps the earlier attempt's result and uncertainty.
 
+**Recover from durable records.** Recovery MUST start from the effect owner's durable records. Before dispatch, that owner MUST record the effect intent and the decision that permits it. If the result is not established, recovery MUST preserve the uncertainty and use the owning recovery contract to obtain proof or report unknown. Recorded decisions remain evidence; any further governed effect MUST satisfy current authorization under [Permissions](permissions.md).
+
+**One owner and one deadline per operation.** An operation that crosses a process or network boundary MUST have one end-to-end owner and one deadline covering its waiting, delivery, execution allowance and result collection. Inner waits and retries MUST use the remaining allowance, and a liveness signal MUST NOT extend it. Expiry MUST stop ordinary retries and invoke the owner's failure or unknown-outcome handling; it MUST NOT be treated as proof that external execution has stopped. Cleanup remains subject to the runtime's fencing requirements.
+
+**Name the failure.** Failure diagnostics MUST identify the reporting owner, the observed failed check and the lifecycle stage reached. They MUST distinguish an observed failure from an unproved cause.
+
 **Collect valuable information while it exists.** Harness, Sandbox and native state are temporary and may become unreadable or be deleted. OpenKit collects the information it needs to understand admitted work and its result while the work runs. It does not depend on teardown-time recovery or on native history. The decision and its reason are recorded in [Fault Tolerance And Work Collection](../decisions/20261017-fault_tolerance_and_work_collection.md).
 
 **Prefer interruption and a deliberate new attempt.** When a failure breaks an operation, OpenKit stops it with a truthful state and lets an authorized actor start a new attempt. Transparent recovery is an optional optimization; it never adds a second workflow and never guesses.
@@ -36,6 +42,12 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 `Acknowledgement Point` is the durable commit after which an owner may report that content or a decision is accepted.
 
 `Collection Before Loss` is the rule that valuable work information is collected while its source is still readable.
+
+`Safe Point` is an owner-defined committed state whose facts can be recovered from durable records alone. It does not establish the current state of a dependent external execution.
+
+`Danger Window` is an interval in which durable records do not establish whether an external effect occurred or what its result was. It includes uncertainty after dispatch and before receipt or execution is proved.
+
+`End-To-End Owner` is the one owner whose deadline bounds an operation across every layer it crosses.
 
 ## Fault Model
 
@@ -71,6 +83,8 @@ Damaged or unreadable authority-bearing storage fails closed. Missing authority-
 
 [Protocol](protocol.md) and [Communication](communication.md) own request identity, replay, stream ordering, cursor expiry and terminal evidence. A lost response calls for an authoritative read or the same request identity, not a new Turn. A client that stops observing does not stop server work. Output that cannot be collected within the owner's bounds fails the affected work explicitly; it is never dropped silently under a complete result.
 
+[Communication](communication.md#acknowledged-command-delivery) owns acknowledged delivery and proven non-receipt. Redelivery admitted by that contract does not repeat an effect whose outcome is unknown.
+
 ### Worker Harnesses
 
 [Runtime Model](runtime-model.md) owns collection: messages, accepted instructions and decisions, meaningful tool and effect outcomes, output files and Artifacts, and errors are collected through admitted interfaces while the work runs, and stored through existing Item, Artifact, evidence and Workspace owners. Complete means the information needed to understand the admitted work and its result; it does not mean every native event, private reasoning trace or temporary file. A lossy summary does not replace content its owner requires. When required collection fails, OpenKit keeps what arrived and reports the missing part; it never claims complete capture. A scan of changing files is not a consistent snapshot. Planned disposal collects first; urgent revocation does not wait for collection.
@@ -91,6 +105,9 @@ This document adds no entity, record, status value, ledger or recovery service. 
 - An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed. Recovery MUST preserve what remains and MUST NOT replace lost authority with an empty store.
 - A timeout, disconnect, crash or interruption MUST NOT be reported as proof that an effect did or did not happen.
 - An effect with an unknown outcome MUST NOT be repeated automatically.
+- An inner retry, wait or liveness signal MUST NOT extend the deadline set by an operation's end-to-end owner.
+- A decision that permits an effect MUST be durably recorded before that effect can occur. A recorded decision MUST NOT substitute for current authorization when a further effect is dispatched.
+- Diagnostics for a failure MUST identify the owner, the failed check and the lifecycle stage.
 - Required collection that fails MUST be reported as incomplete, never as complete success.
 - A failed native resume MUST NOT be presented as continued context; continuation MUST use a new Thread whose parent is the old Thread and whose context comes from authorized Core records.
 - A failure in one scope, Worker or external dependency MUST NOT expose another scope's data or a secret, or bypass authorization.
@@ -115,7 +132,8 @@ Before `v0.1.0`, release resets are explicit operator actions under [Contract Ev
 - [Foundation](foundation.md) owns durable product truth and trust boundaries; this document applies them to failure.
 - [Storage](storage.md) owns acknowledgement points, integrity failure handling, retained volumes and backup coverage.
 - [Protocol](protocol.md) and [Communication](communication.md) own request replay, Turn outcomes, streams, pending-outcome delivery and closeout.
-- [Runtime Model](runtime-model.md) owns collection, interruption and execution-domain cleanup.
+- [Runtime Model](runtime-model.md) owns collection, interruption and execution-domain cleanup, and projects safe points and danger windows onto the execution lifecycle.
+- [Permissions](permissions.md) owns enforcement points and current authorization at each governed effect boundary.
 - [AgentSession](agent-session.md) owns native continuity and its failure.
 - [Agent Capability](agent-capability.md) and [Vault](vault.md) own external call outcomes and secret injection receipts.
 - [Knowledge](knowledge.md) owns notebook publication and its recovery-required outcome.
