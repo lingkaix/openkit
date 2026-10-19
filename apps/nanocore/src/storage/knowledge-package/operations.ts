@@ -13,7 +13,6 @@ import { dirname, join, posix } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { formatReferenceUri, parseReferenceUri } from '@openkit/protocol';
 import { applyEdits, modify } from 'jsonc-parser';
-import MarkdownIt from 'markdown-it';
 import { parseJsoncObject } from '../../config/jsonc.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../../config/knowledge-base.js';
 import type { RuntimeConfigManager } from '../../config/runtime-config.js';
@@ -43,6 +42,7 @@ import { OperationError } from '../../operation-error.js';
 import {
   type KnowledgeRetrievalAccess,
   knowledgeSourceAudienceReadable,
+  knowledgeSourceLineageReadable,
 } from '../../retrieval-knowledge-adapter.js';
 import type { InflightIdempotentCommand } from '../../runtime/idempotent-command.js';
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
@@ -61,6 +61,7 @@ import {
   writeKnowledgePackageFormat,
 } from './format.js';
 import type { KnowledgePackageManifest } from './manifest.js';
+import { remintKnowledgeMarkdown } from './markdown.js';
 
 /** SHA-256 names original UTF-8 bytes, not Git objects or current page labels. */
 function digest(bytes: string): string {
@@ -75,7 +76,10 @@ export async function exportKnowledgePackage(input: {
   readonly directory: string;
   readonly revalidate: () => void;
   readonly fileAdmission: FileStorageAdmission;
-}): Promise<KnowledgePackageManifest> {
+}): Promise<{
+  manifest: KnowledgePackageManifest;
+  revalidateDisclosure: () => void;
+}> {
   input.revalidate();
   const ownerScope = { kind: 'workspace' as const, workspaceId: input.workspaceId };
   const owner = { dataRoot: input.dataRoot, ownerScope };
@@ -198,7 +202,35 @@ export async function exportKnowledgePackage(input: {
     });
     reservation.recordWritten(metadataBytes * 2 + rawBytes);
     check();
-    return manifest;
+    return {
+      manifest,
+      revalidateDisclosure: () => {
+        input.revalidate();
+        if (notebook.publishedRevision() !== revision) throw new NotebookError('conflict');
+        for (const pointer of pointers.values())
+          if (
+            !knowledgeSourceLineageReadable(
+              { workspaceId: input.workspaceId, access: input.access },
+              pointer.source
+            )
+          )
+            throw new OperationError(
+              'workspace_access_denied',
+              'Knowledge package access denied.',
+              403
+            );
+        // Pages can also cite governed Work or Artifact evidence outside the registered Source tree.
+        assertPortableWorkspaceNotebookDisclosure({
+          dataRoot: input.dataRoot,
+          workspaceId: input.workspaceId,
+          notebookRevision: revision,
+          pages: new Map(
+            Object.entries(pages).map(([path, content]) => [`knowledge/pages/${path}`, content])
+          ),
+          access: input.access,
+        });
+      },
+    };
   } finally {
     reservation.release();
   }
@@ -236,6 +268,7 @@ export async function importKnowledgePackage(input: {
   readonly workspaceId: string;
   readonly requestId: string;
   readonly actorId: string;
+  readonly access: KnowledgeRetrievalAccess;
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
@@ -252,6 +285,71 @@ export async function importKnowledgePackage(input: {
   input.revalidate();
   const root = join(input.dataRoot, 'workspaces', input.workspaceId, 'knowledge');
   const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
+  const commandInput = { workspaceId: input.workspaceId, requestId: input.requestId, manifest };
+  const receipt = input.store.getCommandRequest(
+    'knowledge.package.import',
+    input.requestId,
+    { workspaceId: input.workspaceId, actorId: input.actorId },
+    input.workspaceDb
+  );
+  if (receipt) {
+    const retained = notebook.readRevision(receipt.response.id);
+    if (!retained.parentRevision) throw new NotebookError('recovery_required');
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: input.dataRoot,
+      scope: { kind: 'workspace', workspaceId: input.workspaceId },
+    });
+    const pageScopeId = `page/workspace/${input.workspaceId}/${knowledgeBaseId}`;
+    const result = await publishWorkspaceNotebook(
+      {
+        store: input.store,
+        workspaceDb: input.workspaceDb,
+        notebook,
+        producer: { kind: 'user', id: input.actorId },
+        inflightCommands: input.inflightCommands,
+        command: { name: 'knowledge.package.import', input: commandInput },
+        sourcePointers: notebook.readSourcePointers(retained.revision),
+        revalidate: () => {
+          input.revalidate();
+          assertPortableWorkspaceNotebookDisclosure({
+            dataRoot: input.dataRoot,
+            workspaceId: input.workspaceId,
+            notebookRevision: retained.revision,
+            pages: new Map(
+              Object.entries(retained.files).map(([path, content]) => [
+                `knowledge/pages/${path}`,
+                content,
+              ])
+            ),
+            access: input.access,
+          });
+          return {
+            pageScopeId,
+            scopeSchemaText: readCanonicalTextFile(join(root, 'schema', 'scope-schema.yaml')),
+            reviewRequiredPageIds: [],
+            registeredSources: new Map(
+              input.store
+                .listKnowledgeSources(input.workspaceId)
+                .map((source) => [source.id, source.contentDigest])
+            ),
+            resolvedReferences: importedWorkspaceNotebookReferences(retained.files, pageScopeId),
+          };
+        },
+      },
+      {
+        workspaceId: input.workspaceId,
+        requestId: input.requestId,
+        baseRevision: retained.parentRevision,
+        summary: 'Import Knowledge package',
+        changes: Object.entries(retained.files).map(([path, content]) => ({ path, content })),
+      }
+    );
+    return {
+      workspaceId: input.workspaceId,
+      knowledgeBaseId,
+      notebookRevision: result.notebookRevision,
+    };
+  }
   const seed = requireBootstrapOnly({ ...input, root, notebook });
   const scope = {
     dataRoot: input.dataRoot,
@@ -349,7 +447,6 @@ export async function importKnowledgePackage(input: {
         content,
       ])
   );
-  const markdown = new MarkdownIt({ html: false });
   const reminted = remintPortableWorkspaceNotebookPages({
     pages,
     sourceWorkspaceId: manifest.ownerScope.workspaceId,
@@ -360,26 +457,22 @@ export async function importKnowledgePackage(input: {
     rewritePage: (path, content, rewriteReference) => {
       const parsed = parseOkfDocument({ path, content });
       if (!parsed.ok) throw new NotebookError('invalid_request');
-      let body = parsed.document.body;
-      for (const block of markdown.parse(body, {}))
-        for (const token of block.children ?? []) {
-          const href = token.attrGet(token.type === 'image' ? 'src' : 'href');
-          if (!href) continue;
-          let target = rewriteReference(href);
-          if (target === href && !/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('/')) {
-            const resolved = posix.normalize(
-              posix.join('pages', posix.dirname(path), decodeURI(href))
+      const body = remintKnowledgeMarkdown(parsed.document.body, (href) => {
+        let target = rewriteReference(href);
+        if (target === href && !/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('/')) {
+          const resolved = posix.normalize(
+            posix.join('pages', posix.dirname(path), decodeURI(href))
+          );
+          const replacement = resolved.startsWith('raw/')
+            ? rawPaths.get(resolved.slice(4))
+            : undefined;
+          if (replacement)
+            target = encodeURI(
+              posix.relative(posix.join('pages', posix.dirname(path)), `raw/${replacement}`)
             );
-            const replacement = resolved.startsWith('raw/')
-              ? rawPaths.get(resolved.slice(4))
-              : undefined;
-            if (replacement)
-              target = encodeURI(
-                posix.relative(posix.join('pages', posix.dirname(path)), `raw/${replacement}`)
-              );
-          }
-          if (target !== href) body = body.replaceAll(href, target);
         }
+        return target;
+      });
       // Keep exact authored bytes when no remint or attribution normalization is needed.
       const replaced = content.slice(0, content.length - parsed.document.body.length) + body;
       return parsed.document.reserved ||
@@ -480,7 +573,7 @@ export async function importKnowledgePackage(input: {
         inflightCommands: input.inflightCommands,
         command: {
           name: 'knowledge.package.import',
-          input: { workspaceId: input.workspaceId, requestId: input.requestId, manifest },
+          input: commandInput,
         },
         sourcePointers: transfer.pointers,
         revalidate: () => {
@@ -504,15 +597,15 @@ export async function importKnowledgePackage(input: {
     };
   } catch (error) {
     // Preserve a published or unknown outcome. Only a proved unchanged seed permits local staging compensation.
-    if (notebook.publishedRevision() === seed.revision) {
-      withCanonicalFileWriteAdmission(input.fileAdmission, () => {
-        writeFileAtomic(schemaPath, oldSchema);
-        writeFileAtomic(configPath, oldConfig);
-      });
-      for (const path of copied) rmSync(path, { force: true });
-      for (const path of [...createdDirectories].sort((left, right) => right.length - left.length))
-        rmdirSync(path);
-    }
+    if (notebook.publishedRevision() !== seed.revision)
+      throw new NotebookError('recovery_required');
+    withCanonicalFileWriteAdmission(input.fileAdmission, () => {
+      writeFileAtomic(schemaPath, oldSchema);
+      writeFileAtomic(configPath, oldConfig);
+    });
+    for (const path of copied) rmSync(path, { force: true });
+    for (const path of [...createdDirectories].sort((left, right) => right.length - left.length))
+      rmdirSync(path);
     throw error;
   } finally {
     reservation.release();

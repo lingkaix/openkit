@@ -16,6 +16,7 @@ import { registerAppApiRoute } from '../../openapi.js';
 import { OperationError, projectOperationError } from '../../operation-error.js';
 import { admitOperation, type OperationAdmissionDependencies } from '../../operation-resolvers.js';
 import type { InflightIdempotentCommand } from '../../runtime/idempotent-command.js';
+import { IdempotencyKeyConflictError } from '../../runtime/idempotent-command.js';
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
 import type { WorkspaceDb } from '../db.js';
 import {
@@ -89,6 +90,12 @@ export function registerKnowledgePackageRoutes(
         };
         revalidate();
         staging = await createKnowledgePackageStaging(dependencies.dataRoot);
+        const access = {
+          store,
+          coreDb: dependencies.coreDb,
+          actor: { kind: 'user' as const, id: context.get('actor').userId },
+          requestActor: context.get('actor'),
+        };
         const directory = join(staging.root, 'package');
         if (id === 'knowledge.package.import') {
           await mkdir(directory, { mode: 0o700 });
@@ -101,25 +108,21 @@ export function registerKnowledgePackageRoutes(
             workspaceId,
             requestId: admitted.input.requestId as string,
             actorId: context.get('actor').userId,
+            access,
             workspaceDb: dependencies.repositoryWorkspaceDb(workspaceId),
             revalidate,
           });
           return context.json(KnowledgePackageImportResponseSchema.parse(result));
         }
-        const manifest = await exportKnowledgePackage({
+        const captured = await exportKnowledgePackage({
           ...dependencies,
           dataRoot: dependencies.dataRoot,
           workspaceId,
           directory,
           revalidate,
-          access: {
-            store,
-            coreDb: dependencies.coreDb,
-            actor: { kind: 'user', id: context.get('actor').userId },
-            requestActor: context.get('actor'),
-          },
+          access,
         });
-        const archive = knowledgePackageArchive(directory, manifest);
+        const archive = knowledgePackageArchive(directory, captured.manifest);
         const owned = staging;
         staging = undefined;
         // The body owns staging until EOF, cancellation or failure; no export handle is retained.
@@ -127,7 +130,7 @@ export function registerKnowledgePackageRoutes(
           (async function* () {
             try {
               for await (const chunk of archive) {
-                revalidate();
+                captured.revalidateDisclosure();
                 yield chunk;
               }
             } finally {
@@ -149,7 +152,15 @@ export function registerKnowledgePackageRoutes(
           },
         });
       } catch (error) {
-        const projected = projectOperationError(error);
+        const projected =
+          projectOperationError(error) ??
+          (error instanceof IdempotencyKeyConflictError
+            ? {
+                code: error.code,
+                message: error.message,
+                status: error.status,
+              }
+            : undefined);
         const failure =
           projected ??
           (error instanceof NotebookError
