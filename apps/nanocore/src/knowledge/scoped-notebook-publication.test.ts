@@ -427,19 +427,21 @@ describe('internal direct User and Server Notebook publication', () => {
     ).toBe(f.initialServer);
   });
 
-  it('refuses unavailable Source storage in self edits and keeps generic native history source-free', async () => {
+  it('refuses an unregistered Source in an initialized Notebook and keeps generic native history source-free', async () => {
     const f = fixture();
     const scope = { kind: 'user', userId: alice } as const;
     const request = edit(f.initialUser, scope);
     const sourceContent = page(scope, 'Source-bound bytes.', [
       'source:ks_00000000-0000-7000-8000-000000000001',
     ]);
+    // The Source pointer/reference owners admit an empty Notebook, but not an unregistered identity.
+    // See 20261018-file_storage_and_knowledge_packages.md and 20260909-personal_memory_and_knowledge_learning.md.
     await expect(
       publishScopedNotebook(f.user, {
         ...request,
         changes: [{ path: 'note.md', content: sourceContent }],
       })
-    ).rejects.toMatchObject({ code: 'recovery_required' });
+    ).rejects.toMatchObject({ code: 'invalid_request' });
     expect(counts(f.userDb)).toEqual({ audit: 2, receipts: 0 });
     const retained = notebook(f.user);
     const candidate = retained.prepare({
@@ -451,7 +453,7 @@ describe('internal direct User and Server Notebook publication', () => {
     expect(() => readScopedNotebookHistory(f.user)).toThrow('Notebook invalid request.');
     await expect(
       publishScopedNotebook(f.user, { ...request, baseRevision: candidate })
-    ).rejects.toMatchObject({ code: 'recovery_required' });
+    ).rejects.toMatchObject({ code: 'invalid_request' });
     expect(retained.publishedRevision()).toBe(candidate);
     expect(counts(f.userDb)).toEqual({ audit: 2, receipts: 0 });
   });
@@ -466,7 +468,7 @@ describe('internal direct User and Server Notebook publication', () => {
     });
     const references = [`source:${source.id}@${source.contentDigest}`];
     const request = {
-      ...edit(f.initialUser, { kind: 'user', userId: alice }),
+      ...edit(notebook(f.user).publishedRevision(), { kind: 'user', userId: alice }),
       changes: [
         {
           path: 'note.md',
